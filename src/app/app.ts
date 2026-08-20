@@ -17,13 +17,24 @@ import { ThemePreference, ThemeService } from './core/services/theme.service';
 import { UniverseService } from './core/services/universe.service';
 import { WorkspaceService } from './core/services/workspace.service';
 import { AppState } from './core/state/app.state';
-
-type NavItem = { id: string; label: string; icon: string; needsUniverse: boolean };
+import { UniversePickerComponent } from './features/universe-picker/universe-picker.component';
+import { AppShellComponent } from './shell/app-shell/app-shell.component';
+import { ContextualInspectorComponent } from './shell/contextual-inspector/contextual-inspector.component';
+import { TitlebarComponent } from './shell/titlebar/titlebar.component';
+import { SidebarNavItem, UniverseSidebarComponent } from './shell/universe-sidebar/universe-sidebar.component';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [
+    CommonModule,
+    FormsModule,
+    AppShellComponent,
+    TitlebarComponent,
+    UniverseSidebarComponent,
+    ContextualInspectorComponent,
+    UniversePickerComponent,
+  ],
   templateUrl: './app.html',
   styleUrl: './app.css',
 })
@@ -65,9 +76,13 @@ export class App implements OnInit, OnDestroy {
   readonly infoMessage = signal('');
   readonly syncBusy = signal(false);
   readonly syncStatus = signal<SyncServerStatus>({ running: false, address: null, pairing_code: null, device_name: 'Meu computador' });
+  readonly lastOpenedUniverseId = signal<string | null>(localStorage.getItem('narrahub.lastUniverseId'));
+  readonly pendingDeleteUniverse = signal<UniverseWithStats | null>(null);
 
   newUniverseName = '';
   newUniverseDesc = '';
+  editingUniverseId: string | null = null;
+  deleteUniverseConfirmation = '';
   newStoryName = '';
   newBookName = '';
   newChapterTitle = '';
@@ -87,8 +102,7 @@ export class App implements OnInit, OnDestroy {
   pairingCode = '';
 
   readonly planningStatuses: PlanningStatus[] = ['IDEIAS', 'PLANEJADO', 'ESCREVENDO', 'REVISAO', 'FINALIZADO'];
-  readonly entityTypes: EntityType[] = ['Personagem', 'Lugar', 'Evento', 'Objeto', 'Organização', 'Nota'];
-  readonly navItems: NavItem[] = [
+  readonly navItems: SidebarNavItem[] = [
     { id: 'inicio', label: 'Início', icon: '⌂', needsUniverse: false },
     { id: 'escrita', label: 'Escrita', icon: '✎', needsUniverse: true },
     { id: 'personagens', label: 'Personagens', icon: '♙', needsUniverse: true },
@@ -101,15 +115,6 @@ export class App implements OnInit, OnDestroy {
     { id: 'configuracoes', label: 'Configurações', icon: '⚙', needsUniverse: false },
   ];
 
-  readonly filteredUniverses = computed(() => {
-    const query = this.searchQuery().trim().toLocaleLowerCase('pt-BR');
-    if (!query) return this.universes();
-    return this.universes().filter((universe) =>
-      `${universe.name} ${universe.description}`.toLocaleLowerCase('pt-BR').includes(query),
-    );
-  });
-  readonly totalWords = computed(() => this.universes().reduce((total, universe) => total + universe.stats.total_words, 0));
-  readonly totalChapters = computed(() => this.universes().reduce((total, universe) => total + universe.stats.total_chapters, 0));
   readonly wordCount = computed(() => this.countWords(this.editorContent()));
 
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -134,7 +139,7 @@ export class App implements OnInit, OnDestroy {
   @HostListener('document:keydown.control.k', ['$event'])
   focusSearch(event: Event): void {
     event.preventDefault();
-    document.querySelector<HTMLInputElement>('.global-search input')?.focus();
+    document.querySelector<HTMLInputElement>('.nh-global-search input')?.focus();
   }
 
   async minimizeWindow(): Promise<void> { if (isTauri()) await getCurrentWindow().minimize(); }
@@ -143,13 +148,14 @@ export class App implements OnInit, OnDestroy {
   async toggleFullscreen(): Promise<void> { if (isTauri()) { const win = getCurrentWindow(); await win.setFullscreen(!(await win.isFullscreen())); } }
   async loadUniverses(): Promise<void> { this.universes.set(await this.universeService.list()); }
 
-  async selectNav(item: NavItem): Promise<void> {
+  async selectNav(item: SidebarNavItem): Promise<void> {
     if (item.needsUniverse && !this.appState.activeUniverse()) {
       this.showInfo('Selecione ou crie um universo para abrir esta área.'); return;
     }
     await this.saveChapterNow();
     this.activeNav.set(item.id);
-    if (item.id === 'inicio') { this.appState.goHome(); return; }
+    if (item.id === 'inicio') { await this.returnToLibrary(); return; }
+    if (item.id === 'ajuda') { this.showInfo('Ajuda e feedback serão conectados ao fluxo nativo em uma próxima fase.'); return; }
     if (item.id === 'configuracoes') { this.appState.openSettings(); return; }
     if (item.id === 'escrita') this.appState.openEditor();
     else if (item.id === 'personagens') this.appState.openEntityList('Personagem');
@@ -164,24 +170,54 @@ export class App implements OnInit, OnDestroy {
   async createUniverse(): Promise<void> {
     const name = this.newUniverseName.trim(); if (!name) return;
     try {
+      if (this.editingUniverseId) {
+        await this.universeService.update(this.editingUniverseId, { name, description: this.newUniverseDesc.trim() });
+        const active = this.appState.activeUniverse();
+        if (active?.id === this.editingUniverseId) {
+          this.appState.activeUniverse.set({ ...active, name, description: this.newUniverseDesc.trim(), updated_at: this.db.now() });
+        }
+        this.resetUniverseForm(); this.appState.closeModal(); await this.loadUniverses(); this.showInfo('Universo atualizado.');
+        return;
+      }
       const created = await this.universeService.create(name, this.newUniverseDesc.trim());
-      this.newUniverseName = ''; this.newUniverseDesc = ''; this.appState.closeModal(); await this.loadUniverses();
+      this.resetUniverseForm(); this.appState.closeModal(); await this.loadUniverses();
       const universe = this.universes().find((item) => item.id === created.id); if (universe) await this.openUniverse(universe);
-    } catch (error) { this.reportError('Não foi possível criar o universo.', error); }
+    } catch (error) { this.reportError('Não foi possível salvar o universo.', error); }
+  }
+
+  beginCreateUniverse(): void { this.resetUniverseForm(); this.appState.openModal('new-universe'); }
+
+  beginEditUniverse(universe: UniverseWithStats): void {
+    this.editingUniverseId = universe.id; this.newUniverseName = universe.name; this.newUniverseDesc = universe.description;
+    this.appState.openModal('new-universe');
+  }
+
+  requestDeleteUniverse(universe: UniverseWithStats): void {
+    this.pendingDeleteUniverse.set(universe); this.deleteUniverseConfirmation = ''; this.appState.openModal('delete-universe');
   }
 
   async openUniverse(universe: UniverseWithStats): Promise<void> {
-    await this.saveChapterNow(); this.appState.openUniverse(universe); this.activeNav.set('escrita'); await this.loadWorkspaceData();
+    await this.saveChapterNow();
+    localStorage.setItem('narrahub.lastUniverseId', universe.id); this.lastOpenedUniverseId.set(universe.id);
+    this.searchQuery.set(''); this.appState.openUniverse(universe); this.activeNav.set('escrita'); await this.loadWorkspaceData();
   }
 
-  async deleteUniverse(id: string, event: Event): Promise<void> {
-    event.stopPropagation(); const universe = this.universes().find((item) => item.id === id);
-    if (!universe || !confirm(`Excluir “${universe.name}” e todo o conteúdo associado?`)) return;
+  async confirmDeleteUniverse(): Promise<void> {
+    const universe = this.pendingDeleteUniverse();
+    if (!universe || this.deleteUniverseConfirmation.trim() !== universe.name) return;
     try {
-      await this.universeService.delete(id); await this.loadUniverses();
-      if (this.appState.activeUniverseId() === id) { this.appState.goHome(); this.activeNav.set('inicio'); }
+      await this.universeService.delete(universe.id); this.appState.closeModal(); this.pendingDeleteUniverse.set(null); await this.loadUniverses();
+      if (this.lastOpenedUniverseId() === universe.id) { localStorage.removeItem('narrahub.lastUniverseId'); this.lastOpenedUniverseId.set(null); }
+      if (this.appState.activeUniverseId() === universe.id) await this.returnToLibrary();
+      this.showInfo('Universo excluído do banco local.');
     } catch (error) { this.reportError('Não foi possível excluir o universo.', error); }
   }
+
+  async returnToLibrary(): Promise<void> {
+    await this.saveChapterNow(); this.appState.goHome(); this.activeNav.set('inicio'); this.searchQuery.set(''); this.clearWritingSelection();
+  }
+
+  openSettings(): void { this.searchQuery.set(''); this.activeNav.set('configuracoes'); this.appState.openSettings(); }
 
   async loadWorkspaceData(): Promise<void> {
     const id = this.appState.activeUniverseId(); if (!id) return;
@@ -274,11 +310,25 @@ export class App implements OnInit, OnDestroy {
       this.newEntityName = ''; this.newEntityDescription = ''; this.appState.closeModal(); this.entities.set(await this.entityService.listByUniverse(id)); await this.refreshUniverseStats();
     } catch (error) { this.reportError('Não foi possível criar a entidade.', error); }
   }
+  beginCreateEntity(): void {
+    this.newEntityType = (this.appState.sidebarEntityFilter() || 'Personagem') as EntityType;
+    this.newEntityName = ''; this.newEntityDescription = ''; this.appState.openModal('new-entity');
+  }
+  entityCreateLabel(): string {
+    const type = this.appState.sidebarEntityFilter() || 'entidade';
+    return `Novo ${type.toLocaleLowerCase('pt-BR')}`;
+  }
   async openEntitySheet(entity: Entity): Promise<void> {
     try { this.activeEntity.set(await this.entityService.getWithDetails(entity.id)); this.appState.openEntitySheet(entity.id); }
     catch (error) { this.reportError('Não foi possível abrir a ficha.', error); }
   }
-  visibleEntities(): Entity[] { const filter = this.appState.sidebarEntityFilter(); return filter ? this.entities().filter((entity) => entity.type === filter) : this.entities(); }
+  visibleEntities(): Entity[] {
+    const filter = this.appState.sidebarEntityFilter(); const query = this.searchQuery().trim().toLocaleLowerCase('pt-BR');
+    return this.entities().filter((entity) =>
+      (!filter || entity.type === filter) &&
+      (!query || `${entity.name} ${entity.description} ${entity.type}`.toLocaleLowerCase('pt-BR').includes(query)),
+    );
+  }
   entitySectionTitle(): string { const filter = this.appState.sidebarEntityFilter(); return filter ? (filter === 'Personagem' ? 'Personagens' : filter === 'Lugar' ? 'Lugares' : filter === 'Evento' ? 'Eventos' : `${filter}s`) : 'Entidades'; }
 
   async loadRelations(): Promise<void> { const id = this.appState.activeUniverseId(); if (id) this.relations.set(await this.workspaceService.listRelations(id)); }
@@ -332,13 +382,13 @@ export class App implements OnInit, OnDestroy {
 
   formatNumber(value: number): string { return value.toLocaleString('pt-BR'); }
   formatDate(value: string): string { if (!value) return 'Sem data'; const date = new Date(value.length === 10 ? `${value}T12:00:00` : value); return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' }); }
-  coverStyle(universe: UniverseWithStats): Record<string, string> { return universe.cover_image ? { 'background-image': `linear-gradient(180deg, transparent, rgba(17, 11, 42, .88)), url("${universe.cover_image}")` } : {}; }
   private async refreshUniverseStats(): Promise<void> {
     const id = this.appState.activeUniverseId(); if (!id) return; const stats = await this.universeService.getStats(id);
     this.universes.update((items) => items.map((item) => item.id === id ? { ...item, stats } : item));
     const active = this.appState.activeUniverse(); if (active) this.appState.activeUniverse.set({ ...active, stats });
   }
   private clearWritingSelection(): void { this.activeStory.set(null); this.activeBook.set(null); this.activeChapter.set(null); this.books.set([]); this.chapters.set([]); this.editorTitle.set(''); this.editorContent.set(''); }
+  private resetUniverseForm(): void { this.editingUniverseId = null; this.newUniverseName = ''; this.newUniverseDesc = ''; }
   private countWords(content: string): number { const normalized = content.replace(/<[^>]+>/g, ' ').trim(); return normalized ? normalized.split(/\s+/u).length : 0; }
   private showInfo(message: string): void { this.infoMessage.set(message); if (this.infoTimer) clearTimeout(this.infoTimer); this.infoTimer = setTimeout(() => this.infoMessage.set(''), 4200); }
   private reportError(message: string, error: unknown): void { console.error(`[NarraHub] ${message}`, error); this.errorMessage.set(`${message} ${error instanceof Error ? error.message : String(error)}`); }

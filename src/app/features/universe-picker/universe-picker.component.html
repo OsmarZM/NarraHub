@@ -1,0 +1,82 @@
+<section class="universe-library" (click)="openMenuId.set(null)">
+  <header class="library-hero">
+    <p class="library-kicker">SUA BIBLIOTECA DE MUNDOS</p>
+    <h1>Qual universo vamos explorar hoje?</h1>
+    <p>Escolha um universo para continuar escrevendo ou dê vida a um novo mundo.</p>
+  </header>
+
+  @if (universes().length === 0) {
+    <section class="library-empty" aria-labelledby="empty-universe-title">
+      <div class="empty-book" aria-hidden="true"><span></span><span></span><i>✦</i></div>
+      <p class="library-kicker">COMECE PELO ESSENCIAL</p>
+      <h2 id="empty-universe-title">Seu primeiro universo começa aqui</h2>
+      <p>Nenhum conteúdo de demonstração. Tudo que aparecer nesta biblioteca será criado por você.</p>
+      <button type="button" class="library-primary" (click)="createRequested.emit()">Criar primeiro universo</button>
+      <div class="empty-flow" aria-label="Fluxo inicial"><span>Universo</span><b>→</b><span>História</span><b>→</b><span>Livro</span><b>→</b><span>Capítulo</span></div>
+    </section>
+  } @else {
+    <div class="library-heading">
+      <div><span></span><h2>Seus universos</h2><small>{{ visibleUniverses().length }} encontrado(s)</small></div>
+      <label>Ordenar por
+        <select [value]="sort()" (change)="sort.set($any($event.target).value)">
+          <option value="recent">Mais recentes</option>
+          <option value="name">Nome</option>
+          <option value="created">Data de criação</option>
+        </select>
+      </label>
+    </div>
+
+    @if (visibleUniverses().length === 0) {
+      <section class="library-no-results">
+        <h2>Nenhum universo encontrado</h2>
+        <p>Tente outro termo para “{{ query() }}”.</p>
+      </section>
+    } @else {
+      <div class="portal-grid">
+        @for (universe of visibleUniverses(); track universe.id; let index = $index) {
+          <article
+            class="universe-portal"
+            [class.recently-opened]="lastOpenedId() === universe.id"
+            [style.--delay.ms]="index * 55"
+            tabindex="0"
+            (click)="openRequested.emit(universe)"
+            (keydown.enter)="openRequested.emit(universe)"
+          >
+            <div class="portal-art" [style.background-image]="coverStyle(universe)['background-image']">
+              @if (!universe.cover_image) {
+                <div class="portal-placeholder" aria-hidden="true"><span>{{ universe.name.charAt(0).toUpperCase() }}</span><i></i><i></i><i></i></div>
+              }
+              <div class="portal-shade"></div>
+              @if (lastOpenedId() === universe.id) { <span class="recent-badge">✦ Aberto recentemente</span> }
+              <button type="button" class="portal-menu-button" aria-label="Ações do universo" [attr.aria-expanded]="openMenuId() === universe.id" (click)="toggleMenu(universe.id, $event)">•••</button>
+              @if (openMenuId() === universe.id) {
+                <div class="portal-menu" role="menu" (click)="$event.stopPropagation()">
+                  <button type="button" role="menuitem" (click)="chooseEdit(universe, $event)">Editar nome e descrição</button>
+                  <button type="button" role="menuitem" class="danger" (click)="chooseDelete(universe, $event)">Excluir universo…</button>
+                </div>
+              }
+              <div class="portal-copy">
+                <h3>{{ universe.name }}</h3>
+                @if (universe.description) { <p>{{ universe.description }}</p> }
+                <dl>
+                  <div><dt>Livros</dt><dd>▱ {{ universe.stats.total_books }}</dd></div>
+                  <div><dt>Capítulos</dt><dd>▤ {{ universe.stats.total_chapters }}</dd></div>
+                  <div><dt>Personagens</dt><dd>♙ {{ characterCount(universe) }}</dd></div>
+                  <div><dt>Última edição</dt><dd>◷ {{ relativeDate(universe.updated_at) }}</dd></div>
+                </dl>
+                <button type="button" class="open-portal" (click)="openRequested.emit(universe); $event.stopPropagation()">Abrir universo <span>→</span></button>
+              </div>
+            </div>
+          </article>
+        }
+        <button type="button" class="create-portal" (click)="createRequested.emit()">
+          <div class="create-illustration" aria-hidden="true"><span>＋</span><i></i><i></i><i></i></div>
+          <strong>Criar novo universo</strong>
+          <small>Comece um mundo vazio, sem dados prontos.</small>
+        </button>
+      </div>
+    }
+  }
+
+  <footer class="library-privacy"><span></span><p><strong>Seus universos ficam apenas no seu dispositivo.</strong><small>Sem nuvem. Sem contas. Só você e suas histórias.</small></p></footer>
+</section>

@@ -1,44 +1,29 @@
-<div class="app-shell" [class.focus-mode]="isFocusMode()">
-  <header class="titlebar" data-tauri-drag-region (dblclick)="toggleMaximizeWindow()">
-    <div class="brand" data-tauri-drag-region>
-      <div class="brand-mark" aria-hidden="true"><i></i><i></i></div>
-      <span>NarraHub</span>
-    </div>
-    <label class="global-search">
-      <span aria-hidden="true">⌕</span>
-      <input type="search" aria-label="Buscar" placeholder="Buscar universos..." [ngModel]="searchQuery()" (ngModelChange)="searchQuery.set($event)" />
-      <kbd>Ctrl K</kbd>
-    </label>
-    <div class="top-actions">
-      <button type="button" class="icon-button" [attr.aria-label]="theme.resolvedTheme() === 'dark' ? 'Usar tema claro' : 'Usar tema escuro'" (click)="theme.toggle(); $event.stopPropagation()">
-        {{ theme.resolvedTheme() === 'dark' ? '☀' : '☾' }}
-      </button>
-      <div class="local-status" title="Dados armazenados neste dispositivo"><span class="status-dot"></span>Local-first</div>
-    </div>
-    <div class="window-controls" (dblclick)="$event.stopPropagation()">
-      <button type="button" aria-label="Minimizar" (click)="minimizeWindow(); $event.stopPropagation()">—</button>
-      <button type="button" aria-label="Maximizar ou restaurar" (click)="toggleMaximizeWindow(); $event.stopPropagation()">□</button>
-      <button type="button" class="close-button" aria-label="Fechar" (click)="closeWindow(); $event.stopPropagation()">×</button>
-    </div>
-  </header>
+<app-shell [showSidebar]="appState.currentView() === 'workspace' && !!appState.activeUniverse()" [focusMode]="isFocusMode()">
+  <app-titlebar
+    titlebar
+    [query]="searchQuery()"
+    [workspaceMode]="appState.currentView() === 'workspace'"
+    (queryChange)="searchQuery.set($event)"
+    (homeRequested)="returnToLibrary()"
+    (settingsRequested)="openSettings()"
+    (minimizeRequested)="minimizeWindow()"
+    (maximizeRequested)="toggleMaximizeWindow()"
+    (closeRequested)="closeWindow()"
+  />
+  @if (appState.currentView() === 'workspace' && appState.activeUniverse(); as universe) {
+    <app-universe-sidebar
+      sidebar
+      [universe]="universe"
+      [items]="navItems"
+      [activeItem]="activeNav()"
+      [collapsed]="appState.sidebarCollapsed()"
+      (itemSelected)="selectNav($event)"
+      (changeUniverse)="returnToLibrary()"
+      (collapseToggled)="appState.toggleSidebar()"
+    />
+  }
 
-  <div class="app-frame">
-    <aside class="navigation" [class.collapsed]="appState.sidebarCollapsed()">
-      <button type="button" class="collapse-button" (click)="appState.toggleSidebar()" [attr.aria-label]="appState.sidebarCollapsed() ? 'Expandir menu' : 'Recolher menu'">{{ appState.sidebarCollapsed() ? '»' : '«' }}</button>
-      <nav aria-label="Navegação principal">
-        @for (item of navItems; track item.id) {
-          <button type="button" class="nav-button" [class.active]="activeNav() === item.id" [class.context-locked]="item.needsUniverse && !appState.activeUniverse()" (click)="selectNav(item)" [title]="item.label">
-            <span class="nav-icon" aria-hidden="true">{{ item.icon }}</span><span class="nav-label">{{ item.label }}</span>
-          </button>
-        }
-      </nav>
-      <div class="navigation-footer">
-        <div class="workspace-card"><span class="status-dot"></span><div><strong>Workspace local</strong><small>Offline por padrão</small></div></div>
-        <small class="version">NarraHub 0.2.0</small>
-      </div>
-    </aside>
-
-    <main class="content">
+  <div class="content-stage" [class.focus-mode]="isFocusMode()">
       @if (errorMessage()) { <div class="alert error-alert" role="alert"><span>{{ errorMessage() }}</span><button type="button" (click)="errorMessage.set('')">×</button></div> }
       @if (infoMessage()) { <div class="toast" role="status">{{ infoMessage() }}</div> }
 
@@ -83,45 +68,22 @@
           </div>
         </section>
       } @else if (appState.currentView() === 'home') {
-        <section class="home-view page-enter">
-          <div class="page-heading">
-            <div><span class="eyebrow">WORKSPACE LOCAL</span><h1>Suas histórias, no seu ritmo.</h1><p>Escreva offline, organize seu universo e sincronize quando quiser.</p></div>
-            <button type="button" class="primary-button" (click)="appState.openModal('new-universe')"><span>＋</span>Novo universo</button>
-          </div>
-          @if (universes().length > 0) {
-            <div class="summary-row">
-              <article><span>Universos</span><strong>{{ universes().length }}</strong><i>◈</i></article>
-              <article><span>Capítulos</span><strong>{{ formatNumber(totalChapters()) }}</strong><i>▤</i></article>
-              <article><span>Palavras escritas</span><strong>{{ formatNumber(totalWords()) }}</strong><i>✎</i></article>
-              <article><span>Privacidade</span><strong class="local-copy">Local</strong><i>⌂</i></article>
-            </div>
-            <div class="section-heading"><div><h2>Meus universos</h2><p>{{ filteredUniverses().length }} projeto(s)</p></div></div>
-            @if (filteredUniverses().length > 0) {
-              <div class="universe-grid">
-                @for (universe of filteredUniverses(); track universe.id; let index = $index) {
-                  <article class="universe-card stagger-card" [style.--delay.ms]="index * 55" tabindex="0" (click)="openUniverse(universe)" (keydown.enter)="openUniverse(universe)">
-                    <div class="universe-cover" [ngStyle]="coverStyle(universe)"><span class="universe-orbit"></span><span class="universe-initial">{{ universe.name.charAt(0).toUpperCase() }}</span><button type="button" class="delete-button" aria-label="Excluir universo" (click)="deleteUniverse(universe.id, $event)">×</button></div>
-                    <div class="universe-body"><h3>{{ universe.name }}</h3><p>{{ universe.description || 'Sem descrição' }}</p><div class="universe-stats"><span><strong>{{ universe.stats.total_books }}</strong> livros</span><span><strong>{{ universe.stats.total_chapters }}</strong> capítulos</span><span><strong>{{ formatNumber(universe.stats.total_words) }}</strong> palavras</span></div></div>
-                  </article>
-                }
-              </div>
-            } @else { <div class="no-results">Nenhum universo corresponde a “{{ searchQuery() }}”.</div> }
-          } @else {
-            <section class="empty-hero">
-              <div class="empty-illustration" aria-hidden="true"><span></span><span></span><span></span><i>✦</i></div>
-              <span class="eyebrow">COMECE PELO ESSENCIAL</span><h2>Seu primeiro universo começa aqui</h2><p>Nenhum dado de demonstração. Tudo que aparecer será criado por você.</p>
-              <button type="button" class="primary-button" (click)="appState.openModal('new-universe')">Criar primeiro universo</button>
-              <div class="flow-hint"><span>Universo</span><b>→</b><span>História</span><b>→</b><span>Livro</span><b>→</b><span>Capítulo</span></div>
-            </section>
-          }
-        </section>
+        <app-universe-picker
+          [universes]="universes()"
+          [query]="searchQuery()"
+          [lastOpenedId]="lastOpenedUniverseId()"
+          (createRequested)="beginCreateUniverse()"
+          (openRequested)="openUniverse($event)"
+          (editRequested)="beginEditUniverse($event)"
+          (deleteRequested)="requestDeleteUniverse($event)"
+        />
       } @else {
         <section class="workspace-view page-enter">
           <header class="workspace-header">
             <div class="breadcrumb"><button type="button" (click)="selectNav(navItems[0])">Universos</button><span>/</span><strong>{{ appState.activeUniverse()?.name }}</strong>@if (activeStory() && activeNav() === 'escrita') { <span>/</span><span>{{ activeStory()?.name }}</span> }</div>
             <div class="workspace-actions"><span class="save-state" [class.saving]="isSaving()"><i></i>{{ saveMessage() || 'Banco local conectado' }}</span>
               @if (appState.workspaceView() === 'editor') { <button type="button" class="secondary-button" (click)="appState.openModal('new-chapter')" [disabled]="!activeBook()">＋ Capítulo</button> }
-              @else if (appState.workspaceView() === 'entities') { <button type="button" class="primary-button small" (click)="appState.openModal('new-entity')">＋ Nova entidade</button> }
+              @else if (appState.workspaceView() === 'entities') { <button type="button" class="primary-button small" (click)="beginCreateEntity()">＋ {{ entityCreateLabel() }}</button> }
               @else if (appState.workspaceView() === 'graph') { <button type="button" class="primary-button small" (click)="appState.openModal('new-relation')" [disabled]="entities().length < 2">＋ Conexão</button> }
               @else if (appState.workspaceView() === 'timeline') { <button type="button" class="primary-button small" (click)="appState.openModal('new-timeline')">＋ Evento</button> }
               @else if (appState.workspaceView() === 'planning') { <button type="button" class="primary-button small" (click)="appState.openModal('new-planning')">＋ Item</button> }
@@ -164,16 +126,16 @@
                   <footer class="editor-status"><span>{{ formatNumber(wordCount()) }} palavras</span><span>{{ formatNumber(editorContent().length) }} caracteres</span><span>~{{ Math.ceil(wordCount() / 220) || 0 }} min de leitura</span><span class="save-state"><i></i>{{ saveMessage() }}</span></footer>
                 }
               </article>
-              <aside class="writing-inspector"><span class="eyebrow">VISÃO GERAL</span><h3>{{ activeBook()?.name || 'Livro' }}</h3><div class="inspector-stat"><span>Capítulos</span><strong>{{ chapters().length }}</strong></div><div class="inspector-stat"><span>Palavras no livro</span><strong>{{ formatNumber(wordCount() + chapters().filter(c => c.id !== activeChapter()?.id).reduce((sum, c) => sum + c.word_count, 0)) }}</strong></div><div class="inspector-note"><strong>Salvamento automático</strong><p>O conteúdo é gravado localmente após 700 ms sem digitação.</p></div></aside>
+              <app-contextual-inspector class="writing-inspector" label="Visão geral do livro"><span class="eyebrow">VISÃO GERAL</span><h3>{{ activeBook()?.name || 'Livro' }}</h3><div class="inspector-stat"><span>Capítulos</span><strong>{{ chapters().length }}</strong></div><div class="inspector-stat"><span>Palavras no livro</span><strong>{{ formatNumber(wordCount() + chapters().filter(c => c.id !== activeChapter()?.id).reduce((sum, c) => sum + c.word_count, 0)) }}</strong></div><div class="inspector-note"><strong>Salvamento automático</strong><p>O conteúdo é gravado localmente após 700 ms sem digitação.</p></div></app-contextual-inspector>
             </div>
           } @else if (appState.workspaceView() === 'entities' || appState.workspaceView() === 'entity-sheet') {
             <div class="feature-page entity-view">
-              <header class="feature-heading"><div><span class="eyebrow">WORLDBUILDING</span><h1>{{ entitySectionTitle() }}</h1><p>Construa fichas flexíveis sem conteúdo inventado.</p></div><div class="filter-pills"><button type="button" [class.active]="!appState.sidebarEntityFilter()" (click)="appState.openEntityList(null)">Todos</button>@for (type of entityTypes.slice(0, 5); track type) { <button type="button" [class.active]="appState.sidebarEntityFilter() === type" (click)="appState.openEntityList(type)">{{ type }}</button> }</div></header>
+              <header class="feature-heading"><div><span class="eyebrow">WORLDBUILDING</span><h1>{{ entitySectionTitle() }}</h1><p>Construa fichas flexíveis sem conteúdo inventado.</p></div></header>
               @if (appState.workspaceView() === 'entity-sheet' && activeEntity()) {
                 <article class="entity-sheet surface-card"><button type="button" class="text-button" (click)="appState.openEntityList(appState.sidebarEntityFilter())">← Voltar</button><div class="entity-sheet-title"><span>{{ activeEntity()?.type?.charAt(0) }}</span><div><small>{{ activeEntity()?.type }}</small><h2>{{ activeEntity()?.name }}</h2></div></div><p class="entity-description">{{ activeEntity()?.description || 'Nenhuma descrição adicionada.' }}</p><div class="attribute-grid">@for (attribute of activeEntity()?.attributes; track attribute.id) { <div><span>{{ attribute.key }}</span><strong>{{ attribute.value || 'Não informado' }}</strong></div> }</div></article>
               } @else if (visibleEntities().length > 0) {
                 <div class="entity-grid">@for (entity of visibleEntities(); track entity.id; let index = $index) { <button type="button" class="entity-card stagger-card" [style.--delay.ms]="index * 35" (click)="openEntitySheet(entity)"><span class="entity-avatar">{{ entity.name.charAt(0).toUpperCase() }}</span><span><small>{{ entity.type }}</small><strong>{{ entity.name }}</strong><em>{{ entity.description || 'Sem descrição' }}</em></span></button> }</div>
-              } @else { <section class="empty-feature"><span>♙</span><h2>Nenhuma entidade cadastrada</h2><p>Crie personagens, lugares, eventos e objetos quando precisar.</p><button type="button" class="primary-button" (click)="appState.openModal('new-entity')">Criar primeira entidade</button></section> }
+              } @else { <section class="empty-feature"><span>♙</span><h2>Nenhum registro nesta seção</h2><p>Crie apenas {{ (appState.sidebarEntityFilter() || 'entidades').toLocaleLowerCase('pt-BR') }} neste menu.</p><button type="button" class="primary-button" (click)="beginCreateEntity()">{{ entityCreateLabel() }}</button></section> }
             </div>
           } @else if (appState.workspaceView() === 'graph') {
             <div class="feature-page graph-page"><header class="feature-heading"><div><span class="eyebrow">RELAÇÕES</span><h1>Grafo de conexões</h1><p>Leia como os elementos do seu universo se relacionam.</p></div></header>
@@ -197,15 +159,16 @@
           }
         </section>
       }
-    </main>
   </div>
-</div>
+</app-shell>
 
 @if (appState.modalOpen()) {
   <div class="modal-backdrop" (mousedown)="appState.closeModal()">
     <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       @if (appState.modalOpen() === 'new-universe') {
-        <header><div><span class="eyebrow">NOVO PROJETO</span><h2>Criar universo</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Nome do universo<input name="universeName" [(ngModel)]="newUniverseName" placeholder="Ex.: As Crônicas do Vale" autofocus /></label><label>Descrição <span>(opcional)</span><textarea name="universeDesc" [(ngModel)]="newUniverseDesc" placeholder="Gênero, tema ou uma breve ideia"></textarea></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newUniverseName.trim()" (click)="createUniverse()">Criar universo</button></footer>
+        <header><div><span class="eyebrow">{{ editingUniverseId ? 'BIBLIOTECA' : 'NOVO MUNDO' }}</span><h2>{{ editingUniverseId ? 'Editar universo' : 'Criar universo' }}</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Nome do universo<input name="universeName" [(ngModel)]="newUniverseName" placeholder="Ex.: As Crônicas do Vale" autofocus /></label><label>Descrição <span>(opcional)</span><textarea name="universeDesc" [(ngModel)]="newUniverseDesc" placeholder="Gênero, tema ou uma breve ideia"></textarea></label><p class="modal-guidance">A capa, gênero, tags e calendário serão adicionados quando o armazenamento seguro de anexos estiver implementado.</p><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newUniverseName.trim()" (click)="createUniverse()">{{ editingUniverseId ? 'Salvar alterações' : 'Criar universo' }}</button></footer>
+      } @else if (appState.modalOpen() === 'delete-universe' && pendingDeleteUniverse(); as universe) {
+        <header><div><span class="eyebrow danger-copy">AÇÃO DESTRUTIVA</span><h2>Excluir {{ universe.name }}?</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><p class="delete-warning">Todos os livros, capítulos, personagens, lugares e eventos deste universo serão removidos do banco local. Backup e exportação ainda não estão disponíveis nesta fase.</p><label>Digite <strong>{{ universe.name }}</strong> para confirmar<input name="deleteConfirmation" [(ngModel)]="deleteUniverseConfirmation" autocomplete="off" /></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button destructive" [disabled]="deleteUniverseConfirmation.trim() !== universe.name" (click)="confirmDeleteUniverse()">Excluir definitivamente</button></footer>
       } @else if (appState.modalOpen() === 'new-story') {
         <header><div><span class="eyebrow">ESTRUTURA</span><h2>Nova história</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Nome da história<input name="storyName" [(ngModel)]="newStoryName" placeholder="Ex.: A saga principal" autofocus /></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newStoryName.trim()" (click)="createStory()">Criar história</button></footer>
       } @else if (appState.modalOpen() === 'new-book') {
@@ -213,7 +176,7 @@
       } @else if (appState.modalOpen() === 'new-chapter') {
         <header><div><span class="eyebrow">ESCRITA</span><h2>Novo capítulo</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Título do capítulo<input name="chapterTitle" [(ngModel)]="newChapterTitle" placeholder="Ex.: Capítulo 1 — O chamado" autofocus /></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newChapterTitle.trim()" (click)="createChapter()">Criar capítulo</button></footer>
       } @else if (appState.modalOpen() === 'new-entity') {
-        <header><div><span class="eyebrow">WORLDBUILDING</span><h2>Nova entidade</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Tipo<select name="entityType" [(ngModel)]="newEntityType">@for (type of entityTypes; track type) { <option [ngValue]="type">{{ type }}</option> }</select></label><label>Nome<input name="entityName" [(ngModel)]="newEntityName" placeholder="Ex.: Personagem principal" autofocus /></label><label>Descrição <span>(opcional)</span><textarea name="entityDescription" [(ngModel)]="newEntityDescription"></textarea></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newEntityName.trim()" (click)="createEntity()">Criar entidade</button></footer>
+        <header><div><span class="eyebrow">WORLDBUILDING</span><h2>Novo {{ newEntityType.toLocaleLowerCase('pt-BR') }}</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><p class="modal-guidance">Você está criando um registro no menu {{ entitySectionTitle() }}. O tipo é definido pelo contexto, sem seleção genérica.</p><label>Nome<input name="entityName" [(ngModel)]="newEntityName" [placeholder]="newEntityType === 'Personagem' ? 'Nome do personagem' : newEntityType === 'Lugar' ? 'Nome do lugar' : 'Nome do evento'" autofocus /></label><label>Descrição <span>(opcional)</span><textarea name="entityDescription" [(ngModel)]="newEntityDescription"></textarea></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newEntityName.trim()" (click)="createEntity()">Criar {{ newEntityType.toLocaleLowerCase('pt-BR') }}</button></footer>
       } @else if (appState.modalOpen() === 'new-relation') {
         <header><div><span class="eyebrow">CONEXÕES</span><h2>Nova conexão</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Origem<select name="relationSource" [(ngModel)]="newRelationSource"><option value="">Selecione</option>@for (entity of entities(); track entity.id) { <option [value]="entity.id">{{ entity.name }} · {{ entity.type }}</option> }</select></label><label>Relação<input name="relationLabel" [(ngModel)]="newRelationLabel" placeholder="Ex.: é irmão de" /></label><label>Destino<select name="relationTarget" [(ngModel)]="newRelationTarget"><option value="">Selecione</option>@for (entity of entities(); track entity.id) { <option [value]="entity.id">{{ entity.name }} · {{ entity.type }}</option> }</select></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newRelationSource || !newRelationTarget || !newRelationLabel.trim()" (click)="createRelation()">Criar conexão</button></footer>
       } @else if (appState.modalOpen() === 'new-timeline') {

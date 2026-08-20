@@ -1,0 +1,18 @@
+<aside class="nh-sidebar" [class.collapsed]="collapsed()">
+  <button type="button" class="nh-sidebar-collapse" (click)="collapseToggled.emit()" [attr.aria-label]="collapsed() ? 'Expandir menu' : 'Recolher menu'">{{ collapsed() ? '›' : '‹' }}</button>
+  <div class="nh-active-universe">
+    <div class="nh-universe-thumb" [style.background-image]="universe().cover_image ? 'url(' + universe().cover_image + ')' : null">{{ universe().cover_image ? '' : universe().name.charAt(0).toUpperCase() }}</div>
+    <div><strong>{{ universe().name }}</strong><small>{{ universe().stats.total_books }} livro(s) · {{ universe().stats.total_chapters }} capítulo(s)</small></div>
+  </div>
+  <button type="button" class="nh-change-universe" (click)="changeUniverse.emit()"><span aria-hidden="true">←</span><span>Trocar universo</span></button>
+  <nav aria-label="Navegação do universo">
+    @for (item of items(); track item.id) {
+      @if (item.needsUniverse) {
+        <button type="button" [class.active]="activeItem() === item.id" (click)="itemSelected.emit(item)" [title]="item.label">
+          <span class="nh-nav-icon" aria-hidden="true">{{ item.icon }}</span><span class="nh-nav-label">{{ item.label }}</span>
+        </button>
+      }
+    }
+  </nav>
+  <button type="button" class="nh-help" (click)="itemSelected.emit({ id: 'ajuda', label: 'Ajuda e feedback', icon: '?', needsUniverse: true })"><span>?</span><span>Ajuda e feedback</span></button>
+</aside>

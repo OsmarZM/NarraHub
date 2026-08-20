@@ -1,0 +1,40 @@
+<header class="nh-titlebar" data-tauri-drag-region (dblclick)="maximizeRequested.emit()">
+  <button type="button" class="nh-brand" aria-label="Voltar à biblioteca de universos" (click)="homeRequested.emit(); $event.stopPropagation()">
+    <svg class="nh-brand-symbol" viewBox="0 0 40 40" role="img" aria-hidden="true">
+      <path d="M5 8.5c5.7.2 10.3 2.2 15 6.6v18c-4.4-3.7-9.1-5.7-15-5.9V8.5Z" />
+      <path d="M35 8.5c-5.7.2-10.3 2.2-15 6.6v18c4.4-3.7 9.1-5.7 15-5.9V8.5Z" />
+      <path d="M9 5.5c4.2.8 7.7 2.6 11 5.5 3.3-2.9 6.8-4.7 11-5.5" />
+    </svg>
+    <span>NarraHub</span>
+  </button>
+
+  <label class="nh-global-search">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m16.4 16.4 4.1 4.1"></path></svg>
+    <input
+      type="search"
+      [attr.aria-label]="workspaceMode() ? 'Buscar no universo' : 'Buscar universos'"
+      [placeholder]="workspaceMode() ? 'Buscar no projeto...' : 'Buscar universos...'"
+      [ngModel]="query()"
+      (ngModelChange)="queryChange.emit($event)"
+    />
+    <kbd>Ctrl K</kbd>
+  </label>
+
+  <div class="nh-title-actions">
+    <div class="nh-theme-toggle" role="group" aria-label="Tema da interface">
+      <button type="button" aria-label="Usar tema claro" [class.active]="theme.resolvedTheme() === 'light'" (click)="theme.setTheme('light'); $event.stopPropagation()">☼</button>
+      <span></span>
+      <button type="button" aria-label="Usar tema escuro" [class.active]="theme.resolvedTheme() === 'dark'" (click)="theme.setTheme('dark'); $event.stopPropagation()">☾</button>
+    </div>
+    <button type="button" class="nh-title-icon" aria-label="Abrir configurações" (click)="settingsRequested.emit(); $event.stopPropagation()">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"></path></svg>
+    </button>
+    <div class="nh-local-status" title="Os dados permanecem neste dispositivo"><span></span>Local-first</div>
+  </div>
+
+  <div class="nh-window-controls" (dblclick)="$event.stopPropagation()">
+    <button type="button" aria-label="Minimizar" (click)="minimizeRequested.emit(); $event.stopPropagation()">—</button>
+    <button type="button" aria-label="Maximizar ou restaurar" (click)="maximizeRequested.emit(); $event.stopPropagation()">□</button>
+    <button type="button" class="close" aria-label="Fechar" (click)="closeRequested.emit(); $event.stopPropagation()">×</button>
+  </div>
+</header>

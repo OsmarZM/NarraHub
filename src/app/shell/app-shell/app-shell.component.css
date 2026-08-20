@@ -1,0 +1,31 @@
+.nh-app-shell {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  color: var(--nh-ink);
+  background:
+    radial-gradient(circle at 86% -10%, color-mix(in srgb, var(--nh-ochre) 8%, transparent), transparent 34%),
+    var(--nh-bg);
+  transition: color .24s ease, background-color .24s ease;
+}
+
+.nh-app-frame {
+  height: calc(100vh - var(--nh-titlebar-height));
+  display: flex;
+}
+
+.nh-content {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.nh-app-shell.focus-mode .nh-app-frame {
+  height: calc(100vh - var(--nh-titlebar-height));
+}
+
+@media (max-width: 680px) {
+  .nh-app-frame { height: calc(100vh - 58px); }
+  .nh-app-shell.has-sidebar .nh-content { padding-bottom: 64px; }
+}

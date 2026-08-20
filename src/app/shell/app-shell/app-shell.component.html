@@ -1,0 +1,11 @@
+<div class="nh-app-shell" [class.has-sidebar]="showSidebar()" [class.focus-mode]="focusMode()">
+  <ng-content select="[titlebar]"></ng-content>
+  <div class="nh-app-frame">
+    @if (showSidebar() && !focusMode()) {
+      <ng-content select="[sidebar]"></ng-content>
+    }
+    <main class="nh-content">
+      <ng-content></ng-content>
+    </main>
+  </div>
+</div>
