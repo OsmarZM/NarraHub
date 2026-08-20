@@ -1,0 +1,196 @@
+/* ============================================
+   NarraHub Design System — Tokens
+   ============================================ */
+
+:root {
+  /* ── Superfícies ─────────────────────────────── */
+  --bg-app: #0a0a0f;
+  --bg-sidebar: #0e0e15;
+  --bg-content: #12121a;
+  --bg-card: #181823;
+  --bg-elevated: #1e1e2d;
+  --bg-hover: #252538;
+  --bg-active: #2a2a40;
+  --bg-input: #14141e;
+  --bg-overlay: rgba(0, 0, 0, 0.65);
+  --bg-tooltip: #2a2a3d;
+
+  /* ── Acentos ─────────────────────────────────── */
+  --accent-primary: #8b5cf6;
+  --accent-primary-hover: #7c3aed;
+  --accent-primary-glow: rgba(139, 92, 246, 0.2);
+  --accent-primary-subtle: rgba(139, 92, 246, 0.1);
+  --accent-secondary: #06b6d4;
+  --accent-secondary-hover: #0891b2;
+  --accent-warm: #f59e0b;
+  --accent-warm-hover: #d97706;
+  --accent-success: #10b981;
+  --accent-success-hover: #059669;
+  --accent-danger: #ef4444;
+  --accent-danger-hover: #dc2626;
+  --accent-pink: #ec4899;
+  --accent-pink-hover: #db2777;
+
+  /* ── Entity Type Colors ──────────────────────── */
+  --color-personagem: #8b5cf6;
+  --color-lugar: #06b6d4;
+  --color-evento: #f59e0b;
+  --color-objeto: #10b981;
+  --color-organizacao: #ef4444;
+  --color-livro: #64748b;
+  --color-conceito: #ec4899;
+  --color-nota: #94a3b8;
+
+  /* ── Canon Status Colors ─────────────────────── */
+  --color-canon: #10b981;
+  --color-ideia: #f59e0b;
+  --color-descartado: #ef4444;
+  --color-alternativo: #8b5cf6;
+
+  /* ── Texto ───────────────────────────────────── */
+  --text-primary: #e8e8f0;
+  --text-secondary: #9090a8;
+  --text-muted: #5a5a72;
+  --text-disabled: #3a3a4d;
+  --text-accent: var(--accent-primary);
+  --text-inverse: #0a0a0f;
+  --text-link: #8b9cf6;
+  --text-link-hover: #a78bfa;
+
+  /* ── Bordas ──────────────────────────────────── */
+  --border-subtle: rgba(255, 255, 255, 0.04);
+  --border-default: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --border-focus: var(--accent-primary);
+  --border-error: var(--accent-danger);
+
+  /* ── Sombras ─────────────────────────────────── */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.7);
+  --shadow-glow-primary: 0 0 20px rgba(139, 92, 246, 0.15);
+  --shadow-glow-secondary: 0 0 20px rgba(6, 182, 212, 0.15);
+  --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.3);
+
+  /* ── Tipografia ──────────────────────────────── */
+  --font-sans: 'Segoe UI Variable', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  --font-serif: 'Merriweather', 'Georgia', 'Cambria', 'Times New Roman', serif;
+
+  --text-xs: 0.6875rem;     /* 11px */
+  --text-sm: 0.8125rem;     /* 13px */
+  --text-base: 0.9375rem;   /* 15px */
+  --text-lg: 1.125rem;      /* 18px */
+  --text-xl: 1.375rem;      /* 22px */
+  --text-2xl: 1.75rem;      /* 28px */
+  --text-3xl: 2.25rem;      /* 36px */
+  --text-4xl: 3rem;         /* 48px */
+
+  --leading-tight: 1.3;
+  --leading-normal: 1.6;
+  --leading-relaxed: 1.8;
+  --leading-loose: 2.0;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --tracking-tight: -0.02em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.02em;
+
+  /* ── Espaçamento ─────────────────────────────── */
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;
+
+  /* ── Raios de borda ──────────────────────────── */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 24px;
+  --radius-full: 9999px;
+
+  /* ── Layout ──────────────────────────────────── */
+  --sidebar-width: 260px;
+  --sidebar-collapsed-width: 52px;
+  --topbar-height: 44px;
+  --statusbar-height: 28px;
+  --content-max-width: 780px;
+  --editor-max-width: 720px;
+
+  /* ── Z-index ─────────────────────────────────── */
+  --z-base: 0;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-overlay: 300;
+  --z-modal: 400;
+  --z-toast: 500;
+  --z-tooltip: 600;
+  --z-max: 999;
+
+  /* ── Transições ──────────────────────────────── */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --duration-fast: 100ms;
+  --duration-normal: 200ms;
+  --duration-slow: 350ms;
+  --duration-slower: 500ms;
+
+  --transition-colors: color var(--duration-normal) var(--ease-in-out),
+                        background-color var(--duration-normal) var(--ease-in-out),
+                        border-color var(--duration-normal) var(--ease-in-out);
+  --transition-transform: transform var(--duration-normal) var(--ease-out);
+  --transition-opacity: opacity var(--duration-normal) var(--ease-in-out);
+  --transition-shadow: box-shadow var(--duration-normal) var(--ease-in-out);
+  --transition-all: all var(--duration-normal) var(--ease-in-out);
+
+  /* ── Scrollbar ───────────────────────────────── */
+  --scrollbar-width: 6px;
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: rgba(255, 255, 255, 0.08);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.15);
+}
+
+/* ── Scrollbar Global ──────────────────────────── */
+::-webkit-scrollbar {
+  width: var(--scrollbar-width);
+  height: var(--scrollbar-width);
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* ── Selection ─────────────────────────────────── */
+::selection {
+  background: rgba(139, 92, 246, 0.3);
+  color: var(--text-primary);
+}

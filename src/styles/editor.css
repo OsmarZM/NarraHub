@@ -1,0 +1,511 @@
+/* ============================================
+   NarraHub — Editor Styles (Tiptap/ProseMirror)
+   ============================================ */
+
+/* ── Editor Container ──────────────────────────── */
+
+.editor-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.editor-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.editor-topbar-breadcrumb {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.editor-topbar-breadcrumb .highlight {
+  color: var(--text-secondary);
+}
+
+.editor-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  padding: var(--space-10) var(--space-6) var(--space-20);
+}
+
+.editor-writing-area {
+  width: 100%;
+  max-width: var(--editor-max-width);
+}
+
+/* ── Editor Chapter Title ──────────────────────── */
+
+.editor-chapter-title {
+  font-family: var(--font-serif);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  color: var(--text-primary);
+  margin-bottom: var(--space-2);
+  border: none;
+  background: transparent;
+  width: 100%;
+  outline: none;
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-tight);
+}
+
+.editor-chapter-title::placeholder {
+  color: var(--text-muted);
+}
+
+.editor-chapter-divider {
+  width: 60px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent-primary), transparent);
+  margin: var(--space-5) 0;
+  border: none;
+}
+
+/* ── ProseMirror Content ───────────────────────── */
+
+.ProseMirror {
+  font-family: var(--font-serif);
+  font-size: var(--text-lg);
+  line-height: var(--leading-loose);
+  color: var(--text-primary);
+  outline: none;
+  min-height: 400px;
+  caret-color: var(--accent-primary);
+}
+
+.ProseMirror > *:first-child {
+  margin-top: 0;
+}
+
+.ProseMirror p {
+  margin-bottom: var(--space-4);
+  text-indent: 2em;
+}
+
+.ProseMirror p:first-child {
+  text-indent: 0;
+}
+
+.ProseMirror p.is-empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-muted);
+  float: left;
+  pointer-events: none;
+  height: 0;
+  font-style: italic;
+}
+
+/* Headings */
+.ProseMirror h1 {
+  font-family: var(--font-serif);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  color: var(--text-primary);
+  margin-top: var(--space-10);
+  margin-bottom: var(--space-4);
+  line-height: var(--leading-tight);
+  text-indent: 0;
+}
+
+.ProseMirror h2 {
+  font-family: var(--font-serif);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  margin-top: var(--space-8);
+  margin-bottom: var(--space-3);
+  line-height: var(--leading-tight);
+  text-indent: 0;
+}
+
+.ProseMirror h3 {
+  font-family: var(--font-serif);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+  margin-top: var(--space-6);
+  margin-bottom: var(--space-3);
+  line-height: var(--leading-tight);
+  text-indent: 0;
+}
+
+/* Emphasis */
+.ProseMirror strong {
+  font-weight: var(--weight-bold);
+  color: var(--text-primary);
+}
+
+.ProseMirror em {
+  font-style: italic;
+}
+
+/* Blockquotes */
+.ProseMirror blockquote {
+  border-left: 3px solid var(--accent-primary);
+  padding-left: var(--space-5);
+  margin: var(--space-6) 0;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.ProseMirror blockquote p {
+  text-indent: 0;
+}
+
+/* Horizontal Rule */
+.ProseMirror hr {
+  border: none;
+  height: 1px;
+  background: var(--border-default);
+  margin: var(--space-8) auto;
+  width: 30%;
+}
+
+/* Lists */
+.ProseMirror ul,
+.ProseMirror ol {
+  padding-left: var(--space-6);
+  margin-bottom: var(--space-4);
+}
+
+.ProseMirror ul {
+  list-style-type: disc;
+}
+
+.ProseMirror ol {
+  list-style-type: decimal;
+}
+
+.ProseMirror li {
+  margin-bottom: var(--space-1);
+  text-indent: 0;
+}
+
+.ProseMirror li p {
+  text-indent: 0;
+  margin-bottom: var(--space-1);
+}
+
+/* Code */
+.ProseMirror code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--bg-elevated);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--accent-secondary);
+}
+
+/* ── Menções ───────────────────────────────────── */
+
+.mention {
+  display: inline;
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: 0.92em;
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition: var(--transition-colors);
+  text-indent: 0;
+  text-decoration: none;
+}
+
+.mention:hover {
+  text-decoration: underline;
+}
+
+/* Mention by entity type */
+.mention-personagem {
+  background: rgba(139, 92, 246, 0.12);
+  color: var(--color-personagem);
+}
+
+.mention-lugar {
+  background: rgba(6, 182, 212, 0.12);
+  color: var(--color-lugar);
+}
+
+.mention-evento {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--color-evento);
+}
+
+.mention-objeto {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--color-objeto);
+}
+
+.mention-organizacao {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--color-organizacao);
+}
+
+.mention-conceito {
+  background: rgba(236, 72, 153, 0.12);
+  color: var(--color-conceito);
+}
+
+.mention-default {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-link);
+}
+
+/* ── Mention Suggestion Dropdown ───────────────── */
+
+.mention-suggestion {
+  position: absolute;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: var(--space-1);
+  min-width: 240px;
+  max-height: 280px;
+  overflow-y: auto;
+  box-shadow: var(--shadow-lg);
+  z-index: var(--z-dropdown);
+  animation: slideDown var(--duration-normal) var(--ease-spring);
+}
+
+.mention-suggestion-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: var(--transition-colors);
+}
+
+.mention-suggestion-item:hover,
+.mention-suggestion-item-active {
+  background: var(--bg-hover);
+}
+
+.mention-suggestion-item-selected {
+  background: var(--accent-primary-subtle);
+}
+
+.mention-suggestion-shape {
+  font-size: var(--text-base);
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.mention-suggestion-name {
+  flex: 1;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mention-suggestion-type {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.mention-suggestion-empty {
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ── Floating Toolbar ──────────────────────────── */
+
+.floating-toolbar {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: var(--space-1);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  z-index: var(--z-dropdown);
+  animation: scaleIn var(--duration-fast) var(--ease-spring);
+}
+
+.floating-toolbar-btn {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  cursor: pointer;
+  transition: var(--transition-colors);
+}
+
+.floating-toolbar-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.floating-toolbar-btn-active {
+  background: var(--accent-primary-subtle);
+  color: var(--accent-primary);
+}
+
+.floating-toolbar-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border-default);
+  margin: 0 2px;
+}
+
+/* ── Editor Status Bar ─────────────────────────── */
+
+.editor-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.editor-status-item {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.editor-status-saved {
+  color: var(--accent-success);
+}
+
+.editor-status-saving {
+  color: var(--accent-warm);
+}
+
+/* ── Focus Mode ────────────────────────────────── */
+
+.focus-mode .ProseMirror > *:not(.has-focus) {
+  opacity: 0.15;
+  transition: opacity var(--duration-slow) var(--ease-in-out);
+}
+
+.focus-mode .ProseMirror > .has-focus {
+  opacity: 1;
+}
+
+.focus-mode .ProseMirror > *:not(.has-focus):hover {
+  opacity: 0.5;
+}
+
+/* ── Chapter Tree (Editor Sidebar) ─────────────── */
+
+.chapter-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--space-2);
+}
+
+.chapter-tree-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition-colors);
+  user-select: none;
+}
+
+.chapter-tree-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.chapter-tree-item-active {
+  background: var(--accent-primary-subtle);
+  color: var(--accent-primary);
+}
+
+.chapter-tree-item-dragging {
+  opacity: 0.5;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-md);
+}
+
+.chapter-tree-number {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  width: 22px;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.chapter-tree-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chapter-tree-words {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.chapter-tree-status {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.chapter-tree-status-ideia { background: var(--text-muted); }
+.chapter-tree-status-planejado { background: var(--accent-secondary); }
+.chapter-tree-status-escrevendo { background: var(--accent-warm); }
+.chapter-tree-status-revisao { background: var(--accent-primary); }
+.chapter-tree-status-finalizado { background: var(--accent-success); }
+
+/* ── Personal Comments ─────────────────────────── */
+
+.personal-comment {
+  background: rgba(245, 158, 11, 0.06);
+  border-left: 3px solid var(--accent-warm);
+  padding: var(--space-3) var(--space-4);
+  margin: var(--space-4) 0;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  color: var(--accent-warm);
+  font-style: normal;
+}
+
+.personal-comment::before {
+  content: '📝 ';
+}

@@ -1,0 +1,13 @@
+{
+  "app": {
+    "windows": [
+      {
+        "title": "NarraHub",
+        "width": 430,
+        "height": 900,
+        "decorations": true,
+        "resizable": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { font-family: Inter, "Segoe UI Variable", "Segoe UI", sans-serif; text-rendering: optimizeLegibility; }
+button, input, textarea, select { font: inherit; }
+button { color: inherit; }
+::selection { color: #fff; background: #6d4aff; }
