@@ -11,9 +11,11 @@ import { BookService } from './core/services/book.service';
 import { ChapterService } from './core/services/chapter.service';
 import { DatabaseService } from './core/services/database.service';
 import { EntityService } from './core/services/entity.service';
+import { OnlineShareService } from './core/services/online-share.service';
 import { StoryService } from './core/services/story.service';
 import { SyncService } from './core/services/sync.service';
 import { ThemePreference, ThemeService } from './core/services/theme.service';
+import { AppUpdateInfo, UpdateService } from './core/services/update.service';
 import { UniverseService } from './core/services/universe.service';
 import { WorkspaceService } from './core/services/workspace.service';
 import { AppState } from './core/state/app.state';
@@ -22,6 +24,14 @@ import { AppShellComponent } from './shell/app-shell/app-shell.component';
 import { ContextualInspectorComponent } from './shell/contextual-inspector/contextual-inspector.component';
 import { TitlebarComponent } from './shell/titlebar/titlebar.component';
 import { SidebarNavItem, UniverseSidebarComponent } from './shell/universe-sidebar/universe-sidebar.component';
+
+interface StoredOnlineShare {
+  id: string;
+  revokeToken: string;
+  expiresAt: string;
+  title: string;
+  apiUrl: string;
+}
 
 @Component({
   selector: 'app-root',
@@ -48,8 +58,10 @@ export class App implements OnInit, OnDestroy {
   private readonly bookService = inject(BookService);
   private readonly chapterService = inject(ChapterService);
   private readonly entityService = inject(EntityService);
+  private readonly onlineShareService = inject(OnlineShareService);
   private readonly workspaceService = inject(WorkspaceService);
   private readonly syncService = inject(SyncService);
+  private readonly updateService = inject(UpdateService);
 
   readonly searchQuery = signal('');
   readonly activeNav = signal('inicio');
@@ -75,6 +87,15 @@ export class App implements OnInit, OnDestroy {
   readonly errorMessage = signal('');
   readonly infoMessage = signal('');
   readonly syncBusy = signal(false);
+  readonly shareBusy = signal(false);
+  readonly shareLink = signal('');
+  readonly shareExpiresAt = signal('');
+  readonly onlineShares = signal<StoredOnlineShare[]>(this.readStoredShares());
+  readonly updateBusy = signal(false);
+  readonly updateProgress = signal(0);
+  readonly updatePhase = signal<'idle' | 'checking' | 'available' | 'downloading' | 'current' | 'error'>('idle');
+  readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.3.0', availableVersion: null, notes: '', publishedAt: null });
+  readonly updateError = signal('');
   readonly syncStatus = signal<SyncServerStatus>({ running: false, address: null, pairing_code: null, device_name: 'Meu computador' });
   readonly lastOpenedUniverseId = signal<string | null>(localStorage.getItem('narrahub.lastUniverseId'));
   readonly pendingDeleteUniverse = signal<UniverseWithStats | null>(null);
@@ -100,6 +121,8 @@ export class App implements OnInit, OnDestroy {
   deviceName = localStorage.getItem('narrahub.deviceName') || 'Meu computador';
   remoteAddress = '';
   pairingCode = '';
+  shareApiUrl = localStorage.getItem('narrahub.shareApiUrl') || '';
+  shareExpiresInDays = 7;
 
   readonly planningStatuses: PlanningStatus[] = ['IDEIAS', 'PLANEJADO', 'ESCREVENDO', 'REVISAO', 'FINALIZADO'];
   readonly navItems: SidebarNavItem[] = [
@@ -126,6 +149,9 @@ export class App implements OnInit, OnDestroy {
       await this.db.init();
       await this.loadUniverses();
       this.syncStatus.set(await this.syncService.status());
+      const currentVersion = await this.updateService.currentVersion();
+      this.updateInfo.update((info) => ({ ...info, currentVersion }));
+      setTimeout(() => void this.checkForUpdates(true), 1800);
     } catch (error) {
       this.reportError('Não foi possível abrir o banco local do NarraHub.', error);
     } finally { this.isLoading.set(false); }
@@ -218,6 +244,11 @@ export class App implements OnInit, OnDestroy {
   }
 
   openSettings(): void { this.searchQuery.set(''); this.activeNav.set('configuracoes'); this.appState.openSettings(); }
+
+  openShareModal(): void {
+    if (!this.activeChapter()) { this.showInfo('Abra um capítulo antes de compartilhar.'); return; }
+    this.shareLink.set(''); this.shareExpiresAt.set(''); this.appState.openModal('share-content');
+  }
 
   async loadWorkspaceData(): Promise<void> {
     const id = this.appState.activeUniverseId(); if (!id) return;
@@ -363,6 +394,88 @@ export class App implements OnInit, OnDestroy {
   async loadHistory(): Promise<void> { const id = this.appState.activeUniverseId(); if (id) this.history.set(await this.workspaceService.listHistory(id)); }
 
   setTheme(value: string): void { this.theme.setTheme(value as ThemePreference); }
+  saveShareServer(): void {
+    try {
+      if (!this.shareApiUrl.trim()) {
+        localStorage.removeItem('narrahub.shareApiUrl'); this.shareApiUrl = ''; this.showInfo('Servidor de compartilhamento removido.'); return;
+      }
+      this.shareApiUrl = this.onlineShareService.normalizeApiUrl(this.shareApiUrl);
+      localStorage.setItem('narrahub.shareApiUrl', this.shareApiUrl);
+      this.showInfo('Servidor de compartilhamento salvo neste dispositivo.');
+    } catch (error) { this.reportError('Endereço de compartilhamento inválido.', error); }
+  }
+  async createOnlineShare(): Promise<void> {
+    const chapter = this.activeChapter(); if (!chapter) return;
+    if (!this.shareApiUrl.trim()) { this.showInfo('Configure o servidor em Configurações > Compartilhamento online.'); return; }
+    this.errorMessage.set('');
+    this.shareBusy.set(true);
+    try {
+      await this.saveChapterNow();
+      const created = await this.onlineShareService.create(this.shareApiUrl, {
+        version: 1,
+        kind: 'chapter',
+        title: this.editorTitle().trim() || chapter.title,
+        content: this.editorContent(),
+        universeName: this.appState.activeUniverse()?.name || '',
+        storyName: this.activeStory()?.name || '',
+        bookName: this.activeBook()?.name || '',
+        sharedAt: new Date().toISOString(),
+      }, Number(this.shareExpiresInDays));
+      this.shareLink.set(created.url); this.shareExpiresAt.set(created.expiresAt);
+      this.rememberShare(created.id, created.revokeToken, created.expiresAt, this.editorTitle().trim() || chapter.title, this.shareApiUrl);
+      const copied = await this.copyShareLink(false);
+      this.showInfo(copied ? 'Link criptografado criado e copiado.' : 'Link criptografado criado. Copie-o manualmente.');
+    } catch (error) { this.reportError('Não foi possível criar o compartilhamento online.', error); }
+    finally { this.shareBusy.set(false); }
+  }
+  async copyShareLink(showFeedback = true): Promise<boolean> {
+    if (!this.shareLink()) return false;
+    try {
+      await navigator.clipboard.writeText(this.shareLink());
+      if (showFeedback) this.showInfo('Link copiado.');
+      return true;
+    } catch (error) {
+      console.warn('[NarraHub] Não foi possível copiar o link automaticamente.', error);
+      if (showFeedback) this.showInfo('Não foi possível copiar automaticamente. Selecione o link manualmente.');
+      return false;
+    }
+  }
+  async revokeOnlineShare(share: StoredOnlineShare): Promise<void> {
+    const apiUrl = share.apiUrl || this.shareApiUrl;
+    if (!apiUrl) { this.showInfo('Configure o servidor usado para criar este link.'); return; }
+    this.shareBusy.set(true); this.errorMessage.set('');
+    try {
+      await this.onlineShareService.revoke(apiUrl, share.id, share.revokeToken);
+      const remaining = this.onlineShares().filter((item) => item.id !== share.id);
+      this.onlineShares.set(remaining); this.persistStoredShares(remaining);
+      this.showInfo('Compartilhamento revogado. O link não pode mais ser aberto.');
+    } catch (error) { this.reportError('Não foi possível revogar o compartilhamento.', error); }
+    finally { this.shareBusy.set(false); }
+  }
+  async checkForUpdates(silent = false): Promise<void> {
+    if (!isTauri()) { if (!silent) this.showInfo('A atualização automática funciona somente no aplicativo instalado.'); return; }
+    this.updateBusy.set(true); this.updatePhase.set('checking'); this.updateError.set(''); this.updateProgress.set(0);
+    try {
+      const info = await this.updateService.check(); this.updateInfo.set(info);
+      this.updatePhase.set(info.availableVersion ? 'available' : 'current');
+      if (!silent) this.showInfo(info.availableVersion ? `Versão ${info.availableVersion} disponível.` : 'O NarraHub está atualizado.');
+    } catch (error) {
+      this.updatePhase.set('error'); this.updateError.set(error instanceof Error ? error.message : String(error));
+      if (!silent) this.reportError('Não foi possível verificar atualizações.', error);
+    } finally { this.updateBusy.set(false); }
+  }
+  async installUpdate(): Promise<void> {
+    if (!this.updateInfo().availableVersion) return;
+    this.updateBusy.set(true); this.updatePhase.set('downloading'); this.updateProgress.set(0); this.updateError.set('');
+    try {
+      await this.saveChapterNow();
+      await this.updateService.downloadAndInstall((progress) => this.updateProgress.set(progress));
+      await this.updateService.relaunch();
+    } catch (error) {
+      this.updatePhase.set('error'); this.updateError.set(error instanceof Error ? error.message : String(error));
+      this.reportError('Não foi possível instalar a atualização.', error);
+    } finally { this.updateBusy.set(false); }
+  }
   saveDeviceName(): void { this.deviceName = this.deviceName.trim() || 'Meu computador'; localStorage.setItem('narrahub.deviceName', this.deviceName); this.showInfo('Nome do dispositivo salvo.'); }
   async startSync(): Promise<void> {
     if (!isTauri()) { this.showInfo('A sincronização de rede só funciona no aplicativo instalado.'); return; }
@@ -389,6 +502,21 @@ export class App implements OnInit, OnDestroy {
   }
   private clearWritingSelection(): void { this.activeStory.set(null); this.activeBook.set(null); this.activeChapter.set(null); this.books.set([]); this.chapters.set([]); this.editorTitle.set(''); this.editorContent.set(''); }
   private resetUniverseForm(): void { this.editingUniverseId = null; this.newUniverseName = ''; this.newUniverseDesc = ''; }
+  private rememberShare(id: string, revokeToken: string, expiresAt: string, title: string, apiUrl: string): void {
+    const shares = [{ id, revokeToken, expiresAt, title, apiUrl }, ...this.onlineShares().filter((item) => item.id !== id)].slice(0, 50);
+    this.onlineShares.set(shares); this.persistStoredShares(shares);
+  }
+  private readStoredShares(): StoredOnlineShare[] {
+    try {
+      const value = JSON.parse(localStorage.getItem('narrahub.onlineShares') || '[]');
+      if (!Array.isArray(value)) return [];
+      return value.filter((item) => item && /^[A-Za-z0-9_-]{16}$/u.test(item.id) && typeof item.revokeToken === 'string' && typeof item.expiresAt === 'string')
+        .map((item) => ({ ...item, title: typeof item.title === 'string' ? item.title : 'Capítulo compartilhado', apiUrl: typeof item.apiUrl === 'string' ? item.apiUrl : '' }));
+    } catch { return []; }
+  }
+  private persistStoredShares(shares: StoredOnlineShare[]): void {
+    localStorage.setItem('narrahub.onlineShares', JSON.stringify(shares));
+  }
   private countWords(content: string): number { const normalized = content.replace(/<[^>]+>/g, ' ').trim(); return normalized ? normalized.split(/\s+/u).length : 0; }
   private showInfo(message: string): void { this.infoMessage.set(message); if (this.infoTimer) clearTimeout(this.infoTimer); this.infoTimer = setTimeout(() => this.infoMessage.set(''), 4200); }
   private reportError(message: string, error: unknown): void { console.error(`[NarraHub] ${message}`, error); this.errorMessage.set(`${message} ${error instanceof Error ? error.message : String(error)}`); }

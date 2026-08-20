@@ -27,6 +27,14 @@ O esquema principal contém:
 
 Rust controla janela, rede local e operações que não devem ser expostas diretamente à interface. Novas regras críticas devem migrar gradualmente dos serviços SQL Angular para comandos Rust transacionais.
 
+### Compartilhamento online
+
+O NarraHub Share é um serviço opcional e separado do banco local. A interface cifra uma cópia de leitura com AES-256-GCM; o servidor armazena apenas o envelope cifrado e nunca participa da sincronização editável.
+
+### Atualizações
+
+O plugin updater do Tauri verifica um manifesto `latest.json` publicado no GitHub Releases. Artefatos sem assinatura válida são recusados. A configuração contendo a chave pública é injetada somente no build oficial de release.
+
 ## Regras
 
 - IDs são UUIDs e não dependem de sequência local.

@@ -5,6 +5,8 @@ src-tauri/gen/android/local.properties
 src-tauri/gen/schemas/
 output/
 .playwright-cli/
+services/share-api/data/
+src-tauri/tauri.release.conf.json
 .angular/
 .tauri/
 *.log

@@ -1,0 +1,52 @@
+name: Release Windows
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Validar versão e compartilhamento
+        run: |
+          npm run release:validate-version
+          npm run share-api:test
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Preparar configuração assinada do updater
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+        run: npm run release:prepare-config
+
+      - name: Criar release e artefatos do updater
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: app-v__VERSION__
+          releaseName: 'NarraHub v__VERSION__'
+          releaseBody: 'Instaladores Windows e manifesto assinado para atualização automática.'
+          releaseDraft: true
+          prerelease: false
+          args: '--config src-tauri/tauri.release.conf.json'

@@ -15,6 +15,12 @@ O build oficial usa Rust MSVC e gera NSIS e MSI. A validação de uma release ex
 
 Assinatura de código deve ser adicionada antes de distribuição pública.
 
+## Updater Windows
+
+O pipeline `.github/workflows/release-windows.yml` gera uma release em rascunho e os artefatos assinados do updater. As chaves ficam nos Secrets/Variables do GitHub e nunca no repositório. Consulte [Atualizações](UPDATES.md).
+
+Publicar código, executar o workflow, validar o instalador e publicar a release são quatro estados diferentes. O aplicativo instalado consulta somente a última release publicada.
+
 ## Android
 
 O build Android deve gerar APK para teste interno e AAB para publicação. Antes de release:

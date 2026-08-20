@@ -9,6 +9,13 @@ use tauri_plugin_sql::{Migration, MigrationKind};
 pub fn run() {
     tauri::Builder::default()
         .manage(std::sync::Mutex::new(sync::SyncState::default()))
+        .plugin(tauri_plugin_process::init())
+        .setup(|app| {
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            Ok(())
+        })
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations(

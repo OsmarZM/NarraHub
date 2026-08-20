@@ -65,6 +65,36 @@
               <div class="field-row"><label class="field-label">Endereço<input [(ngModel)]="remoteAddress" placeholder="192.168.0.10:41337" /></label><label class="field-label code-field">Código<input [(ngModel)]="pairingCode" inputmode="numeric" maxlength="6" placeholder="000000" /></label></div>
               <button type="button" class="primary-button" [disabled]="syncBusy() || !remoteAddress.trim() || pairingCode.trim().length !== 6" (click)="connectSync()">Sincronizar agora</button>
             </article>
+
+            <article class="surface-card settings-wide-card">
+              <div class="card-head"><div><div class="card-icon">↗</div><h2>Compartilhamento online</h2></div><span class="status-badge" [class.online]="!!shareApiUrl.trim()">{{ shareApiUrl.trim() ? 'Configurado' : 'Opcional' }}</span></div>
+              <p>Crie links de leitura criptografados. O servidor armazena somente o conteúdo cifrado; a chave permanece no fragmento privado do link.</p>
+              <label class="field-label">Servidor HTTPS<input [(ngModel)]="shareApiUrl" placeholder="https://share.seudominio.com" inputmode="url" /></label>
+              <div class="inline-actions"><button type="button" class="secondary-button" (click)="saveShareServer()">Salvar servidor</button><small>Para desenvolvimento, use http://localhost:8787.</small></div>
+              @if (onlineShares().length) {
+                <div class="share-history"><strong>Links criados neste dispositivo</strong>
+                  @for (share of onlineShares(); track share.id) {
+                    <div class="share-history-row"><span><b>{{ share.title }}</b><small>Expira em {{ formatDate(share.expiresAt) }}</small></span><button type="button" class="text-button danger-outline" [disabled]="shareBusy()" (click)="revokeOnlineShare(share)">Revogar</button></div>
+                  }
+                </div>
+              }
+              <div class="security-callout"><strong>Não é sincronização.</strong><span>O link entrega uma cópia somente para leitura. Alterações do leitor não voltam para o NarraHub.</span></div>
+            </article>
+
+            <article class="surface-card settings-wide-card update-card">
+              <div class="card-head"><div><div class="card-icon">⇧</div><h2>Atualizações do aplicativo</h2></div><span class="status-badge" [class.online]="updatePhase() === 'current'">v{{ updateInfo().currentVersion }}</span></div>
+              @if (updatePhase() === 'available') {
+                <h3>Versão {{ updateInfo().availableVersion }} disponível</h3><p>{{ updateInfo().notes || 'Nova versão assinada disponível no canal oficial.' }}</p>
+                <button type="button" class="primary-button" [disabled]="updateBusy()" (click)="installUpdate()">Baixar e instalar</button>
+              } @else if (updatePhase() === 'downloading') {
+                <p>Baixando e validando a assinatura da versão {{ updateInfo().availableVersion }}…</p><div class="update-progress" role="progressbar" [attr.aria-valuenow]="updateProgress()" aria-valuemin="0" aria-valuemax="100"><span [style.width.%]="updateProgress()"></span></div><small>{{ updateProgress() }}%</small>
+              } @else {
+                <p>{{ updatePhase() === 'current' ? 'Você está usando a versão mais recente publicada.' : 'O NarraHub verifica o manifesto assinado no GitHub Releases.' }}</p>
+                @if (updateError()) { <div class="security-callout warning"><strong>Verificação indisponível</strong><span>{{ updateError() }}</span></div> }
+                <button type="button" class="secondary-button" [disabled]="updateBusy()" (click)="checkForUpdates()">{{ updatePhase() === 'checking' ? 'Verificando…' : 'Verificar agora' }}</button>
+              }
+              <small class="security-note">Uma atualização só é instalada depois que a assinatura Tauri é validada. Push comum no GitHub não atualiza aplicativos instalados.</small>
+            </article>
           </div>
         </section>
       } @else if (appState.currentView() === 'home') {
@@ -82,7 +112,7 @@
           <header class="workspace-header">
             <div class="breadcrumb"><button type="button" (click)="selectNav(navItems[0])">Universos</button><span>/</span><strong>{{ appState.activeUniverse()?.name }}</strong>@if (activeStory() && activeNav() === 'escrita') { <span>/</span><span>{{ activeStory()?.name }}</span> }</div>
             <div class="workspace-actions"><span class="save-state" [class.saving]="isSaving()"><i></i>{{ saveMessage() || 'Banco local conectado' }}</span>
-              @if (appState.workspaceView() === 'editor') { <button type="button" class="secondary-button" (click)="appState.openModal('new-chapter')" [disabled]="!activeBook()">＋ Capítulo</button> }
+              @if (appState.workspaceView() === 'editor') { <button type="button" class="secondary-button" (click)="openShareModal()" [disabled]="!activeChapter()">↗ Compartilhar</button><button type="button" class="secondary-button" (click)="appState.openModal('new-chapter')" [disabled]="!activeBook()">＋ Capítulo</button> }
               @else if (appState.workspaceView() === 'entities') { <button type="button" class="primary-button small" (click)="beginCreateEntity()">＋ {{ entityCreateLabel() }}</button> }
               @else if (appState.workspaceView() === 'graph') { <button type="button" class="primary-button small" (click)="appState.openModal('new-relation')" [disabled]="entities().length < 2">＋ Conexão</button> }
               @else if (appState.workspaceView() === 'timeline') { <button type="button" class="primary-button small" (click)="appState.openModal('new-timeline')">＋ Evento</button> }
@@ -177,6 +207,16 @@
         <header><div><span class="eyebrow">ESCRITA</span><h2>Novo capítulo</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Título do capítulo<input name="chapterTitle" [(ngModel)]="newChapterTitle" placeholder="Ex.: Capítulo 1 — O chamado" autofocus /></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newChapterTitle.trim()" (click)="createChapter()">Criar capítulo</button></footer>
       } @else if (appState.modalOpen() === 'new-entity') {
         <header><div><span class="eyebrow">WORLDBUILDING</span><h2>Novo {{ newEntityType.toLocaleLowerCase('pt-BR') }}</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><p class="modal-guidance">Você está criando um registro no menu {{ entitySectionTitle() }}. O tipo é definido pelo contexto, sem seleção genérica.</p><label>Nome<input name="entityName" [(ngModel)]="newEntityName" [placeholder]="newEntityType === 'Personagem' ? 'Nome do personagem' : newEntityType === 'Lugar' ? 'Nome do lugar' : 'Nome do evento'" autofocus /></label><label>Descrição <span>(opcional)</span><textarea name="entityDescription" [(ngModel)]="newEntityDescription"></textarea></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newEntityName.trim()" (click)="createEntity()">Criar {{ newEntityType.toLocaleLowerCase('pt-BR') }}</button></footer>
+      } @else if (appState.modalOpen() === 'share-content') {
+        <header><div><span class="eyebrow">LEITURA ONLINE</span><h2>Compartilhar capítulo</h2></div><button type="button" (click)="appState.closeModal()">×</button></header>
+        <p class="modal-guidance">Será criada uma cópia criptografada do capítulo atual. A chave viaja depois de <code>#k=</code> e não é enviada ao servidor.</p>
+        @if (!shareApiUrl.trim()) { <div class="security-callout warning"><strong>Servidor não configurado</strong><span>Abra Configurações e informe o endereço HTTPS do NarraHub Share.</span></div> }
+        <label>Expiração<select name="shareExpiry" [(ngModel)]="shareExpiresInDays"><option [ngValue]="1">24 horas</option><option [ngValue]="7">7 dias</option><option [ngValue]="30">30 dias</option></select></label>
+        @if (shareLink()) {
+          <label>Link protegido<textarea class="share-link-field" readonly [value]="shareLink()"></textarea></label>
+          <small class="share-expiry">Expira em {{ formatDate(shareExpiresAt()) }}. Qualquer pessoa com o link completo poderá ler.</small>
+        }
+        <footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Fechar</button>@if (shareLink()) { <button type="button" class="secondary-button" (click)="copyShareLink()">Copiar novamente</button> }<button type="button" class="primary-button" [disabled]="shareBusy() || !shareApiUrl.trim()" (click)="createOnlineShare()">{{ shareBusy() ? 'Criptografando…' : 'Criar link criptografado' }}</button></footer>
       } @else if (appState.modalOpen() === 'new-relation') {
         <header><div><span class="eyebrow">CONEXÕES</span><h2>Nova conexão</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Origem<select name="relationSource" [(ngModel)]="newRelationSource"><option value="">Selecione</option>@for (entity of entities(); track entity.id) { <option [value]="entity.id">{{ entity.name }} · {{ entity.type }}</option> }</select></label><label>Relação<input name="relationLabel" [(ngModel)]="newRelationLabel" placeholder="Ex.: é irmão de" /></label><label>Destino<select name="relationTarget" [(ngModel)]="newRelationTarget"><option value="">Selecione</option>@for (entity of entities(); track entity.id) { <option [value]="entity.id">{{ entity.name }} · {{ entity.type }}</option> }</select></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newRelationSource || !newRelationTarget || !newRelationLabel.trim()" (click)="createRelation()">Criar conexão</button></footer>
       } @else if (appState.modalOpen() === 'new-timeline') {
