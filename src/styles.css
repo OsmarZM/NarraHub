@@ -1,4 +1,8 @@
-:root {
+:root,
+html[data-theme='light'],
+html.light,
+body[data-theme='light'],
+body.light {
   --nh-bg: #f7f2e9;
   --nh-surface: #fffaf2;
   --nh-surface-muted: #f1e9df;
@@ -22,7 +26,12 @@
   --nh-shadow-soft: 0 8px 24px rgba(64, 43, 32, .08);
 }
 
-html[data-theme='dark'] {
+:root[data-theme='dark'],
+html[data-theme='dark'],
+html.dark,
+body[data-theme='dark'],
+body.dark,
+[data-theme='dark'] {
   --nh-bg: #17151a;
   --nh-surface: #201d22;
   --nh-surface-muted: #2a252b;
@@ -40,13 +49,35 @@ html[data-theme='dark'] {
   --nh-shadow-soft: 0 8px 24px rgba(0, 0, 0, .24);
 }
 
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']),
+  html:not([data-theme='light']),
+  body:not([data-theme='light']) {
+    --nh-bg: #17151a;
+    --nh-surface: #201d22;
+    --nh-surface-muted: #2a252b;
+    --nh-ink: #f2eadd;
+    --nh-ink-muted: #b3a9a4;
+    --nh-wine: #d18cae;
+    --nh-wine-hover: #e1a5c2;
+    --nh-coral: #e58b63;
+    --nh-ochre: #d1a45b;
+    --nh-sage: #8fac89;
+    --nh-border: #3c353b;
+    --nh-danger: #e27f77;
+    --nh-success: #71b889;
+    --nh-shadow: 0 22px 60px rgba(0, 0, 0, .35);
+    --nh-shadow-soft: 0 8px 24px rgba(0, 0, 0, .24);
+  }
+}
+
 * { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--nh-ink-muted) 42%, transparent) transparent; }
 *::-webkit-scrollbar { width: 8px; height: 8px; }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: color-mix(in srgb, var(--nh-ink-muted) 42%, transparent); background-clip: padding-box; }
 *::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--nh-wine) 64%, transparent); background-clip: padding-box; }
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-body { color: var(--nh-ink); background: var(--nh-bg); font-family: Inter, "Segoe UI Variable", "Segoe UI", sans-serif; text-rendering: optimizeLegibility; }
+body { color: var(--nh-ink); background: var(--nh-bg); font-family: Inter, "Segoe UI Variable", "Segoe UI", sans-serif; text-rendering: optimizeLegibility; transition: color .2s ease, background-color .2s ease; }
 button, input, textarea, select { font: inherit; }
 button { color: inherit; }
 :focus-visible { outline: 2px solid var(--nh-coral); outline-offset: 2px; }
