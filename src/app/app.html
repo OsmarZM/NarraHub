@@ -26,6 +26,24 @@
   <div class="content-stage" [class.focus-mode]="isFocusMode()">
       @if (errorMessage()) { <div class="alert error-alert" role="alert"><span>{{ errorMessage() }}</span><button type="button" (click)="errorMessage.set('')">×</button></div> }
       @if (infoMessage()) { <div class="toast" role="status">{{ infoMessage() }}</div> }
+      @if ((updatePhase() === 'available' && !updatePromptDismissed()) || updatePhase() === 'downloading') {
+        <aside class="startup-update" aria-live="polite">
+          <span class="startup-update-icon">⇧</span>
+          <div class="startup-update-copy">
+            @if (updatePhase() === 'downloading') {
+              <strong>Instalando NarraHub {{ updateInfo().availableVersion }}</strong>
+              <span>Download e assinatura em validação. O aplicativo será reiniciado ao concluir.</span>
+              <div class="startup-update-progress" role="progressbar" [attr.aria-valuenow]="updateProgress()" aria-valuemin="0" aria-valuemax="100"><i [style.width.%]="updateProgress()"></i></div>
+            } @else {
+              <strong>NarraHub {{ updateInfo().availableVersion }} está disponível</strong>
+              <span>{{ updateInfo().notes || 'Uma nova versão assinada pode ser instalada agora.' }}</span>
+            }
+          </div>
+          @if (updatePhase() === 'available') {
+            <div class="startup-update-actions"><button type="button" class="text-button" (click)="dismissUpdatePrompt()">Agora não</button><button type="button" class="primary-button" [disabled]="updateBusy()" (click)="installUpdate()">Atualizar e reiniciar</button></div>
+          } @else { <b class="startup-update-percent">{{ updateProgress() }}%</b> }
+        </aside>
+      }
 
       @if (isLoading()) {
         <section class="center-state"><div class="loader"></div><p>Abrindo seu workspace local...</p></section>

@@ -94,8 +94,9 @@ export class App implements OnInit, OnDestroy {
   readonly updateBusy = signal(false);
   readonly updateProgress = signal(0);
   readonly updatePhase = signal<'idle' | 'checking' | 'available' | 'downloading' | 'current' | 'error'>('idle');
-  readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.3.0', availableVersion: null, notes: '', publishedAt: null });
+  readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.3.1', availableVersion: null, notes: '', publishedAt: null });
   readonly updateError = signal('');
+  readonly updatePromptDismissed = signal(false);
   readonly syncStatus = signal<SyncServerStatus>({ running: false, address: null, pairing_code: null, device_name: 'Meu computador' });
   readonly lastOpenedUniverseId = signal<string | null>(localStorage.getItem('narrahub.lastUniverseId'));
   readonly pendingDeleteUniverse = signal<UniverseWithStats | null>(null);
@@ -160,6 +161,7 @@ export class App implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     if (this.infoTimer) clearTimeout(this.infoTimer);
+    this.updateService.dispose();
   }
 
   @HostListener('document:keydown.control.k', ['$event'])
@@ -454,10 +456,12 @@ export class App implements OnInit, OnDestroy {
   }
   async checkForUpdates(silent = false): Promise<void> {
     if (!isTauri()) { if (!silent) this.showInfo('A atualização automática funciona somente no aplicativo instalado.'); return; }
+    if (this.updateBusy()) return;
     this.updateBusy.set(true); this.updatePhase.set('checking'); this.updateError.set(''); this.updateProgress.set(0);
     try {
       const info = await this.updateService.check(); this.updateInfo.set(info);
       this.updatePhase.set(info.availableVersion ? 'available' : 'current');
+      if (info.availableVersion) this.updatePromptDismissed.set(false);
       if (!silent) this.showInfo(info.availableVersion ? `Versão ${info.availableVersion} disponível.` : 'O NarraHub está atualizado.');
     } catch (error) {
       this.updatePhase.set('error'); this.updateError.set(error instanceof Error ? error.message : String(error));
@@ -465,10 +469,11 @@ export class App implements OnInit, OnDestroy {
     } finally { this.updateBusy.set(false); }
   }
   async installUpdate(): Promise<void> {
-    if (!this.updateInfo().availableVersion) return;
+    if (!this.updateInfo().availableVersion || this.updateBusy()) return;
     this.updateBusy.set(true); this.updatePhase.set('downloading'); this.updateProgress.set(0); this.updateError.set('');
     try {
       await this.saveChapterNow();
+      if (this.saveMessage() === 'Erro ao salvar') throw new Error('A atualização foi interrompida porque o capítulo atual não pôde ser salvo.');
       await this.updateService.downloadAndInstall((progress) => this.updateProgress.set(progress));
       await this.updateService.relaunch();
     } catch (error) {
@@ -476,6 +481,7 @@ export class App implements OnInit, OnDestroy {
       this.reportError('Não foi possível instalar a atualização.', error);
     } finally { this.updateBusy.set(false); }
   }
+  dismissUpdatePrompt(): void { this.updatePromptDismissed.set(true); }
   saveDeviceName(): void { this.deviceName = this.deviceName.trim() || 'Meu computador'; localStorage.setItem('narrahub.deviceName', this.deviceName); this.showInfo('Nome do dispositivo salvo.'); }
   async startSync(): Promise<void> {
     if (!isTauri()) { this.showInfo('A sincronização de rede só funciona no aplicativo instalado.'); return; }

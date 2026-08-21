@@ -1,6 +1,6 @@
 {
   "name": "narrahub-app",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "scripts": {
     "ng": "ng",
     "start": "ng serve",
@@ -18,6 +18,7 @@
     "share-api:dev": "node services/share-api/src/server.mjs",
     "share-api:test": "node --test services/share-api/test/*.test.mjs",
     "release:prepare-config": "node scripts/prepare-release-config.mjs",
+    "release:validate-updater": "node scripts/validate-updater-environment.mjs",
     "release:validate-version": "node scripts/validate-release-version.mjs",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml",
     "check": "npm run build && cargo check --manifest-path src-tauri/Cargo.toml"

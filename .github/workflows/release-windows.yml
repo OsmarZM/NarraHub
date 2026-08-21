@@ -23,6 +23,13 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
+      - name: Validar segredos do updater
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run release:validate-updater
+
       - name: Instalar dependências
         run: npm ci
 

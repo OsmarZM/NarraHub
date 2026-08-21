@@ -16,7 +16,7 @@ export class UpdateService {
   private pendingUpdate: Update | null = null;
 
   async currentVersion(): Promise<string> {
-    return isTauri() ? getVersion() : '0.3.0-dev';
+    return isTauri() ? getVersion() : '0.3.1-dev';
   }
 
   async check(): Promise<AppUpdateInfo> {
@@ -46,5 +46,10 @@ export class UpdateService {
 
   async relaunch(): Promise<void> {
     await relaunch();
+  }
+
+  dispose(): void {
+    this.pendingUpdate?.close();
+    this.pendingUpdate = null;
   }
 }
