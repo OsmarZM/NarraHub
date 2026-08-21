@@ -45,6 +45,20 @@ jobs:
           TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
         run: npm run release:prepare-config
 
+      - name: Preparar Cloudflare Tunnel verificado
+        shell: pwsh
+        run: |
+          $cloudflaredVersion = '2026.7.3'
+          $expectedSha256 = '8635da433b6df8194746e88ed9d2589566c20e38bfc2a80e431a348b7c765841'
+          $binaryDirectory = 'src-tauri\binaries'
+          $binaryPath = Join-Path $binaryDirectory 'cloudflared-x86_64-pc-windows-msvc.exe'
+          New-Item -ItemType Directory -Force -Path $binaryDirectory | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/download/$cloudflaredVersion/cloudflared-windows-amd64.exe" -OutFile $binaryPath
+          $actualSha256 = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "Checksum inválido para cloudflared $cloudflaredVersion. Esperado $expectedSha256, obtido $actualSha256."
+          }
+
       - name: Criar release e artefatos do updater
         uses: tauri-apps/tauri-action@v1
         env:

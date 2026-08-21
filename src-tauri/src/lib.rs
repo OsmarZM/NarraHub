@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod database;
+mod online_share;
 mod sync;
 
 use database::migrations::{MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5};
@@ -20,8 +21,11 @@ fn updater_configured(app: tauri::AppHandle) -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(std::sync::Mutex::new(sync::SyncState::default()))
+        .manage(std::sync::Mutex::new(
+            online_share::OnlineShareState::default(),
+        ))
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             #[cfg(desktop)]
@@ -80,7 +84,18 @@ pub fn run() {
             sync::sync_start,
             sync::sync_stop,
             sync::sync_connect,
+            online_share::online_share_status,
+            online_share::online_share_start,
+            online_share::online_share_stop,
+            online_share::online_share_create,
+            online_share::online_share_revoke,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running NarraHub");
+        .build(tauri::generate_context!())
+        .expect("error while building NarraHub");
+
+    app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            online_share::stop_on_exit(app_handle);
+        }
+    });
 }

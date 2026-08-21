@@ -8,6 +8,7 @@ output/
 .playwright-cli/
 services/share-api/data/
 src-tauri/tauri.release.conf.json
+src-tauri/binaries/cloudflared-*.exe
 .angular/
 .tauri/
 *.log

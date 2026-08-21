@@ -1,73 +1,38 @@
-# Compartilhamento online
+# Compartilhamento temporário
 
 ## Objetivo
 
-Permitir que o autor entregue uma cópia de leitura de um capítulo sem criar conta, colaboração em nuvem ou acesso remoto ao banco local.
+Permitir que o autor compartilhe uma seleção somente para leitura enquanto o computador e o NarraHub estiverem ativos, sem conta, domínio ou hospedagem permanente.
 
-## Fluxo
+## Funcionamento
 
-1. O autor abre um capítulo e escolhe **Compartilhar**.
-2. O aplicativo serializa título, texto e contexto do capítulo.
-3. Uma chave aleatória AES-256-GCM e um IV de 96 bits são criados no dispositivo.
-4. Somente o envelope cifrado é enviado por HTTPS ao NarraHub Share.
-5. O servidor devolve um identificador, expiração e token de revogação.
-6. A chave é adicionada ao fragmento `#k=` da URL. Fragmentos não são enviados na requisição HTTP.
-7. O visualizador busca o blob, descriptografa no navegador e renderiza o texto com `textContent`.
+1. O autor clica em **Compartilhar** dentro de um universo.
+2. Seleciona a apresentação do universo, capítulos e fichas de personagens, lugares, eventos, objetos ou organizações.
+3. O aplicativo reduz imagens grandes e serializa somente os itens marcados.
+4. Uma chave aleatória AES-256-GCM e um IV de 96 bits são criados no dispositivo.
+5. O pacote cifrado fica apenas na memória do processo Rust.
+6. O sidecar `cloudflared` abre um Quick Tunnel HTTPS aleatório `*.trycloudflare.com` para o servidor local embutido.
+7. A chave é adicionada ao fragmento `#k=` da URL. Esse fragmento não é enviado em requisições HTTP.
+8. O navegador do visitante busca o envelope e descriptografa localmente.
+9. Ao clicar em **Encerrar** ou fechar o NarraHub, o processo do túnel é finalizado e todos os envelopes em memória são descartados.
 
-## Limites de segurança
+## Limites e segurança
 
-- Qualquer pessoa com a URL completa consegue ler o conteúdo.
-- O servidor não recebe a chave, mas pode observar IP, horário, tamanho do blob e identificador.
-- O servidor precisa operar atrás de HTTPS em produção.
-- O serviço limita criações a 20 por IP/hora e blobs cifrados a aproximadamente 2 MB.
-- O conteúdo expira em 1, 7 ou 30 dias.
-- Os tokens de revogação ficam somente no dispositivo do autor, em armazenamento local.
-- A tela de Configurações lista os links criados nesse dispositivo e permite revogá-los; a chave de leitura não é persistida nessa lista.
-- Não há edição colaborativa, conta, descoberta pública ou indexação.
+- Qualquer pessoa com a URL completa consegue ler os itens selecionados.
+- A Cloudflare pode observar metadados de transporte, como IP, horário e volume, mas não recebe a chave de leitura.
+- O pacote aberto nunca é enviado ao túnel; a criptografia ocorre antes da publicação.
+- O servidor local aceita somente leitura pública e mantém os envelopes em RAM.
+- O limite por pacote cifrado é 2,8 MB; o cliente limita o texto aberto a 2 MB e reduz imagens grandes.
+- A validade de 1, 7 ou 30 dias é um teto. A sessão termina antes ao fechar o aplicativo.
+- Não há edição colaborativa, conta, descoberta pública, indexação ou persistência online.
+- O compartilhamento é diferente da sincronização Wi-Fi e não altera o banco local do autor.
 
-## Execução
+## Distribuição Windows
 
-```powershell
-$env:NARRAHUB_SHARE_PUBLIC_URL = 'http://localhost:8787'
-npm run share-api:dev
-```
+O workflow de release baixa uma versão fixa do `cloudflared-windows-amd64.exe`, valida o SHA-256 publicado e o empacota como sidecar Tauri. O executável não precisa estar instalado separadamente no computador do usuário.
 
-Configure `http://localhost:8787` na tela de Configurações. Para produção, publique `services/share-api/Dockerfile` com volume persistente em `/data`, proxy reverso e TLS. Nesse ambiente, `NARRAHUB_SHARE_PUBLIC_URL` é obrigatória para que o serviço não construa links a partir de um cabeçalho `Host` não confiável.
+O `externalBin` fica em `src-tauri/tauri.windows.conf.json`, portanto não interfere no build Android.
 
-## URL temporária gratuita sem conta
+## Servidor de desenvolvimento legado
 
-Para testes e compartilhamentos ocasionais, o Cloudflare Quick Tunnel cria uma URL aleatória `*.trycloudflare.com` sem conta e sem configurar DNS. Instale `cloudflared.exe` em `D:\DevTools\Cloudflared` ou no `PATH` e execute:
-
-```powershell
-npm run share-api:temporary
-```
-
-O inicializador abre o túnel em segundo plano, obtém a URL HTTPS, configura `NARRAHUB_SHARE_PUBLIC_URL` e inicia o NarraHub Share. Copie a URL exibida para **Configurações > Compartilhamento online**.
-
-Esse modo é somente temporário: o computador precisa permanecer ligado, a URL muda ao reiniciar e o Quick Tunnel não oferece SLA. Para uma comunidade pública estável, use um domínio e hospedagem persistente.
-
-## API
-
-### `POST /v1/shares`
-
-Entrada:
-
-```json
-{
-  "version": 1,
-  "algorithm": "A256GCM",
-  "iv": "base64url",
-  "ciphertext": "base64url",
-  "expiresInDays": 7
-}
-```
-
-O servidor nunca aceita título ou texto aberto. A resposta contém `id`, `url`, `expiresAt` e `revokeToken`.
-
-### `GET /v1/shares/:id`
-
-Retorna o envelope cifrado enquanto não estiver expirado.
-
-### `DELETE /v1/shares/:id`
-
-Exige `Authorization: Bearer <revokeToken>` e remove o compartilhamento.
+`services/share-api` permanece como implementação compatível para testes automatizados do visualizador e para quem optar por uma hospedagem persistente no futuro. Ele não é usado pelo fluxo padrão do aplicativo Windows.

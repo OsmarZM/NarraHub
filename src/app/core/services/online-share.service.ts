@@ -1,13 +1,32 @@
 import { Injectable } from '@angular/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 
-export interface OnlineShareDocument {
-  version: 1;
-  kind: 'chapter';
+export interface SharedChapter {
+  id: string;
   title: string;
   content: string;
   universeName: string;
   storyName: string;
   bookName: string;
+}
+
+export interface SharedEntity {
+  id: string;
+  type: string;
+  name: string;
+  description: string;
+  image: string;
+  canonStatus: string;
+  attributes: Array<{ key: string; value: string }>;
+}
+
+export interface OnlineShareDocument {
+  version: 2;
+  kind: 'bundle';
+  title: string;
+  universe: { name: string; description: string; coverImage: string } | null;
+  chapters: SharedChapter[];
+  entities: SharedEntity[];
   sharedAt: string;
 }
 
@@ -16,14 +35,6 @@ interface EncryptedShareEnvelope {
   algorithm: 'A256GCM';
   iv: string;
   ciphertext: string;
-  expiresInDays: number;
-}
-
-interface CreateShareResponse {
-  id: string;
-  url: string;
-  expiresAt: string;
-  revokeToken: string;
 }
 
 export interface CreatedOnlineShare {
@@ -33,41 +44,37 @@ export interface CreatedOnlineShare {
   revokeToken: string;
 }
 
-export interface OnlineShareHealth {
-  ok: boolean;
-  service: string;
-  encryption: string;
+export interface OnlineShareStatus {
+  running: boolean;
+  publicUrl: string | null;
+  shareCount: number;
 }
 
 @Injectable({ providedIn: 'root' })
 export class OnlineShareService {
-  async health(apiUrl: string): Promise<OnlineShareHealth> {
-    const baseUrl = this.normalizeApiUrl(apiUrl);
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 8_000);
-    try {
-      const response = await fetch(`${baseUrl}/health`, { cache: 'no-store', signal: controller.signal });
-      if (!response.ok) throw new Error(`Servidor respondeu com status ${response.status}.`);
-      const health = await response.json() as OnlineShareHealth;
-      if (!health.ok || health.service !== 'narrahub-share') {
-        throw new Error('O endereço não aponta para um servidor NarraHub Share compatível.');
-      }
-      return health;
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        throw new Error('O servidor não respondeu em até 8 segundos.');
-      }
-      throw error;
-    } finally {
-      window.clearTimeout(timeout);
-    }
+  async status(): Promise<OnlineShareStatus> {
+    if (!isTauri()) return { running: false, publicUrl: null, shareCount: 0 };
+    return invoke<OnlineShareStatus>('online_share_status');
   }
 
-  async create(apiUrl: string, document: OnlineShareDocument, expiresInDays: number): Promise<CreatedOnlineShare> {
-    const baseUrl = this.normalizeApiUrl(apiUrl);
+  async start(): Promise<OnlineShareStatus> {
+    this.requireNativeApp();
+    return invoke<OnlineShareStatus>('online_share_start');
+  }
+
+  async stop(): Promise<OnlineShareStatus> {
+    if (!isTauri()) return { running: false, publicUrl: null, shareCount: 0 };
+    return invoke<OnlineShareStatus>('online_share_stop');
+  }
+
+  async create(document: OnlineShareDocument, expiresInDays: number): Promise<CreatedOnlineShare> {
+    this.requireNativeApp();
     const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt']);
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const plaintext = new TextEncoder().encode(JSON.stringify(document));
+    if (plaintext.byteLength > 2_000_000) {
+      throw new Error('A seleção ficou acima de 2 MB. Remova algumas imagens ou divida o compartilhamento.');
+    }
     const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext);
     const rawKey = await crypto.subtle.exportKey('raw', key);
     const envelope: EncryptedShareEnvelope = {
@@ -75,56 +82,31 @@ export class OnlineShareService {
       algorithm: 'A256GCM',
       iv: this.toBase64Url(iv),
       ciphertext: this.toBase64Url(new Uint8Array(encrypted)),
-      expiresInDays: this.normalizeExpiry(expiresInDays),
     };
 
-    const response = await fetch(`${baseUrl}/v1/shares`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(envelope),
+    const created = await invoke<CreatedOnlineShare>('online_share_create', {
+      envelope,
+      expiresInDays: this.normalizeExpiry(expiresInDays),
     });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      throw new Error(`Servidor recusou o compartilhamento (${response.status})${detail ? `: ${detail.slice(0, 180)}` : ''}`);
-    }
-
-    const created = await response.json() as CreateShareResponse;
     const viewerUrl = new URL(created.url);
-    if (!['https:', 'http:'].includes(viewerUrl.protocol) || viewerUrl.origin !== new URL(baseUrl).origin) {
-      throw new Error('O servidor retornou um endereço de compartilhamento inválido.');
+    if (viewerUrl.protocol !== 'https:' || !viewerUrl.hostname.endsWith('.trycloudflare.com')) {
+      throw new Error('O túnel retornou um endereço público inválido.');
     }
     viewerUrl.hash = `k=${this.toBase64Url(new Uint8Array(rawKey))}`;
     return { ...created, url: viewerUrl.toString() };
   }
 
-  async revoke(apiUrl: string, id: string, revokeToken: string): Promise<void> {
-    const baseUrl = this.normalizeApiUrl(apiUrl);
-    const response = await fetch(`${baseUrl}/v1/shares/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      headers: { authorization: `Bearer ${revokeToken}` },
-    });
-    if (response.ok || response.status === 404) return;
-    if (response.status === 403) throw new Error('O servidor recusou o token de revogação deste link.');
-    throw new Error(`Não foi possível revogar o compartilhamento (${response.status}).`);
+  async revoke(id: string, revokeToken: string): Promise<OnlineShareStatus> {
+    this.requireNativeApp();
+    return invoke<OnlineShareStatus>('online_share_revoke', { id, revokeToken });
   }
 
-  normalizeApiUrl(value: string): string {
-    const trimmed = value.trim().replace(/\/+$/u, '');
-    if (!trimmed) throw new Error('Configure o servidor de compartilhamento online.');
-    const url = new URL(trimmed);
-    const isLocal = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-    if (url.protocol !== 'https:' && !(isLocal && url.protocol === 'http:')) {
-      throw new Error('O servidor online precisa usar HTTPS. HTTP é aceito somente no desenvolvimento local.');
-    }
-    if (url.username || url.password || url.search || url.hash) {
-      throw new Error('Informe apenas o endereço base do servidor.');
-    }
-    return url.toString().replace(/\/$/u, '');
+  private requireNativeApp(): void {
+    if (!isTauri()) throw new Error('O compartilhamento temporário funciona somente no aplicativo instalado.');
   }
 
   private normalizeExpiry(value: number): number {
-    if (![1, 7, 30].includes(value)) return 7;
-    return value;
+    return [1, 7, 30].includes(value) ? value : 7;
   }
 
   private toBase64Url(bytes: Uint8Array): string {

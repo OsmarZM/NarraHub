@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
 const config = JSON.parse(await readFile('src-tauri/tauri.conf.json', 'utf8'));
+const windowsConfig = JSON.parse(await readFile('src-tauri/tauri.windows.conf.json', 'utf8'));
 const mainWindow = config.app?.windows?.[0];
 const security = config.app?.security;
 
@@ -17,5 +18,8 @@ if (!Array.isArray(disabledDirectives) || disabledDirectives.length !== 1 || dis
 if (!security.csp?.includes("style-src 'self' 'unsafe-inline'")) {
   throw new Error('O CSP precisa permitir os estilos dinamicos dos componentes Angular.');
 }
+if (!windowsConfig.bundle?.externalBin?.includes('binaries/cloudflared')) {
+  throw new Error('O instalador precisa incluir o sidecar cloudflared para compartilhamento temporario.');
+}
 
-console.log('Configuracao desktop validada: estilos Angular permitidos e janela dentro da area util.');
+console.log('Configuracao desktop validada: janela segura, estilos Angular e sidecar temporario configurados.');

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -26,4 +26,11 @@ test('rejeita conteúdo aberto ou expiração fora do contrato', () => {
   assert.throws(() => validateEnvelope({ ...envelope, algorithm: 'none' }), /algoritmo/u);
   assert.throws(() => validateEnvelope({ ...envelope, expiresInDays: 365 }), /Expiração/u);
   assert.throws(() => validateEnvelope({ ...envelope, ciphertext: '<script>alert(1)</script>' }), /cifrado/u);
+});
+
+test('visualizador aceita pacotes selecionados sem injetar HTML arbitrário', async () => {
+  const viewer = await readFile(new URL('../public/viewer.js', import.meta.url), 'utf8');
+  assert.match(viewer, /payload\.version === 2 && payload\.kind === 'bundle'/u);
+  assert.match(viewer, /const allowed = new Set/u);
+  assert.doesNotMatch(viewer, /\.innerHTML\s*=/u);
 });

@@ -14,7 +14,7 @@ import { ChapterService } from './core/services/chapter.service';
 import { DatabaseService } from './core/services/database.service';
 import { EntityService } from './core/services/entity.service';
 import { MentionService } from './core/services/mention.service';
-import { OnlineShareService } from './core/services/online-share.service';
+import { OnlineShareService, OnlineShareStatus } from './core/services/online-share.service';
 import { StoryService } from './core/services/story.service';
 import { SyncService } from './core/services/sync.service';
 import { ThemePreference, ThemeService } from './core/services/theme.service';
@@ -35,7 +35,6 @@ interface StoredOnlineShare {
   revokeToken: string;
   expiresAt: string;
   title: string;
-  apiUrl: string;
 }
 
 type EntityHubType = 'Personagem' | 'Lugar' | 'Evento' | 'Objeto' | 'Organização';
@@ -119,15 +118,18 @@ export class App implements OnInit, OnDestroy {
   readonly infoMessage = signal('');
   readonly syncBusy = signal(false);
   readonly shareBusy = signal(false);
-  readonly shareServerState = signal<'idle' | 'checking' | 'online' | 'error'>('idle');
-  readonly shareServerMessage = signal('');
+  readonly shareProgressMessage = signal('');
+  readonly shareSession = signal<OnlineShareStatus>({ running: false, publicUrl: null, shareCount: 0 });
   readonly shareLink = signal('');
   readonly shareExpiresAt = signal('');
-  readonly onlineShares = signal<StoredOnlineShare[]>(this.readStoredShares());
+  readonly onlineShares = signal<StoredOnlineShare[]>([]);
+  readonly shareIncludeUniverse = signal(true);
+  readonly shareSelectedChapterIds = signal<Set<string>>(new Set());
+  readonly shareSelectedEntityIds = signal<Set<string>>(new Set());
   readonly updateBusy = signal(false);
   readonly updateProgress = signal(0);
   readonly updatePhase = signal<'idle' | 'checking' | 'available' | 'downloading' | 'current' | 'error'>('idle');
-  readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.5.0', availableVersion: null, notes: '', publishedAt: null });
+  readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.6.0', availableVersion: null, notes: '', publishedAt: null });
   readonly updateError = signal('');
   readonly updatePromptDismissed = signal(false);
   readonly syncStatus = signal<SyncServerStatus>({ running: false, address: null, pairing_code: null, device_name: 'Meu computador' });
@@ -163,7 +165,6 @@ export class App implements OnInit, OnDestroy {
   deviceName = localStorage.getItem('narrahub.deviceName') || 'Meu computador';
   remoteAddress = '';
   pairingCode = '';
-  shareApiUrl = localStorage.getItem('narrahub.shareApiUrl') || '';
   shareExpiresInDays = 7;
 
   readonly planningStatuses: PlanningStatus[] = ['IDEIAS', 'PLANEJADO', 'ESCREVENDO', 'REVISAO', 'FINALIZADO'];
@@ -179,6 +180,9 @@ export class App implements OnInit, OnDestroy {
   ];
 
   readonly wordCount = computed(() => this.countWords(this.editorContent()));
+  readonly shareSelectionCount = computed(() =>
+    (this.shareIncludeUniverse() ? 1 : 0) + this.shareSelectedChapterIds().size + this.shareSelectedEntityIds().size
+  );
   readonly recentEntities = computed(() => [...this.entities()].sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 8));
   readonly globalSearchResults = computed<GlobalSearchResult[]>(() => {
     if (this.appState.currentView() !== 'workspace') return [];
@@ -214,6 +218,7 @@ export class App implements OnInit, OnDestroy {
       await this.db.init();
       await this.loadUniverses();
       this.syncStatus.set(await this.syncService.status());
+      this.shareSession.set(await this.onlineShareService.status());
       const currentVersion = await this.updateService.currentVersion();
       this.updateInfo.update((info) => ({ ...info, currentVersion }));
       if (await this.updateService.isConfigured()) setTimeout(() => void this.checkForUpdates(true), 1800);
@@ -239,7 +244,11 @@ export class App implements OnInit, OnDestroy {
 
   async minimizeWindow(): Promise<void> { if (isTauri()) await getCurrentWindow().minimize(); }
   async toggleMaximizeWindow(): Promise<void> { if (isTauri()) await getCurrentWindow().toggleMaximize(); }
-  async closeWindow(): Promise<void> { await this.saveChapterNow(); if (isTauri()) await getCurrentWindow().close(); }
+  async closeWindow(): Promise<void> {
+    await this.saveChapterNow();
+    await this.onlineShareService.stop().catch((error) => console.warn('[NarraHub] Falha ao encerrar compartilhamento temporário.', error));
+    if (isTauri()) await getCurrentWindow().close();
+  }
   async toggleFullscreen(): Promise<void> { if (isTauri()) { const win = getCurrentWindow(); await win.setFullscreen(!(await win.isFullscreen())); } }
   async loadUniverses(): Promise<void> { this.universes.set(await this.universeService.list()); }
 
@@ -315,8 +324,15 @@ export class App implements OnInit, OnDestroy {
   openSettings(): void { this.searchQuery.set(''); this.activeNav.set('configuracoes'); this.appState.openSettings(); }
 
   openShareModal(): void {
-    if (!this.activeChapter()) { this.showInfo('Abra um capítulo antes de compartilhar.'); return; }
-    this.shareLink.set(''); this.shareExpiresAt.set(''); this.appState.openModal('share-content');
+    if (!this.appState.activeUniverse()) { this.showInfo('Abra um universo antes de compartilhar.'); return; }
+    const chapterIds = new Set<string>();
+    const entityIds = new Set<string>();
+    if (this.activeChapter()) chapterIds.add(this.activeChapter()!.id);
+    if (this.activeEntity()) entityIds.add(this.activeEntity()!.id);
+    this.shareIncludeUniverse.set(true);
+    this.shareSelectedChapterIds.set(chapterIds);
+    this.shareSelectedEntityIds.set(entityIds);
+    this.shareLink.set(''); this.shareExpiresAt.set(''); this.shareProgressMessage.set(''); this.appState.openModal('share-content');
   }
 
   async loadWorkspaceData(): Promise<void> {
@@ -643,55 +659,89 @@ export class App implements OnInit, OnDestroy {
   }
 
   setTheme(value: string): void { this.theme.setTheme(value as ThemePreference); }
-  async saveShareServer(): Promise<void> {
-    try {
-      if (!this.shareApiUrl.trim()) {
-        localStorage.removeItem('narrahub.shareApiUrl'); this.shareApiUrl = ''; this.shareServerState.set('idle'); this.shareServerMessage.set(''); this.showInfo('Servidor de compartilhamento removido.'); return;
-      }
-      this.shareApiUrl = this.onlineShareService.normalizeApiUrl(this.shareApiUrl);
-      await this.testShareServer(true);
-    } catch (error) { this.reportError('Endereço de compartilhamento inválido.', error); }
+  isChapterSelectedForShare(id: string): boolean { return this.shareSelectedChapterIds().has(id); }
+  isEntitySelectedForShare(id: string): boolean { return this.shareSelectedEntityIds().has(id); }
+  toggleShareChapter(id: string): void { this.toggleShareSelection(this.shareSelectedChapterIds, id); }
+  toggleShareEntity(id: string): void { this.toggleShareSelection(this.shareSelectedEntityIds, id); }
+  selectAllShareChapters(): void {
+    this.shareSelectedChapterIds.set(this.shareSelectedChapterIds().size === this.universeChapters().length
+      ? new Set()
+      : new Set(this.universeChapters().map((chapter) => chapter.id)));
   }
-  async testShareServer(persist = false): Promise<void> {
-    if (!this.shareApiUrl.trim()) { this.shareServerState.set('error'); this.shareServerMessage.set('Informe primeiro o endereço HTTPS do servidor.'); return; }
-    this.shareServerState.set('checking'); this.shareServerMessage.set('Verificando conexão segura…');
+  selectAllShareEntities(): void {
+    this.shareSelectedEntityIds.set(this.shareSelectedEntityIds().size === this.entities().length
+      ? new Set()
+      : new Set(this.entities().map((entity) => entity.id)));
+  }
+  async startOnlineShareSession(showFeedback = true): Promise<boolean> {
+    if (this.shareSession().running) return true;
+    this.shareBusy.set(true); this.shareProgressMessage.set('Abrindo um túnel seguro e temporário…'); this.errorMessage.set('');
     try {
-      this.shareApiUrl = this.onlineShareService.normalizeApiUrl(this.shareApiUrl);
-      const health = await this.onlineShareService.health(this.shareApiUrl);
-      if (persist) localStorage.setItem('narrahub.shareApiUrl', this.shareApiUrl);
-      this.shareServerState.set('online'); this.shareServerMessage.set(health.encryption === 'client-side' ? 'Servidor online. A criptografia ocorre neste dispositivo.' : 'Servidor online.');
-      this.showInfo(persist ? 'Servidor validado e salvo.' : 'Servidor de compartilhamento online.');
+      this.shareSession.set(await this.onlineShareService.start());
+      if (showFeedback) this.showInfo('Compartilhamento temporário disponível enquanto o NarraHub estiver aberto.');
+      return true;
     } catch (error) {
-      this.shareServerState.set('error'); this.shareServerMessage.set(error instanceof Error ? error.message : String(error));
-      if (persist) localStorage.removeItem('narrahub.shareApiUrl');
-      this.reportError('Não foi possível validar o servidor de compartilhamento.', error);
-    }
+      this.reportError('Não foi possível abrir o compartilhamento temporário.', error);
+      return false;
+    } finally { this.shareBusy.set(false); this.shareProgressMessage.set(''); }
+  }
+  async stopOnlineShareSession(): Promise<void> {
+    this.shareBusy.set(true); this.shareProgressMessage.set('Encerrando links públicos…');
+    try {
+      this.shareSession.set(await this.onlineShareService.stop());
+      this.onlineShares.set([]); this.shareLink.set(''); this.shareExpiresAt.set('');
+      this.showInfo('Sessão encerrada. Todos os links temporários foram invalidados.');
+    } catch (error) { this.reportError('Não foi possível encerrar o compartilhamento.', error); }
+    finally { this.shareBusy.set(false); this.shareProgressMessage.set(''); }
   }
   async createOnlineShare(): Promise<void> {
-    const chapter = this.activeChapter(); if (!chapter) return;
-    if (!this.shareApiUrl.trim()) { this.showInfo('Configure o servidor em Configurações > Compartilhamento online.'); return; }
+    const universe = this.appState.activeUniverse(); if (!universe) return;
+    if (this.shareSelectionCount() === 0) { this.showInfo('Selecione ao menos um item para compartilhar.'); return; }
     this.errorMessage.set('');
-    this.shareBusy.set(true);
+    if (!(await this.startOnlineShareSession(false))) return;
+    this.shareBusy.set(true); this.shareProgressMessage.set('Preparando e criptografando somente os itens selecionados…');
     try {
-      const health = await this.onlineShareService.health(this.shareApiUrl);
-      this.shareServerState.set('online'); this.shareServerMessage.set(health.encryption === 'client-side' ? 'Servidor online. A criptografia ocorre neste dispositivo.' : 'Servidor online.');
       await this.saveChapterNow();
-      const created = await this.onlineShareService.create(this.shareApiUrl, {
-        version: 1,
-        kind: 'chapter',
-        title: this.editorTitle().trim() || chapter.title,
-        content: this.editorContent(),
-        universeName: this.appState.activeUniverse()?.name || '',
-        storyName: this.activeStory()?.name || '',
-        bookName: this.activeBook()?.name || '',
+      const selectedChapters = this.universeChapters().filter((chapter) => this.isChapterSelectedForShare(chapter.id));
+      const selectedEntities = this.entities().filter((entity) => this.isEntitySelectedForShare(entity.id));
+      const entityDetails = (await Promise.all(selectedEntities.map((entity) => this.entityService.getWithDetails(entity.id))))
+        .filter((entity): entity is EntityWithDetails => !!entity);
+      const document = {
+        version: 2 as const,
+        kind: 'bundle' as const,
+        title: universe.name,
+        universe: this.shareIncludeUniverse() ? {
+          name: universe.name,
+          description: universe.description,
+          coverImage: await this.prepareShareImage(universe.cover_image),
+        } : null,
+        chapters: selectedChapters.map((chapter) => ({
+          id: chapter.id,
+          title: chapter.id === this.activeChapter()?.id ? (this.editorTitle().trim() || chapter.title) : chapter.title,
+          content: chapter.id === this.activeChapter()?.id ? this.editorContent() : chapter.content,
+          universeName: universe.name,
+          storyName: chapter.story_name,
+          bookName: chapter.book_name,
+        })),
+        entities: await Promise.all(entityDetails.map(async (entity) => ({
+          id: entity.id,
+          type: entity.type,
+          name: entity.name,
+          description: entity.description,
+          image: await this.prepareShareImage(entity.image),
+          canonStatus: entity.canon_status,
+          attributes: entity.attributes.filter((attribute) => attribute.value.trim()).map((attribute) => ({ key: attribute.key, value: attribute.value })),
+        }))),
         sharedAt: new Date().toISOString(),
-      }, Number(this.shareExpiresInDays));
+      };
+      const created = await this.onlineShareService.create(document, Number(this.shareExpiresInDays));
       this.shareLink.set(created.url); this.shareExpiresAt.set(created.expiresAt);
-      this.rememberShare(created.id, created.revokeToken, created.expiresAt, this.editorTitle().trim() || chapter.title, this.shareApiUrl);
+      this.rememberShare(created.id, created.revokeToken, created.expiresAt, universe.name);
+      this.shareSession.update((status) => ({ ...status, shareCount: status.shareCount + 1 }));
       const copied = await this.copyShareLink(false);
       this.showInfo(copied ? 'Link criptografado criado e copiado.' : 'Link criptografado criado. Copie-o manualmente.');
     } catch (error) { this.reportError('Não foi possível criar o compartilhamento online.', error); }
-    finally { this.shareBusy.set(false); }
+    finally { this.shareBusy.set(false); this.shareProgressMessage.set(''); }
   }
   async copyShareLink(showFeedback = true): Promise<boolean> {
     if (!this.shareLink()) return false;
@@ -706,13 +756,11 @@ export class App implements OnInit, OnDestroy {
     }
   }
   async revokeOnlineShare(share: StoredOnlineShare): Promise<void> {
-    const apiUrl = share.apiUrl || this.shareApiUrl;
-    if (!apiUrl) { this.showInfo('Configure o servidor usado para criar este link.'); return; }
     this.shareBusy.set(true); this.errorMessage.set('');
     try {
-      await this.onlineShareService.revoke(apiUrl, share.id, share.revokeToken);
+      this.shareSession.set(await this.onlineShareService.revoke(share.id, share.revokeToken));
       const remaining = this.onlineShares().filter((item) => item.id !== share.id);
-      this.onlineShares.set(remaining); this.persistStoredShares(remaining);
+      this.onlineShares.set(remaining);
       this.showInfo('Compartilhamento revogado. O link não pode mais ser aberto.');
     } catch (error) { this.reportError('Não foi possível revogar o compartilhamento.', error); }
     finally { this.shareBusy.set(false); }
@@ -826,20 +874,32 @@ export class App implements OnInit, OnDestroy {
   private resetWorkspaceData(): void { this.clearWritingSelection(); this.stories.set([]); this.universeBooks.set([]); this.universeChapters.set([]); this.entities.set([]); this.mentionOccurrences.set([]); this.timeline.set([]); this.planning.set([]); this.relations.set([]); this.history.set([]); this.activeEntity.set(null); this.entityGallery.set([]); this.expandedStoryIds.set(new Set()); this.expandedBookIds.set(new Set()); }
   private resetUniverseForm(): void { this.editingUniverseId = null; this.newUniverseName = ''; this.newUniverseDesc = ''; this.newUniverseCoverData = ''; }
   private fileToDataUrl(file: File): Promise<string> { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error ?? new Error('Falha ao ler a imagem.')); reader.readAsDataURL(file); }); }
-  private rememberShare(id: string, revokeToken: string, expiresAt: string, title: string, apiUrl: string): void {
-    const shares = [{ id, revokeToken, expiresAt, title, apiUrl }, ...this.onlineShares().filter((item) => item.id !== id)].slice(0, 50);
-    this.onlineShares.set(shares); this.persistStoredShares(shares);
+  private toggleShareSelection(target: typeof this.shareSelectedChapterIds, id: string): void {
+    target.update((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   }
-  private readStoredShares(): StoredOnlineShare[] {
-    try {
-      const value = JSON.parse(localStorage.getItem('narrahub.onlineShares') || '[]');
-      if (!Array.isArray(value)) return [];
-      return value.filter((item) => item && /^[A-Za-z0-9_-]{16}$/u.test(item.id) && typeof item.revokeToken === 'string' && typeof item.expiresAt === 'string')
-        .map((item) => ({ ...item, title: typeof item.title === 'string' ? item.title : 'Capítulo compartilhado', apiUrl: typeof item.apiUrl === 'string' ? item.apiUrl : '' }));
-    } catch { return []; }
+  private async prepareShareImage(dataUrl: string): Promise<string> {
+    if (!dataUrl || dataUrl.length <= 180_000) return dataUrl;
+    return new Promise((resolve) => {
+      const image = new Image();
+      image.onload = () => {
+        const scale = Math.min(1, 720 / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        canvas.getContext('2d')?.drawImage(image, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/webp', 0.76));
+      };
+      image.onerror = () => resolve('');
+      image.src = dataUrl;
+    });
   }
-  private persistStoredShares(shares: StoredOnlineShare[]): void {
-    localStorage.setItem('narrahub.onlineShares', JSON.stringify(shares));
+  private rememberShare(id: string, revokeToken: string, expiresAt: string, title: string): void {
+    const shares = [{ id, revokeToken, expiresAt, title }, ...this.onlineShares().filter((item) => item.id !== id)].slice(0, 50);
+    this.onlineShares.set(shares);
   }
   private countWords(content: string): number { const normalized = content.replace(/<[^>]+>/g, ' ').trim(); return normalized ? normalized.split(/\s+/u).length : 0; }
   private showInfo(message: string): void { this.infoMessage.set(message); if (this.infoTimer) clearTimeout(this.infoTimer); this.infoTimer = setTimeout(() => this.infoMessage.set(''), 4200); }
