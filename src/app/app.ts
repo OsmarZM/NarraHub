@@ -5,7 +5,7 @@ import { CdkDragDrop, DragDropModule, moveItemInArray } from '@angular/cdk/drag-
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
-  Attachment, Book, BookOption, Chapter, ChapterOption, Entity, EntityType, EntityWithDetails, HistoryEntry,
+  Attachment, Book, BookOption, Chapter, ChapterOption, Entity, EntityAttribute, EntityType, EntityWithDetails, HistoryEntry,
   MentionOccurrence, PlanningItem, PlanningStatus, RelationCard, Story, SyncServerStatus, TimelineEvent, UniverseWithStats,
 } from './core/models';
 import { BookService } from './core/services/book.service';
@@ -586,10 +586,59 @@ export class App implements OnInit, OnDestroy {
     }
   }
 
+  async removeEntityImage(): Promise<void> {
+    const entity = this.activeEntity(); if (!entity) return;
+    await this.entityService.update(entity.id, { image: '' });
+    this.activeEntity.set({ ...entity, image: '' });
+    this.entities.update((items) => items.map((item) => item.id === entity.id ? { ...item, image: '' } : item));
+    this.showInfo('Imagem removida.');
+  }
+
+  addAttributeToActiveEntity(): void {
+    const entity = this.activeEntity(); if (!entity) return;
+    const newAttr: EntityAttribute = {
+      id: 'temp_' + Date.now(),
+      entity_id: entity.id,
+      key: 'Nova propriedade',
+      value: '',
+      sort_order: entity.attributes.length,
+    };
+    this.activeEntity.set({
+      ...entity,
+      attributes: [...entity.attributes, newAttr],
+    });
+  }
+
+  async removeAttributeFromActiveEntity(attribute: EntityAttribute): Promise<void> {
+    const entity = this.activeEntity(); if (!entity) return;
+    if (!attribute.id.startsWith('temp_')) {
+      await this.entityService.removeAttribute(attribute.id);
+    }
+    this.activeEntity.set({
+      ...entity,
+      attributes: entity.attributes.filter((a) => a.id !== attribute.id),
+    });
+  }
+
+  extractFirstUrl(text?: string): string | null {
+    if (!text) return null;
+    const match = text.match(/https?:\/\/[^\s]+/i);
+    return match ? match[0] : null;
+  }
+
+  openExternalLink(url: string): void {
+    if (!url) return;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
   async updateActiveEntity(): Promise<void> {
     const entity = this.activeEntity(); if (!entity) return;
     await this.entityService.update(entity.id, { name: entity.name.trim(), description: entity.description, canon_status: entity.canon_status });
-    for (const attribute of entity.attributes) await this.entityService.setAttribute(entity.id, attribute.key, attribute.value);
+    for (const attribute of entity.attributes) {
+      if (attribute.key.trim()) {
+        await this.entityService.setAttribute(entity.id, attribute.key.trim(), attribute.value);
+      }
+    }
     this.entities.update((items) => items.map((item) => item.id === entity.id ? { ...item, name: entity.name, description: entity.description, canon_status: entity.canon_status } : item));
     this.showInfo('Ficha salva.');
   }
