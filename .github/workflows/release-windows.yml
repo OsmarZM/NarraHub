@@ -36,6 +36,7 @@ jobs:
       - name: Validar versão e compartilhamento
         run: |
           npm run release:validate-version
+          npm run release:validate-desktop
           npm run share-api:test
           cargo test --manifest-path src-tauri/Cargo.toml
 
