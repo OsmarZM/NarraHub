@@ -4,7 +4,7 @@
 
 import { Injectable, inject } from '@angular/core';
 import { DatabaseService } from './database.service';
-import { Chapter, ChapterStatus, CanonStatus } from '../models';
+import { Chapter, ChapterOption, ChapterStatus, CanonStatus } from '../models';
 
 @Injectable({ providedIn: 'root' })
 export class ChapterService {
@@ -38,6 +38,18 @@ export class ChapterService {
     return this.db.select<Chapter>(
       'SELECT * FROM chapters WHERE book_id = $1 ORDER BY sort_order ASC',
       [bookId]
+    );
+  }
+
+  async listByUniverse(universeId: string): Promise<ChapterOption[]> {
+    return this.db.select<ChapterOption>(
+      `SELECT c.*, b.name AS book_name, b.story_id, s.name AS story_name
+       FROM chapters c
+       JOIN books b ON b.id = c.book_id
+       JOIN stories s ON s.id = b.story_id
+       WHERE s.universe_id = $1
+       ORDER BY s.sort_order, b.sort_order, c.sort_order`,
+      [universeId],
     );
   }
 

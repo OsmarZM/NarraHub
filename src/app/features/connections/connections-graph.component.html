@@ -1,0 +1,34 @@
+<section class="graph-workbench">
+  <aside class="graph-filters" aria-label="Filtros do grafo">
+    <div><span class="graph-kicker">EXPLORAR</span><h2>Tipos de elemento</h2></div>
+    @for (type of allTypes; track type) {
+      <label><input type="checkbox" [checked]="visibleTypes.has(type)" (change)="toggleType(type)" /><span class="shape-dot" [attr.data-type]="type"></span>{{ type }}</label>
+    }
+    <div class="graph-help"><strong>Como navegar</strong><span>Arraste os nós, use a roda para zoom e dê duplo clique para abrir uma ficha.</span></div>
+  </aside>
+  <div class="graph-stage">
+    <div class="graph-toolbar" role="toolbar" aria-label="Controles do grafo">
+      <button type="button" (click)="organize()">Organizar grafo</button>
+      <span></span>
+      <button type="button" aria-label="Diminuir zoom" (click)="zoomOut()">−</button>
+      <button type="button" aria-label="Aumentar zoom" (click)="zoomIn()">+</button>
+      <button type="button" (click)="fit()">Ajustar</button>
+    </div>
+    <div #graphHost class="graph-host" aria-label="Grafo visual de conexões"></div>
+    <div class="graph-legend"><span><i class="circle"></i>Personagem</span><span><i class="hexagon"></i>Lugar</span><span><i class="square"></i>Evento</span><span><i class="triangle"></i>Objeto</span><span><i class="diamond"></i>Organização</span></div>
+  </div>
+  @if (selectedEntity; as entity) {
+    <aside class="graph-inspector">
+      <button type="button" class="inspector-close" aria-label="Fechar detalhes" (click)="clearFocus()">×</button>
+      <div class="inspector-identity">
+        <div class="inspector-image" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0) }}</div>
+        <span>{{ entity.type }}</span><h2>{{ entity.name }}</h2>
+      </div>
+      <p>{{ entity.description || 'Nenhuma descrição adicionada.' }}</p>
+      <div class="inspector-relations"><header><strong>Relações</strong><span>{{ relationsFor(entity).length }}</span></header>
+        @for (relation of relationsFor(entity); track relation.id) { <div><span>{{ otherName(relation, entity) }}</span><small>{{ relation.label }}</small></div> }
+      </div>
+      <div class="inspector-actions"><button type="button" (click)="focusSelected()">Focar conexões</button><button type="button" class="primary" (click)="entityOpened.emit(entity)">Abrir ficha</button></div>
+    </aside>
+  }
+</section>

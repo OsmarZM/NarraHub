@@ -19,7 +19,7 @@ O esquema principal contém:
 - `universes`, `stories`, `books`, `chapters`;
 - `entities`, `entity_attributes`, `entity_templates`;
 - `relations`, `mentions`;
-- `timeline_events`, `planning_items`;
+- `timeline_events`, `planning_items`, `attachments`;
 - `chapter_revisions`, `change_log`;
 - `devices`, `sync_peers`, `sync_events`, `sync_conflicts`.
 
@@ -44,6 +44,7 @@ O plugin updater do Tauri verifica um manifesto `latest.json` publicado no GitHu
 - Um snapshot remoto mais antigo não substitui um registro local mais novo.
 - Conteúdo de capítulo alterado simultaneamente gera `sync_conflicts`.
 - Dados de demonstração só podem existir em fixtures explícitas de teste.
+- Toda consulta de workspace é limitada pelo universo ativo; respostas assíncronas de um universo anterior são descartadas após a troca.
 
 ## Limites atuais
 

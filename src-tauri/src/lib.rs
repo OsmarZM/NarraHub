@@ -2,7 +2,7 @@ pub mod commands;
 pub mod database;
 mod sync;
 
-use database::migrations::{MIGRATION_V1, MIGRATION_V2};
+use database::migrations::{MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4};
 use tauri_plugin_sql::{Migration, MigrationKind};
 
 fn has_updater_config(config: &tauri::Config) -> bool {
@@ -46,6 +46,18 @@ pub fn run() {
                             version: 2,
                             description: "Add planning, history and sync foundation",
                             sql: MIGRATION_V2,
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 3,
+                            description: "Link timeline events and support fictional dates",
+                            sql: MIGRATION_V3,
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 4,
+                            description: "Add reusable image galleries",
+                            sql: MIGRATION_V4,
                             kind: MigrationKind::Up,
                         },
                     ],

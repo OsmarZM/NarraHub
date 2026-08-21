@@ -34,6 +34,18 @@ npm run share-api:dev
 
 Configure `http://localhost:8787` na tela de Configurações. Para produção, publique `services/share-api/Dockerfile` com volume persistente em `/data`, proxy reverso e TLS. Nesse ambiente, `NARRAHUB_SHARE_PUBLIC_URL` é obrigatória para que o serviço não construa links a partir de um cabeçalho `Host` não confiável.
 
+## URL temporária gratuita sem conta
+
+Para testes e compartilhamentos ocasionais, o Cloudflare Quick Tunnel cria uma URL aleatória `*.trycloudflare.com` sem conta e sem configurar DNS. Instale `cloudflared.exe` em `D:\DevTools\Cloudflared` ou no `PATH` e execute:
+
+```powershell
+npm run share-api:temporary
+```
+
+O inicializador abre o túnel em segundo plano, obtém a URL HTTPS, configura `NARRAHUB_SHARE_PUBLIC_URL` e inicia o NarraHub Share. Copie a URL exibida para **Configurações > Compartilhamento online**.
+
+Esse modo é somente temporário: o computador precisa permanecer ligado, a URL muda ao reiniciar e o Quick Tunnel não oferece SLA. Para uma comunidade pública estável, use um domínio e hospedagem persistente.
+
 ## API
 
 ### `POST /v1/shares`

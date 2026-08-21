@@ -120,6 +120,17 @@ export interface EntityWithDetails extends Entity {
   mentions: MentionWithChapter[];
 }
 
+export interface Attachment {
+  id: string;
+  universe_id: string;
+  owner_type: 'entity' | 'chapter' | 'universe';
+  owner_id: string;
+  data_url: string;
+  caption: string;
+  sort_order: number;
+  created_at: string;
+}
+
 // ── Relation ────────────────────────────────────
 
 export type RelationImportance = 'normal' | 'alta' | 'critica';
@@ -176,6 +187,9 @@ export interface TimelineEvent {
   event_type: string;
   start_date: string;
   end_date: string;
+  entity_id?: string | null;
+  display_date?: string;
+  sort_key?: number;
   created_at: string;
   updated_at: string;
 }
@@ -193,6 +207,15 @@ export interface PlanningItem {
   sort_order: number;
   created_at: string;
   updated_at: string;
+  chapter_title?: string;
+  book_name?: string;
+  story_name?: string;
+}
+
+export interface ChapterOption extends Chapter {
+  book_name: string;
+  story_id: string;
+  story_name: string;
 }
 
 export interface RelationCard extends Relation {

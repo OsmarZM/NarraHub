@@ -23,6 +23,7 @@ const TABLES: &[&str] = &[
     "mentions",
     "timeline_events",
     "planning_items",
+    "attachments",
 ];
 
 #[derive(Default)]
@@ -495,7 +496,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::migrations::{MIGRATION_V1, MIGRATION_V2};
+    use crate::database::migrations::{MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4};
 
     fn temporary_database(label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("narrahub-{label}-{}.db", Uuid::new_v4()));
@@ -506,6 +507,12 @@ mod tests {
         connection
             .execute_batch(MIGRATION_V2)
             .expect("migration v2");
+        connection
+            .execute_batch(MIGRATION_V3)
+            .expect("migration v3");
+        connection
+            .execute_batch(MIGRATION_V4)
+            .expect("migration v4");
         path
     }
 

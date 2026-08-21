@@ -1,0 +1,12 @@
+<div class="nh-editor-toolbar" role="toolbar" aria-label="Ferramentas do editor">
+  <select aria-label="Estilo do texto" (change)="setHeadingFromSelect($any($event.target).value)"><option value="0">Parágrafo</option><option value="1">Título 1</option><option value="2">Título 2</option><option value="3">Título 3</option></select>
+  <span></span><button type="button" aria-label="Negrito" [class.active]="editor?.isActive('bold')" (click)="command('bold')"><strong>B</strong></button><button type="button" aria-label="Itálico" [class.active]="editor?.isActive('italic')" (click)="command('italic')"><em>I</em></button><button type="button" aria-label="Tachado" [class.active]="editor?.isActive('strike')" (click)="command('strike')"><s>S</s></button>
+  <span></span><button type="button" aria-label="Lista com marcadores" (click)="command('bulletList')">• Lista</button><button type="button" aria-label="Lista numerada" (click)="command('orderedList')">1. Lista</button><button type="button" aria-label="Citação" (click)="command('blockquote')">❝</button><button type="button" aria-label="Divisor de cena" (click)="command('horizontalRule')">—</button>
+  <button type="button" aria-label="Inserir imagem" (click)="requestImage()">▧ Imagem</button><input #imageInput type="file" accept="image/*" hidden (change)="importImage($event)" />
+  <div class="nh-editor-spacer"></div><button type="button" class="focus-button" (click)="focusModeChange.emit(!focusMode)">{{ focusMode ? 'Sair do foco' : 'Modo foco' }}</button><button type="button" aria-label="Tela cheia" (click)="fullscreenRequested.emit()">⛶</button>
+</div>
+@if (imageError) { <div class="nh-editor-warning" role="alert">{{ imageError }}</div> }
+<div class="nh-document">
+  <input class="nh-chapter-title" aria-label="Título do capítulo" [ngModel]="title" (ngModelChange)="titleChange.emit($event)" (blur)="saveRequested.emit()" />
+  <div #editorHost class="nh-rich-editor"></div>
+</div>

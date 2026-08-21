@@ -4,28 +4,31 @@ Aplicativo local-first para escrever livros, organizar universos narrativos e si
 
 O NarraHub é distribuído como aplicativo Windows e Android com Tauri 2. A interface Angular é empacotada dentro do aplicativo; não existe servidor web externo ou navegador no uso de produção.
 
-## Versão 0.3.1
+## Versão 0.4.0
 
 Fluxos implementados:
 
 - universo → história → livro → capítulo;
-- editor Markdown com autosave, contagem de palavras, modo foco e tela cheia;
-- reordenação de capítulos;
+- editor visual Tiptap com autosave, formatação, imagens, contagem de palavras, modo foco e tela cheia;
+- árvore de histórias, livros e capítulos com reordenação por arrastar;
 - personagens, lugares, eventos, objetos, organizações e notas;
 - atributos dinâmicos de entidades;
-- conexões entre entidades;
-- timeline persistida;
-- planejamento Kanban persistido;
+- fichas editáveis com imagem principal, galeria e atributos próprios de cada tipo;
+- grafo Cytoscape navegável com zoom, filtros, formas por tipo e nós reposicionáveis;
+- timeline persistida com datas reais ou fictícias e vínculo com eventos existentes;
+- planejamento Kanban persistido, arrastável e capaz de reutilizar capítulos existentes;
 - revisões automáticas de capítulos e histórico de alterações;
 - temas claro, escuro e conforme o sistema;
 - sincronização bidirecional por endereço local e código temporário;
 - armazenamento SQLite independente em cada dispositivo;
+- isolamento de coleções e respostas assíncronas por universo;
 - layout responsivo para desktop e telas móveis;
-- controles nativos de minimizar, maximizar/restaurar e fechar.
+- controles nativos de minimizar, maximizar/restaurar e fechar;
 - links online de leitura com criptografia AES-256-GCM no dispositivo;
 - serviço de compartilhamento autohospedável que armazena somente blobs cifrados;
 - verificação e instalação de atualizações assinadas pelo updater do Tauri;
-- pipeline manual de releases Windows no GitHub Actions.
+- pipeline manual de releases Windows no GitHub Actions;
+- opção de URL pública temporária por Cloudflare Quick Tunnel, sem conta, para testes do NarraHub Share.
 
 O estado inicial é vazio. O aplicativo não cria usuário, universo, personagem, métrica ou conteúdo de demonstração.
 

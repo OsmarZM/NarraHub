@@ -8,18 +8,18 @@ export class WorkspaceService {
 
   listTimeline(universeId: string): Promise<TimelineEvent[]> {
     return this.db.select<TimelineEvent>(
-      'SELECT * FROM timeline_events WHERE universe_id = $1 ORDER BY start_date, created_at',
+      'SELECT * FROM timeline_events WHERE universe_id = $1 ORDER BY COALESCE(sort_key, 0), start_date, created_at',
       [universeId],
     );
   }
 
-  async createTimeline(universeId: string, title: string, date: string, description = ''): Promise<void> {
+  async createTimeline(universeId: string, title: string, date: string, description = '', entityId: string | null = null, displayDate = '', sortKey = 0): Promise<void> {
     const id = this.db.generateId();
     const now = this.db.now();
     await this.db.execute(
-      `INSERT INTO timeline_events (id, universe_id, title, description, event_type, start_date, end_date, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, 'MARCO', $5, '', $6, $6)`,
-      [id, universeId, title, description, date, now],
+      `INSERT INTO timeline_events (id, universe_id, title, description, event_type, start_date, end_date, entity_id, display_date, sort_key, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'MARCO', $5, '', $6, $7, $8, $9, $9)`,
+      [id, universeId, title, description, date, entityId, displayDate, sortKey, now],
     );
   }
 
@@ -29,19 +29,24 @@ export class WorkspaceService {
 
   listPlanning(universeId: string): Promise<PlanningItem[]> {
     return this.db.select<PlanningItem>(
-      `SELECT * FROM planning_items WHERE universe_id = $1
-       ORDER BY CASE status WHEN 'IDEIAS' THEN 0 WHEN 'PLANEJADO' THEN 1 WHEN 'ESCREVENDO' THEN 2 WHEN 'REVISAO' THEN 3 ELSE 4 END, sort_order, created_at`,
+      `SELECT p.*, c.title AS chapter_title, b.name AS book_name, s.name AS story_name
+       FROM planning_items p
+       LEFT JOIN chapters c ON c.id = p.chapter_id
+       LEFT JOIN books b ON b.id = c.book_id
+       LEFT JOIN stories s ON s.id = b.story_id
+       WHERE p.universe_id = $1
+       ORDER BY CASE p.status WHEN 'IDEIAS' THEN 0 WHEN 'PLANEJADO' THEN 1 WHEN 'ESCREVENDO' THEN 2 WHEN 'REVISAO' THEN 3 ELSE 4 END, p.sort_order, p.created_at`,
       [universeId],
     );
   }
 
-  async createPlanning(universeId: string, title: string, description = ''): Promise<void> {
+  async createPlanning(universeId: string, title: string, description = '', chapterId: string | null = null): Promise<void> {
     const id = this.db.generateId();
     const now = this.db.now();
     await this.db.execute(
-      `INSERT INTO planning_items (id, universe_id, title, description, status, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, 'IDEIAS', $5, $5)`,
-      [id, universeId, title, description, now],
+      `INSERT INTO planning_items (id, universe_id, chapter_id, title, description, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, 'IDEIAS', $6, $6)`,
+      [id, universeId, chapterId, title, description, now],
     );
   }
 

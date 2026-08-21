@@ -278,3 +278,39 @@ BEGIN
   VALUES (lower(hex(randomblob(16))), NEW.universe_id, 'entity', NEW.id, 'update', 'record', OLD.name, NEW.name, datetime('now'));
 END;
 "#;
+
+pub const MIGRATION_V3: &str = r#"
+ALTER TABLE timeline_events ADD COLUMN entity_id TEXT REFERENCES entities(id) ON DELETE SET NULL;
+ALTER TABLE timeline_events ADD COLUMN display_date TEXT NOT NULL DEFAULT '';
+ALTER TABLE timeline_events ADD COLUMN sort_key REAL NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_timeline_universe_sort ON timeline_events(universe_id, sort_key, start_date);
+"#;
+
+pub const MIGRATION_V4: &str = r#"
+CREATE TABLE IF NOT EXISTS attachments (
+    id TEXT PRIMARY KEY NOT NULL,
+    universe_id TEXT NOT NULL,
+    owner_type TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    data_url TEXT NOT NULL,
+    caption TEXT NOT NULL DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (universe_id) REFERENCES universes(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_owner ON attachments(universe_id, owner_type, owner_id, sort_order);
+
+CREATE TRIGGER IF NOT EXISTS trg_entity_attachments_delete
+AFTER DELETE ON entities
+BEGIN
+  DELETE FROM attachments WHERE owner_type = 'entity' AND owner_id = OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_chapter_attachments_delete
+AFTER DELETE ON chapters
+BEGIN
+  DELETE FROM attachments WHERE owner_type = 'chapter' AND owner_id = OLD.id;
+END;
+"#;
