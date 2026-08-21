@@ -33,18 +33,6 @@ jobs:
       - name: Instalar dependências
         run: npm ci
 
-      - name: Validar versão e compartilhamento
-        run: |
-          npm run release:validate-version
-          npm run release:validate-desktop
-          npm run share-api:test
-          cargo test --manifest-path src-tauri/Cargo.toml
-
-      - name: Preparar configuração assinada do updater
-        env:
-          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
-        run: npm run release:prepare-config
-
       - name: Preparar Cloudflare Tunnel verificado
         shell: pwsh
         run: |
@@ -58,6 +46,18 @@ jobs:
           if ($actualSha256 -ne $expectedSha256) {
             throw "Checksum inválido para cloudflared $cloudflaredVersion. Esperado $expectedSha256, obtido $actualSha256."
           }
+
+      - name: Validar versão e compartilhamento
+        run: |
+          npm run release:validate-version
+          npm run release:validate-desktop
+          npm run share-api:test
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Preparar configuração assinada do updater
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+        run: npm run release:prepare-config
 
       - name: Criar release e artefatos do updater
         uses: tauri-apps/tauri-action@v1
