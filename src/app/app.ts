@@ -152,7 +152,7 @@ export class App implements OnInit, OnDestroy {
       this.syncStatus.set(await this.syncService.status());
       const currentVersion = await this.updateService.currentVersion();
       this.updateInfo.update((info) => ({ ...info, currentVersion }));
-      setTimeout(() => void this.checkForUpdates(true), 1800);
+      if (await this.updateService.isConfigured()) setTimeout(() => void this.checkForUpdates(true), 1800);
     } catch (error) {
       this.reportError('Não foi possível abrir o banco local do NarraHub.', error);
     } finally { this.isLoading.set(false); }
@@ -457,6 +457,10 @@ export class App implements OnInit, OnDestroy {
   async checkForUpdates(silent = false): Promise<void> {
     if (!isTauri()) { if (!silent) this.showInfo('A atualização automática funciona somente no aplicativo instalado.'); return; }
     if (this.updateBusy()) return;
+    if (!(await this.updateService.isConfigured())) {
+      if (!silent) this.showInfo('Este build de desenvolvimento não possui um canal de atualização configurado.');
+      return;
+    }
     this.updateBusy.set(true); this.updatePhase.set('checking'); this.updateError.set(''); this.updateProgress.set(0);
     try {
       const info = await this.updateService.check(); this.updateInfo.set(info);

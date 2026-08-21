@@ -45,4 +45,6 @@ O workflow gera temporariamente `src-tauri/tauri.release.conf.json`; o arquivo �
 
 Versões antigas que foram compiladas sem endpoint e chave pública não conseguem descobrir o updater retroativamente. Por isso, o primeiro instalador gerado por esta pipeline deve ser baixado e instalado manualmente. A partir dele, versões SemVer superiores publicadas no mesmo canal passam a ser detectadas pelo inicializador.
 
+No modo `tauri dev`, o plugin não é registrado porque a configuração assinada de release não existe. Isso evita que o ambiente de desenvolvimento tente desserializar um updater nulo. O comando `updater_configured` informa ao frontend se o canal está realmente disponível antes de qualquer verificação.
+
 Referências oficiais: [Tauri Updater](https://v2.tauri.app/plugin/updater/) e [pipeline GitHub do Tauri](https://v2.tauri.app/distribute/pipelines/github/).

@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { getVersion } from '@tauri-apps/api/app';
-import { isTauri } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 
@@ -17,6 +17,10 @@ export class UpdateService {
 
   async currentVersion(): Promise<string> {
     return isTauri() ? getVersion() : '0.3.1-dev';
+  }
+
+  async isConfigured(): Promise<boolean> {
+    return isTauri() && invoke<boolean>('updater_configured');
   }
 
   async check(): Promise<AppUpdateInfo> {

@@ -29,6 +29,8 @@ Fluxos implementados:
 
 O estado inicial é vazio. O aplicativo não cria usuário, universo, personagem, métrica ou conteúdo de demonstração.
 
+Para desenvolvimento Windows, use `npm run desktop:dev`. O inicializador reutiliza o cache Rust em `D:\DevTools\NarraHubTarget` quando o disco D está disponível e não ativa o updater sem uma configuração de release assinada.
+
 ## Arquitetura
 
 ```text
