@@ -496,7 +496,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::migrations::{MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4};
+    use crate::database::migrations::{MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5};
 
     fn temporary_database(label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("narrahub-{label}-{}.db", Uuid::new_v4()));
@@ -513,6 +513,9 @@ mod tests {
         connection
             .execute_batch(MIGRATION_V4)
             .expect("migration v4");
+        connection
+            .execute_batch(MIGRATION_V5)
+            .expect("migration v5");
         path
     }
 

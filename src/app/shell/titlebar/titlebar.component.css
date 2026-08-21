@@ -24,11 +24,16 @@
 .nh-theme-toggle span { width: 1px; height: 16px; background: var(--nh-border); }
 .nh-title-icon { display: grid; place-items: center; border-radius: 8px; }
 .nh-title-icon:hover { color: var(--nh-wine); background: var(--nh-surface-muted); }
-.nh-local-status { display: flex; align-items: center; gap: 8px; padding-left: 13px; border-left: 1px solid var(--nh-border); color: var(--nh-ink-muted); font-size: 11px; }
+.nh-local-status { display: flex; align-items: center; gap: 8px; padding-left: 13px; border-left: 1px solid var(--nh-border); color: var(--nh-ink-muted); font-size: 11px; white-space: nowrap; }
 .nh-local-status span { width: 8px; height: 8px; border-radius: 50%; background: var(--nh-success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--nh-success) 10%, transparent); }
-.nh-window-controls { height: 100%; display: flex; border-left: 1px solid var(--nh-border); }
-.nh-window-controls button { width: 46px; height: 100%; border: 0; color: var(--nh-ink-muted); background: transparent; }
+.nh-window-controls { height: 100%; display: flex; align-items: center; gap: 2px; margin-right: 6px; padding-left: 5px; }
+.nh-window-controls button { width: 40px; height: 34px; display: grid; place-items: center; border: 0; border-radius: 8px; color: var(--nh-ink-muted); background: transparent; transition: color .16s, background .16s; }
 .nh-window-controls button:hover { color: var(--nh-ink); background: var(--nh-surface-muted); }
 .nh-window-controls .close:hover { color: #fff; background: #c9434c; }
+.win-minimize { width: 11px; height: 1px; background: currentColor; transform: translateY(3px); }
+.win-maximize { width: 10px; height: 10px; border: 1px solid currentColor; border-radius: 1px; }
+.win-close { position: relative; width: 12px; height: 12px; }
+.win-close::before,.win-close::after { position: absolute; top: 5px; left: 0; width: 12px; height: 1px; background: currentColor; content: ''; transform: rotate(45deg); }
+.win-close::after { transform: rotate(-45deg); }
 @media (max-width: 920px) { .nh-titlebar { grid-template-columns: 190px minmax(220px, 1fr) auto; }.nh-title-actions { display: none; } }
 @media (max-width: 680px) { .nh-titlebar { height: 58px; grid-template-columns: 64px 1fr; }.nh-brand { justify-content: center; padding: 0; }.nh-brand span { display: none; }.nh-global-search { margin-right: 10px; }.nh-global-search kbd,.nh-window-controls { display: none; } }

@@ -45,9 +45,14 @@ export interface Book {
   story_id: string;
   name: string;
   description: string;
+  cover_image: string;
   sort_order: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface BookOption extends Book {
+  story_name: string;
 }
 
 // ── Chapter ─────────────────────────────────────
@@ -164,6 +169,15 @@ export interface Mention {
 export interface MentionWithChapter extends Mention {
   chapter_title: string;
   book_name: string;
+}
+
+export interface MentionOccurrence extends MentionWithChapter {
+  story_name: string;
+  story_id: string;
+  book_id: string;
+  chapter_sort_order: number;
+  book_sort_order: number;
+  story_sort_order: number;
 }
 
 // ── Change Log ──────────────────────────────────

@@ -2,7 +2,7 @@ pub mod commands;
 pub mod database;
 mod sync;
 
-use database::migrations::{MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4};
+use database::migrations::{MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5};
 use tauri_plugin_sql::{Migration, MigrationKind};
 
 fn has_updater_config(config: &tauri::Config) -> bool {
@@ -58,6 +58,12 @@ pub fn run() {
                             version: 4,
                             description: "Add reusable image galleries",
                             sql: MIGRATION_V4,
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 5,
+                            description: "Add book cover images",
+                            sql: MIGRATION_V5,
                             kind: MigrationKind::Up,
                         },
                     ],

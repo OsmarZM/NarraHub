@@ -314,3 +314,7 @@ BEGIN
   DELETE FROM attachments WHERE owner_type = 'chapter' AND owner_id = OLD.id;
 END;
 "#;
+
+pub const MIGRATION_V5: &str = r#"
+ALTER TABLE books ADD COLUMN cover_image TEXT NOT NULL DEFAULT '';
+"#;

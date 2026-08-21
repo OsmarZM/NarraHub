@@ -4,7 +4,7 @@
 
 import { Injectable, inject } from '@angular/core';
 import { DatabaseService } from './database.service';
-import { Mention } from '../models';
+import { Mention, MentionOccurrence } from '../models';
 
 @Injectable({ providedIn: 'root' })
 export class MentionService {
@@ -40,6 +40,21 @@ export class MentionService {
     return this.db.select<Mention>(
       'SELECT * FROM mentions WHERE entity_id = $1',
       [entityId]
+    );
+  }
+
+  async listByUniverse(universeId: string): Promise<MentionOccurrence[]> {
+    return this.db.select<MentionOccurrence>(
+      `SELECT m.*, c.title AS chapter_title, b.name AS book_name, s.name AS story_name,
+              s.id AS story_id, b.id AS book_id, c.sort_order AS chapter_sort_order,
+              b.sort_order AS book_sort_order, s.sort_order AS story_sort_order
+       FROM mentions m
+       JOIN chapters c ON c.id = m.chapter_id
+       JOIN books b ON b.id = c.book_id
+       JOIN stories s ON s.id = b.story_id
+       WHERE s.universe_id = $1
+       ORDER BY s.sort_order, b.sort_order, c.sort_order, m.created_at`,
+      [universeId],
     );
   }
 

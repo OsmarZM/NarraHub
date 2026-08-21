@@ -31,7 +31,7 @@ try {
   while ((Get-Date) -lt $deadline -and -not $publicUrl) {
     if ($tunnel.HasExited) { throw "O Quick Tunnel encerrou antes de publicar a URL. Consulte $tunnelLog" }
     if (Test-Path -LiteralPath $tunnelLog) {
-      $contents = Get-Content -LiteralPath $tunnelLog -Raw -ErrorAction SilentlyContinue
+      $contents = [string](Get-Content -LiteralPath $tunnelLog -Raw -ErrorAction SilentlyContinue)
       $match = [regex]::Match($contents, 'https://[a-z0-9-]+\.trycloudflare\.com')
       if ($match.Success) { $publicUrl = $match.Value }
     }

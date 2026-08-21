@@ -5,14 +5,15 @@ import { CdkDragDrop, DragDropModule, moveItemInArray } from '@angular/cdk/drag-
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
-  Attachment, Book, Chapter, ChapterOption, Entity, EntityType, EntityWithDetails, HistoryEntry, PlanningItem,
-  PlanningStatus, RelationCard, Story, SyncServerStatus, TimelineEvent, UniverseWithStats,
+  Attachment, Book, BookOption, Chapter, ChapterOption, Entity, EntityType, EntityWithDetails, HistoryEntry,
+  MentionOccurrence, PlanningItem, PlanningStatus, RelationCard, Story, SyncServerStatus, TimelineEvent, UniverseWithStats,
 } from './core/models';
 import { BookService } from './core/services/book.service';
 import { AttachmentService } from './core/services/attachment.service';
 import { ChapterService } from './core/services/chapter.service';
 import { DatabaseService } from './core/services/database.service';
 import { EntityService } from './core/services/entity.service';
+import { MentionService } from './core/services/mention.service';
 import { OnlineShareService } from './core/services/online-share.service';
 import { StoryService } from './core/services/story.service';
 import { SyncService } from './core/services/sync.service';
@@ -35,6 +36,23 @@ interface StoredOnlineShare {
   expiresAt: string;
   title: string;
   apiUrl: string;
+}
+
+type EntityHubType = 'Personagem' | 'Lugar' | 'Evento' | 'Objeto' | 'Organização';
+
+interface GlobalSearchResult {
+  id: string;
+  kind: 'story' | 'book' | 'chapter' | 'entity' | 'timeline' | 'planning';
+  label: string;
+  context: string;
+  icon: string;
+}
+
+interface WritingCharacterInsight {
+  entity: Entity;
+  mentionedInCurrent: boolean;
+  firstOccurrence: MentionOccurrence | null;
+  dialogueSnippets: string[];
 }
 
 @Component({
@@ -66,6 +84,7 @@ export class App implements OnInit, OnDestroy {
   private readonly attachmentService = inject(AttachmentService);
   private readonly chapterService = inject(ChapterService);
   private readonly entityService = inject(EntityService);
+  private readonly mentionService = inject(MentionService);
   private readonly onlineShareService = inject(OnlineShareService);
   private readonly workspaceService = inject(WorkspaceService);
   private readonly syncService = inject(SyncService);
@@ -76,9 +95,11 @@ export class App implements OnInit, OnDestroy {
   readonly universes = signal<UniverseWithStats[]>([]);
   readonly stories = signal<Story[]>([]);
   readonly books = signal<Book[]>([]);
+  readonly universeBooks = signal<BookOption[]>([]);
   readonly chapters = signal<Chapter[]>([]);
   readonly universeChapters = signal<ChapterOption[]>([]);
   readonly entities = signal<Entity[]>([]);
+  readonly mentionOccurrences = signal<MentionOccurrence[]>([]);
   readonly timeline = signal<TimelineEvent[]>([]);
   readonly planning = signal<PlanningItem[]>([]);
   readonly relations = signal<RelationCard[]>([]);
@@ -98,18 +119,22 @@ export class App implements OnInit, OnDestroy {
   readonly infoMessage = signal('');
   readonly syncBusy = signal(false);
   readonly shareBusy = signal(false);
+  readonly shareServerState = signal<'idle' | 'checking' | 'online' | 'error'>('idle');
+  readonly shareServerMessage = signal('');
   readonly shareLink = signal('');
   readonly shareExpiresAt = signal('');
   readonly onlineShares = signal<StoredOnlineShare[]>(this.readStoredShares());
   readonly updateBusy = signal(false);
   readonly updateProgress = signal(0);
   readonly updatePhase = signal<'idle' | 'checking' | 'available' | 'downloading' | 'current' | 'error'>('idle');
-  readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.4.0', availableVersion: null, notes: '', publishedAt: null });
+  readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.5.0', availableVersion: null, notes: '', publishedAt: null });
   readonly updateError = signal('');
   readonly updatePromptDismissed = signal(false);
   readonly syncStatus = signal<SyncServerStatus>({ running: false, address: null, pairing_code: null, device_name: 'Meu computador' });
   readonly lastOpenedUniverseId = signal<string | null>(localStorage.getItem('narrahub.lastUniverseId'));
   readonly pendingDeleteUniverse = signal<UniverseWithStats | null>(null);
+  readonly expandedStoryIds = signal<Set<string>>(new Set());
+  readonly expandedBookIds = signal<Set<string>>(new Set());
 
   newUniverseName = '';
   newUniverseDesc = '';
@@ -145,11 +170,7 @@ export class App implements OnInit, OnDestroy {
   readonly navItems: SidebarNavItem[] = [
     { id: 'inicio', label: 'Início', icon: '⌂', needsUniverse: false },
     { id: 'escrita', label: 'Escrita', icon: '✎', needsUniverse: true },
-    { id: 'personagens', label: 'Personagens', icon: '♙', needsUniverse: true },
-    { id: 'lugares', label: 'Lugares', icon: '⌖', needsUniverse: true },
-    { id: 'eventos', label: 'Eventos', icon: '◇', needsUniverse: true },
-    { id: 'objetos', label: 'Objetos', icon: '△', needsUniverse: true },
-    { id: 'organizacoes', label: 'Organizações', icon: '◆', needsUniverse: true },
+    { id: 'entidades', label: 'Entidades', icon: '♧', needsUniverse: true },
     { id: 'conexoes', label: 'Conexões', icon: '⌘', needsUniverse: true },
     { id: 'timeline', label: 'Timeline', icon: '◷', needsUniverse: true },
     { id: 'planejamento', label: 'Planejamento', icon: '☑', needsUniverse: true },
@@ -158,6 +179,30 @@ export class App implements OnInit, OnDestroy {
   ];
 
   readonly wordCount = computed(() => this.countWords(this.editorContent()));
+  readonly recentEntities = computed(() => [...this.entities()].sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 8));
+  readonly globalSearchResults = computed<GlobalSearchResult[]>(() => {
+    if (this.appState.currentView() !== 'workspace') return [];
+    const query = this.normalizeSearch(this.searchQuery());
+    if (query.length < 2) return [];
+    const matches = (value: string) => this.normalizeSearch(value).includes(query);
+    const results: GlobalSearchResult[] = [];
+    for (const story of this.stories()) if (matches(`${story.name} ${story.description}`)) results.push({ id: story.id, kind: 'story', label: story.name, context: 'História', icon: '⌂' });
+    for (const book of this.universeBooks()) if (matches(`${book.name} ${book.description} ${book.story_name}`)) results.push({ id: book.id, kind: 'book', label: book.name, context: `Livro · ${book.story_name}`, icon: '▱' });
+    for (const chapter of this.universeChapters()) if (matches(`${chapter.title} ${chapter.content} ${chapter.book_name} ${chapter.story_name}`)) results.push({ id: chapter.id, kind: 'chapter', label: chapter.title, context: `${chapter.story_name} · ${chapter.book_name}`, icon: '▤' });
+    for (const entity of this.entities()) if (matches(`${entity.name} ${entity.description} ${entity.type}`)) results.push({ id: entity.id, kind: 'entity', label: entity.name, context: entity.type, icon: entity.name.charAt(0).toUpperCase() });
+    for (const event of this.timeline()) if (matches(`${event.title} ${event.description} ${event.display_date || event.start_date}`)) results.push({ id: event.id, kind: 'timeline', label: event.title, context: 'Linha do tempo', icon: '◷' });
+    for (const item of this.planning()) if (matches(`${item.title} ${item.description} ${item.status}`)) results.push({ id: item.id, kind: 'planning', label: item.title, context: `Planejamento · ${item.status}`, icon: '☑' });
+    return results.slice(0, 24);
+  });
+  readonly writingCharacters = computed<WritingCharacterInsight[]>(() => {
+    const paragraphs = this.contentParagraphs(this.editorContent());
+    return this.entities().filter((entity) => entity.type === 'Personagem').map((entity) => {
+      const matching = paragraphs.filter((paragraph) => this.textMentionsEntity(paragraph, entity.name));
+      const dialogueSnippets = matching.filter((paragraph) => this.looksLikeDialogue(paragraph, entity.name)).slice(0, 3);
+      const firstOccurrence = this.mentionOccurrences().find((mention) => mention.entity_id === entity.id) ?? null;
+      return { entity, mentionedInCurrent: matching.length > 0, firstOccurrence, dialogueSnippets };
+    }).filter((insight) => insight.mentionedInCurrent || insight.firstOccurrence);
+  });
 
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private infoTimer: ReturnType<typeof setTimeout> | null = null;
@@ -189,6 +234,9 @@ export class App implements OnInit, OnDestroy {
     document.querySelector<HTMLInputElement>('.nh-global-search input')?.focus();
   }
 
+  @HostListener('document:keydown.escape')
+  clearSearch(): void { this.searchQuery.set(''); }
+
   async minimizeWindow(): Promise<void> { if (isTauri()) await getCurrentWindow().minimize(); }
   async toggleMaximizeWindow(): Promise<void> { if (isTauri()) await getCurrentWindow().toggleMaximize(); }
   async closeWindow(): Promise<void> { await this.saveChapterNow(); if (isTauri()) await getCurrentWindow().close(); }
@@ -205,11 +253,7 @@ export class App implements OnInit, OnDestroy {
     if (item.id === 'ajuda') { this.showInfo('Ajuda e feedback serão conectados ao fluxo nativo em uma próxima fase.'); return; }
     if (item.id === 'configuracoes') { this.appState.openSettings(); return; }
     if (item.id === 'escrita') this.appState.openEditor();
-    else if (item.id === 'personagens') this.appState.openEntityList('Personagem');
-    else if (item.id === 'lugares') this.appState.openEntityList('Lugar');
-    else if (item.id === 'eventos') this.appState.openEntityList('Evento');
-    else if (item.id === 'objetos') this.appState.openEntityList('Objeto');
-    else if (item.id === 'organizacoes') this.appState.openEntityList('Organização');
+    else if (item.id === 'entidades') this.appState.openEntityList(null);
     else if (item.id === 'conexoes') { this.appState.openGraph(); await this.loadRelations(); }
     else if (item.id === 'timeline') { this.appState.openTimeline(); await this.loadTimeline(); }
     else if (item.id === 'planejamento') { this.appState.openPlanning(); await this.loadPlanning(); }
@@ -279,14 +323,20 @@ export class App implements OnInit, OnDestroy {
     const id = this.appState.activeUniverseId(); if (!id) return;
     const epoch = this.workspaceEpoch;
     try {
-      const [stories, entities, chapters] = await Promise.all([
+      const [stories, books, entities, chapters, timeline, planning] = await Promise.all([
         this.storyService.listByUniverse(id),
+        this.bookService.listByUniverse(id),
         this.entityService.listByUniverse(id),
         this.chapterService.listByUniverse(id),
+        this.workspaceService.listTimeline(id),
+        this.workspaceService.listPlanning(id),
       ]);
       if (epoch !== this.workspaceEpoch || this.appState.activeUniverseId() !== id) return;
-      this.stories.set(stories); this.entities.set(entities); this.universeChapters.set(chapters);
+      this.stories.set(stories); this.universeBooks.set(books); this.entities.set(entities); this.universeChapters.set(chapters); this.timeline.set(timeline); this.planning.set(planning);
+      this.expandedStoryIds.set(new Set(stories.slice(0, 1).map((story) => story.id)));
+      this.expandedBookIds.set(new Set(books.slice(0, 1).map((book) => book.id)));
       if (this.stories().length) await this.selectStory(this.stories()[0]); else this.clearWritingSelection();
+      void this.rebuildMentionIndex(id, chapters, entities);
     } catch (error) { this.reportError('Não foi possível carregar os dados do universo.', error); }
   }
 
@@ -294,7 +344,7 @@ export class App implements OnInit, OnDestroy {
     const id = this.appState.activeUniverseId(); const name = this.newStoryName.trim(); if (!id || !name) return;
     try {
       const story = await this.storyService.create(id, name); this.newStoryName = ''; this.appState.closeModal();
-      this.stories.set(await this.storyService.listByUniverse(id)); await this.selectStory(story); await this.refreshUniverseStats();
+      this.stories.set(await this.storyService.listByUniverse(id)); this.setExpanded(this.expandedStoryIds, story.id, true); await this.selectStory(story); await this.refreshUniverseStats();
     } catch (error) { this.reportError('Não foi possível criar a história.', error); }
   }
 
@@ -303,7 +353,7 @@ export class App implements OnInit, OnDestroy {
     const universeId = this.appState.activeUniverseId();
     const books = await this.bookService.listByStory(story.id);
     if (!universeId || this.appState.activeUniverseId() !== universeId || !this.stories().some((item) => item.id === story.id)) return;
-    this.activeStory.set(story); this.appState.activeStoryId.set(story.id); this.books.set(books);
+    this.activeStory.set(story); this.appState.activeStoryId.set(story.id); this.books.set(books); this.setExpanded(this.expandedStoryIds, story.id, true);
     if (this.books().length) await this.selectBook(this.books()[0]);
     else { this.activeBook.set(null); this.activeChapter.set(null); this.chapters.set([]); this.editorTitle.set(''); this.editorContent.set(''); }
   }
@@ -312,7 +362,7 @@ export class App implements OnInit, OnDestroy {
     const story = this.activeStory(); const name = this.newBookName.trim(); if (!story || !name) return;
     try {
       const book = await this.bookService.create(story.id, name); this.newBookName = ''; this.appState.closeModal();
-      this.books.set(await this.bookService.listByStory(story.id)); await this.selectBook(book); await this.refreshUniverseStats();
+      this.books.set(await this.bookService.listByStory(story.id)); await this.refreshUniverseBooks(); this.setExpanded(this.expandedBookIds, book.id, true); await this.selectBook(book); await this.refreshUniverseStats();
     } catch (error) { this.reportError('Não foi possível criar o livro.', error); }
   }
 
@@ -321,7 +371,7 @@ export class App implements OnInit, OnDestroy {
     const storyId = this.activeStory()?.id;
     const chapters = await this.chapterService.listByBook(book.id);
     if (!storyId || this.activeStory()?.id !== storyId || !this.books().some((item) => item.id === book.id)) return;
-    this.activeBook.set(book); this.appState.activeBookId.set(book.id); this.chapters.set(chapters);
+    this.activeBook.set(book); this.appState.activeBookId.set(book.id); this.chapters.set(chapters); this.setExpanded(this.expandedBookIds, book.id, true);
     if (this.chapters().length) await this.selectChapter(this.chapters()[0]); else { this.activeChapter.set(null); this.editorTitle.set(''); this.editorContent.set(''); }
   }
 
@@ -337,6 +387,58 @@ export class App implements OnInit, OnDestroy {
     if (this.activeChapter()?.id === chapter.id) return;
     await this.saveChapterNow(); this.activeChapter.set(chapter); this.appState.activeChapterId.set(chapter.id);
     this.editorTitle.set(chapter.title); this.editorContent.set(chapter.content || ''); this.saveMessage.set('Salvo');
+  }
+
+  booksForStory(storyId: string): BookOption[] { return this.universeBooks().filter((book) => book.story_id === storyId); }
+  chaptersForBook(bookId: string): ChapterOption[] { return this.universeChapters().filter((chapter) => chapter.book_id === bookId); }
+  isStoryExpanded(id: string): boolean { return this.expandedStoryIds().has(id); }
+  isBookExpanded(id: string): boolean { return this.expandedBookIds().has(id); }
+  toggleStory(story: Story, event: Event): void { event.stopPropagation(); this.setExpanded(this.expandedStoryIds, story.id, !this.isStoryExpanded(story.id)); }
+  toggleBook(book: Book, event: Event): void { event.stopPropagation(); this.setExpanded(this.expandedBookIds, book.id, !this.isBookExpanded(book.id)); }
+
+  async openBookOption(book: BookOption): Promise<void> {
+    const story = this.stories().find((candidate) => candidate.id === book.story_id); if (!story) return;
+    await this.selectStory(story);
+    const selected = this.books().find((candidate) => candidate.id === book.id); if (selected) await this.selectBook(selected);
+    this.activeNav.set('escrita'); this.appState.openEditor();
+  }
+
+  async openChapterOption(option: ChapterOption): Promise<void> {
+    const story = this.stories().find((candidate) => candidate.id === option.story_id); if (!story) return;
+    await this.selectStory(story);
+    const book = this.books().find((candidate) => candidate.id === option.book_id); if (!book) return;
+    await this.selectBook(book);
+    const chapter = this.chapters().find((candidate) => candidate.id === option.id); if (chapter) await this.selectChapter(chapter);
+    this.activeNav.set('escrita'); this.appState.openEditor(option.id);
+  }
+
+  async selectTreeChapter(option: ChapterOption): Promise<void> { await this.openChapterOption(option); }
+
+  async moveTreeChapter(chapter: ChapterOption, direction: -1 | 1, event: Event): Promise<void> {
+    event.stopPropagation();
+    const items = this.chaptersForBook(chapter.book_id); const index = items.findIndex((item) => item.id === chapter.id); const next = index + direction;
+    if (index < 0 || next < 0 || next >= items.length) return;
+    [items[index], items[next]] = [items[next], items[index]];
+    await this.chapterService.reorder(chapter.book_id, items.map((item) => item.id)); await this.refreshUniverseChapters();
+    if (this.activeBook()?.id === chapter.book_id) this.chapters.set(await this.chapterService.listByBook(chapter.book_id));
+  }
+
+  async dropTreeChapter(event: CdkDragDrop<ChapterOption[]>, book: BookOption): Promise<void> {
+    if (event.previousIndex === event.currentIndex) return;
+    const items = [...event.container.data]; moveItemInArray(items, event.previousIndex, event.currentIndex);
+    await this.chapterService.reorder(book.id, items.map((item) => item.id)); await this.refreshUniverseChapters();
+    if (this.activeBook()?.id === book.id) this.chapters.set(await this.chapterService.listByBook(book.id));
+  }
+
+  async onBookCoverSelected(event: Event, book: Book): Promise<void> {
+    const input = event.target as HTMLInputElement; const file = input.files?.[0]; input.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/') || file.size > 8 * 1024 * 1024) { this.showInfo('Escolha uma imagem de até 8 MB.'); return; }
+    const cover_image = await this.fileToDataUrl(file); await this.bookService.update(book.id, { cover_image });
+    this.books.update((items) => items.map((item) => item.id === book.id ? { ...item, cover_image } : item));
+    this.universeBooks.update((items) => items.map((item) => item.id === book.id ? { ...item, cover_image } : item));
+    if (this.activeBook()?.id === book.id) this.activeBook.update((active) => active ? { ...active, cover_image } : active);
+    this.showInfo('Capa do livro atualizada.');
   }
 
   async moveChapter(chapter: Chapter, direction: -1 | 1, event: Event): Promise<void> {
@@ -375,7 +477,8 @@ export class App implements OnInit, OnDestroy {
       const updated = { ...chapter, title, content, word_count: words, updated_at: this.db.now() };
       this.activeChapter.set(updated); this.chapters.update((items) => items.map((item) => item.id === updated.id ? updated : item));
       this.universeChapters.update((items) => items.map((item) => item.id === updated.id ? { ...item, ...updated } : item));
-      this.saveMessage.set('Salvo'); await this.refreshUniverseStats();
+      await this.mentionService.syncChapterMentions(chapter.id, this.entityIdsInContent(content, this.entities()));
+      this.saveMessage.set('Salvo'); await Promise.all([this.refreshUniverseStats(), this.refreshMentionOccurrences()]);
     } catch (error) { this.saveMessage.set('Erro ao salvar'); this.reportError('O capítulo não foi salvo.', error); }
     finally { this.isSaving.set(false); }
   }
@@ -395,6 +498,9 @@ export class App implements OnInit, OnDestroy {
   beginCreateEntity(): void {
     this.newEntityType = (this.appState.sidebarEntityFilter() || 'Personagem') as EntityType;
     this.newEntityName = ''; this.newEntityDescription = ''; this.newEntityImageData = ''; this.appState.openModal('new-entity');
+  }
+  selectEntityTab(type: EntityHubType | null): void {
+    this.activeEntity.set(null); this.entityGallery.set([]); this.appState.openEntityList(type);
   }
   entityCreateLabel(): string {
     const type = this.appState.sidebarEntityFilter() || 'entidade';
@@ -423,6 +529,24 @@ export class App implements OnInit, OnDestroy {
     const filter = this.appState.sidebarEntityFilter();
     if (!filter) return 'Entidades';
     return ({ Personagem: 'Personagens', Lugar: 'Lugares', Evento: 'Eventos', Objeto: 'Objetos', 'Organização': 'Organizações' } as Record<string, string>)[filter] ?? filter;
+  }
+  entityTypeCount(type: EntityHubType | null): number { return type ? this.entities().filter((entity) => entity.type === type).length : this.entities().length; }
+
+  async openGlobalSearchResult(result: GlobalSearchResult): Promise<void> {
+    this.searchQuery.set('');
+    if (result.kind === 'story') {
+      const story = this.stories().find((item) => item.id === result.id); if (story) { await this.selectStory(story); this.activeNav.set('escrita'); this.appState.openEditor(); }
+    } else if (result.kind === 'book') {
+      const book = this.universeBooks().find((item) => item.id === result.id); if (book) await this.openBookOption(book);
+    } else if (result.kind === 'chapter') {
+      const chapter = this.universeChapters().find((item) => item.id === result.id); if (chapter) await this.openChapterOption(chapter);
+    } else if (result.kind === 'entity') {
+      const entity = this.entities().find((item) => item.id === result.id); if (entity) { this.activeNav.set('entidades'); this.appState.openEntityList(entity.type); await this.openEntitySheet(entity); }
+    } else if (result.kind === 'timeline') {
+      this.activeNav.set('timeline'); this.appState.openTimeline(); queueMicrotask(() => document.querySelector<HTMLElement>(`[data-timeline-id="${result.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+    } else {
+      this.activeNav.set('planejamento'); this.appState.openPlanning(); queueMicrotask(() => document.querySelector<HTMLElement>(`[data-planning-id="${result.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+    }
   }
 
   patchActiveEntity(field: 'name' | 'description' | 'canon_status', value: string): void {
@@ -519,15 +643,29 @@ export class App implements OnInit, OnDestroy {
   }
 
   setTheme(value: string): void { this.theme.setTheme(value as ThemePreference); }
-  saveShareServer(): void {
+  async saveShareServer(): Promise<void> {
     try {
       if (!this.shareApiUrl.trim()) {
-        localStorage.removeItem('narrahub.shareApiUrl'); this.shareApiUrl = ''; this.showInfo('Servidor de compartilhamento removido.'); return;
+        localStorage.removeItem('narrahub.shareApiUrl'); this.shareApiUrl = ''; this.shareServerState.set('idle'); this.shareServerMessage.set(''); this.showInfo('Servidor de compartilhamento removido.'); return;
       }
       this.shareApiUrl = this.onlineShareService.normalizeApiUrl(this.shareApiUrl);
-      localStorage.setItem('narrahub.shareApiUrl', this.shareApiUrl);
-      this.showInfo('Servidor de compartilhamento salvo neste dispositivo.');
+      await this.testShareServer(true);
     } catch (error) { this.reportError('Endereço de compartilhamento inválido.', error); }
+  }
+  async testShareServer(persist = false): Promise<void> {
+    if (!this.shareApiUrl.trim()) { this.shareServerState.set('error'); this.shareServerMessage.set('Informe primeiro o endereço HTTPS do servidor.'); return; }
+    this.shareServerState.set('checking'); this.shareServerMessage.set('Verificando conexão segura…');
+    try {
+      this.shareApiUrl = this.onlineShareService.normalizeApiUrl(this.shareApiUrl);
+      const health = await this.onlineShareService.health(this.shareApiUrl);
+      if (persist) localStorage.setItem('narrahub.shareApiUrl', this.shareApiUrl);
+      this.shareServerState.set('online'); this.shareServerMessage.set(health.encryption === 'client-side' ? 'Servidor online. A criptografia ocorre neste dispositivo.' : 'Servidor online.');
+      this.showInfo(persist ? 'Servidor validado e salvo.' : 'Servidor de compartilhamento online.');
+    } catch (error) {
+      this.shareServerState.set('error'); this.shareServerMessage.set(error instanceof Error ? error.message : String(error));
+      if (persist) localStorage.removeItem('narrahub.shareApiUrl');
+      this.reportError('Não foi possível validar o servidor de compartilhamento.', error);
+    }
   }
   async createOnlineShare(): Promise<void> {
     const chapter = this.activeChapter(); if (!chapter) return;
@@ -535,6 +673,8 @@ export class App implements OnInit, OnDestroy {
     this.errorMessage.set('');
     this.shareBusy.set(true);
     try {
+      const health = await this.onlineShareService.health(this.shareApiUrl);
+      this.shareServerState.set('online'); this.shareServerMessage.set(health.encryption === 'client-side' ? 'Servidor online. A criptografia ocorre neste dispositivo.' : 'Servidor online.');
       await this.saveChapterNow();
       const created = await this.onlineShareService.create(this.shareApiUrl, {
         version: 1,
@@ -638,8 +778,52 @@ export class App implements OnInit, OnDestroy {
     const chapters = await this.chapterService.listByUniverse(id);
     if (this.appState.activeUniverseId() === id) this.universeChapters.set(chapters);
   }
+  private async refreshUniverseBooks(): Promise<void> {
+    const id = this.appState.activeUniverseId(); if (!id) return;
+    const books = await this.bookService.listByUniverse(id);
+    if (this.appState.activeUniverseId() === id) this.universeBooks.set(books);
+  }
+  private async refreshMentionOccurrences(): Promise<void> {
+    const id = this.appState.activeUniverseId(); if (!id) return;
+    const mentions = await this.mentionService.listByUniverse(id);
+    if (this.appState.activeUniverseId() === id) this.mentionOccurrences.set(mentions);
+  }
+  private async rebuildMentionIndex(universeId: string, chapters: ChapterOption[], entities: Entity[]): Promise<void> {
+    try {
+      for (const chapter of chapters) {
+        if (this.appState.activeUniverseId() !== universeId) return;
+        await this.mentionService.syncChapterMentions(chapter.id, this.entityIdsInContent(chapter.content || '', entities));
+      }
+      await this.refreshMentionOccurrences();
+    } catch (error) { console.warn('[NarraHub] Não foi possível atualizar o índice de menções.', error); }
+  }
+  private entityIdsInContent(content: string, entities: Entity[]): string[] {
+    const text = this.contentParagraphs(content).join(' ');
+    return entities.filter((entity) => this.textMentionsEntity(text, entity.name)).map((entity) => entity.id);
+  }
+  private contentParagraphs(content: string): string[] {
+    if (!content.trim()) return [];
+    const document = new DOMParser().parseFromString(content, 'text/html');
+    const blocks = [...document.querySelectorAll('p, blockquote, h1, h2, h3, li')].map((node) => node.textContent?.trim() || '').filter(Boolean);
+    const fallback = document.body.textContent?.trim();
+    return blocks.length ? blocks : fallback ? fallback.split(/\n+/u).map((value) => value.trim()).filter(Boolean) : [];
+  }
+  private textMentionsEntity(text: string, name: string): boolean {
+    const normalizedText = this.normalizeSearch(text); const normalizedName = this.normalizeSearch(name);
+    if (normalizedName.length < 2) return false;
+    const escaped = normalizedName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`, 'u').test(normalizedText);
+  }
+  private looksLikeDialogue(paragraph: string, name: string): boolean {
+    const normalized = this.normalizeSearch(paragraph); const entityName = this.normalizeSearch(name);
+    return /^[—–-]|[“”"]|\b(disse|perguntou|respondeu|sussurrou|gritou|falou)\b/u.test(normalized) || normalized.startsWith(`${entityName}:`);
+  }
+  private normalizeSearch(value: string): string { return value.normalize('NFD').replace(/[\u0300-\u036f]/gu, '').toLocaleLowerCase('pt-BR').trim(); }
+  private setExpanded(target: typeof this.expandedStoryIds, id: string, expanded: boolean): void {
+    target.update((current) => { const next = new Set(current); if (expanded) next.add(id); else next.delete(id); return next; });
+  }
   private clearWritingSelection(): void { this.activeStory.set(null); this.activeBook.set(null); this.activeChapter.set(null); this.books.set([]); this.chapters.set([]); this.editorTitle.set(''); this.editorContent.set(''); }
-  private resetWorkspaceData(): void { this.clearWritingSelection(); this.stories.set([]); this.universeChapters.set([]); this.entities.set([]); this.timeline.set([]); this.planning.set([]); this.relations.set([]); this.history.set([]); this.activeEntity.set(null); this.entityGallery.set([]); }
+  private resetWorkspaceData(): void { this.clearWritingSelection(); this.stories.set([]); this.universeBooks.set([]); this.universeChapters.set([]); this.entities.set([]); this.mentionOccurrences.set([]); this.timeline.set([]); this.planning.set([]); this.relations.set([]); this.history.set([]); this.activeEntity.set(null); this.entityGallery.set([]); this.expandedStoryIds.set(new Set()); this.expandedBookIds.set(new Set()); }
   private resetUniverseForm(): void { this.editingUniverseId = null; this.newUniverseName = ''; this.newUniverseDesc = ''; this.newUniverseCoverData = ''; }
   private fileToDataUrl(file: File): Promise<string> { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error ?? new Error('Falha ao ler a imagem.')); reader.readAsDataURL(file); }); }
   private rememberShare(id: string, revokeToken: string, expiresAt: string, title: string, apiUrl: string): void {

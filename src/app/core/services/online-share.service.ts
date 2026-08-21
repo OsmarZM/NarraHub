@@ -33,8 +33,36 @@ export interface CreatedOnlineShare {
   revokeToken: string;
 }
 
+export interface OnlineShareHealth {
+  ok: boolean;
+  service: string;
+  encryption: string;
+}
+
 @Injectable({ providedIn: 'root' })
 export class OnlineShareService {
+  async health(apiUrl: string): Promise<OnlineShareHealth> {
+    const baseUrl = this.normalizeApiUrl(apiUrl);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 8_000);
+    try {
+      const response = await fetch(`${baseUrl}/health`, { cache: 'no-store', signal: controller.signal });
+      if (!response.ok) throw new Error(`Servidor respondeu com status ${response.status}.`);
+      const health = await response.json() as OnlineShareHealth;
+      if (!health.ok || health.service !== 'narrahub-share') {
+        throw new Error('O endereço não aponta para um servidor NarraHub Share compatível.');
+      }
+      return health;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error('O servidor não respondeu em até 8 segundos.');
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
   async create(apiUrl: string, document: OnlineShareDocument, expiresInDays: number): Promise<CreatedOnlineShare> {
     const baseUrl = this.normalizeApiUrl(apiUrl);
     const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt']);
