@@ -32,8 +32,10 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === 'POST' && url.pathname === '/v1/shares') {
       enforceRateLimit(request);
-      const envelope = validateEnvelope(await readJsonBody(request));
-      const created = await store.create(envelope);
+      const body = await readJsonBody(request);
+      const envelope = validateEnvelope(body);
+      const contributionToken = typeof body.contributionToken === 'string' ? body.contributionToken : '';
+      const created = await store.create(envelope, contributionToken);
       const publicUrl = configuredPublicUrl || inferredPublicUrl(request);
       sendJson(response, 201, {
         id: created.id,
@@ -57,6 +59,19 @@ const server = createServer(async (request, response) => {
       const revoked = await store.revoke(shareMatch[1], token);
       if (!revoked) { sendJson(response, 403, { error: 'Token de revogação inválido.' }); return; }
       response.writeHead(204); response.end(); return;
+    }
+
+    const contributionMatch = url.pathname.match(/^\/v1\/shares\/([A-Za-z0-9_-]{16})\/contributions$/u);
+    if (contributionMatch && request.method === 'GET') {
+      const items = await store.listContributions(contributionMatch[1], Number.parseInt(url.searchParams.get('after') || '0', 10) || 0);
+      if (!items) { sendJson(response, 404, { error: 'Compartilhamento inexistente ou expirado.' }); return; }
+      sendJson(response, 200, { items }); return;
+    }
+    if (contributionMatch && request.method === 'POST') {
+      const token = request.headers['x-narrahub-contribution-token'] || '';
+      const item = await store.appendContribution(contributionMatch[1], token, await readJsonBody(request));
+      if (!item) { sendJson(response, 403, { error: 'Token de colaboração inválido.' }); return; }
+      sendJson(response, 201, { sequence:item.sequence, receivedAt:item.receivedAt }); return;
     }
 
     if (request.method === 'GET' && /^\/s\/[A-Za-z0-9_-]{16}$/u.test(url.pathname)) {
@@ -87,11 +102,11 @@ function applySecurityHeaders(request, response) {
   if (origin && allowedOrigins.has(origin)) response.setHeader('access-control-allow-origin', origin);
   response.setHeader('vary', 'origin');
   response.setHeader('access-control-allow-methods', 'GET,POST,DELETE,OPTIONS');
-  response.setHeader('access-control-allow-headers', 'content-type,authorization');
+  response.setHeader('access-control-allow-headers', 'content-type,authorization,x-narrahub-contribution-token');
   response.setHeader('x-content-type-options', 'nosniff');
   response.setHeader('referrer-policy', 'no-referrer');
   response.setHeader('permissions-policy', 'camera=(), microphone=(), geolocation=()');
-  response.setHeader('content-security-policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+  response.setHeader('content-security-policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
 }
 
 function enforceRateLimit(request) {

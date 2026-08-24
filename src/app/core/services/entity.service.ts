@@ -24,8 +24,8 @@ export class EntityService {
     const now = this.db.now();
 
     await this.db.execute(
-      `INSERT INTO entities (id, universe_id, type, name, description, image, canon_status, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, '', 'CANON', $6, $7)`,
+      `INSERT INTO entities (id, universe_id, type, name, description, summary, image, canon_status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, '', '', 'CANON', $6, $7)`,
       [id, universeId, type, name, description, now, now]
     );
 
@@ -56,7 +56,7 @@ export class EntityService {
     }
 
     return {
-      id, universe_id: universeId, type, name, description,
+      id, universe_id: universeId, type, name, description, summary: '',
       image: '', canon_status: 'CANON', created_at: now, updated_at: now,
     };
   }
@@ -133,7 +133,7 @@ export class EntityService {
     return { ...entity, attributes, relations, mentions };
   }
 
-  async update(id: string, data: Partial<Pick<Entity, 'name' | 'description' | 'image' | 'canon_status'>>): Promise<void> {
+  async update(id: string, data: Partial<Pick<Entity, 'name' | 'description' | 'summary' | 'image' | 'canon_status'>>): Promise<void> {
     const now = this.db.now();
     const sets: string[] = ['updated_at = $1'];
     const params: unknown[] = [now];
@@ -191,6 +191,18 @@ export class EntityService {
 
   async removeAttribute(attributeId: string): Promise<void> {
     await this.db.execute('DELETE FROM entity_attributes WHERE id = $1', [attributeId]);
+  }
+
+  async saveAttribute(attribute: EntityAttribute): Promise<void> {
+    if (attribute.id.startsWith('temp_')) {
+      await this.setAttribute(attribute.entity_id, attribute.key, attribute.value);
+      return;
+    }
+    await this.db.execute(
+      `UPDATE entity_attributes SET key = $1, value = $2, sort_order = $3 WHERE id = $4 AND entity_id = $5`,
+      [attribute.key.trim(), attribute.value, attribute.sort_order, attribute.id, attribute.entity_id]
+    );
+    await this.db.execute('UPDATE entities SET updated_at = $1 WHERE id = $2', [this.db.now(), attribute.entity_id]);
   }
 
   // ── Search (for mentions autocomplete) ──────

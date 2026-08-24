@@ -1,12 +1,137 @@
 <div class="nh-editor-toolbar" role="toolbar" aria-label="Ferramentas do editor">
-  <select aria-label="Estilo do texto" (change)="setHeadingFromSelect($any($event.target).value)"><option value="0">Parágrafo</option><option value="1">Título 1</option><option value="2">Título 2</option><option value="3">Título 3</option></select>
-  <span></span><button type="button" aria-label="Negrito" [class.active]="editor?.isActive('bold')" (click)="command('bold')"><strong>B</strong></button><button type="button" aria-label="Itálico" [class.active]="editor?.isActive('italic')" (click)="command('italic')"><em>I</em></button><button type="button" aria-label="Tachado" [class.active]="editor?.isActive('strike')" (click)="command('strike')"><s>S</s></button>
-  <span></span><button type="button" aria-label="Lista com marcadores" (click)="command('bulletList')">• Lista</button><button type="button" aria-label="Lista numerada" (click)="command('orderedList')">1. Lista</button><button type="button" aria-label="Citação" (click)="command('blockquote')">❝</button><button type="button" aria-label="Divisor de cena" (click)="command('horizontalRule')">—</button>
-  <button type="button" aria-label="Inserir imagem" (click)="requestImage()">▧ Imagem</button><input #imageInput type="file" accept="image/*" hidden (change)="importImage($event)" />
-  <div class="nh-editor-spacer"></div><button type="button" class="focus-button" (click)="focusModeChange.emit(!focusMode)">{{ focusMode ? 'Sair do foco' : 'Modo foco' }}</button><button type="button" aria-label="Tela cheia" (click)="fullscreenRequested.emit()">⛶</button>
+  <div class="nh-toolbar-group history-tools" aria-label="Histórico de edição">
+    <button type="button" aria-label="Desfazer" title="Desfazer" [disabled]="!editor?.can()?.undo()" (click)="command('undo')">↶</button>
+    <button type="button" aria-label="Refazer" title="Refazer" [disabled]="!editor?.can()?.redo()" (click)="command('redo')">↷</button>
+  </div>
+  <div class="nh-toolbar-group format-tools" aria-label="Formatação">
+    <select aria-label="Estilo do texto" (change)="setHeadingFromSelect($any($event.target).value)">
+      <option value="0">Parágrafo</option><option value="1">Título 1</option><option value="2">Título 2</option><option value="3">Título 3</option>
+    </select>
+    <button type="button" aria-label="Negrito" title="Negrito" [class.active]="editor?.isActive('bold')" (click)="command('bold')"><strong>B</strong></button>
+    <button type="button" aria-label="Itálico" title="Itálico" [class.active]="editor?.isActive('italic')" (click)="command('italic')"><em>I</em></button>
+    <button type="button" aria-label="Tachado" title="Tachado" [class.active]="editor?.isActive('strike')" (click)="command('strike')"><s>S</s></button>
+  </div>
+  <div class="nh-toolbar-group structure-tools" aria-label="Estrutura do texto">
+    <button type="button" aria-label="Lista com marcadores" title="Lista com marcadores" (click)="command('bulletList')">• Lista</button>
+    <button type="button" aria-label="Lista numerada" title="Lista numerada" (click)="command('orderedList')">1. Lista</button>
+    <button type="button" aria-label="Citação" title="Citação" (click)="command('blockquote')">❝</button>
+    <button type="button" aria-label="Divisor de cena" title="Divisor de cena" (click)="command('horizontalRule')">—</button>
+  </div>
+  <div class="nh-toolbar-group writing-tools" aria-label="Assistentes de escrita">
+    <button type="button" aria-label="Inserir imagem" title="Inserir imagem" (click)="requestImage()">▧ Imagem</button>
+    <input #imageInput type="file" accept="image/*" hidden (change)="importImage($event)" />
+    <button type="button" [class.active]="spellcheckEnabled" [attr.aria-pressed]="spellcheckEnabled" title="Corretor ortográfico do sistema" (click)="toggleSpellcheck()">✓ Ortografia</button>
+    <button type="button" [class.active]="voicePanelOpen" [attr.aria-expanded]="voicePanelOpen" title="Criar anotação por voz" (click)="toggleVoicePanel()">● Voz</button>
+    <button type="button" [disabled]="!aiEnabled" [title]="aiEnabled ? 'Abrir assistente de escrita' : 'Configure a IA nas preferências'" (click)="requestAssistant()">✦ IA</button>
+  </div>
+  <div class="nh-editor-spacer"></div>
+  <div class="nh-toolbar-group view-tools" aria-label="Visualização">
+    <button type="button" class="focus-button" (click)="focusModeChange.emit(!focusMode)">{{ focusMode ? 'Sair do foco' : 'Modo foco' }}</button>
+    <button type="button" aria-label="Tela cheia" title="Tela cheia" (click)="fullscreenRequested.emit()">⛶</button>
+  </div>
 </div>
+
 @if (imageError) { <div class="nh-editor-warning" role="alert">{{ imageError }}</div> }
-<div class="nh-document">
-  <input class="nh-chapter-title" aria-label="Título do capítulo" [ngModel]="title" (ngModelChange)="titleChange.emit($event)" (blur)="saveRequested.emit()" />
-  <div #editorHost class="nh-rich-editor"></div>
+
+@if (aiPanelOpen && aiEnabled) {
+  <section
+    class="nh-ai-bubble"
+    [class.below]="bubbleBelow"
+    [class.has-result]="aiResponse || aiError"
+    [style.top.px]="bubbleTop"
+    [style.left.px]="bubbleLeft"
+    role="dialog"
+    aria-label="Assistente de escrita para o trecho selecionado"
+  >
+    <header><span>✦ {{ selectedText ? 'Trabalhar seleção' : 'Assistente de escrita' }}</span><button type="button" aria-label="Fechar assistente" (mousedown)="$event.preventDefault()" (click)="dismissAiPanel()">×</button></header>
+    @if (!aiBusy && !aiResponse && !aiError && !customPromptOpen) {
+      <nav aria-label="Ações rápidas de IA">
+        <button type="button" (mousedown)="$event.preventDefault()" (click)="requestAssistant('correct')">Corrigir</button>
+        <button type="button" (mousedown)="$event.preventDefault()" (click)="requestAssistant('rewrite')">Reescrever</button>
+        <button type="button" (mousedown)="$event.preventDefault()" (click)="requestAssistant('expand')">Detalhar</button>
+        <button type="button" (mousedown)="$event.preventDefault()" (click)="requestAssistant('shorten')">Encurtar</button>
+        <button type="button" class="custom-action" (mousedown)="$event.preventDefault()" (click)="requestAssistant('custom')">Pedir outra coisa…</button>
+      </nav>
+    }
+    @if (customPromptOpen && !aiBusy) {
+      <div class="nh-ai-custom"><textarea [(ngModel)]="customPrompt" aria-label="Instrução personalizada para a IA" placeholder="Ex.: deixe a fala mais tensa, sem mudar o sentido" (keydown.control.enter)="submitCustomPrompt()"></textarea><footer><small>Ctrl + Enter para enviar</small><button type="button" [disabled]="!customPrompt.trim()" (click)="submitCustomPrompt()">Enviar</button></footer></div>
+    }
+    @if (aiBusy) { <div class="nh-ai-busy"><i></i><span>Escrevendo sem bloquear seu capítulo…</span></div> }
+    @if (aiError) { <div class="nh-ai-error" role="alert"><strong>Não foi possível usar a IA</strong><p>{{ aiError }}</p><button type="button" (click)="retryCustomPrompt()">Tentar outra instrução</button></div> }
+    @if (aiResponse) { <div class="nh-ai-result"><p>{{ aiResponse }}</p><footer><button type="button" class="ghost" (click)="dismissAiPanel()">Descartar</button><button type="button" (click)="applyAiResult(selectedText ? 'replace' : 'insert')">{{ selectedText ? 'Substituir seleção' : 'Inserir aqui' }}</button></footer></div> }
+  </section>
+}
+
+@if (slashMenuOpen && aiEnabled) {
+  <section class="nh-slash-menu" [style.top.px]="slashTop" [style.left.px]="slashLeft" role="listbox" aria-label="Comandos rápidos de escrita">
+    <header><span>Comandos rápidos</span><kbd>↑↓ Enter</kbd></header>
+    <div class="nh-slash-list">
+      @for (shortcut of filteredPromptShortcuts(); track shortcut.id; let index = $index) {
+        <button type="button" role="option" [class.active]="index === slashActiveIndex" (mousedown)="$event.preventDefault()" (click)="executeSlashCommand(shortcut)"><i>{{ shortcut.icon }}</i><span><strong>/{{ shortcut.command }}</strong><small>{{ shortcut.label }}</small></span>@if (!shortcut.builtIn) { <b aria-label="Excluir atalho" title="Excluir atalho" (click)="deletePromptShortcut(shortcut, $event)">×</b> }</button>
+      } @empty { <p>Nenhum comando corresponde a “/{{ slashQuery }}”.</p> }
+    </div>
+    @if (shortcutEditorOpen) {
+      <div class="nh-shortcut-editor"><div><label>Comando<input [(ngModel)]="newShortcutCommand" placeholder="ex.: batalha" /></label><label>Nome<input [(ngModel)]="newShortcutLabel" placeholder="Planejar batalha" /></label></div><label>Prompt<textarea [(ngModel)]="newShortcutPrompt" placeholder="Descreva exatamente o que a IA deve gerar."></textarea></label><footer><button type="button" (click)="shortcutEditorOpen = false">Cancelar</button><button type="button" [disabled]="!newShortcutCommand.trim() || !newShortcutLabel.trim() || !newShortcutPrompt.trim()" (click)="savePromptShortcut()">Salvar atalho</button></footer></div>
+    } @else { <button type="button" class="nh-create-shortcut" (mousedown)="$event.preventDefault()" (click)="shortcutEditorOpen = true">＋ Criar meu atalho de prompt</button> }
+  </section>
+}
+
+@if (voicePanelOpen) {
+  <section class="nh-voice-note" aria-label="Anotação por voz">
+    <div class="nh-voice-header">
+      <div><strong>Anotação por voz</strong><small>Fale livremente, revise a transcrição e insira somente quando estiver pronta.</small></div>
+      <span [class.recording]="isListening">{{ isListening ? 'Ouvindo…' : 'Pausado' }}</span>
+    </div>
+    @if (speechSupported) {
+      <textarea
+        [(ngModel)]="voiceTranscript"
+        spellcheck="true"
+        lang="pt-BR"
+        placeholder="A transcrição aparecerá aqui…"
+        aria-label="Transcrição da anotação por voz"
+      ></textarea>
+      @if (voiceInterim) { <p class="nh-voice-interim">{{ voiceInterim }}</p> }
+      @if (voiceError) { <p class="nh-editor-warning" role="alert">{{ voiceError }}</p> }
+      <footer>
+        <button type="button" class="voice-record" [class.recording]="isListening" (click)="isListening ? stopVoiceNote() : startVoiceNote()">{{ isListening ? '■ Parar' : '● Gravar e transcrever' }}</button>
+        <button type="button" (click)="voiceTranscript = ''; voiceInterim = ''" [disabled]="!voiceTranscript && !voiceInterim">Limpar</button>
+        <button type="button" class="voice-insert" (click)="insertVoiceNote()" [disabled]="!voiceTranscript.trim()">Inserir no capítulo</button>
+      </footer>
+    } @else {
+      <p class="nh-voice-unavailable">Este dispositivo não disponibilizou transcrição por voz ao aplicativo. O editor continua disponível normalmente.</p>
+    }
+  </section>
+}
+
+@if (completionSuggestions.length) {
+  <div class="nh-autocomplete" role="listbox" aria-label="Sugestões de autocomplete">
+    <span>Tab para completar</span>
+    @for (suggestion of completionSuggestions; track suggestion.value; let index = $index) {
+      <button type="button" role="option" [class.active]="index === activeCompletionIndex" (mousedown)="$event.preventDefault()" (click)="applyCompletion(suggestion)">
+        @if (suggestion.kind === 'personagem') {
+          <i class="nh-suggestion-avatar" [style.background-image]="suggestion.image ? 'url(' + suggestion.image + ')' : null">{{ suggestion.image ? '' : suggestion.value.charAt(0).toUpperCase() }}</i>
+        } @else { <i>↗</i> }
+        <strong>{{ suggestion.value }}</strong><small>{{ suggestion.kind }}</small>
+      </button>
+    }
+  </div>
+}
+
+<div class="nh-document-scroll">
+  <article class="nh-document" aria-label="Página do capítulo">
+    <textarea
+      #titleInput
+      class="nh-chapter-title"
+      aria-label="Título do capítulo"
+      rows="1"
+      wrap="soft"
+      maxlength="240"
+      spellcheck="true"
+      lang="pt-BR"
+      [ngModel]="title"
+      (ngModelChange)="onTitleInput($event)"
+      (blur)="saveRequested.emit()"
+    ></textarea>
+    <div #editorHost class="nh-rich-editor"></div>
+  </article>
 </div>

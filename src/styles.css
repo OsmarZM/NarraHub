@@ -1,8 +1,7 @@
+@import './styles/ai.css';
+
 :root,
-html[data-theme='light'],
-html.light,
-body[data-theme='light'],
-body.light {
+:root[data-theme='light'] {
   --nh-bg: #f7f2e9;
   --nh-surface: #fffaf2;
   --nh-surface-muted: #f1e9df;
@@ -26,12 +25,7 @@ body.light {
   --nh-shadow-soft: 0 8px 24px rgba(64, 43, 32, .08);
 }
 
-:root[data-theme='dark'],
-html[data-theme='dark'],
-html.dark,
-body[data-theme='dark'],
-body.dark,
-[data-theme='dark'] {
+:root[data-theme='dark'] {
   --nh-bg: #17151a;
   --nh-surface: #201d22;
   --nh-surface-muted: #2a252b;
@@ -50,9 +44,7 @@ body.dark,
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']),
-  html:not([data-theme='light']),
-  body:not([data-theme='light']) {
+  :root:not([data-theme]) {
     --nh-bg: #17151a;
     --nh-surface: #201d22;
     --nh-surface-muted: #2a252b;

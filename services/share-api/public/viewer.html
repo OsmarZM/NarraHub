@@ -4,23 +4,20 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta name="referrer" content="no-referrer" />
-    <title>Conteúdo compartilhado · NarraHub</title>
+    <title>Sessão compartilhada · NarraHub</title>
     <link rel="stylesheet" href="/viewer.css" />
     <script type="module" src="/viewer.js"></script>
   </head>
   <body>
-    <header class="site-header"><span class="mark">N</span><strong>NarraHub</strong><small>Sessão temporária de leitura</small></header>
-    <main>
-      <section id="loading" class="state"><span></span><h1>Abrindo conteúdo protegido…</h1><p>A chave permanece no seu navegador.</p></section>
-      <section id="error" class="state" hidden><h1>Não foi possível abrir este conteúdo</h1><p id="error-message"></p></section>
-      <article id="document" hidden>
-        <p class="eyebrow">CONTEÚDO COMPARTILHADO</p>
-        <h1 id="title"></h1>
-        <p id="context" class="context"></p>
-        <div class="rule"></div>
-        <div id="content" class="content"></div>
-        <footer><span>Conteúdo descriptografado somente neste navegador.</span><time id="expiry"></time></footer>
-      </article>
-    </main>
+    <section id="loading" class="state"><span></span><h1>Abrindo sessão protegida…</h1><p>A chave permanece somente neste navegador.</p></section>
+    <section id="error" class="state" hidden><div class="mark">N</div><h1>Não foi possível abrir esta sessão</h1><p id="error-message"></p></section>
+    <div id="workspace" class="workspace" hidden>
+      <header class="topbar"><div class="brand"><span class="mark">N</span><strong>NarraHub</strong></div><div class="session-title"><b id="title"></b><small id="expiry"></small></div><div class="top-actions"><span id="permission" class="permission"></span><button id="conversation-button" type="button" class="icon-button">Anotações <b id="conversation-count">0</b></button></div></header>
+      <aside class="sidebar"><p class="eyebrow">UNIVERSOS</p><nav id="universe-nav"></nav><div class="sidebar-rule"></div><nav id="section-nav" class="section-nav"></nav><footer>Conteúdo descriptografado neste dispositivo.</footer></aside>
+      <main id="main" class="main"></main>
+      <aside id="conversation" class="conversation" aria-label="Conversa da sessão"><header><div><span class="eyebrow">CONVERSA</span><h2>Anotações por seção</h2></div><button id="conversation-close" type="button" class="icon-button" aria-label="Fechar">×</button></header><div class="identity"><label>Seu nome<input id="contributor-name" maxlength="60" placeholder="Como deseja aparecer" /></label></div><div id="conversation-feed" class="conversation-feed"></div></aside>
+    </div>
+    <dialog id="entity-dialog" class="sheet"><div id="entity-dialog-content"></div></dialog>
+    <dialog id="editor-dialog" class="sheet editor-sheet"><div id="editor-dialog-content"></div></dialog>
   </body>
 </html>

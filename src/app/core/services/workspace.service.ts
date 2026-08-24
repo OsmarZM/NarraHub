@@ -54,6 +54,16 @@ export class WorkspaceService {
     await this.db.execute('UPDATE planning_items SET status = $1, updated_at = $2 WHERE id = $3', [status, this.db.now(), id]);
   }
 
+  async reorderPlanning(status: PlanningStatus, itemIds: string[]): Promise<void> {
+    const now = this.db.now();
+    for (let index = 0; index < itemIds.length; index++) {
+      await this.db.execute(
+        'UPDATE planning_items SET status = $1, sort_order = $2, updated_at = $3 WHERE id = $4',
+        [status, index, now, itemIds[index]],
+      );
+    }
+  }
+
   async deletePlanning(id: string): Promise<void> {
     await this.db.execute('DELETE FROM planning_items WHERE id = $1', [id]);
   }

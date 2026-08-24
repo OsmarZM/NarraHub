@@ -28,9 +28,27 @@ test('rejeita conteúdo aberto ou expiração fora do contrato', () => {
   assert.throws(() => validateEnvelope({ ...envelope, ciphertext: '<script>alert(1)</script>' }), /cifrado/u);
 });
 
-test('visualizador aceita pacotes selecionados sem injetar HTML arbitrário', async () => {
+test('mantém contribuições cifradas em sequência e exige token', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'narrahub-collab-'));
+  try {
+    const store = new FileShareStore(directory);
+    await store.init();
+    const created = await store.create(envelope, 'token-colaboracao');
+    assert.equal(await store.appendContribution(created.id, 'token-incorreto', envelope), null);
+    const added = await store.appendContribution(created.id, 'token-colaboracao', envelope);
+    assert.equal(added.sequence, 1);
+    assert.equal((await store.listContributions(created.id, 0)).length, 1);
+    assert.equal((await store.listContributions(created.id, 1)).length, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('visualizador aceita workspaces colaborativos sem injetar HTML arbitrário', async () => {
   const viewer = await readFile(new URL('../public/viewer.js', import.meta.url), 'utf8');
-  assert.match(viewer, /payload\.version === 2 && payload\.kind === 'bundle'/u);
-  assert.match(viewer, /const allowed = new Set/u);
+  assert.match(viewer, /payload\.version === 3 && payload\.kind === 'workspace'/u);
+  assert.match(viewer, /contributionKind/u);
+  assert.match(viewer, /X-NarraHub-Contribution-Token/u);
+  assert.match(viewer, /const allowed\s*=\s*new Set/u);
   assert.doesNotMatch(viewer, /\.innerHTML\s*=/u);
 });

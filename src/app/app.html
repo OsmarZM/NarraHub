@@ -57,9 +57,17 @@
         <section class="center-state"><div class="loader"></div><p>Abrindo seu workspace local...</p></section>
       } @else if (activeNav() === 'configuracoes') {
         <section class="feature-page settings-page page-enter">
-          <header class="feature-heading"><div><span class="eyebrow">PREFERÊNCIAS</span><h1>Configurações</h1><p>Personalize o NarraHub e conecte seus dispositivos.</p></div></header>
-          <div class="settings-grid">
-            <article class="surface-card">
+          <header class="feature-heading"><div><span class="eyebrow">PREFERÊNCIAS</span><h1>Configurações</h1><p>Escolha uma área para ajustar sem misturar recursos diferentes.</p></div></header>
+          <div class="settings-shell">
+            <nav class="settings-nav" aria-label="Seções das configurações">
+              <button type="button" [class.active]="settingsSection() === 'general'" (click)="selectSettingsSection('general')"><span>◐</span><strong>Geral</strong><small>Aparência</small></button>
+              <button type="button" [class.active]="settingsSection() === 'ai'" (click)="selectSettingsSection('ai')"><span>✦</span><strong>Inteligência</strong><small>Modelo e memória</small></button>
+              <button type="button" [class.active]="settingsSection() === 'sync'" (click)="selectSettingsSection('sync')"><span>⇄</span><strong>Dispositivos</strong><small>Sincronização</small></button>
+              <button type="button" [class.active]="settingsSection() === 'share'" (click)="selectSettingsSection('share')"><span>↗</span><strong>Compartilhar</strong><small>Links temporários</small></button>
+              <button type="button" [class.active]="settingsSection() === 'updates'" (click)="selectSettingsSection('updates')"><span>⇧</span><strong>Atualizações</strong><small>Versão instalada</small></button>
+            </nav>
+            <div class="settings-grid">
+            <article class="surface-card" [hidden]="settingsSection() !== 'general'">
               <div class="card-icon">◐</div><h2>Aparência</h2><p>O tema é aplicado imediatamente e fica salvo neste dispositivo.</p>
               <div class="theme-picker" role="group" aria-label="Tema">
                 <button type="button" [class.active]="theme.preference() === 'light'" (click)="setTheme('light')"><span>☀</span>Claro</button>
@@ -68,13 +76,95 @@
               </div>
             </article>
 
-            <article class="surface-card sync-card">
+            <article class="surface-card settings-wide-card ai-settings-card" [hidden]="settingsSection() !== 'ai'">
+              <div class="card-head"><div><div class="card-icon">✦</div><h2>Inteligência local</h2></div><span class="status-badge" [class.online]="ai.localStatus().state === 'ready'" [class.error]="ai.localStatus().state === 'error'">@switch (ai.localStatus().state) { @case ('ready') { Disponível } @case ('installing') { Instalando } @case ('starting') { Iniciando } @case ('error') { Atenção } @default { {{ ai.localStatus().installed ? 'Instalada' : 'Não instalada' }} } }</span></div>
+              <p>O NarraHub gerencia um motor privado para escrita. Ele inicia com o aplicativo, recebe somente o contexto necessário e libera o modelo da memória após alguns minutos sem uso.</p>
+              <div class="ai-recommendation-hero">
+                <div><span>RECOMENDADA PARA ESTE COMPUTADOR</span><strong>{{ ai.localStatus().recommended.name }}</strong><p>{{ aiRecommendationReason() }}</p></div>
+                <button type="button" class="primary-button" (click)="useRecommendedAi()">{{ ai.localStatus().installed ? 'Usar recomendada' : 'Ver instalação recomendada' }}</button>
+              </div>
+              <div class="ai-mode-picker" role="group" aria-label="Modo da inteligência artificial">
+                <button type="button" [class.active]="aiMode === 'off'" (click)="setAiMode('off')">Desativada</button>
+                <button type="button" [class.active]="aiMode === 'local'" (click)="setAiMode('local')">Neste computador</button>
+                <button type="button" [class.active]="aiMode === 'custom'" (click)="setAiMode('custom')">API própria</button>
+              </div>
+              @if (aiMode === 'local') {
+                <section class="local-ai-manager" aria-live="polite">
+                  <div class="ai-device-summary">
+                    <div><small>ANÁLISE DO DISPOSITIVO</small><strong>{{ ai.localStatus().hardware.score || '—' }}<span>/100</span></strong></div>
+                    <dl>
+                      <div><dt>Memória</dt><dd>{{ ai.localStatus().hardware.totalMemoryGb || '—' }} GB</dd></div>
+                      <div><dt>CPU</dt><dd>{{ ai.localStatus().hardware.logicalCores }} processadores</dd></div>
+                      <div><dt>GPU</dt><dd>{{ ai.localStatus().hardware.gpu || 'Não identificada' }}</dd></div>
+                      <div><dt>Espaço livre</dt><dd>{{ ai.localStatus().hardware.availableStorageGb || '—' }} GB</dd></div>
+                    </dl>
+                  </div>
+
+                  <div class="ai-runtime-state" [class.online]="ai.localStatus().state === 'ready'" [class.error]="ai.localStatus().state === 'error'">
+                    <i></i><span><strong>@if (ai.localStatus().state === 'ready') { Pronta para escrever } @else if (ai.localStatus().state === 'starting') { Inicializando o motor local } @else if (ai.localStatus().state === 'installing') { Instalando com sua autorização } @else if (ai.localStatus().state === 'error') { O motor precisa de atenção } @else if (ai.localStatus().installed) { Instalada neste computador } @else { Instalação necessária }</strong><small>{{ ai.localStatus().message }}</small></span>
+                  </div>
+
+                  @if (ai.installProgress(); as progress) {
+                    <div class="ai-install-progress">
+                      <div><span>{{ progress.message }}</span><b>{{ progress.percent }}%</b></div>
+                      <div class="ai-progress-track" role="progressbar" [attr.aria-valuenow]="progress.percent" aria-valuemin="0" aria-valuemax="100"><i [style.width.%]="progress.percent"></i></div>
+                      @if (progress.totalBytes) { <small>{{ formatAiSize(progress.downloadedBytes) }} de {{ formatAiSize(progress.totalBytes) }}</small> }
+                    </div>
+                  } @else if (!ai.localStatus().installed) {
+                    <div class="ai-consent-callout">
+                      <span>PRIMEIRA UTILIZAÇÃO</span>
+                      <strong>Nada será baixado sem sua permissão</strong>
+                      <p>Ao continuar, o NarraHub baixa o motor llama.cpp e um perfil de escrita verificado. Os arquivos ficam somente neste dispositivo e podem ocupar o espaço indicado.</p>
+                    </div>
+                    <div class="ai-profile-options" role="radiogroup" aria-label="Perfil da inteligência local">
+                      @for (profile of ai.localStatus().profiles; track profile.id) {
+                        <button type="button" role="radio" [attr.aria-checked]="aiSelectedProfile === profile.id" [class.selected]="aiSelectedProfile === profile.id" [class.recommended]="ai.localStatus().recommended.id === profile.id" [disabled]="aiInstallBusy() || (!!ai.localStatus().hardware.totalMemoryGb && profile.minimumMemoryGb > ai.localStatus().hardware.totalMemoryGb)" (click)="aiSelectedProfile = profile.id">
+                          <span>@if (ai.localStatus().recommended.id === profile.id) { RECOMENDADO } @else { {{ profile.id === 'lite' ? 'LEVE' : profile.id === 'advanced' ? 'MAIS QUALIDADE' : 'EQUILIBRADO' }} }</span>
+                          <strong>{{ profile.name }}</strong>
+                          <p>{{ profile.description }}</p>
+                          <small>{{ formatAiSize(profile.downloadBytes) }} · {{ profile.useCases.join(' · ') }}</small>
+                        </button>
+                      }
+                    </div>
+                    <button type="button" class="primary-button ai-install-button" [disabled]="aiInstallBusy() || !ai.localStatus().supported" (click)="installLocalAi(aiSelectedProfile)">{{ aiInstallBusy() ? 'Preparando instalação…' : 'Permitir e instalar ' + formatAiSize(selectedAiProfile().downloadBytes) }}</button>
+                    <small class="security-note">Download por HTTPS com verificação SHA-256. O nome técnico do modelo fica oculto porque o NarraHub escolhe e gerencia essa parte.</small>
+                  } @else {
+                    <div class="ai-installed-profile">
+                      <span>PERFIL INSTALADO</span>
+                      <strong>{{ installedAiProfile().name }}</strong>
+                      <p>O processo inicia junto com o NarraHub. O modelo só trabalha quando você usa uma ação de IA e entra em repouso após 5 minutos.</p>
+                      <div>
+                        @if (!ai.localStatus().running) { <button type="button" class="primary-button" [disabled]="aiInstallBusy()" (click)="activateLocalAi()">Iniciar agora</button> }
+                        <button type="button" class="secondary-button" [disabled]="aiInstallBusy()" (click)="restartLocalAi()">Reiniciar em modo seguro</button>
+                      </div>
+                    </div>
+                  }
+                  @if (aiInstallError()) { <div class="ai-install-error" role="alert"><strong>Não foi possível concluir</strong><span>{{ aiInstallError() }}</span></div> }
+                </section>
+              } @else if (aiMode === 'custom') {
+                <div class="field-row ai-fields">
+                  <label class="field-label">Endpoint compatível<input [(ngModel)]="aiEndpoint" placeholder="http://127.0.0.1:8080/v1" autocomplete="url" /></label>
+                  <label class="field-label">Modelo<input [(ngModel)]="aiModel" placeholder="nome-do-modelo" autocomplete="off" /></label>
+                </div>
+                <label class="field-label">Chave da API <span>(mantida somente nesta sessão)</span><input type="password" [(ngModel)]="aiApiKey" placeholder="Não será salva no banco" autocomplete="off" /></label>
+                <button type="button" class="secondary-button" (click)="saveAiSettings()">Usar esta API</button>
+              }
+              @if (aiMode !== 'local') { <small class="security-note">A IA local permanece neste computador. APIs remotas precisam usar HTTPS.</small> }
+              <section class="ai-creative-profile">
+                <header><div><span>CONTEXTO CRIATIVO LOCAL</span><strong>Como a IA deve colaborar com você?</strong></div><small>{{ aiMemoryCount() }} decisão(ões) aceita(s) neste universo</small></header>
+                <textarea [(ngModel)]="aiWriterGuidance" maxlength="2000" placeholder="Ex.: Prefiro nomes curtos, conflitos moralmente ambíguos e desenvolvimento gradual. Evite soluções convenientes."></textarea>
+                <div><button type="button" class="secondary-button" (click)="saveWriterGuidance()">Salvar orientações</button><button type="button" class="text-button danger-outline" [disabled]="!aiMemoryCount()" (click)="clearAiLearning()">Esquecer decisões deste universo</button></div>
+                <p>O NarraHub combina essas orientações com as fichas, relações e decisões que você aceitou. Ele não treina o modelo nem envia o universo inteiro.</p>
+              </section>
+            </article>
+
+            <article class="surface-card sync-card" [hidden]="settingsSection() !== 'sync'">
               <div class="card-icon">⌁</div><h2>Este dispositivo</h2><p>Nome mostrado durante o pareamento na mesma rede Wi-Fi.</p>
               <label class="field-label">Nome do dispositivo<input [(ngModel)]="deviceName" maxlength="60" /></label>
               <button type="button" class="secondary-button" (click)="saveDeviceName()">Salvar nome</button>
             </article>
 
-            <article class="surface-card sync-host-card">
+            <article class="surface-card sync-host-card" [hidden]="settingsSection() !== 'sync'">
               <div class="card-head"><div><div class="card-icon">⇄</div><h2>Receber sincronização</h2></div><span class="status-badge" [class.online]="syncStatus().running">{{ syncStatus().running ? 'Disponível' : 'Desativado' }}</span></div>
               <p>Deixe esta tela aberta e informe o endereço e código ao outro dispositivo.</p>
               @if (syncStatus().running) {
@@ -86,15 +176,15 @@
               <small class="security-note">Use apenas em uma rede Wi-Fi privada. O código muda a cada sessão.</small>
             </article>
 
-            <article class="surface-card sync-connect-card">
+            <article class="surface-card sync-connect-card" [hidden]="settingsSection() !== 'sync'">
               <div class="card-icon">⌁</div><h2>Conectar a outro dispositivo</h2><p>Digite os dados exibidos no computador ou celular que receberá a conexão.</p>
               <div class="field-row"><label class="field-label">Endereço<input [(ngModel)]="remoteAddress" placeholder="192.168.0.10:41337" /></label><label class="field-label code-field">Código<input [(ngModel)]="pairingCode" inputmode="numeric" maxlength="6" placeholder="000000" /></label></div>
               <button type="button" class="primary-button" [disabled]="syncBusy() || !remoteAddress.trim() || pairingCode.trim().length !== 6" (click)="connectSync()">Sincronizar agora</button>
             </article>
 
-            <article class="surface-card settings-wide-card">
-              <div class="card-head"><div><div class="card-icon">↗</div><h2>Compartilhamento temporário</h2></div><span class="status-badge" [class.online]="shareSession().running">{{ shareSession().running ? 'Online agora' : 'Desativado' }}</span></div>
-              <p>O NarraHub abre um endereço Cloudflare somente durante esta sessão. Você escolhe os itens; o link para de funcionar ao encerrar ou fechar o aplicativo.</p>
+            <article class="surface-card settings-wide-card" [hidden]="settingsSection() !== 'share'">
+              <div class="card-head"><div><div class="card-icon">↗</div><h2>Sessões colaborativas</h2></div><span class="status-badge" [class.online]="shareSession().running">{{ shareSession().running ? 'Online agora' : 'Desativado' }}</span></div>
+              <p>Compartilhe um ou mais universos para leitura, anotações ou propostas de edição. O texto local só muda quando você aprova.</p>
               @if (shareSession().running) {
                 <div class="share-session-panel"><span><small>Endereço temporário</small><strong>{{ shareSession().publicUrl }}</strong></span><span><small>Links ativos</small><b>{{ shareSession().shareCount }}</b></span></div>
                 <button type="button" class="secondary-button danger-outline" [disabled]="shareBusy()" (click)="stopOnlineShareSession()">Encerrar e invalidar todos os links</button>
@@ -102,16 +192,45 @@
                 <button type="button" class="primary-button" [disabled]="shareBusy()" (click)="startOnlineShareSession()">{{ shareBusy() ? 'Abrindo túnel…' : 'Disponibilizar temporariamente' }}</button>
               }
               @if (onlineShares().length) {
-                <div class="share-history"><strong>Links criados neste dispositivo</strong>
+                <div class="share-history"><strong>Links ativos neste dispositivo</strong>
                   @for (share of onlineShares(); track share.id) {
-                    <div class="share-history-row"><span><b>{{ share.title }}</b><small>Expira em {{ formatDate(share.expiresAt) }}</small></span><button type="button" class="text-button danger-outline" [disabled]="shareBusy()" (click)="revokeOnlineShare(share)">Revogar</button></div>
+                    <div class="share-history-row"><span><b>{{ share.title }}</b><small>{{ sharePermissionLabel(share.permission) }} · expira em {{ formatDate(share.expiresAt) }}</small></span><button type="button" class="text-button danger-outline" [disabled]="shareBusy()" (click)="revokeOnlineShare(share)">Revogar</button></div>
                   }
                 </div>
               }
-              <div class="security-callout"><strong>Criptografia de ponta a ponta para leitura.</strong><span>Somente o conteúdo cifrado passa pelo túnel. A chave fica depois de <code>#k=</code> no link e não é enviada ao servidor.</span></div>
+              <div class="security-callout"><strong>Conteúdo e contribuições cifrados de ponta a ponta.</strong><span>A chave fica depois de <code>#k=</code> no link. Edições recebidas entram numa fila local de revisão, nunca direto nos textos.</span></div>
+
+              <section class="collaboration-review">
+                <header><div><span class="eyebrow">REVISÃO LOCAL</span><h3>Alterações e anotações</h3></div><span class="review-count">{{ pendingCollaborationCount() }} pendente(s)</span></header>
+                @if (collaborationSessions().length) {
+                  <div class="collaboration-layout">
+                    <nav class="collaboration-sessions" aria-label="Sessões compartilhadas">
+                      @for (session of collaborationSessions(); track session.id) {
+                        <button type="button" [class.active]="selectedCollaborationSessionId() === session.id" (click)="selectCollaborationSession(session.id)">
+                          <strong>{{ session.title }}</strong><small>{{ sharePermissionLabel(session.permission) }} · {{ session.status === 'active' ? 'ativa' : 'encerrada' }}</small>
+                          <span>{{ session.pending_count || 0 }} edição(ões) · {{ session.note_count || 0 }} nota(s)</span>
+                        </button>
+                      }
+                    </nav>
+                    <div class="collaboration-feed">
+                      @if (selectedCollaborationSessionId(); as sessionId) {
+                        @if (selectedCollaborationHasPending()) { <button type="button" class="primary-button small approve-all" (click)="approveAllCollaboration(sessionId)">Aprovar todas as pendentes</button> }
+                        @for (item of selectedCollaborationContributions(); track item.id) {
+                          <article class="contribution-card" [class.note]="item.kind === 'note'" [class.reviewed]="item.status === 'approved' || item.status === 'rejected'">
+                            <header><span><b>{{ item.contributor }}</b><small>{{ item.target_label }} · {{ item.kind === 'note' ? 'anotação' : contributionFieldLabel(item.field) }}</small></span><em [class.approved]="item.status === 'approved'" [class.rejected]="item.status === 'rejected'">{{ item.status === 'pending' ? 'Aguardando revisão' : item.status === 'noted' ? 'Anotação' : item.status === 'approved' ? 'Aprovada' : 'Rejeitada' }}</em></header>
+                            @if (item.kind === 'note') { <p>{{ item.message }}</p> }
+                            @else { <div class="contribution-diff"><div><small>Antes</small><pre>{{ item.original_value }}</pre></div><div><small>Proposta</small><pre>{{ item.proposed_value }}</pre></div></div> }
+                            @if (item.status === 'pending') { <footer><button type="button" class="secondary-button danger-outline" (click)="reviewCollaboration(item, 'rejected')">Rejeitar</button><button type="button" class="primary-button" (click)="reviewCollaboration(item, 'approved')">Aprovar e aplicar</button></footer> }
+                          </article>
+                        } @empty { <div class="review-empty"><strong>Nenhuma contribuição nesta sessão</strong><p>As anotações e propostas aparecerão aqui enquanto o link estiver ativo.</p></div> }
+                      }
+                    </div>
+                  </div>
+                } @else { <div class="review-empty"><strong>Nenhuma sessão compartilhada</strong><p>Crie um link colaborativo para começar uma revisão com leitores ou coautores.</p></div> }
+              </section>
             </article>
 
-            <article class="surface-card settings-wide-card update-card">
+            <article class="surface-card settings-wide-card update-card" [hidden]="settingsSection() !== 'updates'">
               <div class="card-head"><div><div class="card-icon">⇧</div><h2>Atualizações do aplicativo</h2></div><span class="status-badge" [class.online]="updatePhase() === 'current'">v{{ updateInfo().currentVersion }}</span></div>
               @if (updatePhase() === 'available') {
                 <h3>Versão {{ updateInfo().availableVersion }} disponível</h3><p>{{ updateInfo().notes || 'Nova versão assinada disponível no canal oficial.' }}</p>
@@ -125,6 +244,7 @@
               }
               <small class="security-note">Uma atualização só é instalada depois que a assinatura Tauri é validada. Push comum no GitHub não atualiza aplicativos instalados.</small>
             </article>
+            </div>
           </div>
         </section>
       } @else if (appState.currentView() === 'home') {
@@ -142,8 +262,9 @@
           <header class="workspace-header">
             <div class="breadcrumb"><button type="button" (click)="selectNav(navItems[0])">Universos</button><span>/</span><strong>{{ appState.activeUniverse()?.name }}</strong>@if (activeStory() && activeNav() === 'escrita') { <span>/</span><span>{{ activeStory()?.name }}</span> }</div>
             <div class="workspace-actions"><span class="save-state" [class.saving]="isSaving()"><i></i>{{ saveMessage() || 'Banco local conectado' }}</span>
+              @if (appState.activeUniverse(); as activeUniverse) { <button type="button" class="secondary-button metadata-button" title="Tags do universo" (click)="openMetadata('universe', activeUniverse.id, activeUniverse.name)"># Tags</button> }
               <button type="button" class="secondary-button" (click)="openShareModal()">↗ Compartilhar</button>
-              @if (appState.workspaceView() === 'editor') { <button type="button" class="secondary-button" (click)="appState.openModal('new-chapter')" [disabled]="!activeBook()">＋ Capítulo</button> }
+              @if (appState.workspaceView() === 'editor') { <button type="button" class="secondary-button" [class.active]="inspectorOpen()" [disabled]="!activeChapter()" (click)="toggleInspector()">{{ inspectorOpen() ? 'Ocultar resumo' : 'Resumo do capítulo' }}</button><button type="button" class="secondary-button" (click)="appState.openModal('new-chapter')" [disabled]="!activeBook()">＋ Capítulo</button> }
               @else if (appState.workspaceView() === 'entities' && appState.sidebarEntityFilter()) { <button type="button" class="primary-button small" (click)="beginCreateEntity()">＋ {{ entityCreateLabel() }}</button> }
               @else if (appState.workspaceView() === 'graph') { <button type="button" class="primary-button small" (click)="appState.openModal('new-relation')" [disabled]="entities().length < 2">＋ Conexão</button> }
               @else if (appState.workspaceView() === 'timeline') { <button type="button" class="primary-button small" (click)="appState.openModal('new-timeline')">＋ Evento</button> }
@@ -152,20 +273,20 @@
           </header>
 
           @if (appState.workspaceView() === 'editor') {
-            <div class="writing-layout">
+            <div class="writing-layout" [class.inspector-open]="inspectorOpen()">
               <aside class="project-tree">
                 <div class="panel-heading"><div><span class="eyebrow">PROJETO</span><h2>Livros e capítulos</h2></div><button type="button" aria-label="Nova história" (click)="appState.openModal('new-story')">＋</button></div>
                 @if (stories().length === 0) { <div class="tree-empty"><p>Nenhuma história criada.</p><button type="button" class="text-button" (click)="appState.openModal('new-story')">＋ Criar história</button></div> }
                 @for (story of stories(); track story.id) {
-                  <div class="tree-story-row" [class.selected]="activeStory()?.id === story.id"><button type="button" class="tree-expander" [attr.aria-expanded]="isStoryExpanded(story.id)" (click)="toggleStory(story, $event)"><span [class.expanded]="isStoryExpanded(story.id)">›</span></button><button type="button" class="tree-story" (click)="selectStory(story)"><span class="folder-icon">▰</span><strong>{{ story.name }}</strong><small>{{ booksForStory(story.id).length }}</small></button></div>
+                  <div class="tree-story-row" [class.selected]="activeStory()?.id === story.id"><button type="button" class="tree-expander" [attr.aria-expanded]="isStoryExpanded(story.id)" (click)="toggleStory(story, $event)"><span [class.expanded]="isStoryExpanded(story.id)">›</span></button><button type="button" class="tree-story" [title]="story.name" (click)="selectStory(story)"><span class="folder-icon">▰</span><strong>{{ story.name }}</strong><small>{{ booksForStory(story.id).length }}</small></button><button type="button" class="tree-meta" aria-label="Tags da história" title="Tags" (click)="openMetadata('story', story.id, story.name, $event)">#</button><button type="button" class="tree-delete" aria-label="Excluir história" title="Excluir história" (click)="requestDelete('story', story.id, story.name, $event)">×</button></div>
                   @if (isStoryExpanded(story.id)) {
                     <div class="tree-children">
                       @for (book of booksForStory(story.id); track book.id) {
-                        <div class="tree-book-row" [class.selected]="activeBook()?.id === book.id"><button type="button" class="tree-expander book" [attr.aria-expanded]="isBookExpanded(book.id)" (click)="toggleBook(book, $event)"><span [class.expanded]="isBookExpanded(book.id)">›</span></button><button type="button" class="tree-book" (click)="openBookOption(book)"><span class="book-icon" [style.background-image]="book.cover_image ? 'url(' + book.cover_image + ')' : null">{{ book.cover_image ? '' : '▱' }}</span><span class="tree-book-copy"><strong>{{ book.name }}</strong><small>{{ chaptersForBook(book.id).length }} capítulo(s)</small></span></button></div>
+                        <div class="tree-book-row" [class.selected]="activeBook()?.id === book.id"><button type="button" class="tree-expander book" [attr.aria-expanded]="isBookExpanded(book.id)" (click)="toggleBook(book, $event)"><span [class.expanded]="isBookExpanded(book.id)">›</span></button><button type="button" class="tree-book" [title]="book.name" (click)="openBookOption(book)"><span class="book-icon" [style.background-image]="book.cover_image ? 'url(' + book.cover_image + ')' : null">{{ book.cover_image ? '' : '▱' }}</span><span class="tree-book-copy"><strong>{{ book.name }}</strong><small>{{ chaptersForBook(book.id).length }} capítulo(s)</small></span></button><button type="button" class="tree-meta" aria-label="Tags do livro" title="Tags" (click)="openMetadata('book', book.id, book.name, $event)">#</button><button type="button" class="tree-delete" aria-label="Excluir livro" title="Excluir livro" (click)="requestDelete('book', book.id, book.name, $event)">×</button></div>
                         @if (isBookExpanded(book.id)) {
                           <div class="chapter-list" cdkDropList [cdkDropListData]="chaptersForBook(book.id)" (cdkDropListDropped)="dropTreeChapter($event, book)">
                             @for (chapter of chaptersForBook(book.id); track chapter.id; let first = $first; let last = $last) {
-                              <button type="button" cdkDrag [cdkDragData]="chapter" [class.selected]="activeChapter()?.id === chapter.id" (click)="selectTreeChapter(chapter)"><span class="drag-handle" cdkDragHandle>⠿</span><span class="doc-icon">▤</span><span class="chapter-copy"><strong>{{ chapter.title }}</strong><small>{{ chapter.word_count }} palavras</small></span><span class="reorder"><i [class.disabled]="first" (click)="moveTreeChapter(chapter, -1, $event)">↑</i><i [class.disabled]="last" (click)="moveTreeChapter(chapter, 1, $event)">↓</i></span></button>
+                              <div class="tree-chapter-row" cdkDrag [cdkDragData]="chapter" [class.selected]="activeChapter()?.id === chapter.id"><button type="button" class="tree-chapter" [title]="chapter.title" (click)="selectTreeChapter(chapter)"><span class="drag-handle" cdkDragHandle>⠿</span><span class="doc-icon">▤</span><span class="chapter-copy"><strong>{{ chapter.title }}</strong><small>{{ chapter.word_count }} palavras</small></span><span class="reorder"><i [class.disabled]="first" (click)="moveTreeChapter(chapter, -1, $event)">↑</i><i [class.disabled]="last" (click)="moveTreeChapter(chapter, 1, $event)">↓</i></span></button><button type="button" class="tree-meta" aria-label="Tags do capítulo" title="Tags" (click)="openMetadata('chapter', chapter.id, chapter.title, $event)">#</button><button type="button" class="tree-delete" aria-label="Excluir capítulo" title="Excluir capítulo" (click)="requestDelete('chapter', chapter.id, chapter.title, $event)">×</button></div>
                             }
                             @if (activeBook()?.id === book.id) { <button type="button" class="add-tree-item" (click)="appState.openModal('new-chapter')">＋ Novo capítulo</button> }
                           </div>
@@ -182,21 +303,27 @@
                 @else if (!activeBook()) { <section class="editor-empty"><span class="empty-icon">▱</span><h2>{{ activeStory()?.name }}</h2><p>Esta história ainda não tem livros.</p><button type="button" class="primary-button" (click)="appState.openModal('new-book')">Criar primeiro livro</button></section> }
                 @else if (!activeChapter()) { <section class="editor-empty"><span class="empty-icon">▤</span><h2>{{ activeBook()?.name }}</h2><p>Este livro ainda não tem capítulos.</p><button type="button" class="primary-button" (click)="appState.openModal('new-chapter')">Criar primeiro capítulo</button></section> }
                 @else {
-                  <app-writing-editor [title]="editorTitle()" [content]="editorContent()" [saveMessage]="saveMessage()" [focusMode]="isFocusMode()" (titleChange)="onTitleInput($event)" (contentChange)="onEditorInput($event)" (saveRequested)="saveChapterNow()" (focusModeChange)="isFocusMode.set($event)" (fullscreenRequested)="toggleFullscreen()" />
+                  <app-writing-editor [title]="editorTitle()" [content]="editorContent()" [saveMessage]="saveMessage()" [focusMode]="isFocusMode()" [characters]="characterEntities()" [aiEnabled]="ai.enabled()" [aiBusy]="aiBusy()" [aiResponse]="aiResponse()" [aiError]="aiError()" (titleChange)="onTitleInput($event)" (contentChange)="onEditorInput($event)" (saveRequested)="saveChapterNow()" (focusModeChange)="isFocusMode.set($event)" (fullscreenRequested)="toggleFullscreen()" (assistantRequested)="openAiAssistant($event)" (assistantApply)="applyAiResponse($event)" (assistantDismissed)="clearAiAssistant()" />
                   <footer class="editor-status"><span>{{ formatNumber(wordCount()) }} palavras</span><span>{{ formatNumber(editorContent().length) }} caracteres</span><span>~{{ Math.ceil(wordCount() / 220) || 0 }} min de leitura</span><span class="save-state"><i></i>{{ saveMessage() }}</span></footer>
                 }
               </article>
-              <app-contextual-inspector class="writing-inspector" label="Visão geral do livro">
-                <span class="eyebrow">VISÃO GERAL</span><h3>{{ activeBook()?.name || 'Livro' }}</h3>
-                @if (activeBook()) { <label class="book-cover-picker" [style.background-image]="activeBook()?.cover_image ? 'url(' + activeBook()?.cover_image + ')' : null"><input type="file" accept="image/*" hidden (change)="onBookCoverSelected($event, activeBook()!)" /><span>{{ activeBook()?.cover_image ? 'Trocar capa' : '＋ Adicionar capa do livro' }}</span></label> }
-                <div class="inspector-stat"><span>Capítulos</span><strong>{{ chapters().length }}</strong></div><div class="inspector-stat"><span>Palavras no livro</span><strong>{{ formatNumber(wordCount() + chapters().filter(c => c.id !== activeChapter()?.id).reduce((sum, c) => sum + c.word_count, 0)) }}</strong></div>
-                <section class="character-presence"><header><strong>Personagens na obra</strong><span>{{ writingCharacters().length }}</span></header>
+              @if (inspectorOpen() && activeChapter()) {
+              <app-contextual-inspector class="writing-inspector" label="Resumo e contexto do capítulo">
+                <header class="inspector-title"><div><span class="eyebrow">CAPÍTULO ATUAL</span><h3>Resumo e contexto</h3></div><button type="button" aria-label="Recolher painel" title="Recolher painel" (click)="toggleInspector()">×</button></header>
+                <label class="chapter-summary-label"><span>Resumo do capítulo</span><textarea [ngModel]="chapterSummary()" (ngModelChange)="onChapterSummaryInput($event)" (blur)="saveChapterNow()" placeholder="Registre o que acontece, a mudança e o gancho deste capítulo."></textarea></label>
+                <button type="button" class="summary-ai-button" [disabled]="!ai.enabled() || aiBusy()" (click)="summarizeChapterWithAi()">{{ aiBusy() ? 'Resumindo…' : '✦ Gerar resumo com IA' }}</button>
+                @if (chapterTags().length) { <div class="inspector-tags">@for (tag of chapterTags(); track tag.id) { <span [style.--tag-color]="tag.color">{{ tag.name }}</span> }</div> }
+                <div class="scene-route"><label>De onde<input [ngModel]="chapterField('Origem da cena')" (blur)="updateChapterContext('Origem da cena', $any($event.target).value)" placeholder="Lugar de origem" /></label><span>→</span><label>Para onde<input [ngModel]="chapterField('Destino da cena')" (blur)="updateChapterContext('Destino da cena', $any($event.target).value)" placeholder="Lugar de destino" /></label></div>
+                <section class="inspector-places"><header><strong>Lugares mencionados</strong><span>{{ writingPlaces().length }}</span></header>@for (place of writingPlaces(); track place.id) { <button type="button" (click)="activeNav.set('entidades'); selectEntityTab('Lugar'); openEntitySheet(place)">{{ place.name }}</button> } @empty { <p>Nenhum lugar cadastrado foi mencionado.</p> }</section>
+                <section class="character-presence"><header><strong>Personagens e falas</strong><span>{{ writingCharacters().length }}</span></header>
                   @for (insight of writingCharacters(); track insight.entity.id) {
                     <article [class.current]="insight.mentionedInCurrent"><button type="button" class="character-avatar" [style.background-image]="insight.entity.image ? 'url(' + insight.entity.image + ')' : null" (click)="activeNav.set('entidades'); selectEntityTab('Personagem'); openEntitySheet(insight.entity)">{{ insight.entity.image ? '' : insight.entity.name.charAt(0).toUpperCase() }}</button><div><strong>{{ insight.entity.name }}</strong>@if (insight.firstOccurrence) { <small>Primeira aparição: {{ insight.firstOccurrence.chapter_title }}</small> } @else { <small>Aparece neste rascunho</small> }@for (dialogue of insight.dialogueSnippets; track dialogue) { <blockquote>{{ dialogue }}</blockquote> }</div></article>
                   } @empty { <p>Personagens mencionados serão identificados pelo nome enquanto você escreve.</p> }
                 </section>
-                <div class="inspector-note"><strong>Índice automático</strong><p>Menções e falas prováveis são extraídas do texto salvo, sem inventar conteúdo.</p></div>
+                <button type="button" class="metadata-panel-button" (click)="openMetadata('chapter', activeChapter()!.id, activeChapter()!.title)"># Organizar tags</button>
+                <div class="inspector-note"><strong>Índice automático</strong><p>Personagens, lugares e falas prováveis são extraídos do texto salvo, sem inventar conteúdo.</p></div>
               </app-contextual-inspector>
+              }
             </div>
           } @else if (appState.workspaceView() === 'entities' || appState.workspaceView() === 'entity-sheet') {
             <div class="feature-page entity-view">
@@ -208,7 +335,8 @@
                   <div class="sheet-topbar">
                     <button type="button" class="text-button" (click)="appState.openEntityList(appState.sidebarEntityFilter())">← Voltar para lista</button>
                     <div class="sheet-actions">
-                      <button type="button" class="secondary-button small" (click)="addAttributeToActiveEntity()">＋ Adicionar propriedade</button>
+                      <button type="button" class="secondary-button small" (click)="openMetadata('entity', activeEntity()!.id, activeEntity()!.name)"># Tags</button>
+                      <button type="button" class="secondary-button small danger-outline" (click)="requestDelete('entity', activeEntity()!.id, activeEntity()!.name)">Excluir entidade</button>
                       <button type="button" class="primary-button small" (click)="updateActiveEntity()">Salvar ficha</button>
                     </div>
                   </div>
@@ -251,14 +379,23 @@
                       </label>
                     </div>
                     <input class="notion-title-input" placeholder="Nome do personagem..." aria-label="Nome" [ngModel]="activeEntity()?.name" (ngModelChange)="patchActiveEntity('name', $event)" />
+                    @if (entityTags().length) { <div class="entity-sheet-tags">@for (tag of entityTags(); track tag.id) { <span [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</span> }</div> }
                   </div>
+
+                  <section class="entity-summary-section">
+                    <header><div><span class="eyebrow">RESUMO DA ENTIDADE</span><small>Visão rápida separada das suas notas de desenvolvimento.</small></div><button type="button" class="secondary-button small" [disabled]="entityAiBusy()" (click)="summarizeActiveEntityWithAi()">✦ Gerar resumo</button></header>
+                    <textarea [ngModel]="activeEntity()?.summary" (ngModelChange)="patchActiveEntity('summary', $event)" placeholder="Resuma identidade, papel narrativo e conflito central."></textarea>
+                  </section>
 
                   <!-- Tabela de Propriedades Estilo Notion -->
                   <section class="notion-properties-section">
                     <div class="notion-section-title">
-                      <span class="eyebrow">PROPRIEDADES DA FICHA</span>
-                      <small>Campos e características estruturadas</small>
+                      <div><span class="eyebrow">CAMPOS DA FICHA</span><small>Propriedades exclusivas de personagens, lugares, eventos, objetos e organizações.</small></div>
+                      <div class="entity-ai-actions"><button type="button" class="secondary-button small" [disabled]="entityAiBusy()" (click)="suggestActiveEntityFieldsWithAi()">✦ Sugerir campos</button></div>
                     </div>
+
+                    @if (entityAiBusy()) { <div class="entity-ai-status"><span></span>Consultando o contexto deste universo…</div> }
+                    @if (entityAiError()) { <div class="ai-install-error" role="alert"><strong>A IA não conseguiu concluir</strong><span>{{ entityAiError() }}</span></div> }
 
                     <div class="notion-properties-table">
                       @for (attribute of activeEntity()?.attributes; track attribute.id) {
@@ -344,15 +481,17 @@
                   </section>
                 </article>
               } @else if (!appState.sidebarEntityFilter() && entities().length > 0) {
-                <section class="recent-entities"><header><div><span class="eyebrow">ADICIONADOS RECENTEMENTE</span><h2>Continue construindo seu mundo</h2></div><span>Arraste horizontalmente</span></header><div class="recent-carousel">@for (entity of recentEntities(); track entity.id) { <button type="button" (click)="openEntitySheet(entity)"><span class="recent-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><small>{{ entity.type }}</small><strong>{{ entity.name }}</strong><em>{{ entity.description || 'Sem descrição' }}</em></button> }</div></section>
-                <section class="entity-directory"><header><div><span class="eyebrow">DIRETÓRIO DO UNIVERSO</span><h2>Todas as entidades</h2></div><span>{{ entities().length }} registros</span></header><div class="entity-list">@for (entity of visibleEntities(); track entity.id) { <button type="button" (click)="openEntitySheet(entity)"><span class="entity-list-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><span><strong>{{ entity.name }}</strong><small>{{ entity.type }} · {{ entity.canon_status === 'CANON' ? 'Cânone' : entity.canon_status }}</small></span><em>{{ entity.description || 'Sem descrição' }}</em><i>›</i></button> }</div></section>
+                <section class="recent-entities"><header><div><span class="eyebrow">ADICIONADOS RECENTEMENTE</span><h2>Continue construindo seu mundo</h2></div><span>Arraste horizontalmente</span></header><div class="recent-carousel">@for (entity of recentEntities(); track entity.id) { <button type="button" (click)="openEntitySheet(entity)"><span class="recent-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><small>{{ entity.type }}</small><strong>{{ entity.name }}</strong><em>{{ entity.summary || entity.description || 'Sem resumo' }}</em></button> }</div></section>
+                 <section class="entity-directory"><header><div><span class="eyebrow">DIRETÓRIO DO UNIVERSO</span><h2>Todas as entidades</h2></div><span>{{ entities().length }} registros</span></header><div class="entity-list">@for (entity of visibleEntities(); track entity.id) { <div class="entity-list-row"><button type="button" class="entity-list-open" (click)="openEntitySheet(entity)"><span class="entity-list-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><span><strong>{{ entity.name }}</strong><small>{{ entity.type }} · {{ entity.canon_status === 'CANON' ? 'Cânone' : entity.canon_status }}</small></span><em>{{ entity.summary || entity.description || 'Sem resumo' }}</em><i>›</i></button><button type="button" class="entity-list-delete" aria-label="Excluir entidade" title="Excluir entidade" (click)="requestDelete('entity', entity.id, entity.name, $event)">×</button></div> }</div></section>
               } @else if (visibleEntities().length > 0) {
-                <div class="entity-grid">@for (entity of visibleEntities(); track entity.id; let index = $index) { <button type="button" class="entity-card stagger-card" [style.--delay.ms]="index * 35" (click)="openEntitySheet(entity)"><span class="entity-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><span><small>{{ entity.type }}</small><strong>{{ entity.name }}</strong><em>{{ entity.description || 'Sem descrição' }}</em><i>{{ entity.canon_status === 'CANON' ? '● Cânone' : entity.canon_status }}</i></span></button> }</div>
+                <div class="entity-grid">@for (entity of visibleEntities(); track entity.id; let index = $index) { <div class="entity-card-wrap stagger-card" [style.--delay.ms]="index * 35"><button type="button" class="entity-card" (click)="openEntitySheet(entity)"><span class="entity-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><span><small>{{ entity.type }}</small><strong>{{ entity.name }}</strong><em>{{ entity.summary || entity.description || 'Sem resumo' }}</em><i>{{ entity.canon_status === 'CANON' ? '● Cânone' : entity.canon_status }}</i></span></button><button type="button" class="entity-card-delete" aria-label="Excluir entidade" title="Excluir entidade" (click)="requestDelete('entity', entity.id, entity.name, $event)">×</button></div> }</div>
               } @else { <section class="empty-feature"><span>♧</span><h2>Nenhum registro nesta seção</h2><p>{{ appState.sidebarEntityFilter() ? 'Crie o primeiro registro deste tipo.' : 'Escolha uma aba e comece a construir seu universo.' }}</p>@if (appState.sidebarEntityFilter()) { <button type="button" class="primary-button" (click)="beginCreateEntity()">{{ entityCreateLabel() }}</button> }</section> }
             </div>
           } @else if (appState.workspaceView() === 'graph') {
             <div class="feature-page graph-page"><header class="feature-heading"><div><span class="eyebrow">RELAÇÕES</span><h1>Grafo de conexões</h1><p>Leia como os elementos do seu universo se relacionam.</p></div></header>
-              @if (entities().length > 0) { <app-connections-graph [entities]="entities()" [relations]="relations()" (entityOpened)="openEntitySheet($event)" /> }
+              @if (entities().length > 0) { <app-connections-graph [entities]="entities()" [relations]="relations()" (entityOpened)="openEntitySheet($event)" />
+                @if (relations().length) { <section class="relation-manager" aria-label="Ligações cadastradas"><header><strong>Ligações cadastradas</strong><span>{{ relations().length }}</span></header>@for (relation of relations(); track relation.id) { <div><span><b>{{ relation.source_name }}</b><small>{{ relation.label }}</small><b>{{ relation.target_name }}</b></span><button type="button" aria-label="Excluir ligação" (click)="requestDelete('relation', relation.id, relation.source_name + ' — ' + relation.label + ' — ' + relation.target_name)">×</button></div> }</section> }
+              }
               @else { <section class="empty-feature"><span>⌘</span><h2>Conecte seu universo</h2><p>Cadastre ao menos duas entidades e descreva a relação entre elas.</p><button type="button" class="primary-button" [disabled]="entities().length < 2" (click)="appState.openModal('new-relation')">Criar conexão</button></section> }
             </div>
           } @else if (appState.workspaceView() === 'timeline') {
@@ -362,7 +501,7 @@
             </div>
           } @else if (appState.workspaceView() === 'planning') {
             <div class="feature-page planning-page"><header class="feature-heading"><div><span class="eyebrow">FLUXO DE ESCRITA</span><h1>Planejamento</h1><p>Mova ideias até a versão final sem perder o contexto.</p></div></header>
-              <div class="kanban-board" cdkDropListGroup>@for (status of planningStatuses; track status; let columnIndex = $index) { <section class="kanban-column"><header><h2>{{ status === 'REVISAO' ? 'Revisão' : status.charAt(0) + status.slice(1).toLowerCase() }}</h2><span>{{ planningByStatus(status).length }}</span></header><div class="kanban-cards" cdkDropList [cdkDropListData]="planningByStatus(status)" (cdkDropListDropped)="dropPlanning($event, status)">@for (item of planningByStatus(status); track item.id) { <article class="kanban-card" [attr.data-planning-id]="item.id" cdkDrag [cdkDragData]="item"><div class="card-actions"><span class="card-drag" cdkDragHandle>⠿</span><button type="button" aria-label="Mover para esquerda" [disabled]="columnIndex === 0" (click)="movePlanning(item, -1)">←</button><button type="button" aria-label="Mover para direita" [disabled]="columnIndex === planningStatuses.length - 1" (click)="movePlanning(item, 1)">→</button><button type="button" aria-label="Excluir" (click)="deletePlanning(item.id)">×</button></div>@if (item.chapter_id) { <button type="button" class="planning-link" (click)="openPlanningChapter(item)">{{ item.story_name }} / {{ item.book_name }}</button> }<h3>{{ item.title }}</h3><p>{{ item.description || 'Sem descrição' }}</p>@if (item.chapter_id) { <div class="planning-progress"><span [style.width.%]="Math.min(100, ((universeChapters().find(c => c.id === item.chapter_id)?.word_count || 0) / Math.max(1, item.target_words || 2000)) * 100)"></span></div> }</article> }<button type="button" class="kanban-add" (click)="appState.openModal('new-planning')">＋ Adicionar ou vincular</button></div></section> }</div>
+              <div class="kanban-board" cdkDropListGroup>@for (status of planningStatuses; track status; let columnIndex = $index) { <section class="kanban-column"><header><h2>{{ status === 'REVISAO' ? 'Revisão' : status.charAt(0) + status.slice(1).toLowerCase() }}</h2><span>{{ planningByStatus(status).length }}</span></header><div class="kanban-cards" cdkDropList [cdkDropListData]="planningByStatus(status)" (cdkDropListDropped)="dropPlanning($event, status)">@for (item of planningByStatus(status); track item.id) { <article class="kanban-card" [attr.data-planning-id]="item.id" cdkDrag [cdkDragData]="item"><div class="card-actions"><span class="card-drag" title="Segure qualquer parte do cartão para arrastar">⠿</span><button type="button" aria-label="Mover para esquerda" [disabled]="columnIndex === 0" (click)="movePlanning(item, -1)">←</button><button type="button" aria-label="Mover para direita" [disabled]="columnIndex === planningStatuses.length - 1" (click)="movePlanning(item, 1)">→</button><button type="button" aria-label="Excluir" (click)="deletePlanning(item.id)">×</button></div>@if (item.chapter_id) { <button type="button" class="planning-link" (click)="openPlanningChapter(item)">{{ item.story_name }} / {{ item.book_name }}</button> }<h3>{{ item.title }}</h3><p>{{ item.description || 'Sem descrição' }}</p>@if (item.chapter_id) { <div class="planning-progress"><span [style.width.%]="Math.min(100, ((universeChapters().find(c => c.id === item.chapter_id)?.word_count || 0) / Math.max(1, item.target_words || 2000)) * 100)"></span></div> }</article> }<button type="button" class="kanban-add" (click)="appState.openModal('new-planning')">＋ Adicionar ou vincular</button></div></section> }</div>
             </div>
           } @else if (appState.workspaceView() === 'history') {
             <div class="feature-page history-page"><header class="feature-heading"><div><span class="eyebrow">VERSÕES</span><h1>Histórico recente</h1><p>Alterações registradas automaticamente no banco local.</p></div><button type="button" class="secondary-button" (click)="loadHistory()">Atualizar</button></header>
@@ -377,7 +516,7 @@
 
 @if (appState.modalOpen()) {
   <div class="modal-backdrop" (mousedown)="appState.closeModal()">
-    <form class="modal" [class.share-modal]="appState.modalOpen() === 'share-content'" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+    <form class="modal" [class.share-modal]="appState.modalOpen() === 'share-content'" [class.ai-modal]="appState.modalOpen() === 'ai-assistant'" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       @if (appState.modalOpen() === 'new-universe') {
         <header><div><span class="eyebrow">{{ editingUniverseId ? 'BIBLIOTECA' : 'NOVO MUNDO' }}</span><h2>{{ editingUniverseId ? 'Editar universo' : 'Criar universo' }}</h2></div><button type="button" (click)="appState.closeModal()">×</button></header>
         <label class="image-picker wide" [style.background-image]="newUniverseCoverData ? 'url(' + newUniverseCoverData + ')' : null"><input type="file" accept="image/*" hidden (change)="onImageSelected($event, 'universe')" /><span>{{ newUniverseCoverData ? 'Trocar capa' : '＋ Adicionar capa do universo' }}</span></label>
@@ -386,6 +525,10 @@
         <footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newUniverseName.trim()" (click)="createUniverse()">{{ editingUniverseId ? 'Salvar alterações' : 'Criar universo' }}</button></footer>
       } @else if (appState.modalOpen() === 'delete-universe' && pendingDeleteUniverse(); as universe) {
         <header><div><span class="eyebrow danger-copy">AÇÃO DESTRUTIVA</span><h2>Excluir {{ universe.name }}?</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><p class="delete-warning">Todos os livros, capítulos, personagens, lugares e eventos deste universo serão removidos do banco local. Backup e exportação ainda não estão disponíveis nesta fase.</p><label>Digite <strong>{{ universe.name }}</strong> para confirmar<input name="deleteConfirmation" [(ngModel)]="deleteUniverseConfirmation" autocomplete="off" /></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button destructive" [disabled]="deleteUniverseConfirmation.trim() !== universe.name" (click)="confirmDeleteUniverse()">Excluir definitivamente</button></footer>
+      } @else if (appState.modalOpen() === 'delete-item' && pendingDelete(); as item) {
+        <header><div><span class="eyebrow danger-copy">EXCLUSÃO LOCAL</span><h2>Excluir {{ deleteKindLabel(item.kind).toLocaleLowerCase('pt-BR') }}?</h2></div><button type="button" (click)="pendingDelete.set(null); appState.closeModal()">×</button></header>
+        <p class="delete-warning"><strong>{{ item.name }}</strong><br />{{ item.detail }} Esta ação não pode ser desfeita.</p>
+        <footer><button type="button" class="secondary-button" (click)="pendingDelete.set(null); appState.closeModal()">Cancelar</button><button type="submit" class="primary-button destructive" (click)="confirmDeleteItem()">Excluir {{ deleteKindLabel(item.kind).toLocaleLowerCase('pt-BR') }}</button></footer>
       } @else if (appState.modalOpen() === 'new-story') {
         <header><div><span class="eyebrow">ESTRUTURA</span><h2>Nova história</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Nome da história<input name="storyName" [(ngModel)]="newStoryName" placeholder="Ex.: A saga principal" autofocus /></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newStoryName.trim()" (click)="createStory()">Criar história</button></footer>
       } @else if (appState.modalOpen() === 'new-book') {
@@ -394,26 +537,41 @@
         <header><div><span class="eyebrow">ESCRITA</span><h2>Novo capítulo</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Título do capítulo<input name="chapterTitle" [(ngModel)]="newChapterTitle" placeholder="Ex.: Capítulo 1 — O chamado" autofocus /></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newChapterTitle.trim()" (click)="createChapter()">Criar capítulo</button></footer>
       } @else if (appState.modalOpen() === 'new-entity') {
         <header><div><span class="eyebrow">WORLDBUILDING</span><h2>Novo {{ newEntityType.toLocaleLowerCase('pt-BR') }}</h2></div><button type="button" (click)="appState.closeModal()">×</button></header>
-        <p class="modal-guidance">O tipo já vem deste menu. Depois de criar, a ficha completa abre automaticamente.</p>
+        <p class="modal-guidance">Descreva a ideia ou preencha manualmente. A IA usa somente o universo atual para propor uma ficha editável.</p>
         <label class="image-picker" [style.background-image]="newEntityImageData ? 'url(' + newEntityImageData + ')' : null"><input type="file" accept="image/*" hidden (change)="onImageSelected($event, 'entity-new')" /><span>{{ newEntityImageData ? 'Trocar imagem' : '＋ Adicionar imagem principal' }}</span></label>
+        <section class="entity-creation-ai">
+          <label>Briefing para a IA <span>(opcional)</span><textarea name="entityBrief" [(ngModel)]="newEntityBrief" placeholder="Ex.: capitã veterana que protege a cidade, mas esconde sua ligação com o inimigo"></textarea></label>
+          <button type="button" class="secondary-button" [disabled]="entityAiBusy() || !ai.enabled()" (click)="suggestNewEntityWithAi()">{{ entityAiBusy() ? 'Montando ficha…' : '✦ Montar proposta com IA' }}</button>
+          @if (!ai.enabled()) { <small>Ative uma IA em Configurações para gerar a proposta. A criação manual continua disponível.</small> }
+          @if (entityAiError()) { <div class="ai-install-error" role="alert"><span>{{ entityAiError() }}</span></div> }
+        </section>
         <label>Nome<input name="entityName" [(ngModel)]="newEntityName" [placeholder]="newEntityType === 'Personagem' ? 'Nome do personagem' : newEntityType === 'Lugar' ? 'Nome do lugar' : newEntityType === 'Evento' ? 'Nome do evento' : newEntityType === 'Objeto' ? 'Nome do objeto' : 'Nome da organização'" autofocus /></label>
         <label>Descrição <span>(opcional)</span><textarea name="entityDescription" [(ngModel)]="newEntityDescription"></textarea></label>
+        <div class="entity-initial-fields"><strong>Campos iniciais da ficha</strong><small>Você poderá alterar ou remover todos eles depois.</small><div>@for (field of defaultFieldsForNewEntity(); track field) { <span>{{ field }}</span> } @for (attribute of newEntityAiAttributes; track attribute.key) { <span class="ai-field">✦ {{ attribute.key }}</span> }</div></div>
         <footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newEntityName.trim()" (click)="createEntity()">Criar e preencher ficha</button></footer>
+      } @else if (appState.modalOpen() === 'metadata' && metadataTarget(); as target) {
+        <header><div><span class="eyebrow">ORGANIZAÇÃO</span><h2>Tags</h2></div><button type="button" (click)="appState.closeModal()">×</button></header>
+        <p class="modal-guidance"><strong>{{ target.name }}</strong> · Tags categorizam conteúdos. Campos pertencem somente às fichas de entidades.</p>
+        <section class="metadata-section"><header><strong>Tags do universo</strong><small>As mesmas tags podem ser usadas em personagens, lugares, eventos, universos, histórias, livros e capítulos.</small></header>
+          <div class="metadata-tags">@for (tag of metadataTags(); track tag.id) { <span class="metadata-tag-item" [style.--tag-color]="tag.color"><button type="button" [class.active]="isMetadataTagAssigned(tag.id)" (click)="toggleMetadataTag(tag)"><i></i>{{ tag.name }}<small>{{ tag.assigned || 0 }}</small></button><button type="button" class="metadata-tag-delete" [attr.aria-label]="'Excluir tag ' + tag.name" (click)="deleteMetadataTag(tag)">×</button></span> } @empty { <p>Nenhuma tag criada neste universo.</p> }</div>
+          <div class="metadata-new-tag"><input name="newTagColor" type="color" [(ngModel)]="newTagColor" aria-label="Cor da tag" /><input name="newTagName" [(ngModel)]="newTagName" placeholder="Nova tag, ex.: fantasia sombria" /><button type="button" class="secondary-button" [disabled]="!newTagName.trim()" (click)="createMetadataTag()">Criar e aplicar</button></div>
+        </section>
+        <footer><button type="button" class="primary-button" (click)="appState.closeModal()">Concluir</button></footer>
       } @else if (appState.modalOpen() === 'share-content') {
-        <header><div><span class="eyebrow">LEITURA TEMPORÁRIA</span><h2>Escolha o que deseja compartilhar</h2></div><button type="button" (click)="appState.closeModal()">×</button></header>
-        <p class="modal-guidance">Nada é publicado por padrão. Marque somente os mundos, textos e fichas que o visitante poderá ler enquanto o seu NarraHub estiver aberto.</p>
+        <header><div><span class="eyebrow">SESSÃO COLABORATIVA</span><h2>Compartilhar universos literários</h2></div><button type="button" (click)="appState.closeModal()">×</button></header>
+        <p class="modal-guidance">Escolha os universos, o conteúdo visível e o que o convidado poderá fazer. Propostas de edição sempre exigem sua aprovação.</p>
         @if (!shareLink()) {
           <div class="share-picker">
-            <section><header><strong>Universo</strong></header><label class="share-choice"><input type="checkbox" name="shareUniverse" [ngModel]="shareIncludeUniverse()" (ngModelChange)="shareIncludeUniverse.set($event)" /><span class="share-choice-avatar" [style.background-image]="appState.activeUniverse()?.cover_image ? 'url(' + appState.activeUniverse()?.cover_image + ')' : null">{{ appState.activeUniverse()?.cover_image ? '' : appState.activeUniverse()?.name?.charAt(0) }}</span><span><b>{{ appState.activeUniverse()?.name }}</b><small>Capa e descrição do mundo</small></span></label></section>
-            <section><header><strong>Capítulos</strong><button type="button" class="text-button" (click)="selectAllShareChapters()">{{ shareSelectedChapterIds().size === universeChapters().length && universeChapters().length ? 'Limpar' : 'Selecionar todos' }}</button></header><div class="share-choice-list">@for (chapter of universeChapters(); track chapter.id) { <label class="share-choice"><input type="checkbox" [name]="'shareChapter-' + chapter.id" [ngModel]="isChapterSelectedForShare(chapter.id)" (ngModelChange)="toggleShareChapter(chapter.id)" /><span class="share-choice-symbol">≡</span><span><b>{{ chapter.title }}</b><small>{{ chapter.story_name }} / {{ chapter.book_name }}</small></span></label> } @empty { <p>Nenhum capítulo criado.</p> }</div></section>
-            <section><header><strong>Fichas do universo</strong><button type="button" class="text-button" (click)="selectAllShareEntities()">{{ shareSelectedEntityIds().size === entities().length && entities().length ? 'Limpar' : 'Selecionar todas' }}</button></header><div class="share-choice-list entity-choices">@for (entity of entities(); track entity.id) { <label class="share-choice"><input type="checkbox" [name]="'shareEntity-' + entity.id" [ngModel]="isEntitySelectedForShare(entity.id)" (ngModelChange)="toggleShareEntity(entity.id)" /><span class="share-choice-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0) }}</span><span><b>{{ entity.name }}</b><small>{{ entity.type }}</small></span></label> } @empty { <p>Nenhuma ficha criada.</p> }</div></section>
+            <section class="share-universe-section"><header><strong>Universos</strong><button type="button" class="text-button" (click)="selectAllShareUniverses()">{{ shareSelectedUniverseIds().size === universes().length && universes().length ? 'Limpar' : 'Selecionar todos' }}</button></header><div class="share-choice-list share-universe-list">@for (universe of universes(); track universe.id) { <label class="share-choice"><input type="checkbox" [name]="'shareUniverse-' + universe.id" [ngModel]="isUniverseSelectedForShare(universe.id)" (ngModelChange)="toggleShareUniverse(universe.id)" /><span class="share-choice-avatar" [style.background-image]="universe.cover_image ? 'url(' + universe.cover_image + ')' : null">{{ universe.cover_image ? '' : universe.name.charAt(0) }}</span><span><b>{{ universe.name }}</b><small>{{ universe.stats.total_chapters }} capítulos · {{ universe.stats.total_entities }} fichas</small></span></label> }</div></section>
+            <section><header><strong>Conteúdo incluído</strong></header><div class="share-content-options"><label><input type="checkbox" name="shareChapters" [(ngModel)]="shareIncludeChapters" /> <span><b>Livros e capítulos</b><small>Texto, resumo e organização narrativa</small></span></label><label><input type="checkbox" name="shareEntities" [(ngModel)]="shareIncludeEntities" /> <span><b>Fichas do universo</b><small>Personagens, lugares, eventos, objetos e campos</small></span></label></div></section>
+            <section><header><strong>Permissão do link</strong></header><div class="share-permission-options"><label [class.active]="sharePermission === 'view'"><input type="radio" name="sharePermission" [(ngModel)]="sharePermission" value="view" /><span><b>Somente leitura</b><small>Navega sem enviar conteúdo</small></span></label><label [class.active]="sharePermission === 'comment'"><input type="radio" name="sharePermission" [(ngModel)]="sharePermission" value="comment" /><span><b>Fazer anotações</b><small>Conversa organizada por seção</small></span></label><label [class.active]="sharePermission === 'edit'"><input type="radio" name="sharePermission" [(ngModel)]="sharePermission" value="edit" /><span><b>Propor edições</b><small>Você aprova antes de aplicar</small></span></label></div></section>
           </div>
-          <div class="share-options"><label>Validade máxima<select name="shareExpiry" [(ngModel)]="shareExpiresInDays"><option [ngValue]="1">24 horas</option><option [ngValue]="7">7 dias</option><option [ngValue]="30">30 dias</option></select></label><span><b>{{ shareSelectionCount() }}</b> item(ns) selecionado(s)<small>Fechar o app encerra antes desse prazo.</small></span></div>
+          <div class="share-options"><label>Validade máxima<select name="shareExpiry" [(ngModel)]="shareExpiresInDays"><option [ngValue]="1">24 horas</option><option [ngValue]="7">7 dias</option><option [ngValue]="30">30 dias</option></select></label><span><b>{{ shareSelectionCount() }}</b> universo(s) selecionado(s)<small>Fechar o app encerra antes desse prazo.</small></span></div>
         }
         @if (shareLink()) {
           <div class="security-callout"><strong>Link pronto e copiado.</strong><span>Ele funciona somente enquanto esta sessão do NarraHub permanecer ativa.</span></div>
           <label>Link protegido<textarea class="share-link-field" readonly [value]="shareLink()"></textarea></label>
-          <small class="share-expiry">Expira em {{ formatDate(shareExpiresAt()) }}. Qualquer pessoa com o link completo poderá ler.</small>
+          <small class="share-expiry">Expira em {{ formatDate(shareExpiresAt()) }}. Permissão: {{ sharePermissionLabel(sharePermission) }}.</small>
         }
         @if (shareProgressMessage()) { <div class="share-progress"><span></span>{{ shareProgressMessage() }}</div> }
         <footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Fechar</button>@if (shareLink()) { <button type="button" class="secondary-button" (click)="copyShareLink()">Copiar novamente</button> } @else { <button type="button" class="primary-button" [disabled]="shareBusy() || shareSelectionCount() === 0" (click)="createOnlineShare()">{{ shareBusy() ? 'Preparando…' : 'Criar link temporário' }}</button> }</footer>

@@ -12,7 +12,7 @@ pub struct AppInfo {
 pub fn get_app_info() -> AppInfo {
     AppInfo {
         name: "NarraHub".to_string(),
-        version: "0.2.0".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
         local_storage_path: "narrahub.db".to_string(),
     }
 }

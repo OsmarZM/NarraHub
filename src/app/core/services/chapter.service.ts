@@ -28,7 +28,7 @@ export class ChapterService {
     );
 
     return {
-      id, book_id: bookId, title, content: '', word_count: 0,
+      id, book_id: bookId, title, content: '', summary: '', scene_origin: '', scene_destination: '', word_count: 0,
       status: 'IDEIA', canon_status: 'CANON', sort_order: sortOrder,
       created_at: now, updated_at: now,
     };
@@ -70,6 +70,20 @@ export class ChapterService {
     await this.db.execute(
       `UPDATE chapters SET title = $1, updated_at = $2 WHERE id = $3`,
       [title, now, id]
+    );
+  }
+
+  async updateSummary(id: string, summary: string): Promise<void> {
+    await this.db.execute(
+      `UPDATE chapters SET summary = $1, updated_at = $2 WHERE id = $3`,
+      [summary, this.db.now(), id]
+    );
+  }
+
+  async updateSceneRoute(id: string, sceneOrigin: string, sceneDestination: string): Promise<void> {
+    await this.db.execute(
+      `UPDATE chapters SET scene_origin = $1, scene_destination = $2, updated_at = $3 WHERE id = $4`,
+      [sceneOrigin, sceneDestination, this.db.now(), id]
     );
   }
 

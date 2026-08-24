@@ -12,7 +12,7 @@ export class ThemeService {
     typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
 
   constructor() {
-    const saved = localStorage.getItem('narrahub.theme');
+    const saved = this.readSavedPreference();
     if (saved === 'light' || saved === 'dark' || saved === 'system') {
       this.preference.set(saved);
     }
@@ -29,7 +29,7 @@ export class ThemeService {
 
   setTheme(theme: ThemePreference): void {
     this.preference.set(theme);
-    localStorage.setItem('narrahub.theme', theme);
+    try { localStorage.setItem('narrahub.theme', theme); } catch { /* storage unavailable */ }
     this.apply();
   }
 
@@ -46,26 +46,8 @@ export class ThemeService {
     this.resolvedTheme.set(resolved);
 
     if (typeof document !== 'undefined') {
-      // 1. Define no <html>
-      document.documentElement.setAttribute('data-theme', resolved);
-      document.documentElement.dataset['theme'] = resolved;
-      document.documentElement.style.colorScheme = resolved;
-
-      // 2. Define no <body>
-      if (document.body) {
-        document.body.setAttribute('data-theme', resolved);
-        if (resolved === 'dark') {
-          document.documentElement.classList.add('dark');
-          document.documentElement.classList.remove('light');
-          document.body.classList.add('dark');
-          document.body.classList.remove('light');
-        } else {
-          document.documentElement.classList.add('light');
-          document.documentElement.classList.remove('dark');
-          document.body.classList.add('light');
-          document.body.classList.remove('dark');
-        }
-      }
+      this.applyToElement(document.documentElement, resolved);
+      if (document.body) this.applyToElement(document.body, resolved);
     }
 
     // 3. Sincroniza com a janela nativa do Windows 11 via Tauri se estiver no Desktop
@@ -77,5 +59,17 @@ export class ThemeService {
         }
       } catch (_) {}
     }
+  }
+
+  private applyToElement(element: HTMLElement, theme: 'light' | 'dark'): void {
+    element.dataset['theme'] = theme;
+    element.classList.remove('light', 'dark');
+    element.classList.add(theme);
+    element.style.colorScheme = theme;
+  }
+
+  private readSavedPreference(): string | null {
+    try { return localStorage.getItem('narrahub.theme'); }
+    catch { return null; }
   }
 }

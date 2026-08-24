@@ -65,12 +65,26 @@ export interface Chapter {
   book_id: string;
   title: string;
   content: string; // JSON from Tiptap
+  summary: string;
+  scene_origin: string;
+  scene_destination: string;
   word_count: number;
   status: ChapterStatus;
   canon_status: CanonStatus;
   sort_order: number;
   created_at: string;
   updated_at: string;
+}
+
+export type MetadataOwnerType = 'universe' | 'story' | 'book' | 'chapter' | 'entity';
+
+export interface ContentTag {
+  id: string;
+  universe_id: string;
+  name: string;
+  color: string;
+  created_at: string;
+  assigned?: number;
 }
 
 // ── Entity ──────────────────────────────────────
@@ -96,6 +110,7 @@ export interface Entity {
   type: EntityType;
   name: string;
   description: string;
+  summary: string;
   image: string;
   canon_status: CanonStatus;
   created_at: string;

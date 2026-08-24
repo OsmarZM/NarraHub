@@ -16,6 +16,9 @@ const VIEWER_HTML: &str = include_str!("../../services/share-api/public/viewer.h
 const VIEWER_JS: &str = include_str!("../../services/share-api/public/viewer.js");
 const VIEWER_CSS: &str = include_str!("../../services/share-api/public/viewer.css");
 const MAX_CIPHERTEXT_LENGTH: usize = 2_800_000;
+const MAX_CONTRIBUTIONS: usize = 200;
+const MAX_CONTRIBUTION_BYTES: usize = 12_000_000;
+const MAX_HTTP_REQUEST_BYTES: usize = 3_000_000;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +34,18 @@ struct ShareRecord {
     envelope: EncryptedShareEnvelope,
     expires_at: String,
     revoke_token: String,
+    contribution_token: String,
+    contributions: Vec<EncryptedContribution>,
+    contribution_bytes: usize,
+    next_sequence: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedContribution {
+    sequence: u64,
+    envelope: EncryptedShareEnvelope,
+    received_at: String,
 }
 
 pub struct OnlineShareState {
@@ -101,7 +116,10 @@ pub async fn online_share_start(
     listener
         .set_nonblocking(true)
         .map_err(|error| error.to_string())?;
-    let port = listener.local_addr().map_err(|error| error.to_string())?.port();
+    let port = listener
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
     let shutdown = Arc::new(AtomicBool::new(false));
     let server_shutdown = shutdown.clone();
     let shares = {
@@ -219,8 +237,12 @@ pub fn online_share_create(
     state: State<'_, Mutex<OnlineShareState>>,
     envelope: EncryptedShareEnvelope,
     expires_in_days: u8,
+    contribution_token: String,
 ) -> Result<CreatedOnlineShare, String> {
     validate_envelope(&envelope, expires_in_days)?;
+    if contribution_token.len() != 43 || !is_base64_url(&contribution_token) {
+        return Err("Token de colaboração inválido.".to_string());
+    }
     let state = state
         .lock()
         .map_err(|_| "Estado do compartilhamento indisponível".to_string())?;
@@ -242,6 +264,10 @@ pub fn online_share_create(
                 envelope,
                 expires_at: expires_at.clone(),
                 revoke_token: revoke_token.clone(),
+                contribution_token,
+                contributions: Vec::new(),
+                contribution_bytes: 0,
+                next_sequence: 1,
             },
         );
     Ok(CreatedOnlineShare {
@@ -250,6 +276,32 @@ pub fn online_share_create(
         expires_at,
         revoke_token,
     })
+}
+
+#[tauri::command]
+pub fn online_share_contributions(
+    state: State<'_, Mutex<OnlineShareState>>,
+    id: String,
+    revoke_token: String,
+    after_sequence: u64,
+) -> Result<Vec<EncryptedContribution>, String> {
+    let state = state
+        .lock()
+        .map_err(|_| "Estado do compartilhamento indisponível".to_string())?;
+    let shares = state
+        .shares
+        .lock()
+        .map_err(|_| "Conteúdo compartilhado indisponível".to_string())?;
+    let record = shares
+        .get(&id)
+        .filter(|record| constant_time_eq(&record.revoke_token, &revoke_token))
+        .ok_or_else(|| "Compartilhamento ou token de revisão inválido.".to_string())?;
+    Ok(record
+        .contributions
+        .iter()
+        .filter(|item| item.sequence > after_sequence)
+        .cloned()
+        .collect())
 }
 
 #[tauri::command]
@@ -308,9 +360,6 @@ fn mark_tunnel_stopped(app: &AppHandle) {
             state.running = false;
             state.public_url = None;
             state.local_port = None;
-            if let Ok(mut shares) = state.shares.lock() {
-                shares.clear();
-            }
         }
     }
 }
@@ -343,6 +392,22 @@ fn validate_envelope(envelope: &EncryptedShareEnvelope, expires_in_days: u8) -> 
     Ok(())
 }
 
+fn validate_contribution_envelope(envelope: &EncryptedShareEnvelope) -> Result<(), String> {
+    if envelope.version != 1 || envelope.algorithm != "A256GCM" {
+        return Err("Versão ou algoritmo da contribuição não suportado.".to_string());
+    }
+    if envelope.iv.len() != 16 || !is_base64_url(&envelope.iv) {
+        return Err("IV da contribuição inválido.".to_string());
+    }
+    if envelope.ciphertext.len() < 24
+        || envelope.ciphertext.len() > MAX_CIPHERTEXT_LENGTH
+        || !is_base64_url(&envelope.ciphertext)
+    {
+        return Err("Contribuição cifrada inválida ou acima do limite.".to_string());
+    }
+    Ok(())
+}
+
 fn run_http_server(
     listener: TcpListener,
     shutdown: Arc<AtomicBool>,
@@ -368,14 +433,19 @@ fn handle_http_request(
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|error| error.to_string())?;
-    let mut buffer = [0_u8; 8192];
-    let length = stream.read(&mut buffer).map_err(|error| error.to_string())?;
-    let request = String::from_utf8_lossy(&buffer[..length]);
-    let request_line = request.lines().next().unwrap_or_default();
+    let request = read_http_request(&mut stream)?;
+    let header_end = request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| "Requisição HTTP inválida.".to_string())?;
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let body = &request[header_end + 4..];
+    let request_line = headers.lines().next().unwrap_or_default();
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or_default();
-    let path = parts.next().unwrap_or("/").split('?').next().unwrap_or("/");
-    if method != "GET" && method != "HEAD" {
+    let request_target = parts.next().unwrap_or("/");
+    let path = request_target.split('?').next().unwrap_or("/");
+    if method != "GET" && method != "HEAD" && method != "POST" {
         return write_response(
             &mut stream,
             405,
@@ -385,14 +455,60 @@ fn handle_http_request(
         );
     }
 
-    let (status, content_type, body) = if path == "/health" {
+    let (status, content_type, response_body) = if path == "/health" {
         (200, "application/json; charset=utf-8", br#"{"ok":true,"service":"narrahub-share","encryption":"client-side","lifetime":"app-session"}"#.to_vec())
     } else if path == "/viewer.js" {
-        (200, "text/javascript; charset=utf-8", VIEWER_JS.as_bytes().to_vec())
+        (
+            200,
+            "text/javascript; charset=utf-8",
+            VIEWER_JS.as_bytes().to_vec(),
+        )
     } else if path == "/viewer.css" {
-        (200, "text/css; charset=utf-8", VIEWER_CSS.as_bytes().to_vec())
+        (
+            200,
+            "text/css; charset=utf-8",
+            VIEWER_CSS.as_bytes().to_vec(),
+        )
     } else if path == "/favicon.ico" {
         (204, "image/x-icon", Vec::new())
+    } else if let Some((id, resource)) = parse_share_resource(path) {
+        if resource == "contributions" && method == "POST" {
+            let token = header_value(&headers, "x-narrahub-contribution-token").unwrap_or_default();
+            match append_contribution(shares, id, token, body) {
+                Ok(contribution) => (
+                    201,
+                    "application/json; charset=utf-8",
+                    json!({ "sequence": contribution.sequence, "receivedAt": contribution.received_at }).to_string().into_bytes(),
+                ),
+                Err((status, message)) => (
+                    status,
+                    "application/json; charset=utf-8",
+                    json!({ "error": message }).to_string().into_bytes(),
+                ),
+            }
+        } else if resource == "contributions" && (method == "GET" || method == "HEAD") {
+            let after = query_parameter(request_target, "after")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            match read_contributions(shares, id, after) {
+                Some(items) => (
+                    200,
+                    "application/json; charset=utf-8",
+                    json!({ "items": items }).to_string().into_bytes(),
+                ),
+                None => (
+                    404,
+                    "application/json; charset=utf-8",
+                    br#"{"error":"Compartilhamento inexistente, encerrado ou expirado."}"#.to_vec(),
+                ),
+            }
+        } else {
+            (
+                404,
+                "application/json; charset=utf-8",
+                r#"{"error":"Rota não encontrada."}"#.as_bytes().to_vec(),
+            )
+        }
     } else if let Some(id) = path.strip_prefix("/v1/shares/") {
         match read_share(shares, id) {
             Some(record) => {
@@ -403,12 +519,24 @@ fn handle_http_request(
                     "ciphertext": record.envelope.ciphertext,
                     "expiresAt": record.expires_at,
                 });
-                (200, "application/json; charset=utf-8", payload.to_string().into_bytes())
+                (
+                    200,
+                    "application/json; charset=utf-8",
+                    payload.to_string().into_bytes(),
+                )
             }
-            None => (404, "application/json; charset=utf-8", br#"{"error":"Compartilhamento inexistente, encerrado ou expirado."}"#.to_vec()),
+            None => (
+                404,
+                "application/json; charset=utf-8",
+                br#"{"error":"Compartilhamento inexistente, encerrado ou expirado."}"#.to_vec(),
+            ),
         }
     } else if path.starts_with("/s/") {
-        (200, "text/html; charset=utf-8", VIEWER_HTML.as_bytes().to_vec())
+        (
+            200,
+            "text/html; charset=utf-8",
+            VIEWER_HTML.as_bytes().to_vec(),
+        )
     } else {
         (
             404,
@@ -416,13 +544,120 @@ fn handle_http_request(
             r#"{"error":"Rota não encontrada."}"#.as_bytes().to_vec(),
         )
     };
-    write_response(&mut stream, status, content_type, &body, method == "HEAD")
+    write_response(
+        &mut stream,
+        status,
+        content_type,
+        &response_body,
+        method == "HEAD",
+    )
 }
 
-fn read_share(
+fn read_http_request(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
+    let mut request = Vec::with_capacity(8192);
+    let mut chunk = [0_u8; 8192];
+    let mut expected_length: Option<usize> = None;
+    loop {
+        let length = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+        if length == 0 {
+            break;
+        }
+        request.extend_from_slice(&chunk[..length]);
+        if request.len() > MAX_HTTP_REQUEST_BYTES {
+            return Err("Requisição acima do limite permitido.".to_string());
+        }
+        if expected_length.is_none() {
+            if let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = header_value(&headers, "content-length")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                expected_length = Some(header_end + 4 + content_length);
+            }
+        }
+        if expected_length.is_some_and(|expected| request.len() >= expected) {
+            break;
+        }
+    }
+    Ok(request)
+}
+
+fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
+    headers.lines().skip(1).find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.trim().eq_ignore_ascii_case(name).then(|| value.trim())
+    })
+}
+
+fn parse_share_resource(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("/v1/shares/")?;
+    let (id, resource) = rest.split_once('/')?;
+    Some((id, resource))
+}
+
+fn query_parameter<'a>(target: &'a str, name: &str) -> Option<&'a str> {
+    target.split_once('?')?.1.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == name).then_some(value)
+    })
+}
+
+fn append_contribution(
     shares: &Arc<Mutex<HashMap<String, ShareRecord>>>,
     id: &str,
-) -> Option<ShareRecord> {
+    token: &str,
+    body: &[u8],
+) -> Result<EncryptedContribution, (u16, String)> {
+    let envelope: EncryptedShareEnvelope = serde_json::from_slice(body)
+        .map_err(|_| (400, "Contribuição cifrada inválida.".to_string()))?;
+    validate_contribution_envelope(&envelope).map_err(|message| (400, message))?;
+    let mut shares = shares
+        .lock()
+        .map_err(|_| (500, "Conteúdo compartilhado indisponível.".to_string()))?;
+    let record = shares.get_mut(id).ok_or_else(|| {
+        (
+            404,
+            "Compartilhamento inexistente, encerrado ou expirado.".to_string(),
+        )
+    })?;
+    if !constant_time_eq(&record.contribution_token, token) {
+        return Err((403, "Token de colaboração inválido.".to_string()));
+    }
+    let contribution_size = envelope.ciphertext.len();
+    if record.contributions.len() >= MAX_CONTRIBUTIONS
+        || record.contribution_bytes + contribution_size > MAX_CONTRIBUTION_BYTES
+    {
+        return Err((429, "A sessão atingiu o limite de contribuições. Peça ao autor para revisar e abrir uma nova sessão.".to_string()));
+    }
+    let contribution = EncryptedContribution {
+        sequence: record.next_sequence,
+        envelope,
+        received_at: Utc::now().to_rfc3339(),
+    };
+    record.next_sequence += 1;
+    record.contribution_bytes += contribution_size;
+    record.contributions.push(contribution.clone());
+    Ok(contribution)
+}
+
+fn read_contributions(
+    shares: &Arc<Mutex<HashMap<String, ShareRecord>>>,
+    id: &str,
+    after: u64,
+) -> Option<Vec<EncryptedContribution>> {
+    let shares = shares.lock().ok()?;
+    let record = shares.get(id)?;
+    Some(
+        record
+            .contributions
+            .iter()
+            .filter(|item| item.sequence > after)
+            .cloned()
+            .collect(),
+    )
+}
+
+fn read_share(shares: &Arc<Mutex<HashMap<String, ShareRecord>>>, id: &str) -> Option<ShareRecord> {
     if id.len() != 16 || !id.chars().all(|value| value.is_ascii_alphanumeric()) {
         return None;
     }
@@ -447,18 +682,29 @@ fn write_response(
 ) -> Result<(), String> {
     let reason = match status {
         200 => "OK",
+        201 => "Created",
         204 => "No Content",
+        400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
         _ => "Error",
     };
     let headers = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nPermissions-Policy: camera=(), microphone=(), geolocation=()\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nPermissions-Policy: camera=(), microphone=(), geolocation=()\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream
         .write_all(headers.as_bytes())
-        .and_then(|_| if head_only { Ok(()) } else { stream.write_all(body) })
+        .and_then(|_| {
+            if head_only {
+                Ok(())
+            } else {
+                stream.write_all(body)
+            }
+        })
         .map_err(|error| error.to_string())
 }
 
@@ -497,7 +743,9 @@ fn constant_time_eq(left: &str, right: &str) -> bool {
     left.as_bytes()
         .iter()
         .zip(right.as_bytes())
-        .fold(0_u8, |difference, (left, right)| difference | (left ^ right))
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
         == 0
 }
 

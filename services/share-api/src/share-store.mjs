@@ -35,7 +35,7 @@ export class FileShareStore {
     await this.pruneExpired();
   }
 
-  async create(envelope) {
+  async create(envelope, contributionToken = '') {
     const normalized = validateEnvelope(envelope);
     const id = randomBytes(12).toString('base64url');
     const revokeToken = randomBytes(24).toString('base64url');
@@ -46,6 +46,8 @@ export class FileShareStore {
       createdAt: createdAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
       revokeHash: hashToken(revokeToken),
+      contributionHash: contributionToken ? hashToken(contributionToken) : '',
+      contributions: [],
       envelope: {
         version: normalized.version,
         algorithm: normalized.algorithm,
@@ -58,6 +60,27 @@ export class FileShareStore {
     await writeFile(temporary, JSON.stringify(record), { encoding: 'utf8', flag: 'wx' });
     await rename(temporary, target);
     return { id, revokeToken, createdAt: record.createdAt, expiresAt: record.expiresAt };
+  }
+
+  async appendContribution(id, token, envelope) {
+    const record = await this.get(id);
+    if (!record || !record.contributionHash || !safeToken(record.contributionHash, token)) return null;
+    const normalized = validateEnvelope({ ...envelope, expiresInDays: 1 });
+    const contributions = Array.isArray(record.contributions) ? record.contributions : [];
+    const accumulated = contributions.reduce((total, item) => total + item.envelope.ciphertext.length, 0);
+    if (contributions.length >= 200 || accumulated + normalized.ciphertext.length > 12_000_000) {
+      const error = new Error('A sessão atingiu o limite de contribuições.'); error.statusCode = 429; throw error;
+    }
+    const item = { sequence: contributions.length + 1, receivedAt: new Date().toISOString(), envelope: { version:1, algorithm:'A256GCM', iv:normalized.iv, ciphertext:normalized.ciphertext } };
+    contributions.push(item); record.contributions = contributions;
+    await writeFile(this.recordPath(id), JSON.stringify(record), 'utf8');
+    return item;
+  }
+
+  async listContributions(id, after = 0) {
+    const record = await this.get(id);
+    if (!record) return null;
+    return (Array.isArray(record.contributions) ? record.contributions : []).filter((item) => item.sequence > after);
   }
 
   async get(id) {
@@ -107,4 +130,11 @@ export class FileShareStore {
 
 function hashToken(value) {
   return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function safeToken(expectedHash, token) {
+  if (typeof token !== 'string') return false;
+  const expected = Buffer.from(expectedHash, 'hex');
+  const received = Buffer.from(hashToken(token), 'hex');
+  return expected.length === received.length && timingSafeEqual(expected, received);
 }
