@@ -17,7 +17,7 @@ Assinatura de código deve ser adicionada antes de distribuição pública.
 
 ## Updater Windows
 
-O pipeline `.github/workflows/release-windows.yml` gera uma release em rascunho e os artefatos assinados do updater. As chaves ficam nos Secrets/Variables do GitHub e nunca no repositório. Consulte [Atualizações](UPDATES.md).
+O pipeline `.github/workflows/release-windows.yml` publica a release e os artefatos assinados do updater. As chaves ficam nos Secrets/Variables do GitHub e nunca no repositório. Consulte [Atualizações](UPDATES.md).
 
 Publicar código, executar o workflow, validar o instalador e publicar a release são quatro estados diferentes. O aplicativo instalado consulta somente a última release publicada.
 

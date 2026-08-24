@@ -35,9 +35,9 @@ Nunca salve a chave privada ou a senha no Git, em `.env` ou no instalador.
 1. Atualize a versão em `package.json`, `src-tauri/Cargo.toml` e `src-tauri/tauri.conf.json`.
 2. Execute `npm run release:validate-version`.
 3. No GitHub Actions, execute manualmente **Release Windows**.
-4. O workflow testa, compila, assina e cria uma release em rascunho.
-5. Instale e valide o artefato em ambiente limpo.
-6. Publique a release. Somente releases publicadas aparecem em `/releases/latest`.
+4. O workflow testa, compila, assina e publica a release.
+5. Confirme no GitHub que NSIS, MSI, assinaturas e `latest.json` foram anexados.
+6. Valide que a release aparece em `/releases/latest`; somente então a atualização está disponível aos usuários.
 
 O workflow gera temporariamente `src-tauri/tauri.release.conf.json`; o arquivo é ignorado pelo Git e recebe a chave pública pela variável protegida.
 

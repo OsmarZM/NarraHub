@@ -4,7 +4,7 @@ Aplicativo local-first para escrever livros, organizar universos narrativos e si
 
 O NarraHub é distribuído como aplicativo Windows e Android com Tauri 2. A interface Angular é empacotada dentro do aplicativo; não existe servidor web externo ou navegador no uso de produção.
 
-## Versão 0.6.0
+## Versão 0.7.0
 
 Fluxos implementados:
 
@@ -24,8 +24,17 @@ Fluxos implementados:
 - isolamento de coleções e respostas assíncronas por universo;
 - layout responsivo para desktop e telas móveis;
 - controles nativos de minimizar, maximizar/restaurar e fechar;
-- links temporários de leitura com seleção de universo, capítulos e fichas;
-- servidor efêmero embutido, dados cifrados somente em memória e Cloudflare Quick Tunnel incluído no instalador Windows;
+- exclusão segura de histórias, livros, capítulos, entidades e ligações;
+- editor responsivo com largura de leitura, resumo recolhível e fichas fora da área de escrita;
+- corretor ortográfico, autocomplete de personagens e vocabulário recorrente;
+- avatares de personagens antes de menções e anotações por voz editáveis;
+- comandos rápidos e atalhos de prompt personalizados no editor;
+- IA opcional por API própria ou runtime local gerenciado e recomendado conforme o hardware;
+- ações de IA sobre seleção, resumo de capítulo e criação/resumo de entidades;
+- tags universais separadas dos campos próprios das fichas;
+- sessões colaborativas com seleção de vários universos e permissões de leitura, anotação ou proposta de edição;
+- revisão local com aprovação individual ou em lote antes de alterar o conteúdo canônico;
+- servidor efêmero embutido, conteúdo e contribuições cifrados e Cloudflare Quick Tunnel incluído no instalador Windows;
 - verificação e instalação de atualizações assinadas pelo updater do Tauri;
 - pipeline manual de releases Windows no GitHub Actions;
 - encerramento automático dos links ao fechar o aplicativo ou parar a sessão.
@@ -52,7 +61,9 @@ Consulte:
 - [Sincronização](docs/SYNC.md)
 - [Distribuição](docs/DISTRIBUTION.md)
 - [Compartilhamento online](docs/ONLINE_SHARING.md)
+- [Assistência à escrita e IA](docs/WRITING_ASSISTANCE.md)
 - [Atualizações](docs/UPDATES.md)
+- [Histórico de versões](CHANGELOG.md)
 
 ## Desenvolvimento
 
@@ -112,6 +123,6 @@ O projeto deve ser validado em aparelho físico antes de uma publicação na Pla
 
 A sincronização 0.2 usa um código temporário de seis dígitos para autorizar uma sessão na rede local. Use somente em uma rede Wi-Fi privada. Não exponha a porta do NarraHub na internet.
 
-O compartilhamento online 0.6 é um fluxo separado e somente para leitura. A seleção é cifrada antes de passar pelo túnel e a chave fica no fragmento do link. Isso não torna a sincronização Wi-Fi 0.2 criptografada.
+O compartilhamento online 0.7 é separado da sincronização Wi-Fi. Conteúdo, anotações e propostas são cifrados antes de passar pelo túnel e a chave fica no fragmento do link. Propostas recebidas só alteram o banco local depois da aprovação do autor. Isso não torna a sincronização Wi-Fi 0.2 criptografada.
 
 Criptografia de transporte, descoberta mDNS e identidade persistente de dispositivos estão planejadas para a próxima revisão do protocolo. Até essa revisão, o aplicativo não apresenta a sincronização como segura para redes públicas.

@@ -18,10 +18,12 @@ O esquema principal contém:
 
 - `universes`, `stories`, `books`, `chapters`;
 - `entities`, `entity_attributes`, `entity_templates`;
+- `content_tags`, `content_tag_assignments`;
 - `relations`, `mentions`;
 - `timeline_events`, `planning_items`, `attachments`;
 - `chapter_revisions`, `change_log`;
 - `devices`, `sync_peers`, `sync_events`, `sync_conflicts`.
+- `collaboration_sessions`, `collaboration_contributions`.
 
 ### Integração nativa
 
@@ -29,15 +31,21 @@ Rust controla janela, rede local e operações que não devem ser expostas diret
 
 ### Compartilhamento online
 
-O NarraHub Share é um serviço opcional e separado do banco local. A interface cifra uma cópia de leitura com AES-256-GCM; o servidor armazena apenas o envelope cifrado e nunca participa da sincronização editável.
+O NarraHub Share é um serviço opcional e separado da sincronização entre dispositivos. A interface cifra o workspace selecionado e as contribuições com AES-256-GCM; o servidor armazena apenas envelopes opacos. Anotações e propostas recebidas entram numa fila SQLite local, e o conteúdo canônico só muda após aprovação explícita.
 
 ### Atualizações
 
 O plugin updater do Tauri verifica um manifesto `latest.json` publicado no GitHub Releases. Artefatos sem assinatura válida são recusados. A configuração contendo a chave pública é injetada somente no build oficial de release.
 
+### Assistência à escrita
+
+Ortografia, autocomplete, avatares de personagens e anotação por voz ficam na camada do editor. Tags categorizam qualquer conteúdo do universo; campos personalizáveis existem somente como `entity_attributes` nas fichas. Origem e destino de cena são colunas próprias do capítulo. A IA é opcional, pode usar o runtime local gerenciado ou uma API compatível configurada pelo usuário e recebe um contexto compacto; detalhes do contrato estão em `docs/WRITING_ASSISTANCE.md`.
+
 ## Regras
 
 - IDs são UUIDs e não dependem de sequência local.
+- Uma migration publicada ou aplicada nunca é alterada; qualquer evolução do esquema recebe uma nova versão para preservar o checksum registrado pelo `tauri-plugin-sql`.
+- Contribuições de sessões compartilhadas entram numa fila local; conteúdo canônico só muda após aprovação explícita do autor.
 - Datas são armazenadas em UTC no formato ISO compatível com SQLite.
 - Toda exclusão em cascata respeita foreign keys.
 - Capítulos geram revisão antes de alteração de título ou conteúdo.
@@ -52,5 +60,6 @@ O plugin updater do Tauri verifica um manifesto `latest.json` publicado no GitHu
 - Exclusões ainda não são propagadas como tombstones entre dispositivos.
 - A sincronização inicial não possui criptografia de transporte.
 - Descoberta automática mDNS ainda não está implementada.
+- A memória criativa atual registra apenas orientações explícitas e decisões aceitas, com limite e escopo por universo. Busca semântica/embeddings e o AI Router ainda não estão implementados.
 
 Esses limites são documentados para não transformar uma entrega parcial em uma promessa falsa.
