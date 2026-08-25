@@ -4,6 +4,10 @@
 
 Manter o NarraHub funcional sem internet, com persistência por dispositivo e evolução controlada do esquema.
 
+O plano incremental, os gates de atualização e os limites de cada fase estão em [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). Decisões permanentes ficam registradas em [`ADR/`](ADR/).
+
+O primeiro incremento de backup e diagnóstico da Fase 1 está descrito em [`BACKUP_AND_RECOVERY.md`](BACKUP_AND_RECOVERY.md).
+
 ## Camadas
 
 ### Interface

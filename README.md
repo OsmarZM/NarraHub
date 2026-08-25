@@ -58,6 +58,7 @@ SQLite de outro dispositivo
 Consulte:
 
 - [Arquitetura](docs/ARCHITECTURE.md)
+- [Plano de evolução arquitetural](docs/ARCHITECTURE_EVOLUTION_PLAN.md)
 - [Sincronização](docs/SYNC.md)
 - [Distribuição](docs/DISTRIBUTION.md)
 - [Compartilhamento online](docs/ONLINE_SHARING.md)

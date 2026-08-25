@@ -37,6 +37,8 @@ Os modos local e API própria usam o contrato HTTP compatível com OpenAI em `PO
 8. A resposta aparece no próprio balão e substitui a seleção ou entra no cursor somente após ação explícita.
 9. O painel recolhível do capítulo também pode gerar e persistir um resumo editorial por IA.
 
+O contexto possui orçamento por provedor. No motor local, o NarraHub preserva o início identificador do universo e o final que contém o trecho em edição, omitindo o miolo quando necessário. Com o prompt inteiro limitado, a tarefa permanece antes do contexto no formato que o Qwen instalado segue corretamente. Se o modelo apenas repetir a instrução ou, numa transformação obrigatória, devolver o texto original, o cliente tenta novamente uma vez e depois apresenta erro explícito.
+
 ### Fichas de entidades
 
 - Tags são uma função de categorização universal e não criam campos.
@@ -84,4 +86,5 @@ Os modos local e API própria usam o contrato HTTP compatível com OpenAI em `PO
 - A instalação gerenciada inicial está disponível no Windows 64 bits. Android e outros sistemas continuam exigindo uma implementação de runtime específica da plataforma.
 - O download pode superar 2 GB no perfil Advanced. Espaço livre e memória mínima são validados antes da instalação.
 - Respostas de IA podem conter erros. Nada é aplicado automaticamente e o escritor continua responsável por revisar o resultado.
+- O perfil local usa os parâmetros de amostragem recomendados para o Qwen3 em modo sem raciocínio e limita a saída para caber no tempo de geração em CPU.
 - A V1 implementa o runtime gerenciado, contexto compacto e memória explícita de decisões aceitas. Perfil comportamental inferido, embeddings e AI Router permanecem como evolução separada; não há fine-tuning contínuo.
