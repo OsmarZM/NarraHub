@@ -11,6 +11,7 @@ declare const __TAURI__: any;
 interface Database {
   execute(query: string, bindValues?: unknown[]): Promise<{ rowsAffected: number; lastInsertId: number }>;
   select<T = unknown>(query: string, bindValues?: unknown[]): Promise<T[]>;
+  close(db?: string): Promise<boolean>;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -51,6 +52,19 @@ export class DatabaseService {
   async selectOne<T = unknown>(query: string, params: unknown[] = []): Promise<T | null> {
     const results = await this.select<T>(query, params);
     return results.length > 0 ? results[0] : null;
+  }
+
+  async close(): Promise<void> {
+    if (this.initPromise) await this.initPromise;
+    if (!this.db) {
+      this.initPromise = null;
+      return;
+    }
+    const closed = await this.db.close();
+    if (!closed) throw new Error('O pool SQLite recusou o encerramento necessário para restaurar o backup.');
+    this.db = null;
+    this.initPromise = null;
+    console.log('[NarraHub] Database connection pool closed');
   }
 
   // Utility: generate UUID v4

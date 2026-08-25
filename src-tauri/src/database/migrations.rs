@@ -1,6 +1,24 @@
 /// NarraHub — Database Migrations
 /// Creates all tables on first run
 
+pub const LATEST_SCHEMA_VERSION: i64 = 10;
+
+pub fn sql_for_version(version: i64) -> Option<&'static str> {
+    match version {
+        1 => Some(MIGRATION_V1),
+        2 => Some(MIGRATION_V2),
+        3 => Some(MIGRATION_V3),
+        4 => Some(MIGRATION_V4),
+        5 => Some(MIGRATION_V5),
+        6 => Some(MIGRATION_V6),
+        7 => Some(MIGRATION_V7),
+        8 => Some(MIGRATION_V8),
+        9 => Some(MIGRATION_V9),
+        10 => Some(MIGRATION_V10),
+        _ => None,
+    }
+}
+
 pub const MIGRATION_V1: &str = r#"
 -- ============================================
 -- NarraHub Database Schema v1
@@ -451,6 +469,52 @@ CREATE INDEX IF NOT EXISTS idx_collaboration_sessions_status ON collaboration_se
 CREATE INDEX IF NOT EXISTS idx_collaboration_contributions_review ON collaboration_contributions(session_id, status, sequence);
 "#;
 
+pub const MIGRATION_V10: &str = r#"
+CREATE TABLE content_tag_assignments_v10 (
+    id TEXT PRIMARY KEY NOT NULL,
+    tag_id TEXT NOT NULL,
+    owner_type TEXT NOT NULL CHECK(owner_type IN ('universe','story','book','chapter','entity','timeline','planning')),
+    owner_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(tag_id, owner_type, owner_id),
+    FOREIGN KEY (tag_id) REFERENCES content_tags(id) ON DELETE CASCADE
+);
+
+INSERT INTO content_tag_assignments_v10 (id, tag_id, owner_type, owner_id, created_at)
+SELECT id, tag_id, owner_type, owner_id, created_at FROM content_tag_assignments;
+
+DROP TRIGGER IF EXISTS trg_story_metadata_delete;
+DROP TRIGGER IF EXISTS trg_book_metadata_delete;
+DROP TRIGGER IF EXISTS trg_chapter_metadata_delete;
+DROP TRIGGER IF EXISTS trg_entity_metadata_delete;
+DROP TABLE content_tag_assignments;
+ALTER TABLE content_tag_assignments_v10 RENAME TO content_tag_assignments;
+CREATE INDEX idx_content_tag_owner ON content_tag_assignments(owner_type, owner_id);
+
+CREATE TRIGGER trg_story_metadata_delete AFTER DELETE ON stories BEGIN
+  DELETE FROM content_tag_assignments WHERE owner_type = 'story' AND owner_id = OLD.id;
+  DELETE FROM content_custom_fields WHERE owner_type = 'story' AND owner_id = OLD.id;
+END;
+CREATE TRIGGER trg_book_metadata_delete AFTER DELETE ON books BEGIN
+  DELETE FROM content_tag_assignments WHERE owner_type = 'book' AND owner_id = OLD.id;
+  DELETE FROM content_custom_fields WHERE owner_type = 'book' AND owner_id = OLD.id;
+END;
+CREATE TRIGGER trg_chapter_metadata_delete AFTER DELETE ON chapters BEGIN
+  DELETE FROM content_tag_assignments WHERE owner_type = 'chapter' AND owner_id = OLD.id;
+  DELETE FROM content_custom_fields WHERE owner_type = 'chapter' AND owner_id = OLD.id;
+END;
+CREATE TRIGGER trg_entity_metadata_delete AFTER DELETE ON entities BEGIN
+  DELETE FROM content_tag_assignments WHERE owner_type = 'entity' AND owner_id = OLD.id;
+  DELETE FROM content_custom_fields WHERE owner_type = 'entity' AND owner_id = OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_timeline_metadata_delete AFTER DELETE ON timeline_events BEGIN
+  DELETE FROM content_tag_assignments WHERE owner_type = 'timeline' AND owner_id = OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_planning_metadata_delete AFTER DELETE ON planning_items BEGIN
+  DELETE FROM content_tag_assignments WHERE owner_type = 'planning' AND owner_id = OLD.id;
+END;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,5 +614,49 @@ mod tests {
             )
             .expect("load contribution");
         assert_eq!(status, "pending");
+    }
+
+    #[test]
+    fn v10_allows_tags_on_timeline_and_planning_previews() {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch(MIGRATION_V1)
+            .expect("apply migration v1");
+        connection
+            .execute_batch(MIGRATION_V2)
+            .expect("apply migration v2");
+        connection
+            .execute_batch(MIGRATION_V3)
+            .expect("apply migration v3");
+        connection
+            .execute_batch(MIGRATION_V6)
+            .expect("apply migration v6");
+        connection
+            .execute_batch(MIGRATION_V10)
+            .expect("apply migration v10");
+        connection
+            .execute(
+                "INSERT INTO universes (id, name) VALUES ('u1', 'Mundo')",
+                [],
+            )
+            .expect("insert universe");
+        connection.execute(
+            "INSERT INTO content_tags (id, universe_id, name, created_at) VALUES ('t1', 'u1', 'Importante', datetime('now'))",
+            [],
+        ).expect("insert tag");
+        connection.execute(
+            "INSERT INTO content_tag_assignments (id, tag_id, owner_type, owner_id, created_at) VALUES ('a1', 't1', 'timeline', 'event1', datetime('now'))",
+            [],
+        ).expect("tag timeline");
+        connection.execute(
+            "INSERT INTO content_tag_assignments (id, tag_id, owner_type, owner_id, created_at) VALUES ('a2', 't1', 'planning', 'plan1', datetime('now'))",
+            [],
+        ).expect("tag planning");
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM content_tag_assignments WHERE owner_type IN ('timeline','planning')",
+            [],
+            |row| row.get(0),
+        ).expect("count assignments");
+        assert_eq!(count, 2);
     }
 }

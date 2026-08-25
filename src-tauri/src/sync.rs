@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 const TABLES: &[&str] = &[
@@ -262,12 +262,7 @@ fn handle_connection(
 }
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let directory = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    Ok(directory.join("narrahub.db"))
+    crate::database::app_database_path(app)
 }
 
 fn export_snapshot(path: &Path) -> Result<Snapshot, String> {
