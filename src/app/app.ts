@@ -5,11 +5,12 @@ import { CdkDragDrop, DragDropModule, moveItemInArray } from '@angular/cdk/drag-
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
-  Attachment, Book, BookOption, Chapter, ChapterOption, ContentTag, DEFAULT_ATTRIBUTES, Entity, EntityAttribute, EntityType, EntityWithDetails, HistoryEntry,
+  Attachment, Book, BookOption, Chapter, ChapterOption, ContentTag, ContentTagAssignment, DEFAULT_ATTRIBUTES, Entity, EntityAttribute, EntityType, EntityWithDetails, HistoryEntry,
   MentionOccurrence, MetadataOwnerType, PlanningItem, PlanningStatus, RelationCard, Story, SyncServerStatus, TimelineEvent, UniverseWithStats,
 } from './core/models';
 import { BookService } from './core/services/book.service';
 import { AttachmentService } from './core/services/attachment.service';
+import { BackupManifest, BackupService, BackupValidation, DatabaseHealthReport, RestorePreparation } from './core/services/backup.service';
 import { AiMode, AiModelProfile, AiService } from './core/services/ai.service';
 import { ChapterService } from './core/services/chapter.service';
 import { CollaborationContribution, CollaborationService, CollaborationSession, SharePermission } from './core/services/collaboration.service';
@@ -27,6 +28,13 @@ import { WorkspaceService } from './core/services/workspace.service';
 import { AppState } from './core/state/app.state';
 import { UniversePickerComponent } from './features/universe-picker/universe-picker.component';
 import { ConnectionsGraphComponent } from './features/connections/connections-graph.component';
+import {
+  ProductionReplicaCatalog,
+  ProductionReplicaChapter,
+  ProductionReplicaService,
+  ProductionReplicaStatus,
+  ReplicaCatalogItem,
+} from './core/services/production-replica.service';
 import { AiWritingRequest, WritingEditorComponent } from './features/writing/writing-editor.component';
 import { AppShellComponent } from './shell/app-shell/app-shell.component';
 import { ContextualInspectorComponent } from './shell/contextual-inspector/contextual-inspector.component';
@@ -62,12 +70,19 @@ interface WritingCharacterInsight {
 }
 
 type DeleteKind = 'story' | 'book' | 'chapter' | 'entity' | 'relation';
+type RenameKind = 'universe' | 'story' | 'book' | 'chapter' | 'entity' | 'timeline' | 'planning';
 
 interface PendingDelete {
   kind: DeleteKind;
   id: string;
   name: string;
   detail: string;
+}
+
+interface PendingRename {
+  kind: RenameKind;
+  id: string;
+  name: string;
 }
 
 interface MetadataTarget {
@@ -117,6 +132,7 @@ export class App implements OnInit, OnDestroy {
   private readonly storyService = inject(StoryService);
   private readonly bookService = inject(BookService);
   private readonly attachmentService = inject(AttachmentService);
+  private readonly backupService = inject(BackupService);
   private readonly chapterService = inject(ChapterService);
   private readonly collaborationService = inject(CollaborationService);
   private readonly entityService = inject(EntityService);
@@ -126,6 +142,7 @@ export class App implements OnInit, OnDestroy {
   private readonly workspaceService = inject(WorkspaceService);
   private readonly syncService = inject(SyncService);
   private readonly updateService = inject(UpdateService);
+  private readonly productionReplicaService = inject(ProductionReplicaService);
 
   readonly searchQuery = signal('');
   readonly activeNav = signal('inicio');
@@ -169,14 +186,22 @@ export class App implements OnInit, OnDestroy {
   readonly selectedCollaborationSessionId = signal<string | null>(null);
   readonly updateBusy = signal(false);
   readonly updateProgress = signal(0);
-  readonly updatePhase = signal<'idle' | 'checking' | 'available' | 'downloading' | 'current' | 'error'>('idle');
+  readonly updatePhase = signal<'idle' | 'checking' | 'available' | 'backing-up' | 'downloading' | 'current' | 'error'>('idle');
   readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.7.3', availableVersion: null, notes: '', publishedAt: null });
   readonly updateError = signal('');
   readonly updatePromptDismissed = signal(false);
+  readonly backupBusy = signal(false);
+  readonly backupError = signal('');
+  readonly databaseHealth = signal<DatabaseHealthReport | null>(null);
+  readonly backups = signal<BackupManifest[]>([]);
+  readonly lastBackupValidation = signal<BackupValidation | null>(null);
+  readonly pendingRestoreBackup = signal<BackupManifest | null>(null);
+  readonly restorePreparation = signal<RestorePreparation | null>(null);
   readonly syncStatus = signal<SyncServerStatus>({ running: false, address: null, pairing_code: null, device_name: 'Meu computador' });
   readonly lastOpenedUniverseId = signal<string | null>(localStorage.getItem('narrahub.lastUniverseId'));
   readonly pendingDeleteUniverse = signal<UniverseWithStats | null>(null);
   readonly pendingDelete = signal<PendingDelete | null>(null);
+  readonly pendingRename = signal<PendingRename | null>(null);
   readonly aiBusy = signal(false);
   readonly aiResponse = signal('');
   readonly aiError = signal('');
@@ -190,11 +215,18 @@ export class App implements OnInit, OnDestroy {
   readonly metadataTarget = signal<MetadataTarget | null>(null);
   readonly metadataTags = signal<ContentTag[]>([]);
   readonly metadataOwnerTags = signal<ContentTag[]>([]);
+  readonly libraryPreviewTags = signal<Record<string, ContentTag[]>>({});
+  readonly workspacePreviewTags = signal<Record<string, ContentTag[]>>({});
   readonly entityTags = signal<ContentTag[]>([]);
   readonly chapterTags = signal<ContentTag[]>([]);
   readonly settingsSection = signal<SettingsSection>('general');
   readonly expandedStoryIds = signal<Set<string>>(new Set());
   readonly expandedBookIds = signal<Set<string>>(new Set());
+  readonly productionReplicaStatus = signal<ProductionReplicaStatus | null>(null);
+  readonly productionReplicaCatalog = signal<ProductionReplicaCatalog | null>(null);
+  readonly productionReplicaChapter = signal<ProductionReplicaChapter | null>(null);
+  readonly productionReplicaBusy = signal(false);
+  readonly productionReplicaError = signal('');
 
   newUniverseName = '';
   newUniverseDesc = '';
@@ -231,6 +263,8 @@ export class App implements OnInit, OnDestroy {
   aiPrompt = '';
   newTagName = '';
   newTagColor = '#7d3650';
+  renameValue = '';
+  restoreConfirmation = '';
   deviceName = localStorage.getItem('narrahub.deviceName') || 'Meu computador';
   remoteAddress = '';
   pairingCode = '';
@@ -313,6 +347,7 @@ export class App implements OnInit, OnDestroy {
       const currentVersion = await this.updateService.currentVersion();
       this.updateInfo.update((info) => ({ ...info, currentVersion }));
       if (await this.updateService.isConfigured()) setTimeout(() => void this.checkForUpdates(true), 1800);
+      void this.initializeProductionReplica();
     } catch (error) {
       this.reportError('Não foi possível abrir o banco local do NarraHub.', error);
     } finally { this.isLoading.set(false); }
@@ -345,7 +380,12 @@ export class App implements OnInit, OnDestroy {
     if (isTauri()) await getCurrentWindow().close();
   }
   async toggleFullscreen(): Promise<void> { if (isTauri()) { const win = getCurrentWindow(); await win.setFullscreen(!(await win.isFullscreen())); } }
-  async loadUniverses(): Promise<void> { this.universes.set(await this.universeService.list()); }
+  async loadUniverses(): Promise<void> {
+    const universes = await this.universeService.list();
+    this.universes.set(universes);
+    const assignments = await this.metadataService.listAssignments(universes.map((universe) => universe.id), ['universe']);
+    this.libraryPreviewTags.set(this.groupTagAssignments(assignments));
+  }
 
   async selectNav(item: SidebarNavItem): Promise<void> {
     if (item.needsUniverse && !this.appState.activeUniverse()) {
@@ -355,7 +395,7 @@ export class App implements OnInit, OnDestroy {
     this.activeNav.set(item.id);
     if (item.id === 'inicio') { await this.returnToLibrary(); return; }
     if (item.id === 'ajuda') { this.showInfo('Ajuda e feedback serão conectados ao fluxo nativo em uma próxima fase.'); return; }
-    if (item.id === 'configuracoes') { this.appState.openSettings(); return; }
+    if (item.id === 'configuracoes') { this.appState.openSettings(); void this.refreshBackupStatus(); return; }
     if (item.id === 'escrita') this.appState.openEditor();
     else if (item.id === 'entidades') this.appState.openEntityList(null);
     else if (item.id === 'conexoes') { this.appState.openGraph(); await this.loadRelations(); }
@@ -448,11 +488,72 @@ export class App implements OnInit, OnDestroy {
     return ({ story: 'História', book: 'Livro', chapter: 'Capítulo', entity: 'Entidade', relation: 'Ligação' } as Record<DeleteKind, string>)[kind];
   }
 
+  requestRename(kind: RenameKind, id: string, name: string, event?: Event): void {
+    event?.stopPropagation();
+    this.pendingRename.set({ kind, id, name });
+    this.renameValue = name;
+    this.appState.openModal('rename-item');
+  }
+
+  renameKindLabel(kind: RenameKind): string {
+    return ({
+      universe: 'Universo', story: 'História', book: 'Livro', chapter: 'Capítulo', entity: 'Entidade', timeline: 'Evento', planning: 'Item de planejamento',
+    } as Record<RenameKind, string>)[kind];
+  }
+
+  async confirmRename(): Promise<void> {
+    const pending = this.pendingRename();
+    const name = this.renameValue.trim();
+    if (!pending || !name) return;
+    try {
+      await this.saveChapterNow();
+      if (pending.kind === 'universe') {
+        await this.universeService.update(pending.id, { name });
+        this.universes.update((items) => items.map((item) => item.id === pending.id ? { ...item, name, updated_at: this.db.now() } : item));
+        this.appState.activeUniverse.update((item) => item?.id === pending.id ? { ...item, name, updated_at: this.db.now() } : item);
+      } else if (pending.kind === 'story') {
+        await this.storyService.update(pending.id, { name });
+        this.stories.update((items) => items.map((item) => item.id === pending.id ? { ...item, name } : item));
+        this.activeStory.update((item) => item?.id === pending.id ? { ...item, name } : item);
+        this.universeBooks.update((items) => items.map((item) => item.story_id === pending.id ? { ...item, story_name: name } : item));
+        this.universeChapters.update((items) => items.map((item) => item.story_id === pending.id ? { ...item, story_name: name } : item));
+        await this.loadPlanning();
+      } else if (pending.kind === 'book') {
+        await this.bookService.update(pending.id, { name });
+        this.books.update((items) => items.map((item) => item.id === pending.id ? { ...item, name } : item));
+        this.activeBook.update((item) => item?.id === pending.id ? { ...item, name } : item);
+        this.universeBooks.update((items) => items.map((item) => item.id === pending.id ? { ...item, name } : item));
+        this.universeChapters.update((items) => items.map((item) => item.book_id === pending.id ? { ...item, book_name: name } : item));
+        await this.loadPlanning();
+      } else if (pending.kind === 'chapter') {
+        await this.chapterService.updateTitle(pending.id, name);
+        this.chapters.update((items) => items.map((item) => item.id === pending.id ? { ...item, title: name } : item));
+        this.universeChapters.update((items) => items.map((item) => item.id === pending.id ? { ...item, title: name } : item));
+        this.activeChapter.update((item) => item?.id === pending.id ? { ...item, title: name } : item);
+        if (this.activeChapter()?.id === pending.id) { this.editorTitle.set(name); this.saveMessage.set('Salvo'); }
+        await this.loadPlanning();
+      } else if (pending.kind === 'entity') {
+        await this.entityService.update(pending.id, { name });
+        this.entities.update((items) => items.map((item) => item.id === pending.id ? { ...item, name } : item));
+        this.activeEntity.update((item) => item?.id === pending.id ? { ...item, name } : item);
+        await Promise.all([this.loadRelations(), this.refreshMentionOccurrences()]);
+      } else if (pending.kind === 'timeline') {
+        await this.workspaceService.updateTimelineTitle(pending.id, name);
+        this.timeline.update((items) => items.map((item) => item.id === pending.id ? { ...item, title: name } : item));
+      } else {
+        await this.workspaceService.updatePlanningTitle(pending.id, name);
+        this.planning.update((items) => items.map((item) => item.id === pending.id ? { ...item, title: name } : item));
+      }
+      this.pendingRename.set(null); this.renameValue = ''; this.appState.closeModal();
+      this.showInfo(`${this.renameKindLabel(pending.kind)} renomeado(a).`);
+    } catch (error) { this.reportError(`Não foi possível renomear ${pending.name}.`, error); }
+  }
+
   async returnToLibrary(): Promise<void> {
     await this.saveChapterNow(); this.workspaceEpoch += 1; this.appState.goHome(); this.activeNav.set('inicio'); this.searchQuery.set(''); this.resetWorkspaceData();
   }
 
-  openSettings(): void { this.searchQuery.set(''); this.activeNav.set('configuracoes'); this.appState.openSettings(); }
+  openSettings(): void { this.searchQuery.set(''); this.activeNav.set('configuracoes'); this.appState.openSettings(); void this.refreshBackupStatus(); }
 
   openShareModal(): void {
     if (!this.appState.activeUniverse()) { this.showInfo('Abra um universo antes de compartilhar.'); return; }
@@ -467,16 +568,17 @@ export class App implements OnInit, OnDestroy {
     const id = this.appState.activeUniverseId(); if (!id) return;
     const epoch = this.workspaceEpoch;
     try {
-      const [stories, books, entities, chapters, timeline, planning] = await Promise.all([
+      const [stories, books, entities, chapters, timeline, planning, tagAssignments] = await Promise.all([
         this.storyService.listByUniverse(id),
         this.bookService.listByUniverse(id),
         this.entityService.listByUniverse(id),
         this.chapterService.listByUniverse(id),
         this.workspaceService.listTimeline(id),
         this.workspaceService.listPlanning(id),
+        this.metadataService.listAssignments([id]),
       ]);
       if (epoch !== this.workspaceEpoch || this.appState.activeUniverseId() !== id) return;
-      this.stories.set(stories); this.universeBooks.set(books); this.entities.set(entities); this.universeChapters.set(chapters); this.timeline.set(timeline); this.planning.set(planning);
+      this.stories.set(stories); this.universeBooks.set(books); this.entities.set(entities); this.universeChapters.set(chapters); this.timeline.set(timeline); this.planning.set(planning); this.workspacePreviewTags.set(this.groupTagAssignments(tagAssignments));
       this.expandedStoryIds.set(new Set(stories.slice(0, 1).map((story) => story.id)));
       this.expandedBookIds.set(new Set(books.slice(0, 1).map((book) => book.id)));
       if (this.stories().length) await this.selectStory(this.stories()[0]); else this.clearWritingSelection();
@@ -940,7 +1042,7 @@ export class App implements OnInit, OnDestroy {
 
   async openMetadata(type: MetadataOwnerType, id: string, name: string, event?: Event): Promise<void> {
     event?.stopPropagation();
-    const universeId = this.appState.activeUniverseId(); if (!universeId) return;
+    const universeId = type === 'universe' ? id : this.appState.activeUniverseId(); if (!universeId) return;
     this.metadataTarget.set({ type, id, name }); this.newTagName = '';
     const [tags, ownerTags] = await Promise.all([
       this.metadataService.listTags(universeId), this.metadataService.listOwnerTags(type, id),
@@ -950,8 +1052,13 @@ export class App implements OnInit, OnDestroy {
 
   isMetadataTagAssigned(id: string): boolean { return this.metadataOwnerTags().some((tag) => tag.id === id); }
 
+  previewTags(type: MetadataOwnerType, id: string): ContentTag[] {
+    const key = this.tagPreviewKey(type, id);
+    return this.workspacePreviewTags()[key] ?? this.libraryPreviewTags()[key] ?? [];
+  }
+
   async createMetadataTag(): Promise<void> {
-    const universeId = this.appState.activeUniverseId(); const target = this.metadataTarget(); const name = this.newTagName.trim();
+    const target = this.metadataTarget(); const universeId = target?.type === 'universe' ? target.id : this.appState.activeUniverseId(); const name = this.newTagName.trim();
     if (!universeId || !target || !name) return;
     try {
       const tag = await this.metadataService.createTag(universeId, name, this.newTagColor);
@@ -1054,7 +1161,188 @@ export class App implements OnInit, OnDestroy {
     return this.ai.localStatus().profiles.find((profile) => profile.id === this.ai.localStatus().installedProfile) || this.ai.localStatus().recommended;
   }
 
-  selectSettingsSection(section: SettingsSection): void { this.settingsSection.set(section); }
+  selectSettingsSection(section: SettingsSection): void { this.settingsSection.set(section); if (section === 'general') void this.refreshBackupStatus(); }
+
+  async refreshBackupStatus(): Promise<void> {
+    if (!isTauri() || this.backupBusy()) return;
+    this.backupBusy.set(true); this.backupError.set('');
+    try {
+      const [health, backups] = await Promise.all([this.backupService.health(), this.backupService.list()]);
+      this.databaseHealth.set(health); this.backups.set(backups);
+    } catch (error) {
+      this.backupError.set(error instanceof Error ? error.message : String(error));
+    } finally { this.backupBusy.set(false); }
+  }
+
+  async createManualBackup(): Promise<void> {
+    if (this.backupBusy()) return;
+    await this.saveChapterNow();
+    this.backupBusy.set(true); this.backupError.set(''); this.lastBackupValidation.set(null);
+    try {
+      const manifest = await this.backupService.create('manual');
+      const validation = await this.backupService.validate(manifest.backupId);
+      this.lastBackupValidation.set(validation);
+      this.backups.set(await this.backupService.list());
+      this.databaseHealth.set(validation.databaseHealth);
+      if (!validation.valid) throw new Error(validation.errors.join(' '));
+      this.showInfo('Backup local criado e validado.');
+    } catch (error) {
+      this.backupError.set(error instanceof Error ? error.message : String(error));
+      this.reportError('Não foi possível criar um backup válido.', error);
+    } finally { this.backupBusy.set(false); }
+  }
+
+  async validateBackup(backupId: string): Promise<void> {
+    if (this.backupBusy()) return;
+    this.backupBusy.set(true); this.backupError.set('');
+    try {
+      const validation = await this.backupService.validate(backupId);
+      this.lastBackupValidation.set(validation);
+      if (validation.valid) this.showInfo('Backup íntegro e compatível com o manifesto.');
+      else this.backupError.set(validation.errors.join(' '));
+    } catch (error) {
+      this.backupError.set(error instanceof Error ? error.message : String(error));
+    } finally { this.backupBusy.set(false); }
+  }
+
+  async initializeProductionReplica(): Promise<void> {
+    if (!isTauri() || this.productionReplicaBusy()) return;
+    try {
+      const status = await this.productionReplicaService.status();
+      this.productionReplicaStatus.set(status);
+      if (status.enabled && status.sourceExists) await this.refreshProductionReplica(true);
+    } catch (error) {
+      console.warn('[NarraHub] Production replica initialization failed.', error);
+    }
+  }
+
+  async refreshProductionReplica(silent = false): Promise<void> {
+    if (this.productionReplicaBusy()) return;
+    this.productionReplicaBusy.set(true);
+    this.productionReplicaError.set('');
+    try {
+      const status = await this.productionReplicaService.refresh();
+      this.productionReplicaStatus.set(status);
+      this.productionReplicaCatalog.set(await this.productionReplicaService.catalog());
+      if (!silent) this.showInfo('Réplica somente leitura da produção atualizada e validada.');
+    } catch (error) {
+      this.productionReplicaError.set(error instanceof Error ? error.message : String(error));
+    } finally {
+      this.productionReplicaBusy.set(false);
+    }
+  }
+
+  async loadProductionReplicaCatalog(): Promise<void> {
+    if (this.productionReplicaBusy() || !this.productionReplicaStatus()?.snapshotId) return;
+    this.productionReplicaBusy.set(true);
+    this.productionReplicaError.set('');
+    try {
+      this.productionReplicaCatalog.set(await this.productionReplicaService.catalog());
+    } catch (error) {
+      this.productionReplicaError.set(error instanceof Error ? error.message : String(error));
+    } finally {
+      this.productionReplicaBusy.set(false);
+    }
+  }
+
+  async openProductionReplicaChapter(chapterId: string): Promise<void> {
+    if (this.productionReplicaBusy()) return;
+    this.productionReplicaBusy.set(true);
+    this.productionReplicaError.set('');
+    try {
+      this.productionReplicaChapter.set(await this.productionReplicaService.chapter(chapterId));
+      this.appState.openModal('production-replica-chapter');
+    } catch (error) {
+      this.productionReplicaError.set(error instanceof Error ? error.message : String(error));
+    } finally {
+      this.productionReplicaBusy.set(false);
+    }
+  }
+
+  replicaStories(universeId: string): ReplicaCatalogItem[] {
+    return this.productionReplicaCatalog()?.stories.filter((story) => story.parentId === universeId) || [];
+  }
+
+  replicaBooks(storyId: string): ReplicaCatalogItem[] {
+    return this.productionReplicaCatalog()?.books.filter((book) => book.parentId === storyId) || [];
+  }
+
+  replicaChapters(bookId: string): ReplicaCatalogItem[] {
+    return this.productionReplicaCatalog()?.chapters.filter((chapter) => chapter.parentId === bookId) || [];
+  }
+
+  replicaChangeKindLabel(kind: string): string {
+    if (kind === 'universe') return 'Universo';
+    if (kind === 'story') return 'História';
+    if (kind === 'book') return 'Livro';
+    if (kind === 'chapter') return 'Capítulo';
+    return 'Entidade';
+  }
+
+  requestRestoreBackup(backup: BackupManifest): void {
+    this.pendingRestoreBackup.set(backup);
+    this.restorePreparation.set(null);
+    this.restoreConfirmation = '';
+    this.backupError.set('');
+    this.appState.openModal('restore-backup');
+  }
+
+  async prepareRestoreBackup(): Promise<void> {
+    const backup = this.pendingRestoreBackup();
+    if (!backup || this.backupBusy()) return;
+    if (this.shareSession().running || this.syncStatus().running) {
+      this.backupError.set('Encerre o compartilhamento e a sincronização antes de restaurar um backup.');
+      return;
+    }
+    await this.saveChapterNow();
+    if (this.saveMessage() === 'Erro ao salvar') {
+      this.backupError.set('A restauração foi interrompida porque o capítulo atual não pôde ser salvo.');
+      return;
+    }
+    this.backupBusy.set(true);
+    this.backupError.set('');
+    try {
+      const preparation = await this.backupService.prepareRestore(backup.backupId);
+      this.restorePreparation.set(preparation);
+      this.backups.set(await this.backupService.list());
+    } catch (error) {
+      this.backupError.set(error instanceof Error ? error.message : String(error));
+    } finally {
+      this.backupBusy.set(false);
+    }
+  }
+
+  async confirmRestoreBackup(): Promise<void> {
+    const preparation = this.restorePreparation();
+    if (!preparation || this.restoreConfirmation.trim() !== 'RESTAURAR' || this.backupBusy()) return;
+    this.backupBusy.set(true);
+    this.backupError.set('');
+    try {
+      await this.db.close();
+      await this.backupService.commitRestore(preparation.token);
+      await this.updateService.relaunch();
+    } catch (error) {
+      await this.db.init().catch((reopenError) => console.error('[NarraHub] Database reopen failed after restore error.', reopenError));
+      this.backupError.set(error instanceof Error ? error.message : String(error));
+      this.reportError('Não foi possível concluir a restauração recuperável.', error);
+    } finally {
+      this.backupBusy.set(false);
+    }
+  }
+
+  backupReasonLabel(reason: BackupManifest['reason']): string {
+    if (reason === 'manual') return 'Manual';
+    if (reason === 'pre_update') return 'Antes de atualizar';
+    if (reason === 'pre_migration') return 'Antes de migrar';
+    if (reason === 'pre_restore') return 'Antes de restaurar';
+    return 'Automático';
+  }
+
+  formatBackupSize(bytes: number): string {
+    if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+    if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+    return `${Math.max(1, Math.round(bytes / 1_000))} KB`;
+  }
 
   useRecommendedAi(): void {
     this.setAiMode('local');
@@ -1114,7 +1402,12 @@ export class App implements OnInit, OnDestroy {
         chapterText ? `${selected ? 'TEXTO SELECIONADO' : 'TRECHO ATUAL'}:\n${chapterText}` : 'TRECHO ATUAL: vazio',
         characters ? `PERSONAGENS CADASTRADOS:\n${characters}` : 'PERSONAGENS CADASTRADOS: nenhum',
       ].join('\n\n'));
-      this.aiResponse.set(await this.ai.complete(this.aiPrompt, context));
+      const request = this.aiWritingRequest();
+      this.aiResponse.set(await this.ai.complete(this.aiPrompt, context, {
+        sourceText: selected,
+        requireTransformation: request?.action === 'correct' || request?.action === 'rewrite' || request?.action === 'expand' || request?.action === 'shorten',
+        maxTokens: request?.action === 'expand' || request?.action === 'chapter' ? 560 : 420,
+      }));
     } catch (error) {
       console.error('[NarraHub] A IA não conseguiu concluir a solicitação.', error);
       this.aiError.set(error instanceof Error ? error.message : String(error));
@@ -1242,16 +1535,23 @@ export class App implements OnInit, OnDestroy {
   }
   async installUpdate(): Promise<void> {
     if (!this.updateInfo().availableVersion || this.updateBusy()) return;
-    this.updateBusy.set(true); this.updatePhase.set('downloading'); this.updateProgress.set(0); this.updateError.set('');
+    this.updateBusy.set(true); this.updatePhase.set('backing-up'); this.updateProgress.set(0); this.updateError.set(''); this.backupBusy.set(true);
     try {
       await this.saveChapterNow();
       if (this.saveMessage() === 'Erro ao salvar') throw new Error('A atualização foi interrompida porque o capítulo atual não pôde ser salvo.');
+      const backup = await this.backupService.create('pre_update');
+      const validation = await this.backupService.validate(backup.backupId);
+      this.lastBackupValidation.set(validation);
+      if (!validation.valid) throw new Error(`A atualização foi interrompida porque o backup de segurança não foi validado. ${validation.errors.join(' ')}`);
+      this.backups.set(await this.backupService.list());
+      this.databaseHealth.set(validation.databaseHealth);
+      this.backupBusy.set(false); this.updatePhase.set('downloading');
       await this.updateService.downloadAndInstall((progress) => this.updateProgress.set(progress));
       await this.updateService.relaunch();
     } catch (error) {
       this.updatePhase.set('error'); this.updateError.set(error instanceof Error ? error.message : String(error));
       this.reportError('Não foi possível instalar a atualização.', error);
-    } finally { this.updateBusy.set(false); }
+    } finally { this.updateBusy.set(false); this.backupBusy.set(false); }
   }
   dismissUpdatePrompt(): void { this.updatePromptDismissed.set(true); }
   saveDeviceName(): void { this.deviceName = this.deviceName.trim() || 'Meu computador'; localStorage.setItem('narrahub.deviceName', this.deviceName); this.showInfo('Nome do dispositivo salvo.'); }
@@ -1433,17 +1733,47 @@ export class App implements OnInit, OnDestroy {
   }
 
   private async reloadMetadataTarget(): Promise<void> {
-    const universeId = this.appState.activeUniverseId(); const target = this.metadataTarget(); if (!universeId || !target) return;
+    const target = this.metadataTarget(); const universeId = target?.type === 'universe' ? target.id : this.appState.activeUniverseId(); if (!universeId || !target) return;
     const [tags, ownerTags] = await Promise.all([
       this.metadataService.listTags(universeId), this.metadataService.listOwnerTags(target.type, target.id),
     ]);
     this.metadataTags.set(tags); this.metadataOwnerTags.set(ownerTags);
     if (target.type === 'chapter' && target.id === this.activeChapter()?.id) this.chapterTags.set(ownerTags);
     if (target.type === 'entity' && target.id === this.activeEntity()?.id) this.entityTags.set(ownerTags);
+    if (this.appState.activeUniverseId() === universeId) await this.refreshWorkspacePreviewTags(universeId);
+    if (target.type === 'universe') await this.refreshLibraryPreviewTags();
   }
 
+  private async refreshLibraryPreviewTags(): Promise<void> {
+    const universeIds = this.universes().map((universe) => universe.id);
+    const assignments = await this.metadataService.listAssignments(universeIds, ['universe']);
+    this.libraryPreviewTags.set(this.groupTagAssignments(assignments));
+  }
+
+  private async refreshWorkspacePreviewTags(universeId: string): Promise<void> {
+    const assignments = await this.metadataService.listAssignments([universeId]);
+    if (this.appState.activeUniverseId() === universeId) this.workspacePreviewTags.set(this.groupTagAssignments(assignments));
+  }
+
+  private groupTagAssignments(assignments: ContentTagAssignment[]): Record<string, ContentTag[]> {
+    const grouped: Record<string, ContentTag[]> = {};
+    for (const assignment of assignments) {
+      const key = this.tagPreviewKey(assignment.owner_type, assignment.owner_id);
+      (grouped[key] ??= []).push({
+        id: assignment.id,
+        universe_id: assignment.universe_id,
+        name: assignment.name,
+        color: assignment.color,
+        created_at: assignment.created_at,
+      });
+    }
+    return grouped;
+  }
+
+  private tagPreviewKey(type: MetadataOwnerType, id: string): string { return `${type}:${id}`; }
+
   private clearWritingSelection(): void { this.activeStory.set(null); this.activeBook.set(null); this.activeChapter.set(null); this.books.set([]); this.chapters.set([]); this.editorTitle.set(''); this.editorContent.set(''); this.chapterSummary.set(''); this.chapterTags.set([]); }
-  private resetWorkspaceData(): void { this.clearWritingSelection(); this.stories.set([]); this.universeBooks.set([]); this.universeChapters.set([]); this.entities.set([]); this.mentionOccurrences.set([]); this.timeline.set([]); this.planning.set([]); this.relations.set([]); this.history.set([]); this.activeEntity.set(null); this.entityGallery.set([]); this.entityTags.set([]); this.expandedStoryIds.set(new Set()); this.expandedBookIds.set(new Set()); }
+  private resetWorkspaceData(): void { this.clearWritingSelection(); this.stories.set([]); this.universeBooks.set([]); this.universeChapters.set([]); this.entities.set([]); this.mentionOccurrences.set([]); this.timeline.set([]); this.planning.set([]); this.relations.set([]); this.history.set([]); this.activeEntity.set(null); this.entityGallery.set([]); this.entityTags.set([]); this.workspacePreviewTags.set({}); this.expandedStoryIds.set(new Set()); this.expandedBookIds.set(new Set()); }
   private resetUniverseForm(): void { this.editingUniverseId = null; this.newUniverseName = ''; this.newUniverseDesc = ''; this.newUniverseCoverData = ''; }
   private fileToDataUrl(file: File): Promise<string> { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error ?? new Error('Falha ao ler a imagem.')); reader.readAsDataURL(file); }); }
   async loadCollaborationReview(): Promise<void> {

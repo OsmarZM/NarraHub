@@ -5,8 +5,8 @@ mod online_share;
 mod sync;
 
 use database::migrations::{
-    MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6,
-    MIGRATION_V7, MIGRATION_V8, MIGRATION_V9,
+    MIGRATION_V1, MIGRATION_V10, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5,
+    MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9,
 };
 use tauri_plugin_sql::{Migration, MigrationKind};
 
@@ -26,6 +26,8 @@ fn updater_configured(app: tauri::AppHandle) -> bool {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .manage(database::backup::BackupRuntimeState::default())
+        .manage(database::recovery::RestoreRuntimeState::default())
         .manage(std::sync::Mutex::new(sync::SyncState::default()))
         .manage(std::sync::Mutex::new(
             local_ai::LocalAiRuntimeState::default(),
@@ -102,6 +104,12 @@ pub fn run() {
                             sql: MIGRATION_V9,
                             kind: MigrationKind::Up,
                         },
+                        Migration {
+                            version: 10,
+                            description: "Allow tags on timeline and planning previews",
+                            sql: MIGRATION_V10,
+                            kind: MigrationKind::Up,
+                        },
                     ],
                 )
                 .build(),
@@ -112,6 +120,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::universe_commands::get_app_info,
             updater_configured,
+            database::health::database_health,
+            database::backup::backup_create,
+            database::backup::backup_list,
+            database::backup::backup_validate,
+            database::recovery::backup_restore_prepare,
+            database::recovery::backup_restore_commit,
+            database::production_replica::production_replica_status,
+            database::production_replica::production_replica_refresh,
+            database::production_replica::production_replica_catalog,
+            database::production_replica::production_replica_chapter,
             local_ai::local_ai_status,
             local_ai::install_local_ai,
             local_ai::start_local_ai_engine,

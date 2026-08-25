@@ -1,5 +1,5 @@
 import { Component, computed, input, output, signal } from '@angular/core';
-import { UniverseWithStats } from '../../core/models';
+import { ContentTag, UniverseWithStats } from '../../core/models';
 
 type UniverseSort = 'recent' | 'name' | 'created';
 
@@ -13,6 +13,7 @@ export class UniversePickerComponent {
   readonly universes = input.required<UniverseWithStats[]>();
   readonly query = input('');
   readonly lastOpenedId = input<string | null>(null);
+  readonly tagsByUniverse = input<Record<string, ContentTag[]>>({});
   readonly createRequested = output<void>();
   readonly openRequested = output<UniverseWithStats>();
   readonly editRequested = output<UniverseWithStats>();
@@ -52,6 +53,10 @@ export class UniversePickerComponent {
 
   characterCount(universe: UniverseWithStats): number {
     return universe.stats.entity_counts['Personagem'] ?? 0;
+  }
+
+  universeTags(universeId: string): ContentTag[] {
+    return this.tagsByUniverse()[`universe:${universeId}`] ?? [];
   }
 
   relativeDate(value: string): string {

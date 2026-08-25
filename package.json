@@ -18,6 +18,8 @@
     "share-api:dev": "node services/share-api/src/server.mjs",
     "share-api:temporary": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-temporary-share.ps1",
     "share-api:test": "node --test services/share-api/test/*.test.mjs",
+    "test:ai": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/ai-prompt.test.mjs",
+    "validate:local-ai": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/validate-local-ai.mjs",
     "release:prepare-config": "node scripts/prepare-release-config.mjs",
     "release:validate-updater": "node scripts/validate-updater-environment.mjs",
     "release:validate-version": "node scripts/validate-release-version.mjs",

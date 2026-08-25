@@ -1,0 +1,52 @@
+@if (status(); as replica) {
+  @if (replica.enabled) {
+    <article class="surface-card production-replica-card">
+      <div class="card-head"><div><div class="card-icon">◉</div><h2>Acervo instalado · somente leitura</h2></div><span class="status-badge" [class.online]="replica.snapshotId" [class.error]="!replica.sourceExists">{{ busy() ? 'Atualizando…' : replica.snapshotId ? 'Réplica validada' : replica.sourceExists ? 'Aguardando cópia' : 'Produção não encontrada' }}</span></div>
+      <p>Consulta um snapshot do banco instalado em <strong>com.narrahub.app</strong>. O desenvolvimento nunca abre essa origem para escrita.</p>
+      @if (!replica.sourceExists) {
+        <div class="callout warning"><strong>Nenhuma instalação de produção encontrada</strong><span>Instale ou execute a versão publicada neste computador para criar o perfil de produção.</span></div>
+      } @else {
+        <div class="actions"><button type="button" class="primary" [disabled]="busy()" (click)="refresh()">{{ busy() ? 'Copiando snapshot…' : 'Atualizar réplica agora' }}</button>@if (replica.snapshotId && !catalog()) { <button type="button" class="secondary" [disabled]="busy()" (click)="loadCatalog()">Abrir catálogo</button> }</div>
+        @if (replica.snapshotId) {
+          <dl class="replica-counts"><div><dt>Universos</dt><dd>{{ replica.counts.universes }}</dd></div><div><dt>Histórias</dt><dd>{{ replica.counts.stories }}</dd></div><div><dt>Livros</dt><dd>{{ replica.counts.books }}</dd></div><div><dt>Capítulos</dt><dd>{{ replica.counts.chapters }}</dd></div><div><dt>Entidades</dt><dd>{{ replica.counts.entities }}</dd></div></dl>
+          <small class="note">Snapshot {{ formatDate(replica.capturedAt || '') }} · schema {{ replica.schemaVersion }} · até 10 versões diferentes preservadas no perfil dev.</small>
+          @if (replica.previousSnapshotId && (replica.changes.addedCount || replica.changes.removedCount)) {
+            <div class="replica-diff" [class.has-removals]="replica.changes.removedCount > 0"><header><strong>Alterações desde a réplica anterior</strong><span><b>+{{ replica.changes.addedCount }}</b> incluído(s) · <b>−{{ replica.changes.removedCount }}</b> removido(s)</span></header>
+              @if (replica.changes.removed.length) { <section><strong>Removidos da produção</strong><div>@for (change of replica.changes.removed; track change.kind + change.id) { <span><small>{{ changeKindLabel(change.kind) }}</small>{{ change.name }}</span> }</div></section> }
+              @if (replica.changes.added.length) { <section class="added"><strong>Incluídos na produção</strong><div>@for (change of replica.changes.added; track change.kind + change.id) { <span><small>{{ changeKindLabel(change.kind) }}</small>{{ change.name }}</span> }</div></section> }
+            </div>
+          } @else if (replica.previousSnapshotId) { <div class="callout"><strong>Nenhuma inclusão ou exclusão detectada</strong><span>Os identificadores do acervo correspondem à réplica anterior.</span></div> }
+        }
+        @if (catalog(); as replicaCatalog) {
+          <div class="replica-library"><header><strong>Biblioteca de produção</strong><small>Clique em um capítulo para ler. Não existem controles de edição nesta área.</small></header>
+            @for (universe of replicaCatalog.universes; track universe.id) {
+              <details><summary><span>◉</span><b>{{ universe.name }}</b><small>{{ stories(universe.id).length }} história(s)</small></summary><div class="replica-universe-tree">
+                @for (story of stories(universe.id); track story.id) {
+                  <details><summary><span>⌂</span><b>{{ story.name }}</b><small>{{ books(story.id).length }} livro(s)</small></summary><div>
+                    @for (book of books(story.id); track book.id) {
+                      <details><summary><span>▱</span><b>{{ book.name }}</b><small>{{ chapters(book.id).length }} capítulo(s)</small></summary><div class="replica-chapters">
+                        @for (item of chapters(book.id); track item.id) { <button type="button" [disabled]="busy()" (click)="openChapter(item.id)"><span>▤</span><span><b>{{ item.name }}</b><small>{{ item.wordCount }} palavras · {{ item.detail }}</small></span><i>→</i></button> }
+                      </div></details>
+                    }
+                  </div></details>
+                }
+              </div></details>
+            }
+          </div>
+        }
+      }
+      @if (error()) { <div class="error" role="alert"><strong>Réplica não atualizada</strong><span>{{ error() }}</span></div> }
+    </article>
+  }
+}
+
+@if (chapter(); as selectedChapter) {
+  <div class="reader-backdrop" (mousedown)="closeChapter()">
+    <section class="reader" role="dialog" aria-modal="true" [attr.aria-label]="'Capítulo ' + selectedChapter.title" (mousedown)="$event.stopPropagation()">
+      <header><div><span>PRODUÇÃO · SOMENTE LEITURA</span><h2>{{ selectedChapter.title }}</h2></div><button type="button" aria-label="Fechar" (click)="closeChapter()">×</button></header>
+      <p>{{ selectedChapter.universeName }} · {{ selectedChapter.storyName }} · {{ selectedChapter.bookName }} · {{ selectedChapter.wordCount }} palavras</p>
+      <article class="replica-document" [innerHTML]="selectedChapter.content"></article>
+      <footer><small>Snapshot {{ formatDate(selectedChapter.capturedAt) }}. Nenhuma alteração alcança o banco instalado.</small><button type="button" class="primary" (click)="closeChapter()">Fechar leitura</button></footer>
+    </section>
+  </div>
+}

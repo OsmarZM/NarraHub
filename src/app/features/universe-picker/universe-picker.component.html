@@ -58,6 +58,14 @@
               <div class="portal-copy">
                 <h3>{{ universe.name }}</h3>
                 @if (universe.description) { <p>{{ universe.description }}</p> }
+                @if (universeTags(universe.id); as tags) {
+                  @if (tags.length) {
+                    <div class="portal-tags" aria-label="Tags do universo">
+                      @for (tag of tags.slice(0, 4); track tag.id) { <span [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</span> }
+                      @if (tags.length > 4) { <span class="tag-overflow">+{{ tags.length - 4 }}</span> }
+                    </div>
+                  }
+                }
                 <dl>
                   <div><dt>Livros</dt><dd>▱ {{ universe.stats.total_books }}</dd></div>
                   <div><dt>Capítulos</dt><dd>▤ {{ universe.stats.total_chapters }}</dd></div>
