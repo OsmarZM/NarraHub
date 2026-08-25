@@ -4,7 +4,7 @@ Aplicativo local-first para escrever livros, organizar universos narrativos e si
 
 O NarraHub é distribuído como aplicativo Windows e Android com Tauri 2. A interface Angular é empacotada dentro do aplicativo; não existe servidor web externo ou navegador no uso de produção.
 
-## Versão 0.7.0
+## Versão 0.7.1
 
 Fluxos implementados:
 
@@ -64,6 +64,8 @@ Consulte:
 - [Assistência à escrita e IA](docs/WRITING_ASSISTANCE.md)
 - [Atualizações](docs/UPDATES.md)
 - [Histórico de versões](CHANGELOG.md)
+- [Desenvolvimento seguro](docs/DEVELOPMENT.md)
+- [Notas da versão 0.7.1](docs/RELEASE_0.7.1.md)
 
 ## Desenvolvimento
 

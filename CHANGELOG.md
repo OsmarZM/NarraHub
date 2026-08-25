@@ -2,6 +2,15 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.7.1 — 2026-08-25
+
+### Correções
+
+- Desenvolvimento e produção agora usam identificadores e diretórios de dados separados, impedindo que uma execução local aplique migrações no banco do aplicativo instalado.
+- Builds oficiais e builds desktop explícitos preservam o identificador de produção `com.narrahub.app`; o modo de desenvolvimento usa `com.narrahub.app.dev`.
+- A troca de tema passou a ter permissão nativa no Tauri, sincronização após o carregamento do documento e estado acessível nos controles de tema.
+- A validação de configuração falha caso os perfis de desenvolvimento e produção voltem a compartilhar o mesmo identificador.
+
 ## 0.7.0 — 2026-08-24
 
 ### Escrita
