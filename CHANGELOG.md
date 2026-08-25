@@ -2,6 +2,15 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.7.2 — 2026-08-25
+
+### Correções
+
+- O CSS completo do aplicativo desktop passa a ser carregado diretamente, sem depender de um evento inline bloqueado pela política de segurança do Tauri.
+- Os temas claro, escuro e sistema voltam a funcionar no aplicativo instalado e a preferência permanece aplicada após reiniciar.
+- A navegação e os formulários das configurações voltam a respeitar o layout planejado, inclusive na seção de inteligência local.
+- A pipeline de release agora compila e inspeciona o bundle de produção, impedindo a publicação quando tema ou configurações dependem do carregamento de CSS incompatível com o desktop.
+
 ## 0.7.1 — 2026-08-25
 
 ### Correções
