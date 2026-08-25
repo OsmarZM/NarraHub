@@ -181,7 +181,7 @@ export class App implements OnInit, OnDestroy {
   readonly updateBusy = signal(false);
   readonly updateProgress = signal(0);
   readonly updatePhase = signal<'idle' | 'checking' | 'available' | 'backing-up' | 'downloading' | 'current' | 'error'>('idle');
-  readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.7.3', availableVersion: null, notes: '', publishedAt: null });
+  readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.7.4', availableVersion: null, notes: '', publishedAt: null });
   readonly updateError = signal('');
   readonly updatePromptDismissed = signal(false);
   readonly backupBusy = signal(false);

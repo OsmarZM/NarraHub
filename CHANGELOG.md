@@ -2,6 +2,17 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.7.4 — 2026-08-25
+
+### Réplica de Produção e Integridade
+
+- Consulta segura e somente leitura ao acervo de produção no perfil de desenvolvimento, sem abrir a base instalada para gravação.
+- Detecção e exibição de diferenças entre snapshots de produção (inclusões e exclusões de histórias, livros, capítulos e entidades).
+- Módulo nativo de integridade de banco de dados SQLite (`health.rs`), com verificação de invariantes referenciais.
+- Mecanismo de backup consistente com cálculo de hash SHA-256 e geração de manifestos versionados.
+- Preparação de restauração com criação prévia de snapshot de segurança e capacidade de rollback em caso de falha.
+- Extração da interface de réplica para componente isolado (`ProductionReplicaComponent`), otimizando o bundle de estilos da aplicação.
+
 ## 0.7.3 — 2026-08-25
 
 ### Correções
