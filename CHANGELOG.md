@@ -2,6 +2,16 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.7.3 — 2026-08-25
+
+### Correções
+
+- O compartilhamento só é marcado como online depois que a URL pública responde ao `/health` identificado do NarraHub por HTTPS.
+- Hostnames temporários publicados pelo Quick Tunnel sem DNS funcional são descartados, e o aplicativo tenta criar um novo túnel até três vezes.
+- Sessões já marcadas como ativas são revalidadas antes da criação de outro link, evitando reutilizar um túnel morto.
+- A captura da URL tolera mensagens do `cloudflared` divididas em mais de um bloco de saída.
+- Falhas após todas as tentativas informam se o problema ocorreu em DNS, conexão, timeout ou resposta pública inválida.
+
 ## 0.7.2 — 2026-08-25
 
 ### Correções
