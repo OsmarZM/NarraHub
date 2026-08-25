@@ -28,13 +28,7 @@ import { WorkspaceService } from './core/services/workspace.service';
 import { AppState } from './core/state/app.state';
 import { UniversePickerComponent } from './features/universe-picker/universe-picker.component';
 import { ConnectionsGraphComponent } from './features/connections/connections-graph.component';
-import {
-  ProductionReplicaCatalog,
-  ProductionReplicaChapter,
-  ProductionReplicaService,
-  ProductionReplicaStatus,
-  ReplicaCatalogItem,
-} from './core/services/production-replica.service';
+import { ProductionReplicaComponent } from './features/production-replica/production-replica.component';
 import { AiWritingRequest, WritingEditorComponent } from './features/writing/writing-editor.component';
 import { AppShellComponent } from './shell/app-shell/app-shell.component';
 import { ContextualInspectorComponent } from './shell/contextual-inspector/contextual-inspector.component';
@@ -117,6 +111,7 @@ type SettingsSection = 'general' | 'ai' | 'sync' | 'share' | 'updates';
     ContextualInspectorComponent,
     UniversePickerComponent,
     ConnectionsGraphComponent,
+    ProductionReplicaComponent,
     WritingEditorComponent,
   ],
   templateUrl: './app.html',
@@ -142,7 +137,6 @@ export class App implements OnInit, OnDestroy {
   private readonly workspaceService = inject(WorkspaceService);
   private readonly syncService = inject(SyncService);
   private readonly updateService = inject(UpdateService);
-  private readonly productionReplicaService = inject(ProductionReplicaService);
 
   readonly searchQuery = signal('');
   readonly activeNav = signal('inicio');
@@ -222,11 +216,6 @@ export class App implements OnInit, OnDestroy {
   readonly settingsSection = signal<SettingsSection>('general');
   readonly expandedStoryIds = signal<Set<string>>(new Set());
   readonly expandedBookIds = signal<Set<string>>(new Set());
-  readonly productionReplicaStatus = signal<ProductionReplicaStatus | null>(null);
-  readonly productionReplicaCatalog = signal<ProductionReplicaCatalog | null>(null);
-  readonly productionReplicaChapter = signal<ProductionReplicaChapter | null>(null);
-  readonly productionReplicaBusy = signal(false);
-  readonly productionReplicaError = signal('');
 
   newUniverseName = '';
   newUniverseDesc = '';
@@ -347,7 +336,6 @@ export class App implements OnInit, OnDestroy {
       const currentVersion = await this.updateService.currentVersion();
       this.updateInfo.update((info) => ({ ...info, currentVersion }));
       if (await this.updateService.isConfigured()) setTimeout(() => void this.checkForUpdates(true), 1800);
-      void this.initializeProductionReplica();
     } catch (error) {
       this.reportError('Não foi possível abrir o banco local do NarraHub.', error);
     } finally { this.isLoading.set(false); }
@@ -1205,79 +1193,7 @@ export class App implements OnInit, OnDestroy {
     } finally { this.backupBusy.set(false); }
   }
 
-  async initializeProductionReplica(): Promise<void> {
-    if (!isTauri() || this.productionReplicaBusy()) return;
-    try {
-      const status = await this.productionReplicaService.status();
-      this.productionReplicaStatus.set(status);
-      if (status.enabled && status.sourceExists) await this.refreshProductionReplica(true);
-    } catch (error) {
-      console.warn('[NarraHub] Production replica initialization failed.', error);
-    }
-  }
 
-  async refreshProductionReplica(silent = false): Promise<void> {
-    if (this.productionReplicaBusy()) return;
-    this.productionReplicaBusy.set(true);
-    this.productionReplicaError.set('');
-    try {
-      const status = await this.productionReplicaService.refresh();
-      this.productionReplicaStatus.set(status);
-      this.productionReplicaCatalog.set(await this.productionReplicaService.catalog());
-      if (!silent) this.showInfo('Réplica somente leitura da produção atualizada e validada.');
-    } catch (error) {
-      this.productionReplicaError.set(error instanceof Error ? error.message : String(error));
-    } finally {
-      this.productionReplicaBusy.set(false);
-    }
-  }
-
-  async loadProductionReplicaCatalog(): Promise<void> {
-    if (this.productionReplicaBusy() || !this.productionReplicaStatus()?.snapshotId) return;
-    this.productionReplicaBusy.set(true);
-    this.productionReplicaError.set('');
-    try {
-      this.productionReplicaCatalog.set(await this.productionReplicaService.catalog());
-    } catch (error) {
-      this.productionReplicaError.set(error instanceof Error ? error.message : String(error));
-    } finally {
-      this.productionReplicaBusy.set(false);
-    }
-  }
-
-  async openProductionReplicaChapter(chapterId: string): Promise<void> {
-    if (this.productionReplicaBusy()) return;
-    this.productionReplicaBusy.set(true);
-    this.productionReplicaError.set('');
-    try {
-      this.productionReplicaChapter.set(await this.productionReplicaService.chapter(chapterId));
-      this.appState.openModal('production-replica-chapter');
-    } catch (error) {
-      this.productionReplicaError.set(error instanceof Error ? error.message : String(error));
-    } finally {
-      this.productionReplicaBusy.set(false);
-    }
-  }
-
-  replicaStories(universeId: string): ReplicaCatalogItem[] {
-    return this.productionReplicaCatalog()?.stories.filter((story) => story.parentId === universeId) || [];
-  }
-
-  replicaBooks(storyId: string): ReplicaCatalogItem[] {
-    return this.productionReplicaCatalog()?.books.filter((book) => book.parentId === storyId) || [];
-  }
-
-  replicaChapters(bookId: string): ReplicaCatalogItem[] {
-    return this.productionReplicaCatalog()?.chapters.filter((chapter) => chapter.parentId === bookId) || [];
-  }
-
-  replicaChangeKindLabel(kind: string): string {
-    if (kind === 'universe') return 'Universo';
-    if (kind === 'story') return 'História';
-    if (kind === 'book') return 'Livro';
-    if (kind === 'chapter') return 'Capítulo';
-    return 'Entidade';
-  }
 
   requestRestoreBackup(backup: BackupManifest): void {
     this.pendingRestoreBackup.set(backup);

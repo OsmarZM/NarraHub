@@ -80,45 +80,8 @@
               </div>
             </article>
 
-            @if (productionReplicaStatus(); as replica) { @if (replica.enabled) {
-              <article class="surface-card settings-wide-card production-replica-card" [hidden]="settingsSection() !== 'general'">
-                <div class="card-head"><div><div class="card-icon">◉</div><h2>Acervo instalado · somente leitura</h2></div><span class="status-badge" [class.online]="replica.snapshotId" [class.error]="!replica.sourceExists">{{ productionReplicaBusy() ? 'Atualizando…' : replica.snapshotId ? 'Réplica validada' : replica.sourceExists ? 'Aguardando cópia' : 'Produção não encontrada' }}</span></div>
-                <p>Consulta um snapshot do banco instalado em <strong>com.narrahub.app</strong>. O ambiente de desenvolvimento nunca abre essa origem para escrita.</p>
-                @if (!replica.sourceExists) {
-                  <div class="security-callout warning"><strong>Nenhuma instalação de produção encontrada</strong><span>Instale ou execute a versão publicada neste computador para criar o perfil de produção.</span></div>
-                } @else {
-                  <div class="backup-actions"><button type="button" class="primary-button" [disabled]="productionReplicaBusy()" (click)="refreshProductionReplica()">{{ productionReplicaBusy() ? 'Copiando snapshot…' : 'Atualizar réplica agora' }}</button>@if (replica.snapshotId && !productionReplicaCatalog()) { <button type="button" class="secondary-button" [disabled]="productionReplicaBusy()" (click)="loadProductionReplicaCatalog()">Abrir catálogo</button> }</div>
-                  @if (replica.snapshotId) {
-                    <dl class="replica-counts"><div><dt>Universos</dt><dd>{{ replica.counts.universes }}</dd></div><div><dt>Histórias</dt><dd>{{ replica.counts.stories }}</dd></div><div><dt>Livros</dt><dd>{{ replica.counts.books }}</dd></div><div><dt>Capítulos</dt><dd>{{ replica.counts.chapters }}</dd></div><div><dt>Entidades</dt><dd>{{ replica.counts.entities }}</dd></div></dl>
-                    <small class="security-note">Snapshot {{ formatDate(replica.capturedAt || '') }} · schema {{ replica.schemaVersion }} · até 10 versões diferentes preservadas no perfil dev.</small>
-                    @if (replica.previousSnapshotId && (replica.changes.addedCount || replica.changes.removedCount)) {
-                      <div class="replica-diff" [class.has-removals]="replica.changes.removedCount > 0"><header><strong>Alterações desde a réplica anterior</strong><span><b>+{{ replica.changes.addedCount }}</b> incluído(s) · <b>−{{ replica.changes.removedCount }}</b> removido(s)</span></header>
-                        @if (replica.changes.removed.length) { <section><strong>Removidos da produção</strong><div>@for (change of replica.changes.removed; track change.kind + change.id) { <span><small>{{ replicaChangeKindLabel(change.kind) }}</small>{{ change.name }}</span> }</div></section> }
-                        @if (replica.changes.added.length) { <section class="added"><strong>Incluídos na produção</strong><div>@for (change of replica.changes.added; track change.kind + change.id) { <span><small>{{ replicaChangeKindLabel(change.kind) }}</small>{{ change.name }}</span> }</div></section> }
-                      </div>
-                    } @else if (replica.previousSnapshotId) { <div class="security-callout"><strong>Nenhuma inclusão ou exclusão detectada</strong><span>Os identificadores do acervo correspondem à réplica anterior.</span></div> }
-                  }
-                  @if (productionReplicaCatalog(); as catalog) {
-                    <div class="replica-library"><header><strong>Biblioteca de produção</strong><small>Clique em um capítulo para ler. Não existem controles de edição nesta área.</small></header>
-                      @for (universe of catalog.universes; track universe.id) {
-                        <details><summary><span>◉</span><b>{{ universe.name }}</b><small>{{ replicaStories(universe.id).length }} história(s)</small></summary><div class="replica-universe-tree">
-                          @for (story of replicaStories(universe.id); track story.id) {
-                            <details><summary><span>⌂</span><b>{{ story.name }}</b><small>{{ replicaBooks(story.id).length }} livro(s)</small></summary><div>
-                              @for (book of replicaBooks(story.id); track book.id) {
-                                <details><summary><span>▱</span><b>{{ book.name }}</b><small>{{ replicaChapters(book.id).length }} capítulo(s)</small></summary><div class="replica-chapters">
-                                  @for (chapter of replicaChapters(book.id); track chapter.id) { <button type="button" [disabled]="productionReplicaBusy()" (click)="openProductionReplicaChapter(chapter.id)"><span>▤</span><span><b>{{ chapter.name }}</b><small>{{ chapter.wordCount }} palavras · {{ chapter.detail }}</small></span><i>→</i></button> }
-                                </div></details>
-                              }
-                            </div></details>
-                          }
-                        </div></details>
-                      }
-                    </div>
-                  }
-                }
-                @if (productionReplicaError()) { <div class="ai-install-error" role="alert"><strong>Réplica não atualizada</strong><span>{{ productionReplicaError() }}</span></div> }
-              </article>
-            } }
+            <app-production-replica [hidden]="settingsSection() !== 'general'" />
+
 
             <article class="surface-card settings-wide-card backup-card" [hidden]="settingsSection() !== 'general'">
               <div class="card-head"><div><div class="card-icon">▣</div><h2>Backup e integridade</h2></div><span class="status-badge" [class.online]="databaseHealth()?.healthy" [class.error]="databaseHealth() && !databaseHealth()?.healthy">@if (backupBusy()) { Verificando… } @else if (databaseHealth()?.healthy) { Banco íntegro } @else if (databaseHealth()) { Atenção necessária } @else { Não verificado }</span></div>
@@ -676,11 +639,6 @@
         }
         @if (backupError()) { <div class="ai-install-error" role="alert"><strong>Restauração interrompida</strong><span>{{ backupError() }}</span></div> }
         <footer><button type="button" class="secondary-button" [disabled]="backupBusy()" (click)="appState.closeModal()">Cancelar</button>@if (!restorePreparation()) { <button type="button" class="primary-button" [disabled]="backupBusy()" (click)="prepareRestoreBackup()">{{ backupBusy() ? 'Preparando e validando…' : 'Preparar restauração' }}</button> } @else { <button type="button" class="primary-button destructive" [disabled]="backupBusy() || restoreConfirmation.trim() !== 'RESTAURAR'" (click)="confirmRestoreBackup()">{{ backupBusy() ? 'Restaurando…' : 'Restaurar e reiniciar' }}</button> }</footer>
-      } @else if (appState.modalOpen() === 'production-replica-chapter' && productionReplicaChapter(); as chapter) {
-        <header><div><span class="eyebrow">PRODUÇÃO · SOMENTE LEITURA</span><h2>{{ chapter.title }}</h2></div><button type="button" (click)="productionReplicaChapter.set(null); appState.closeModal()">×</button></header>
-        <p class="modal-guidance">{{ chapter.universeName }} · {{ chapter.storyName }} · {{ chapter.bookName }} · {{ chapter.wordCount }} palavras</p>
-        <article class="replica-document" [innerHTML]="chapter.content"></article>
-        <footer><small>Snapshot {{ formatDate(chapter.capturedAt) }}. Nenhuma alteração feita aqui alcança o banco instalado.</small><button type="button" class="primary-button" (click)="productionReplicaChapter.set(null); appState.closeModal()">Fechar leitura</button></footer>
       }
     </form>
   </div>
