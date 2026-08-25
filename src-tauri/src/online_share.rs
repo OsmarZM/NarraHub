@@ -19,6 +19,8 @@ const MAX_CIPHERTEXT_LENGTH: usize = 2_800_000;
 const MAX_CONTRIBUTIONS: usize = 200;
 const MAX_CONTRIBUTION_BYTES: usize = 12_000_000;
 const MAX_HTTP_REQUEST_BYTES: usize = 3_000_000;
+const MAX_TUNNEL_START_ATTEMPTS: usize = 3;
+const TUNNEL_HEALTH_ATTEMPTS: usize = 4;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,12 +104,30 @@ pub async fn online_share_start(
     app: AppHandle,
     state: State<'_, Mutex<OnlineShareState>>,
 ) -> Result<OnlineShareStatus, String> {
-    {
+    let existing_url = {
         let current = state
             .lock()
             .map_err(|_| "Estado do compartilhamento indisponível".to_string())?;
-        if current.running {
-            return Ok(status_from(&current));
+        current
+            .running
+            .then(|| current.public_url.clone())
+            .flatten()
+    };
+    if let Some(public_url) = existing_url {
+        if verify_public_tunnel(&public_url).await.is_ok() {
+            let current = state
+                .lock()
+                .map_err(|_| "Estado do compartilhamento indisponível".to_string())?;
+            if current.running && current.public_url.as_deref() == Some(public_url.as_str()) {
+                return Ok(status_from(&current));
+            }
+        } else {
+            let mut current = state
+                .lock()
+                .map_err(|_| "Estado do compartilhamento indisponível".to_string())?;
+            if current.public_url.as_deref() == Some(public_url.as_str()) {
+                stop_inner(&mut current);
+            }
         }
     }
 
@@ -130,83 +150,128 @@ pub async fn online_share_start(
     };
     std::thread::spawn(move || run_http_server(listener, server_shutdown, shares));
 
-    let command = match app.shell().sidecar("cloudflared") {
-        Ok(command) => command,
-        Err(error) => {
-            shutdown.store(true, Ordering::Relaxed);
-            return Err(format!(
-                "O componente Cloudflare Tunnel não está disponível: {error}"
-            ));
-        }
-    };
-    let (mut events, child) = match command
-        .args([
-            "tunnel",
-            "--url",
-            &format!("http://127.0.0.1:{port}"),
-            "--no-autoupdate",
-        ])
-        .spawn()
-    {
-        Ok(process) => process,
-        Err(error) => {
-            shutdown.store(true, Ordering::Relaxed);
-            return Err(format!(
-                "Não foi possível iniciar o túnel temporário: {error}"
-            ));
-        }
-    };
+    let mut public_url = None;
+    let mut tunnel = None;
+    let mut attempt_errors = Vec::new();
 
-    let (url_sender, url_receiver) = mpsc::sync_channel::<Result<String, String>>(1);
-    let monitor_app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let mut url_sent = false;
-        while let Some(event) = events.recv().await {
-            match event {
-                CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
-                    if !url_sent {
-                        if let Some(url) = extract_quick_tunnel_url(&bytes) {
-                            let _ = url_sender.send(Ok(url));
-                            url_sent = true;
+    for attempt in 1..=MAX_TUNNEL_START_ATTEMPTS {
+        let command = match app.shell().sidecar("cloudflared") {
+            Ok(command) => command,
+            Err(error) => {
+                shutdown.store(true, Ordering::Relaxed);
+                return Err(format!(
+                    "O componente Cloudflare Tunnel não está disponível: {error}"
+                ));
+            }
+        };
+        let (mut events, child) = match command
+            .args([
+                "tunnel",
+                "--url",
+                &format!("http://127.0.0.1:{port}"),
+                "--no-autoupdate",
+            ])
+            .spawn()
+        {
+            Ok(process) => process,
+            Err(error) => {
+                attempt_errors.push(format!("tentativa {attempt}: não iniciou ({error})"));
+                continue;
+            }
+        };
+
+        let (url_sender, url_receiver) = mpsc::sync_channel::<Result<String, String>>(1);
+        let monitor_app = app.clone();
+        let tunnel_alive = Arc::new(AtomicBool::new(true));
+        let monitor_alive = tunnel_alive.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut url_sent = false;
+            let mut published_url: Option<String> = None;
+            let mut output_buffer = Vec::with_capacity(4096);
+            while let Some(event) = events.recv().await {
+                match event {
+                    CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
+                        if !url_sent {
+                            output_buffer.extend_from_slice(&bytes);
+                            if output_buffer.len() > 16_384 {
+                                output_buffer.drain(..output_buffer.len() - 16_384);
+                            }
+                            if let Some(url) = extract_quick_tunnel_url(&output_buffer) {
+                                let _ = url_sender.send(Ok(url.clone()));
+                                published_url = Some(url);
+                                url_sent = true;
+                            }
                         }
                     }
-                }
-                CommandEvent::Error(error) => {
-                    if !url_sent {
-                        let _ = url_sender.send(Err(error));
+                    CommandEvent::Error(error) => {
+                        monitor_alive.store(false, Ordering::Relaxed);
+                        if !url_sent {
+                            let _ = url_sender.send(Err(error));
+                        }
+                        if let Some(url) = published_url.as_deref() {
+                            mark_tunnel_stopped(&monitor_app, url);
+                        }
+                        break;
                     }
-                    mark_tunnel_stopped(&monitor_app);
+                    CommandEvent::Terminated(payload) => {
+                        monitor_alive.store(false, Ordering::Relaxed);
+                        if !url_sent {
+                            let _ = url_sender.send(Err(format!(
+                                "O túnel encerrou antes de publicar a URL (código {:?}).",
+                                payload.code
+                            )));
+                        }
+                        if let Some(url) = published_url.as_deref() {
+                            mark_tunnel_stopped(&monitor_app, url);
+                        }
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let received_url = tauri::async_runtime::spawn_blocking(move || {
+            url_receiver
+                .recv_timeout(Duration::from_secs(35))
+                .map_err(|_| "o Cloudflare não retornou uma URL em 35 segundos".to_string())?
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+
+        match received_url {
+            Ok(url) => match verify_public_tunnel(&url).await {
+                Ok(()) if tunnel_alive.load(Ordering::Relaxed) => {
+                    public_url = Some(url);
+                    tunnel = Some(child);
                     break;
                 }
-                CommandEvent::Terminated(payload) => {
-                    if !url_sent {
-                        let _ = url_sender.send(Err(format!(
-                            "O túnel encerrou antes de publicar a URL (código {:?}).",
-                            payload.code
-                        )));
-                    }
-                    mark_tunnel_stopped(&monitor_app);
-                    break;
+                Ok(()) => {
+                    attempt_errors.push(format!(
+                        "tentativa {attempt}: o túnel encerrou após publicar a URL"
+                    ));
+                    let _ = child.kill();
                 }
-                _ => {}
+                Err(error) => {
+                    attempt_errors.push(format!("tentativa {attempt}: {error}"));
+                    let _ = child.kill();
+                }
+            },
+            Err(error) => {
+                attempt_errors.push(format!("tentativa {attempt}: {error}"));
+                let _ = child.kill();
             }
         }
-    });
+    }
 
-    let public_url = tauri::async_runtime::spawn_blocking(move || {
-        url_receiver
-            .recv_timeout(Duration::from_secs(35))
-            .map_err(|_| "O Cloudflare não retornou uma URL em 35 segundos.".to_string())?
-    })
-    .await
-    .map_err(|error| error.to_string())?;
-
-    let public_url = match public_url {
-        Ok(url) => url,
-        Err(error) => {
+    let (public_url, tunnel) = match (public_url, tunnel) {
+        (Some(public_url), Some(tunnel)) => (public_url, tunnel),
+        _ => {
             shutdown.store(true, Ordering::Relaxed);
-            let _ = child.kill();
-            return Err(error);
+            return Err(format!(
+                "O Cloudflare não publicou um endereço acessível após {MAX_TUNNEL_START_ATTEMPTS} tentativas. {}",
+                attempt_errors.join("; ")
+            ));
         }
     };
 
@@ -217,8 +282,63 @@ pub async fn online_share_start(
     current.public_url = Some(public_url);
     current.local_port = Some(port);
     current.server_shutdown = Some(shutdown);
-    current.tunnel = Some(child);
+    current.tunnel = Some(tunnel);
     Ok(status_from(&current))
+}
+
+async fn verify_public_tunnel(public_url: &str) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(7))
+        .user_agent("NarraHub-Tunnel-Health/1")
+        .build()
+        .map_err(|error| format!("não foi possível preparar a verificação pública ({error})"))?;
+    let health_url = format!("{}/health", public_url.trim_end_matches('/'));
+    let mut last_error = "resposta pública inválida".to_string();
+
+    for attempt in 1..=TUNNEL_HEALTH_ATTEMPTS {
+        match client.get(&health_url).send().await {
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                if is_valid_tunnel_health(status.as_u16(), &body) {
+                    return Ok(());
+                }
+                last_error =
+                    format!("HTTPS retornou status {status} sem a confirmação do NarraHub");
+            }
+            Err(error) => {
+                last_error = if error.is_connect() {
+                    "o endereço público não resolveu no DNS ou recusou a conexão".to_string()
+                } else if error.is_timeout() {
+                    "a verificação HTTPS excedeu o tempo limite".to_string()
+                } else {
+                    format!("a verificação HTTPS falhou ({error})")
+                };
+            }
+        }
+
+        if attempt < TUNNEL_HEALTH_ATTEMPTS {
+            let _ = tauri::async_runtime::spawn_blocking(|| {
+                std::thread::sleep(Duration::from_secs(1));
+            })
+            .await;
+        }
+    }
+
+    Err(last_error)
+}
+
+fn is_valid_tunnel_health(status: u16, body: &str) -> bool {
+    if !(200..300).contains(&status) {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .is_some_and(|payload| {
+            payload.get("ok").and_then(|value| value.as_bool()) == Some(true)
+                && payload.get("service").and_then(|value| value.as_str()) == Some("narrahub-share")
+        })
 }
 
 #[tauri::command]
@@ -351,9 +471,12 @@ fn stop_inner(state: &mut OnlineShareState) {
     state.local_port = None;
 }
 
-fn mark_tunnel_stopped(app: &AppHandle) {
+fn mark_tunnel_stopped(app: &AppHandle, expected_url: &str) {
     if let Some(state) = app.try_state::<Mutex<OnlineShareState>>() {
         if let Ok(mut state) = state.lock() {
+            if state.public_url.as_deref() != Some(expected_url) {
+                return;
+            }
             if let Some(shutdown) = state.server_shutdown.take() {
                 shutdown.store(true, Ordering::Relaxed);
             }
@@ -760,6 +883,19 @@ mod tests {
             extract_quick_tunnel_url(output).as_deref(),
             Some("https://fictional-world.trycloudflare.com")
         );
+    }
+
+    #[test]
+    fn validates_only_the_narrahub_public_health_response() {
+        assert!(is_valid_tunnel_health(
+            200,
+            r#"{"ok":true,"service":"narrahub-share","encryption":"client-side"}"#
+        ));
+        assert!(!is_valid_tunnel_health(502, "cloudflare bad gateway"));
+        assert!(!is_valid_tunnel_health(
+            200,
+            r#"{"ok":true,"service":"another-service"}"#
+        ));
     }
 
     #[test]

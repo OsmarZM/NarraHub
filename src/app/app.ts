@@ -170,7 +170,7 @@ export class App implements OnInit, OnDestroy {
   readonly updateBusy = signal(false);
   readonly updateProgress = signal(0);
   readonly updatePhase = signal<'idle' | 'checking' | 'available' | 'downloading' | 'current' | 'error'>('idle');
-  readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.7.2', availableVersion: null, notes: '', publishedAt: null });
+  readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.7.3', availableVersion: null, notes: '', publishedAt: null });
   readonly updateError = signal('');
   readonly updatePromptDismissed = signal(false);
   readonly syncStatus = signal<SyncServerStatus>({ running: false, address: null, pairing_code: null, device_name: 'Meu computador' });
@@ -1143,7 +1143,6 @@ export class App implements OnInit, OnDestroy {
       : new Set(this.universes().map((universe) => universe.id)));
   }
   async startOnlineShareSession(showFeedback = true): Promise<boolean> {
-    if (this.shareSession().running) return true;
     this.shareBusy.set(true); this.shareProgressMessage.set('Abrindo um túnel seguro e temporário…'); this.errorMessage.set('');
     try {
       this.shareSession.set(await this.onlineShareService.start());
