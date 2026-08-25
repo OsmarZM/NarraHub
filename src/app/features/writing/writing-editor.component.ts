@@ -300,10 +300,10 @@ export class WritingEditorComponent implements AfterViewInit, OnChanges, OnDestr
     const { from, to } = this.editor.state.selection;
     const text = from === to ? '' : this.editor.state.doc.textBetween(from, to, '\n').trim();
     const instructions: Record<AiWritingRequest['action'], string> = {
-      correct: 'Corrija ortografia, gramática e pontuação sem alterar a voz, o significado ou os fatos do trecho.',
-      rewrite: 'Reescreva o trecho com mais fluidez e clareza, preservando a voz do escritor e os fatos.',
-      expand: 'Detalhe um pouco mais este trecho com imagens sensoriais coerentes, sem inventar fatos importantes.',
-      shorten: 'Encurte o trecho, removendo repetições e preservando significado, voz e fatos.',
+      correct: 'Corrija ortografia, gramática e pontuação do trecho. Entregue a prosa corrigida, sem explicar as correções e sem alterar voz, significado ou fatos.',
+      rewrite: 'Reescreva o trecho como prosa narrativa pronta para substituir o original, com mais fluidez e clareza. Não explique a técnica; preserve a voz e os fatos.',
+      expand: 'Reescreva e amplie o trecho como prosa narrativa pronta, acrescentando detalhes sensoriais coerentes. Não analise o trecho e não invente fatos importantes.',
+      shorten: 'Reescreva o trecho de forma mais curta, removendo repetições. Entregue somente a prosa final e preserve significado, voz e fatos.',
       custom: '',
       chapter: '',
     };

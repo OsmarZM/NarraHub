@@ -76,7 +76,7 @@ export interface Chapter {
   updated_at: string;
 }
 
-export type MetadataOwnerType = 'universe' | 'story' | 'book' | 'chapter' | 'entity';
+export type MetadataOwnerType = 'universe' | 'story' | 'book' | 'chapter' | 'entity' | 'timeline' | 'planning';
 
 export interface ContentTag {
   id: string;
@@ -85,6 +85,11 @@ export interface ContentTag {
   color: string;
   created_at: string;
   assigned?: number;
+}
+
+export interface ContentTagAssignment extends ContentTag {
+  owner_type: MetadataOwnerType;
+  owner_id: string;
 }
 
 // ── Entity ──────────────────────────────────────

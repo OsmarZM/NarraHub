@@ -27,6 +27,13 @@ export class WorkspaceService {
     await this.db.execute('DELETE FROM timeline_events WHERE id = $1', [id]);
   }
 
+  async updateTimelineTitle(id: string, title: string): Promise<void> {
+    await this.db.execute(
+      'UPDATE timeline_events SET title = $1, updated_at = $2 WHERE id = $3',
+      [title, this.db.now(), id],
+    );
+  }
+
   listPlanning(universeId: string): Promise<PlanningItem[]> {
     return this.db.select<PlanningItem>(
       `SELECT p.*, c.title AS chapter_title, b.name AS book_name, s.name AS story_name
@@ -66,6 +73,13 @@ export class WorkspaceService {
 
   async deletePlanning(id: string): Promise<void> {
     await this.db.execute('DELETE FROM planning_items WHERE id = $1', [id]);
+  }
+
+  async updatePlanningTitle(id: string, title: string): Promise<void> {
+    await this.db.execute(
+      'UPDATE planning_items SET title = $1, updated_at = $2 WHERE id = $3',
+      [title, this.db.now(), id],
+    );
   }
 
   listRelations(universeId: string): Promise<RelationCard[]> {

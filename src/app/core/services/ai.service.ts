@@ -1,5 +1,6 @@
 import { Injectable, computed, signal } from '@angular/core';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { AiPromptOptions, buildAiMessages, isAiEcho, sanitizeAiCompletion } from '../ai/ai-prompt';
 
 export type AiMode = 'off' | 'local' | 'custom';
 export type LocalAiState = 'checking' | 'unsupported' | 'not_installed' | 'installing' | 'stopped' | 'starting' | 'ready' | 'error';
@@ -206,42 +207,60 @@ export class AiService {
     return this.waitForLocalEngine();
   }
 
-  async complete(instruction: string, context: string): Promise<string> {
+  async complete(instruction: string, context: string, options: AiPromptOptions = {}): Promise<string> {
     const settings = this.settings();
     this.validateSettings(settings);
     if (settings.mode === 'off') throw new Error('A assistência por IA está desativada.');
     const localEngine = settings.mode === 'local' ? await this.prepareLocalEngine() : null;
     try {
-      return await this.requestCompletion(localEngine?.endpoint || settings.endpoint, localEngine?.model || settings.model, instruction, context);
+      return await this.requestCompletion(localEngine?.endpoint || settings.endpoint, localEngine?.model || settings.model, instruction, context, settings.mode, options);
     } catch (error) {
       if (settings.mode === 'local' && this.isConnectionFailure(error)) {
         const recovered = await this.startLocalEngine(true).catch(() => null);
-        if (recovered?.running) return this.requestCompletion(MANAGED_ENDPOINT, recovered.modelAlias || 'narrahub-local', instruction, context);
+        if (recovered?.running) return this.requestCompletion(MANAGED_ENDPOINT, recovered.modelAlias || 'narrahub-local', instruction, context, settings.mode, options);
       }
       throw this.toFriendlyError(error, settings.mode);
     }
   }
 
-  private async requestCompletion(endpoint: string, model: string, instruction: string, context: string): Promise<string> {
+  private async requestCompletion(
+    endpoint: string,
+    model: string,
+    instruction: string,
+    context: string,
+    mode: Exclude<AiMode, 'off'>,
+    options: AiPromptOptions,
+    retryAfterEcho = false,
+  ): Promise<string> {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 120_000);
     try {
+      const localSampling = mode === 'local' ? {
+        top_p: 0.8,
+        top_k: 20,
+        min_p: 0,
+      } : {};
       const response = await this.httpFetch(`${endpoint}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(this.sessionApiKey ? { Authorization: `Bearer ${this.sessionApiKey}` } : {}) },
         body: JSON.stringify({
-          model, temperature: 0.7, max_tokens: 1200, stream: false,
-          messages: [
-            { role: 'system', content: '/no_think\nVocê é um assistente editorial. Preserve a voz do escritor, não invente fatos fora do contexto e responda em português do Brasil. Retorne apenas o texto útil para a tarefa.' },
-            { role: 'user', content: `TAREFA\n${instruction.trim()}\n\nCONTEXTO SELECIONADO PELO NARRAHUB\n${context}` },
-          ],
+          model,
+          temperature: 0.7,
+          max_tokens: options.maxTokens ?? (mode === 'local' ? 480 : 1200),
+          stream: false,
+          ...localSampling,
+          messages: buildAiMessages(instruction, context, mode, retryAfterEcho),
         }),
         signal: controller.signal,
       });
       const payload = await response.json().catch(() => ({})) as ChatCompletionResponse;
       if (!response.ok) throw new Error(payload.error?.message || `O provedor respondeu com HTTP ${response.status}.`);
-      const content = payload.choices?.[0]?.message?.content?.trim();
+      const content = sanitizeAiCompletion(payload.choices?.[0]?.message?.content || '');
       if (!content) throw new Error('O provedor não retornou texto.');
+      if (isAiEcho(content, instruction, options)) {
+        if (!retryAfterEcho) return this.requestCompletion(endpoint, model, instruction, context, mode, options, true);
+        throw new Error('A IA repetiu a solicitação sem executar a tarefa. Tente um trecho menor ou use o perfil recomendado para este computador.');
+      }
       return content;
     } finally { window.clearTimeout(timeout); }
   }

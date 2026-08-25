@@ -1,5 +1,5 @@
 import { Injectable, inject } from '@angular/core';
-import { ContentTag, MetadataOwnerType } from '../models';
+import { ContentTag, ContentTagAssignment, MetadataOwnerType } from '../models';
 import { DatabaseService } from './database.service';
 
 @Injectable({ providedIn: 'root' })
@@ -17,6 +17,28 @@ export class MetadataService {
     return this.db.select<ContentTag>(
       `SELECT t.* FROM content_tags t JOIN content_tag_assignments a ON a.tag_id = t.id
        WHERE a.owner_type = $1 AND a.owner_id = $2 ORDER BY t.name`, [ownerType, ownerId]);
+  }
+
+  listAssignments(universeIds: string[], ownerTypes?: MetadataOwnerType[]): Promise<ContentTagAssignment[]> {
+    if (!universeIds.length) return Promise.resolve([]);
+    const params: unknown[] = [...universeIds];
+    const universePlaceholders = universeIds.map((_, index) => `$${index + 1}`).join(',');
+    let ownerFilter = '';
+    if (ownerTypes?.length) {
+      const ownerPlaceholders = ownerTypes.map((ownerType, index) => {
+        params.push(ownerType);
+        return `$${universeIds.length + index + 1}`;
+      }).join(',');
+      ownerFilter = ` AND a.owner_type IN (${ownerPlaceholders})`;
+    }
+    return this.db.select<ContentTagAssignment>(
+      `SELECT t.id, t.universe_id, t.name, t.color, t.created_at, a.owner_type, a.owner_id
+       FROM content_tags t
+       JOIN content_tag_assignments a ON a.tag_id = t.id
+       WHERE t.universe_id IN (${universePlaceholders})${ownerFilter}
+       ORDER BY t.name`,
+      params,
+    );
   }
 
   async createTag(universeId: string, name: string, color: string): Promise<ContentTag> {
