@@ -1,6 +1,6 @@
 {
   "name": "narrahub-app",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "scripts": {
     "ng": "ng",
     "start": "ng serve",
@@ -22,6 +22,7 @@
     "release:validate-updater": "node scripts/validate-updater-environment.mjs",
     "release:validate-version": "node scripts/validate-release-version.mjs",
     "release:validate-desktop": "node scripts/validate-desktop-config.mjs",
+    "release:validate-ui": "node scripts/validate-production-ui.mjs",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml",
     "check": "npm run build && cargo check --manifest-path src-tauri/Cargo.toml"
   },
