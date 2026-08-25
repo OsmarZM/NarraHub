@@ -1,6 +1,6 @@
 {
   "name": "narrahub-app",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "scripts": {
     "ng": "ng",
     "start": "ng serve",
@@ -14,7 +14,7 @@
     "android:dev": "tauri android dev",
     "android:build": "tauri android build",
     "android:apk": "tauri android build --debug --apk --target aarch64 --ci",
-    "android:release:apk": "tauri android build --apk --target aarch64 --ci",
+    "android:release:apk": "tauri android build --apk --target aarch64 --ci --config src-tauri/tauri.production.conf.json",
     "share-api:dev": "node services/share-api/src/server.mjs",
     "share-api:temporary": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-temporary-share.ps1",
     "share-api:test": "node --test services/share-api/test/*.test.mjs",

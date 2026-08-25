@@ -10,6 +10,9 @@ export class ThemeService {
   readonly resolvedTheme = signal<'light' | 'dark'>('light');
   private readonly media: MediaQueryList | null =
     typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  private readonly onSystemThemeChange = (): void => {
+    if (this.preference() === 'system') this.apply();
+  };
 
   constructor() {
     const saved = this.readSavedPreference();
@@ -18,12 +21,11 @@ export class ThemeService {
     }
     this.apply();
 
-    if (this.media) {
-      this.media.addEventListener('change', () => {
-        if (this.preference() === 'system') {
-          this.apply();
-        }
-      });
+    this.media?.addEventListener('change', this.onSystemThemeChange);
+
+    // Garante a aplicação também quando o serviço for criado antes do body.
+    if (typeof document !== 'undefined' && document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => this.apply(), { once: true });
     }
   }
 
@@ -50,14 +52,18 @@ export class ThemeService {
       if (document.body) this.applyToElement(document.body, resolved);
     }
 
-    // 3. Sincroniza com a janela nativa do Windows 11 via Tauri se estiver no Desktop
+    // Sincroniza o WebView e os controles nativos com a preferência escolhida.
     if (isTauri()) {
       try {
         const win = getCurrentWindow();
         if (win && typeof win.setTheme === 'function') {
-          win.setTheme(this.preference() === 'system' ? null : resolved).catch(() => {});
+          void win.setTheme(this.preference() === 'system' ? null : resolved).catch((error) => {
+            console.warn('Não foi possível sincronizar o tema da janela nativa.', error);
+          });
         }
-      } catch (_) {}
+      } catch (error) {
+        console.warn('Não foi possível acessar a janela nativa para aplicar o tema.', error);
+      }
     }
   }
 

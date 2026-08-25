@@ -170,7 +170,7 @@ export class App implements OnInit, OnDestroy {
   readonly updateBusy = signal(false);
   readonly updateProgress = signal(0);
   readonly updatePhase = signal<'idle' | 'checking' | 'available' | 'downloading' | 'current' | 'error'>('idle');
-  readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.7.0', availableVersion: null, notes: '', publishedAt: null });
+  readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.7.1', availableVersion: null, notes: '', publishedAt: null });
   readonly updateError = signal('');
   readonly updatePromptDismissed = signal(false);
   readonly syncStatus = signal<SyncServerStatus>({ running: false, address: null, pairing_code: null, device_name: 'Meu computador' });

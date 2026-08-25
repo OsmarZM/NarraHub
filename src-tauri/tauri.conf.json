@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/tooling/cli/schema.json",
-  "productName": "NarraHub",
-  "version": "0.7.0",
-  "identifier": "com.narrahub.app",
+  "productName": "NarraHub Dev",
+  "version": "0.7.1",
+  "identifier": "com.narrahub.app.dev",
   "build": {
     "beforeDevCommand": "npm run start",
     "devUrl": "http://localhost:4200",

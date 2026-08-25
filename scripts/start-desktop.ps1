@@ -33,7 +33,11 @@ Write-Host '=========================================' -ForegroundColor Cyan
 
 Push-Location $projectRoot
 try {
-  & npm.cmd run tauri -- $Mode
+  $tauriArgs = @($Mode)
+  if ($Mode -eq 'build') {
+    $tauriArgs += @('--config', 'src-tauri/tauri.production.conf.json')
+  }
+  & npm.cmd run tauri -- @tauriArgs
   $nativeExitCode = $LASTEXITCODE
 } finally {
   Pop-Location

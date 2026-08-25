@@ -70,9 +70,9 @@
             <article class="surface-card" [hidden]="settingsSection() !== 'general'">
               <div class="card-icon">◐</div><h2>Aparência</h2><p>O tema é aplicado imediatamente e fica salvo neste dispositivo.</p>
               <div class="theme-picker" role="group" aria-label="Tema">
-                <button type="button" [class.active]="theme.preference() === 'light'" (click)="setTheme('light')"><span>☀</span>Claro</button>
-                <button type="button" [class.active]="theme.preference() === 'dark'" (click)="setTheme('dark')"><span>☾</span>Escuro</button>
-                <button type="button" [class.active]="theme.preference() === 'system'" (click)="setTheme('system')"><span>◐</span>Sistema</button>
+                <button type="button" [attr.aria-pressed]="theme.preference() === 'light'" [class.active]="theme.preference() === 'light'" (click)="setTheme('light')"><span>☀</span>Claro</button>
+                <button type="button" [attr.aria-pressed]="theme.preference() === 'dark'" [class.active]="theme.preference() === 'dark'" (click)="setTheme('dark')"><span>☾</span>Escuro</button>
+                <button type="button" [attr.aria-pressed]="theme.preference() === 'system'" [class.active]="theme.preference() === 'system'" (click)="setTheme('system')"><span>◐</span>Sistema</button>
               </div>
             </article>
 
