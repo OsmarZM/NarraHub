@@ -1,0 +1,12 @@
+{
+  "productName": "NarraHub Qualification",
+  "identifier": "com.narrahub.app.qualification",
+  "app": {
+    "windows": [
+      {
+        "title": "NarraHub — Qualification"
+      }
+    ]
+  }
+}
+

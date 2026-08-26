@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { normalizeNativeCommandError } from '../errors/native-command-error';
 
 export type BackupReason = 'manual' | 'pre_migration' | 'pre_update' | 'pre_restore' | 'periodic';
 
@@ -59,32 +60,40 @@ export interface RestoreCommitResult {
 export class BackupService {
   async health(): Promise<DatabaseHealthReport> {
     this.ensureDesktop();
-    return invoke<DatabaseHealthReport>('database_health');
+    return this.invokeDatabase<DatabaseHealthReport>('database_health');
   }
 
   async create(reason: BackupReason = 'manual'): Promise<BackupManifest> {
     this.ensureDesktop();
-    return invoke<BackupManifest>('backup_create', { reason });
+    return this.invokeDatabase<BackupManifest>('backup_create', { reason });
   }
 
   async list(): Promise<BackupManifest[]> {
     this.ensureDesktop();
-    return invoke<BackupManifest[]>('backup_list');
+    return this.invokeDatabase<BackupManifest[]>('backup_list');
   }
 
   async validate(backupId: string): Promise<BackupValidation> {
     this.ensureDesktop();
-    return invoke<BackupValidation>('backup_validate', { backupId });
+    return this.invokeDatabase<BackupValidation>('backup_validate', { backupId });
   }
 
   async prepareRestore(backupId: string): Promise<RestorePreparation> {
     this.ensureDesktop();
-    return invoke<RestorePreparation>('backup_restore_prepare', { backupId });
+    return this.invokeDatabase<RestorePreparation>('backup_restore_prepare', { backupId });
   }
 
   async commitRestore(token: string): Promise<RestoreCommitResult> {
     this.ensureDesktop();
-    return invoke<RestoreCommitResult>('backup_restore_commit', { token });
+    return this.invokeDatabase<RestoreCommitResult>('backup_restore_commit', { token });
+  }
+
+  private async invokeDatabase<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+    try {
+      return await invoke<T>(command, args);
+    } catch (error) {
+      throw normalizeNativeCommandError(error, 'A operação local não pôde ser concluída.');
+    }
   }
 
   private ensureDesktop(): void {

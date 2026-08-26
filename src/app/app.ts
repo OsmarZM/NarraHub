@@ -1,12 +1,12 @@
 import { CommonModule } from '@angular/common';
-import { Component, HostListener, OnDestroy, OnInit, ViewChild, computed, inject, signal } from '@angular/core';
+import { Component, HostListener, OnDestroy, OnInit, ViewChild, computed, effect, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CdkDragDrop, DragDropModule, moveItemInArray } from '@angular/cdk/drag-drop';
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
-  Attachment, Book, BookOption, Chapter, ChapterOption, ContentTag, ContentTagAssignment, DEFAULT_ATTRIBUTES, Entity, EntityAttribute, EntityType, EntityWithDetails, HistoryEntry,
-  MentionOccurrence, MetadataOwnerType, PlanningItem, RelationCard, Story, SyncServerStatus, TimelineEvent, UniverseWithStats,
+  Attachment, Book, BookOption, Chapter, ChapterOption, ContentTag, ContentTagAssignment, DEFAULT_ATTRIBUTES, Entity, EntityAttribute, EntityType, EntityWithDetails,
+  MentionOccurrence, MetadataOwnerType, PlanningItem, RelationCard, Story, SyncServerStatus, UniverseWithStats,
 } from './core/models';
 import { BookService } from './core/services/book.service';
 import { AttachmentService } from './core/services/attachment.service';
@@ -15,6 +15,8 @@ import { AiMode, AiModelProfile, AiService } from './core/services/ai.service';
 import { ChapterService } from './core/services/chapter.service';
 import { CollaborationContribution, CollaborationService, CollaborationSession, SharePermission } from './core/services/collaboration.service';
 import { DatabaseService } from './core/services/database.service';
+import { AppNavigationId, AppRouteState } from './core/navigation/app-navigation';
+import { AppNavigationService } from './core/navigation/app-navigation.service';
 import { EntityService } from './core/services/entity.service';
 import { MentionService } from './core/services/mention.service';
 import { MetadataService } from './core/services/metadata.service';
@@ -31,6 +33,10 @@ import { UniversePickerComponent } from './features/universe-picker/universe-pic
 import { ConnectionsGraphComponent } from './features/connections/connections-graph.component';
 import { ProductionReplicaComponent } from './features/production-replica/production-replica.component';
 import { PlanningBoardComponent } from './features/planning/planning-board.component';
+import { HistoryPageComponent } from './features/history/history-page.component';
+import { HistoryStore } from './features/history/state/history.store';
+import { TimelinePageComponent } from './features/timeline/timeline-page.component';
+import { TimelineStore } from './features/timeline/state/timeline.store';
 import { AiWritingRequest, WritingEditorComponent } from './features/writing/writing-editor.component';
 import { AppShellComponent } from './shell/app-shell/app-shell.component';
 import { ContextualInspectorComponent } from './shell/contextual-inspector/contextual-inspector.component';
@@ -66,7 +72,7 @@ interface WritingCharacterInsight {
 }
 
 type DeleteKind = 'story' | 'book' | 'chapter' | 'entity' | 'relation';
-type RenameKind = 'universe' | 'story' | 'book' | 'chapter' | 'entity' | 'timeline';
+type RenameKind = 'universe' | 'story' | 'book' | 'chapter' | 'entity';
 
 interface PendingDelete {
   kind: DeleteKind;
@@ -115,6 +121,8 @@ type SettingsSection = 'general' | 'ai' | 'sync' | 'share' | 'updates';
     ConnectionsGraphComponent,
     ProductionReplicaComponent,
     PlanningBoardComponent,
+    HistoryPageComponent,
+    TimelinePageComponent,
     WritingEditorComponent,
   ],
   templateUrl: './app.html',
@@ -141,6 +149,9 @@ export class App implements OnInit, OnDestroy {
   private readonly workspaceService = inject(WorkspaceService);
   private readonly syncService = inject(SyncService);
   private readonly updateService = inject(UpdateService);
+  private readonly historyStore = inject(HistoryStore);
+  private readonly timelineStore = inject(TimelineStore);
+  private readonly navigation = inject(AppNavigationService);
 
   readonly searchQuery = signal('');
   readonly activeNav = signal('inicio');
@@ -152,10 +163,9 @@ export class App implements OnInit, OnDestroy {
   readonly universeChapters = signal<ChapterOption[]>([]);
   readonly entities = signal<Entity[]>([]);
   readonly mentionOccurrences = signal<MentionOccurrence[]>([]);
-  readonly timeline = signal<TimelineEvent[]>([]);
+  readonly timeline = this.timelineStore.events;
   readonly planning = signal<PlanningItem[]>([]);
   readonly relations = signal<RelationCard[]>([]);
-  readonly history = signal<HistoryEntry[]>([]);
   readonly activeStory = signal<Story | null>(null);
   readonly activeBook = signal<Book | null>(null);
   readonly activeChapter = signal<Chapter | null>(null);
@@ -235,12 +245,6 @@ export class App implements OnInit, OnDestroy {
   newEntityAiAttributes: EntityAiAttribute[] = [];
   newEntityImageData = '';
   newEntityType: EntityType = 'Personagem';
-  newTimelineTitle = '';
-  newTimelineDate = '';
-  newTimelineDescription = '';
-  newTimelineEntityId = '';
-  newTimelineDisplayDate = '';
-  newTimelineSortKey = 0;
   newRelationSource = '';
   newRelationTarget = '';
   newRelationLabel = '';
@@ -314,11 +318,20 @@ export class App implements OnInit, OnDestroy {
 
   @ViewChild(WritingEditorComponent) private writingEditor?: WritingEditorComponent;
   @ViewChild(PlanningBoardComponent) private planningBoard?: PlanningBoardComponent;
+  @ViewChild(TimelinePageComponent) private timelinePage?: TimelinePageComponent;
 
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private infoTimer: ReturnType<typeof setTimeout> | null = null;
   private collaborationTimer: ReturnType<typeof setInterval> | null = null;
   private workspaceEpoch = 0;
+  private restoringRoute = false;
+
+  constructor() {
+    effect(() => {
+      const route = this.navigation.route();
+      if (!this.isLoading()) void this.restoreRoute(route);
+    });
+  }
 
   async ngOnInit(): Promise<void> {
     await this.ai.initialize().catch((error) => {
@@ -376,21 +389,22 @@ export class App implements OnInit, OnDestroy {
     this.libraryPreviewTags.set(this.groupTagAssignments(assignments));
   }
 
-  async selectNav(item: SidebarNavItem): Promise<void> {
+  async selectNav(item: SidebarNavItem, updateRoute = true): Promise<void> {
     if (item.needsUniverse && !this.appState.activeUniverse()) {
       this.showInfo('Selecione ou crie um universo para abrir esta área.'); return;
     }
     await this.saveChapterNow();
     this.activeNav.set(item.id);
-    if (item.id === 'inicio') { await this.returnToLibrary(); return; }
+    if (item.id === 'inicio') { await this.returnToLibrary(updateRoute); return; }
     if (item.id === 'ajuda') { this.showInfo('Ajuda e feedback serão conectados ao fluxo nativo em uma próxima fase.'); return; }
-    if (item.id === 'configuracoes') { this.appState.openSettings(); void this.refreshBackupStatus(); return; }
+    if (item.id === 'configuracoes') { this.openSettings(updateRoute); return; }
     if (item.id === 'escrita') this.appState.openEditor();
     else if (item.id === 'entidades') this.appState.openEntityList(null);
     else if (item.id === 'conexoes') { this.appState.openGraph(); await this.loadRelations(); }
-    else if (item.id === 'timeline') { this.appState.openTimeline(); await this.loadTimeline(); }
+    else if (item.id === 'timeline') this.appState.openTimeline();
     else if (item.id === 'planejamento') { this.appState.openPlanning(); await this.loadPlanning(); }
-    else if (item.id === 'historico') { this.appState.openHistory(); await this.loadHistory(); }
+    else if (item.id === 'historico') this.appState.openHistory();
+    if (updateRoute) await this.navigation.navigate(item.id as AppNavigationId, this.appState.activeUniverseId());
   }
 
   async createUniverse(): Promise<void> {
@@ -423,11 +437,12 @@ export class App implements OnInit, OnDestroy {
     this.pendingDeleteUniverse.set(universe); this.deleteUniverseConfirmation = ''; this.appState.openModal('delete-universe');
   }
 
-  async openUniverse(universe: UniverseWithStats): Promise<void> {
+  async openUniverse(universe: UniverseWithStats, updateRoute = true): Promise<void> {
     await this.saveChapterNow();
     this.workspaceEpoch += 1; this.resetWorkspaceData();
     localStorage.setItem('narrahub.lastUniverseId', universe.id); this.lastOpenedUniverseId.set(universe.id);
     this.searchQuery.set(''); this.appState.openUniverse(universe); this.activeNav.set('escrita'); await this.loadWorkspaceData();
+    if (updateRoute) await this.navigation.navigate('escrita', universe.id);
   }
 
   async confirmDeleteUniverse(): Promise<void> {
@@ -486,7 +501,7 @@ export class App implements OnInit, OnDestroy {
 
   renameKindLabel(kind: RenameKind): string {
     return ({
-      universe: 'Universo', story: 'História', book: 'Livro', chapter: 'Capítulo', entity: 'Entidade', timeline: 'Evento',
+      universe: 'Universo', story: 'História', book: 'Livro', chapter: 'Capítulo', entity: 'Entidade',
     } as Record<RenameKind, string>)[kind];
   }
 
@@ -526,20 +541,18 @@ export class App implements OnInit, OnDestroy {
         this.entities.update((items) => items.map((item) => item.id === pending.id ? { ...item, name } : item));
         this.activeEntity.update((item) => item?.id === pending.id ? { ...item, name } : item);
         await Promise.all([this.loadRelations(), this.refreshMentionOccurrences()]);
-      } else if (pending.kind === 'timeline') {
-        await this.workspaceService.updateTimelineTitle(pending.id, name);
-        this.timeline.update((items) => items.map((item) => item.id === pending.id ? { ...item, title: name } : item));
       }
       this.pendingRename.set(null); this.renameValue = ''; this.appState.closeModal();
       this.showInfo(`${this.renameKindLabel(pending.kind)} renomeado(a).`);
     } catch (error) { this.reportError(`Não foi possível renomear ${pending.name}.`, error); }
   }
 
-  async returnToLibrary(): Promise<void> {
+  async returnToLibrary(updateRoute = true): Promise<void> {
     await this.saveChapterNow(); this.workspaceEpoch += 1; this.appState.goHome(); this.activeNav.set('inicio'); this.searchQuery.set(''); this.resetWorkspaceData();
+    if (updateRoute) await this.navigation.navigate('inicio', null);
   }
 
-  openSettings(): void { this.searchQuery.set(''); this.activeNav.set('configuracoes'); this.appState.openSettings(); void this.refreshBackupStatus(); }
+  openSettings(updateRoute = true): void { this.searchQuery.set(''); this.activeNav.set('configuracoes'); this.appState.openSettings(); void this.refreshBackupStatus(); if (updateRoute) void this.navigation.navigate('configuracoes', null); }
 
   openShareModal(): void {
     if (!this.appState.activeUniverse()) { this.showInfo('Abra um universo antes de compartilhar.'); return; }
@@ -554,17 +567,17 @@ export class App implements OnInit, OnDestroy {
     const id = this.appState.activeUniverseId(); if (!id) return;
     const epoch = this.workspaceEpoch;
     try {
-      const [stories, books, entities, chapters, timeline, planning, tagAssignments] = await Promise.all([
+      const [stories, books, entities, chapters, , planning, tagAssignments] = await Promise.all([
         this.storyService.listByUniverse(id),
         this.bookService.listByUniverse(id),
         this.entityService.listByUniverse(id),
         this.chapterService.listByUniverse(id),
-        this.workspaceService.listTimeline(id),
+        this.timelineStore.load(id),
         this.planningService.list(id),
         this.metadataService.listAssignments([id]),
       ]);
       if (epoch !== this.workspaceEpoch || this.appState.activeUniverseId() !== id) return;
-      this.stories.set(stories); this.universeBooks.set(books); this.entities.set(entities); this.universeChapters.set(chapters); this.timeline.set(timeline); this.planning.set(planning); this.workspacePreviewTags.set(this.groupTagAssignments(tagAssignments));
+      this.stories.set(stories); this.universeBooks.set(books); this.entities.set(entities); this.universeChapters.set(chapters); this.planning.set(planning); this.workspacePreviewTags.set(this.groupTagAssignments(tagAssignments));
       this.expandedStoryIds.set(new Set(stories.slice(0, 1).map((story) => story.id)));
       this.expandedBookIds.set(new Set(books.slice(0, 1).map((book) => book.id)));
       if (this.stories().length) await this.selectStory(this.stories()[0]); else this.clearWritingSelection();
@@ -633,7 +646,7 @@ export class App implements OnInit, OnDestroy {
     const story = this.stories().find((candidate) => candidate.id === book.story_id); if (!story) return;
     await this.selectStory(story);
     const selected = this.books().find((candidate) => candidate.id === book.id); if (selected) await this.selectBook(selected);
-    this.activeNav.set('escrita'); this.appState.openEditor();
+    this.setWorkspaceNavigation('escrita'); this.appState.openEditor();
   }
 
   async openChapterOption(option: ChapterOption): Promise<void> {
@@ -642,7 +655,7 @@ export class App implements OnInit, OnDestroy {
     const book = this.books().find((candidate) => candidate.id === option.book_id); if (!book) return;
     await this.selectBook(book);
     const chapter = this.chapters().find((candidate) => candidate.id === option.id); if (chapter) await this.selectChapter(chapter);
-    this.activeNav.set('escrita'); this.appState.openEditor(option.id);
+    this.setWorkspaceNavigation('escrita'); this.appState.openEditor(option.id);
   }
 
   async selectTreeChapter(option: ChapterOption): Promise<void> { await this.openChapterOption(option); }
@@ -777,17 +790,17 @@ export class App implements OnInit, OnDestroy {
   async openGlobalSearchResult(result: GlobalSearchResult): Promise<void> {
     this.searchQuery.set('');
     if (result.kind === 'story') {
-      const story = this.stories().find((item) => item.id === result.id); if (story) { await this.selectStory(story); this.activeNav.set('escrita'); this.appState.openEditor(); }
+      const story = this.stories().find((item) => item.id === result.id); if (story) { await this.selectStory(story); this.setWorkspaceNavigation('escrita'); this.appState.openEditor(); }
     } else if (result.kind === 'book') {
       const book = this.universeBooks().find((item) => item.id === result.id); if (book) await this.openBookOption(book);
     } else if (result.kind === 'chapter') {
       const chapter = this.universeChapters().find((item) => item.id === result.id); if (chapter) await this.openChapterOption(chapter);
     } else if (result.kind === 'entity') {
-      const entity = this.entities().find((item) => item.id === result.id); if (entity) { this.activeNav.set('entidades'); this.appState.openEntityList(entity.type); await this.openEntitySheet(entity); }
+      const entity = this.entities().find((item) => item.id === result.id); if (entity) { this.setWorkspaceNavigation('entidades'); this.appState.openEntityList(entity.type); await this.openEntitySheet(entity); }
     } else if (result.kind === 'timeline') {
-      this.activeNav.set('timeline'); this.appState.openTimeline(); queueMicrotask(() => document.querySelector<HTMLElement>(`[data-timeline-id="${result.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+      this.setWorkspaceNavigation('timeline'); this.appState.openTimeline(); queueMicrotask(() => document.querySelector<HTMLElement>(`[data-timeline-id="${result.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
     } else {
-      this.activeNav.set('planejamento'); this.appState.openPlanning(); queueMicrotask(() => document.querySelector<HTMLElement>(`[data-planning-id="${result.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+      this.setWorkspaceNavigation('planejamento'); this.appState.openPlanning(); queueMicrotask(() => document.querySelector<HTMLElement>(`[data-planning-id="${result.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
     }
   }
 
@@ -953,17 +966,9 @@ export class App implements OnInit, OnDestroy {
   }
   async deleteRelation(id: string): Promise<void> { await this.workspaceService.deleteRelation(id); await this.loadRelations(); }
 
-  async loadTimeline(): Promise<void> { const id = this.appState.activeUniverseId(); if (!id) return; const data = await this.workspaceService.listTimeline(id); if (this.appState.activeUniverseId() === id) this.timeline.set(data); }
-  async createTimeline(): Promise<void> {
-    const id = this.appState.activeUniverseId(); if (!id || !this.newTimelineTitle.trim() || (!this.newTimelineDate && !this.newTimelineDisplayDate.trim())) return;
-    await this.workspaceService.createTimeline(id, this.newTimelineTitle.trim(), this.newTimelineDate || '0000-01-01', this.newTimelineDescription.trim(), this.newTimelineEntityId || null, this.newTimelineDisplayDate.trim(), Number(this.newTimelineSortKey) || 0);
-    this.newTimelineTitle = ''; this.newTimelineDate = ''; this.newTimelineDescription = ''; this.newTimelineEntityId = ''; this.newTimelineDisplayDate = ''; this.newTimelineSortKey = 0; this.appState.closeModal(); await this.loadTimeline();
-  }
-  async deleteTimeline(id: string): Promise<void> { await this.workspaceService.deleteTimeline(id); await this.loadTimeline(); }
-
   async loadPlanning(): Promise<void> { const id = this.appState.activeUniverseId(); if (!id) return; const data = await this.planningService.list(id); if (this.appState.activeUniverseId() === id) this.planning.set(data); }
   beginCreatePlanning(): void { this.planningBoard?.openCreate(); }
-  async loadHistory(): Promise<void> { const id = this.appState.activeUniverseId(); if (!id) return; const data = await this.workspaceService.listHistory(id); if (this.appState.activeUniverseId() === id) this.history.set(data); }
+  beginCreateTimeline(): void { this.timelinePage?.openCreate(); }
 
   async openPlanningChapter(item: PlanningItem): Promise<void> {
     const option = this.universeChapters().find((chapter) => chapter.id === item.chapter_id); if (!option) return;
@@ -972,7 +977,7 @@ export class App implements OnInit, OnDestroy {
     const book = this.books().find((candidate) => candidate.id === option.book_id); if (!book) return;
     await this.selectBook(book);
     const chapter = this.chapters().find((candidate) => candidate.id === option.id); if (chapter) await this.selectChapter(chapter);
-    this.activeNav.set('escrita'); this.appState.openEditor(option.id);
+    this.setWorkspaceNavigation('escrita'); this.appState.openEditor(option.id);
   }
 
   toggleInspector(): void {
@@ -1657,8 +1662,44 @@ export class App implements OnInit, OnDestroy {
 
   private tagPreviewKey(type: MetadataOwnerType, id: string): string { return `${type}:${id}`; }
 
+  setWorkspaceNavigation(navId: Exclude<AppNavigationId, 'inicio' | 'configuracoes'>): void {
+    this.activeNav.set(navId);
+    void this.navigation.navigate(navId, this.appState.activeUniverseId());
+  }
+
+  private async restoreRoute(route: AppRouteState): Promise<void> {
+    if (this.restoringRoute) return;
+    if (route.navId === 'inicio' && this.activeNav() === 'inicio' && this.appState.currentView() === 'home') return;
+    if (route.navId === 'configuracoes' && this.activeNav() === 'configuracoes') return;
+    if (route.universeId && route.universeId === this.appState.activeUniverseId() && route.navId === this.activeNav()) return;
+
+    this.restoringRoute = true;
+    try {
+      if (route.navId === 'inicio') {
+        await this.returnToLibrary(false);
+        return;
+      }
+      if (route.navId === 'configuracoes') {
+        this.openSettings(false);
+        return;
+      }
+
+      const universe = this.universes().find((item) => item.id === route.universeId);
+      if (!universe) {
+        await this.navigation.navigate('inicio', null);
+        this.showInfo('O universo desta rota não existe mais neste banco local.');
+        return;
+      }
+      if (this.appState.activeUniverseId() !== universe.id) await this.openUniverse(universe, false);
+      const navItem = this.navItems.find((item) => item.id === route.navId);
+      if (navItem) await this.selectNav(navItem, false);
+    } finally {
+      this.restoringRoute = false;
+    }
+  }
+
   private clearWritingSelection(): void { this.activeStory.set(null); this.activeBook.set(null); this.activeChapter.set(null); this.books.set([]); this.chapters.set([]); this.editorTitle.set(''); this.editorContent.set(''); this.chapterSummary.set(''); this.chapterTags.set([]); }
-  private resetWorkspaceData(): void { this.clearWritingSelection(); this.stories.set([]); this.universeBooks.set([]); this.universeChapters.set([]); this.entities.set([]); this.mentionOccurrences.set([]); this.timeline.set([]); this.planning.set([]); this.relations.set([]); this.history.set([]); this.activeEntity.set(null); this.entityGallery.set([]); this.entityTags.set([]); this.workspacePreviewTags.set({}); this.expandedStoryIds.set(new Set()); this.expandedBookIds.set(new Set()); }
+  private resetWorkspaceData(): void { this.clearWritingSelection(); this.stories.set([]); this.universeBooks.set([]); this.universeChapters.set([]); this.entities.set([]); this.mentionOccurrences.set([]); this.timelineStore.reset(); this.historyStore.reset(); this.planning.set([]); this.relations.set([]); this.activeEntity.set(null); this.entityGallery.set([]); this.entityTags.set([]); this.workspacePreviewTags.set({}); this.expandedStoryIds.set(new Set()); this.expandedBookIds.set(new Set()); }
   private resetUniverseForm(): void { this.editingUniverseId = null; this.newUniverseName = ''; this.newUniverseDesc = ''; this.newUniverseCoverData = ''; }
   private fileToDataUrl(file: File): Promise<string> { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error ?? new Error('Falha ao ler a imagem.')); reader.readAsDataURL(file); }); }
   async loadCollaborationReview(): Promise<void> {

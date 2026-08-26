@@ -231,6 +231,21 @@ Toda fase deve passar por cinco gates:
 
 ## Fase 0 — Estabilizar a linha 0.7.x
 
+### Estado de implementação
+
+Escopo de engenharia concluído localmente em 26/08/2026:
+
+- migration 10 congelada; migrations 11, 12 e 13 são append-only;
+- fixture representativa e anonimizada do schema 10 cobre todos os domínios persistidos;
+- cadeia completa de migrations é testada em arquivo, fechada e reaberta;
+- upgrade 10→13 preserva conteúdo e contagens das tabelas canônicas;
+- prompts automatizados e geração com o modelo local real foram validados;
+- build de produção, configuração desktop e carregamento dos estilos de tema/configurações passaram;
+- uma réplica isolada do banco instalado abriu no runtime Tauri, migrou e reiniciou sem reaplicar migrations;
+- o banco instalado permaneceu intocado, confirmado por SHA-256 e data de modificação.
+
+O gate de publicação continua separado: a versão somente poderá ser classificada como publicável após assinatura e upgrade por instalador/updater em ambiente de teste. As evidências e o bloqueio externo estão em [`PHASE_0_1_QUALIFICATION.md`](PHASE_0_1_QUALIFICATION.md).
+
 ### Entregas
 
 - Isolar renomeação/tags e correções de IA em commits temáticos.
@@ -257,7 +272,7 @@ A versão de estabilização abre bancos anteriores, mantém capítulos e permit
 
 ### Estado de implementação
 
-Fase 1 em implementação na versão de desenvolvimento 0.7.3:
+Escopo de engenharia concluído localmente na versão de desenvolvimento 0.7.4 em 26/08/2026:
 
 - diagnóstico Rust somente leitura implementado;
 - invariantes estruturais centrais verificados pelo diagnóstico;
@@ -269,9 +284,14 @@ Fase 1 em implementação na versão de desenvolvimento 0.7.3:
 - compatibilidade das migrations aplicadas é validada por checksum antes da troca;
 - retenção implementada para os cinco automáticos mais recentes, preservando manuais e `pre_restore`;
 - testes temporários cobrem round-trip, schema futuro e falha injetada após a troca;
-- interação real no desktop empacotado e teste com instalador assinado publicado permanecem pendentes.
+- contrato de erros tipados implementado nos commands Rust e normalizado no frontend;
+- banco desktop real validado por backup online somente leitura;
+- réplica isolada migrada no Tauri e validada novamente depois de dois boots;
+- contagens das tabelas canônicas comparadas entre a origem schema 10 e a réplica schema 13;
+- interação real no desktop empacotado e teste com instalador assinado publicado permanecem pendentes como gate de release, não como código da fase.
 
 O contrato operacional está documentado em [`BACKUP_AND_RECOVERY.md`](BACKUP_AND_RECOVERY.md).
+O relatório de qualificação local está em [`PHASE_0_1_QUALIFICATION.md`](PHASE_0_1_QUALIFICATION.md).
 
 ### Entregas
 
@@ -313,6 +333,16 @@ Primeira fatia vertical implementada no planejamento para a próxima versão ap�
 - build Angular, teste da migration, runtime Tauri e suíte pura do quadro exercitados;
 - automação visual de arrastar no WebView e matriz de upgrade do instalador ainda permanecem pendentes.
 
+Segunda fatia vertical implementada na mesma linha de desenvolvimento:
+
+- Timeline e Histórico foram extraídos do `App` para componentes e stores próprios;
+- gateways tipados expressam `list`, `create`, `rename` e `delete` sem expor SQL à UI;
+- adapters `LegacyTimelineGateway` e `LegacyHistoryGateway` preservam o comportamento SQLite atual até a migração para commands Rust;
+- respostas atrasadas são descartadas por revisão de carga ao trocar de universo;
+- estado, formulários e erros da Timeline, além da carga do Histórico, deixaram de pertencer ao componente raiz;
+- testes automatizados impedem SQL e `WorkspaceService` de voltarem aos componentes, stores e contratos das features;
+- nenhuma migration ou formato persistido foi alterado por essa modularização.
+
 Essa fatia inicia a fase, mas não conclui a modularização: universo, timeline, entidades, configurações, colaboração e editor ainda precisam dos próprios gateways/stores.
 
 ### Entregas
@@ -346,6 +376,18 @@ Essa fatia inicia a fase, mas não conclui a modularização: universo, timeline
 Os gateways continuam apontando para os serviços SQL existentes. Nenhuma migration é necessária.
 
 ## Fase 3 — Router e carregamento por feature
+
+### Estado de implementação
+
+A fundação do Router foi iniciada sem duplicar telas nem trocar a fonte de estado das features:
+
+- rotas de alto nível representam biblioteca, configurações e seções do workspace;
+- URLs usam o ID estável do universo e nomes estáveis de seção;
+- o shell restaura uma rota profunda válida após inicializar o banco local;
+- uma rota para universo inexistente retorna à biblioteca com mensagem recuperável;
+- Signals e `AppState` continuam controlando a apresentação enquanto os demais ciclos de vida são extraídos;
+- navegação real entre `/library` e `/settings`, além do fallback de deep link inválido, foi validada em Chromium;
+- resolvers, guards de autosave, componentes roteados e lazy loading permanecem para as próximas fatias desta fase.
 
 ### Entregas
 

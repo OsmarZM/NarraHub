@@ -691,6 +691,120 @@ WHERE EXISTS (
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use uuid::Uuid;
+
+    const REPRESENTATIVE_SCHEMA_V10_FIXTURE: &str =
+        include_str!("../../fixtures/schema10_representative.sql");
+
+    fn apply_migrations(connection: &Connection, first: i64, last: i64) {
+        for version in first..=last {
+            connection
+                .execute_batch(sql_for_version(version).expect("known migration"))
+                .unwrap_or_else(|error| panic!("apply migration v{version}: {error}"));
+        }
+        connection
+            .pragma_update(None, "user_version", last)
+            .expect("record schema version");
+    }
+
+    #[test]
+    fn full_migration_chain_creates_a_reopenable_file_database() {
+        let path =
+            std::env::temp_dir().join(format!("narrahub-empty-upgrade-{}.db", Uuid::new_v4()));
+        {
+            let connection = Connection::open(&path).expect("create file database");
+            connection
+                .execute_batch("PRAGMA foreign_keys = ON;")
+                .expect("enable foreign keys");
+            apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        }
+        let reopened = Connection::open(&path).expect("reopen migrated database");
+        let version: i64 = reopened
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read schema version");
+        let integrity: String = reopened
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("check integrity");
+        assert_eq!(version, LATEST_SCHEMA_VERSION);
+        assert_eq!(integrity, "ok");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn representative_schema10_fixture_upgrades_without_data_loss() {
+        let path = std::env::temp_dir().join(format!("narrahub-v10-upgrade-{}.db", Uuid::new_v4()));
+        {
+            let connection = Connection::open(&path).expect("create schema 10 database");
+            connection
+                .execute_batch("PRAGMA foreign_keys = ON;")
+                .expect("enable foreign keys");
+            apply_migrations(&connection, 1, 10);
+            connection
+                .execute_batch(REPRESENTATIVE_SCHEMA_V10_FIXTURE)
+                .expect("seed representative schema 10 fixture");
+            apply_migrations(&connection, 11, LATEST_SCHEMA_VERSION);
+        }
+
+        let reopened = Connection::open(&path).expect("reopen upgraded fixture");
+        reopened
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys after reopen");
+        let chapter: (String, String, String) = reopened
+            .query_row(
+                "SELECT content, scene_origin, scene_destination FROM chapters WHERE id = 'fixture-c1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("load preserved chapter");
+        assert_eq!(
+            chapter,
+            (
+                "<p>Lia atravessou a ponte ao amanhecer.</p>".into(),
+                "Porto Antigo".into(),
+                "Farol de Sal".into(),
+            )
+        );
+        let preserved_counts: (i64, i64, i64, i64, i64) = reopened
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM entities),
+                    (SELECT COUNT(*) FROM relations),
+                    (SELECT COUNT(*) FROM content_tag_assignments),
+                    (SELECT COUNT(*) FROM collaboration_contributions),
+                    (SELECT COUNT(*) FROM planning_items)",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("count preserved domain rows");
+        assert_eq!(preserved_counts, (3, 1, 3, 1, 1));
+        let planning_defaults: (String, String) = reopened
+            .query_row(
+                "SELECT image, custom_field_values FROM planning_items WHERE id = 'fixture-p1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("load additive planning defaults");
+        assert_eq!(planning_defaults, (String::new(), "{}".into()));
+        let foreign_key_failures: i64 = reopened
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("check foreign keys");
+        let integrity: String = reopened
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("check integrity");
+        assert_eq!(foreign_key_failures, 0);
+        assert_eq!(integrity, "ok");
+        std::fs::remove_file(path).ok();
+    }
 
     #[test]
     fn v7_and_v8_move_legacy_fields_and_add_entity_summaries() {

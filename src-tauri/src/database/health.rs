@@ -1,3 +1,4 @@
+use super::error::{DatabaseCommandError, DatabaseCommandResult};
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -38,8 +39,9 @@ pub struct DatabaseHealthReport {
 }
 
 #[tauri::command]
-pub fn database_health(app: AppHandle) -> Result<DatabaseHealthReport, String> {
-    inspect_database(&super::app_database_path(&app)?)
+pub fn database_health(app: AppHandle) -> DatabaseCommandResult<DatabaseHealthReport> {
+    let path = super::app_database_path(&app).map_err(DatabaseCommandError::unavailable)?;
+    inspect_database(&path).map_err(DatabaseCommandError::storage)
 }
 
 pub fn inspect_database(path: &Path) -> Result<DatabaseHealthReport, String> {

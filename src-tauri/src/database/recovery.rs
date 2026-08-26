@@ -1,6 +1,7 @@
 use super::backup::{
     copy_assets, create_backup_at, hash_file, validate_backup_at, BackupReason, BackupRuntimeState,
 };
+use super::error::{DatabaseCommandError, DatabaseCommandResult};
 use super::health::inspect_database;
 use super::migrations::{sql_for_version, LATEST_SCHEMA_VERSION};
 use chrono::Utc;
@@ -80,10 +81,12 @@ pub async fn backup_restore_prepare(
     backup_state: State<'_, BackupRuntimeState>,
     restore_state: State<'_, RestoreRuntimeState>,
     backup_id: String,
-) -> Result<RestorePreparation, String> {
-    let app_data = super::app_data_path(&app)?;
+) -> DatabaseCommandResult<RestorePreparation> {
+    let app_data = super::app_data_path(&app).map_err(DatabaseCommandError::unavailable)?;
     if backup_state.running.swap(true, Ordering::AcqRel) {
-        return Err("Já existe uma operação de backup ou recuperação em andamento.".into());
+        return Err(DatabaseCommandError::conflict(
+            "Já existe uma operação de backup ou recuperação em andamento.",
+        ));
     }
 
     let task = tauri::async_runtime::spawn_blocking(move || {
@@ -92,12 +95,19 @@ pub async fn backup_restore_prepare(
     .await;
     backup_state.running.store(false, Ordering::Release);
 
-    let (preparation, pending) =
-        task.map_err(|error| format!("A preparação da restauração falhou: {error}"))??;
+    let (preparation, pending) = task
+        .map_err(|error| {
+            DatabaseCommandError::unavailable(format!(
+                "A preparação da restauração falhou: {error}"
+            ))
+        })?
+        .map_err(classify_restore_error)?;
     let previous = restore_state
         .pending
         .lock()
-        .map_err(|_| "O estado de restauração ficou indisponível.".to_string())?
+        .map_err(|_| {
+            DatabaseCommandError::unavailable("O estado de restauração ficou indisponível.")
+        })?
         .replace(pending);
     if let Some(previous) = previous {
         remove_restore_staging(&previous.staging);
@@ -111,10 +121,12 @@ pub async fn backup_restore_commit(
     backup_state: State<'_, BackupRuntimeState>,
     restore_state: State<'_, RestoreRuntimeState>,
     token: String,
-) -> Result<RestoreCommitResult, String> {
-    let app_data = super::app_data_path(&app)?;
+) -> DatabaseCommandResult<RestoreCommitResult> {
+    let app_data = super::app_data_path(&app).map_err(DatabaseCommandError::unavailable)?;
     if backup_state.running.swap(true, Ordering::AcqRel) {
-        return Err("Já existe uma operação de backup ou recuperação em andamento.".into());
+        return Err(DatabaseCommandError::conflict(
+            "Já existe uma operação de backup ou recuperação em andamento.",
+        ));
     }
 
     let pending = {
@@ -122,14 +134,18 @@ pub async fn backup_restore_commit(
             Ok(guard) => guard,
             Err(_) => {
                 backup_state.running.store(false, Ordering::Release);
-                return Err("O estado de restauração ficou indisponível.".into());
+                return Err(DatabaseCommandError::unavailable(
+                    "O estado de restauração ficou indisponível.",
+                ));
             }
         };
         match guard.as_ref() {
             Some(pending) if pending.token == token => guard.take().expect("pending checked"),
             _ => {
                 backup_state.running.store(false, Ordering::Release);
-                return Err("A preparação de restauração não existe ou já expirou.".into());
+                return Err(DatabaseCommandError::not_found(
+                    "A preparação de restauração não existe ou já expirou.",
+                ));
             }
         }
     };
@@ -137,7 +153,24 @@ pub async fn backup_restore_commit(
     let task =
         tauri::async_runtime::spawn_blocking(move || commit_restore_at(&app_data, pending)).await;
     backup_state.running.store(false, Ordering::Release);
-    task.map_err(|error| format!("A troca recuperável do banco falhou: {error}"))?
+    task.map_err(|error| {
+        DatabaseCommandError::unavailable(format!("A troca recuperável do banco falhou: {error}"))
+    })?
+    .map_err(DatabaseCommandError::storage)
+}
+
+fn classify_restore_error(message: String) -> DatabaseCommandError {
+    if message.contains("não é restaurável")
+        || message.contains("checksum")
+        || message.contains("schema")
+        || message.contains("Atualize o NarraHub")
+    {
+        DatabaseCommandError::validation(message)
+    } else if message.contains("não encontrado") {
+        DatabaseCommandError::not_found(message)
+    } else {
+        DatabaseCommandError::storage(message)
+    }
 }
 
 fn prepare_restore_at(

@@ -1,4 +1,5 @@
 pub mod backup;
+pub mod error;
 pub mod health;
 pub mod migrations;
 pub mod planning;

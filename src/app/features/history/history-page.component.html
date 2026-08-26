@@ -1,0 +1,38 @@
+<div class="history-feature-page">
+  <header class="history-feature-heading">
+    <div>
+      <span class="history-eyebrow">VERSÕES</span>
+      <h1>Histórico recente</h1>
+      <p>Alterações registradas automaticamente no banco local.</p>
+    </div>
+    <button type="button" class="history-refresh" [disabled]="store.loading()" (click)="store.load(universeId)">
+      {{ store.loading() ? 'Atualizando…' : 'Atualizar' }}
+    </button>
+  </header>
+
+  @if (store.error()) {
+    <p class="history-error" role="alert">{{ store.error() }}</p>
+  }
+
+  @if (store.entries().length > 0) {
+    <div class="history-list">
+      @for (entry of store.entries(); track entry.id) {
+        <article>
+          <span class="history-icon">{{ entry.action === 'create' ? '+' : '↻' }}</span>
+          <div>
+            <h3>{{ entry.display_name }}</h3>
+            <p>{{ entry.entity_type }} · {{ entry.field || entry.action }}@if (entry.new_value) { <span> · {{ entry.new_value }}</span> }</p>
+          </div>
+          <time>{{ formatDate(entry.created_at) }}</time>
+        </article>
+      }
+    </div>
+  } @else if (!store.loading()) {
+    <section class="history-empty">
+      <span>↶</span>
+      <h2>Nenhuma alteração registrada ainda</h2>
+      <p>Novas edições de capítulos e entidades aparecerão aqui.</p>
+    </section>
+  }
+</div>
+

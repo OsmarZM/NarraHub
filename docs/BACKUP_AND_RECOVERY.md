@@ -137,7 +137,8 @@ cargo test --manifest-path src-tauri/Cargo.toml real_desktop_database_creates_a_
 
 ## Próximo incremento
 
-1. Validar o fluxo completo por interação real no desktop empacotado.
-2. Publicar uma versão assinada de teste e executar upgrade real com `pre_update`.
-3. Confirmar reabertura, migrations, integridade e recuperação usando cópia controlada de uma base anterior.
-4. Expor gerenciamento dos pontos técnicos de rollback sem confundi-los com backups do usuário.
+O runtime Tauri já foi exercitado duas vezes sobre uma cópia controlada da base instalada, incluindo migration 10→13, backup online, integridade e preservação das contagens. O relatório está em [`PHASE_0_1_QUALIFICATION.md`](PHASE_0_1_QUALIFICATION.md).
+
+1. Publicar uma versão assinada de teste e executar upgrade real com `pre_update`.
+2. Validar restauração e reinício por interação real no desktop empacotado.
+3. Expor gerenciamento dos pontos técnicos de rollback sem confundi-los com backups do usuário.

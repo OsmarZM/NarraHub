@@ -1,3 +1,4 @@
+use super::error::{DatabaseCommandError, DatabaseCommandResult};
 use super::health::{inspect_database, DatabaseHealthReport};
 use chrono::Utc;
 use rusqlite::{Connection, DatabaseName, OpenFlags};
@@ -86,10 +87,12 @@ pub async fn backup_create(
     app: AppHandle,
     state: State<'_, BackupRuntimeState>,
     reason: Option<BackupReason>,
-) -> Result<BackupManifest, String> {
-    let app_data = super::app_data_path(&app)?;
+) -> DatabaseCommandResult<BackupManifest> {
+    let app_data = super::app_data_path(&app).map_err(DatabaseCommandError::unavailable)?;
     if state.running.swap(true, Ordering::AcqRel) {
-        return Err("Já existe um backup em andamento.".into());
+        return Err(DatabaseCommandError::conflict(
+            "Já existe um backup em andamento.",
+        ));
     }
 
     let database_path = app_data.join(DATABASE_FILE_NAME);
@@ -107,17 +110,31 @@ pub async fn backup_create(
     .await;
     state.running.store(false, Ordering::Release);
 
-    task.map_err(|error| format!("O processo de backup falhou: {error}"))?
+    task.map_err(|error| {
+        DatabaseCommandError::unavailable(format!("O processo de backup falhou: {error}"))
+    })?
+    .map_err(DatabaseCommandError::storage)
 }
 
 #[tauri::command]
-pub fn backup_list(app: AppHandle) -> Result<Vec<BackupManifest>, String> {
-    list_backups_at(&super::app_data_path(&app)?.join("backups"))
+pub fn backup_list(app: AppHandle) -> DatabaseCommandResult<Vec<BackupManifest>> {
+    let app_data = super::app_data_path(&app).map_err(DatabaseCommandError::unavailable)?;
+    list_backups_at(&app_data.join("backups")).map_err(DatabaseCommandError::storage)
 }
 
 #[tauri::command]
-pub fn backup_validate(app: AppHandle, backup_id: String) -> Result<BackupValidation, String> {
-    validate_backup_at(&super::app_data_path(&app)?.join("backups"), &backup_id)
+pub fn backup_validate(
+    app: AppHandle,
+    backup_id: String,
+) -> DatabaseCommandResult<BackupValidation> {
+    let app_data = super::app_data_path(&app).map_err(DatabaseCommandError::unavailable)?;
+    validate_backup_at(&app_data.join("backups"), &backup_id).map_err(|message| {
+        if message.contains("inválido") {
+            DatabaseCommandError::validation(message)
+        } else {
+            DatabaseCommandError::storage(message)
+        }
+    })
 }
 
 pub fn create_backup_at(
@@ -618,7 +635,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::migrations::MIGRATION_V1;
+    use crate::database::migrations::{LATEST_SCHEMA_VERSION, MIGRATION_V1};
     use rusqlite::params;
 
     struct TestPaths {
@@ -881,7 +898,18 @@ mod tests {
         let validation =
             validate_backup_at(&backups, &manifest.backup_id).expect("validate real backup");
 
-        assert_eq!(manifest.schema_version, 10);
+        let expected_schema = std::env::var("NARRAHUB_EXPECTED_SCHEMA")
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok());
+        if let Some(expected_schema) = expected_schema {
+            assert_eq!(manifest.schema_version, expected_schema);
+        }
+        assert!(
+            manifest.schema_version <= LATEST_SCHEMA_VERSION,
+            "desktop schema {} is newer than this build {}",
+            manifest.schema_version,
+            LATEST_SCHEMA_VERSION
+        );
         assert!(
             validation.valid,
             "validation errors: {:?}",
@@ -890,6 +918,44 @@ mod tests {
         assert!(validation.database_health.is_some());
         crate::database::recovery::validate_migration_compatibility(&database)
             .expect("real desktop migrations must match this build");
+
+        if let Some(reference_database) =
+            std::env::var_os("NARRAHUB_REFERENCE_DB").map(std::path::PathBuf::from)
+        {
+            let reference = Connection::open_with_flags(
+                &reference_database,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .expect("open reference database read-only");
+            let migrated =
+                Connection::open_with_flags(&database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                    .expect("open migrated database read-only");
+            for table in [
+                "universes",
+                "stories",
+                "books",
+                "chapters",
+                "entities",
+                "relations",
+                "mentions",
+                "timeline_events",
+                "planning_items",
+                "content_tags",
+                "content_tag_assignments",
+            ] {
+                let sql = format!("SELECT COUNT(*) FROM {table}");
+                let reference_count: i64 = reference
+                    .query_row(&sql, [], |row| row.get(0))
+                    .unwrap_or_else(|error| panic!("count {table} in reference database: {error}"));
+                let migrated_count: i64 = migrated
+                    .query_row(&sql, [], |row| row.get(0))
+                    .unwrap_or_else(|error| panic!("count {table} in migrated database: {error}"));
+                assert_eq!(
+                    migrated_count, reference_count,
+                    "migration changed the number of rows in {table}"
+                );
+            }
+        }
         fs::remove_dir_all(root).ok();
     }
 }

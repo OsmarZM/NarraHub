@@ -1,5 +1,5 @@
 param(
-  [ValidateSet('dev', 'build')]
+  [ValidateSet('dev', 'build', 'qualification')]
   [string]$Mode = 'dev'
 )
 
@@ -36,6 +36,8 @@ try {
   $tauriArgs = @($Mode)
   if ($Mode -eq 'build') {
     $tauriArgs += @('--config', 'src-tauri/tauri.production.conf.json')
+  } elseif ($Mode -eq 'qualification') {
+    $tauriArgs = @('dev', '--config', 'src-tauri/tauri.qualification.conf.json')
   }
   & npm.cmd run tauri -- @tauriArgs
   $nativeExitCode = $LASTEXITCODE
