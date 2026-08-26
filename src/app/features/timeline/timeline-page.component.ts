@@ -24,6 +24,7 @@ export class TimelinePageComponent implements OnChanges {
 
   readonly store = inject(TimelineStore);
   readonly modal = signal<'create' | 'rename' | null>(null);
+  readonly searchQuery = signal('');
 
   newTitle = '';
   newDate = '';
@@ -36,6 +37,28 @@ export class TimelinePageComponent implements OnChanges {
 
   ngOnChanges(): void {
     void this.store.load(this.universeId);
+  }
+
+  filteredEvents() {
+    const query = this.searchQuery().trim().toLowerCase();
+    const events = this.store.events();
+    if (!query) return events;
+    return events.filter((e) => {
+      const matchTitle = (e.title || '').toLowerCase().includes(query);
+      const matchDesc = (e.description || '').toLowerCase().includes(query);
+      const matchDate = (e.display_date || '').toLowerCase().includes(query);
+      const tags = this.tags(e.id);
+      const matchTag = tags.some((t) => (t.name || '').toLowerCase().includes(query));
+      return matchTitle || matchDesc || matchDate || matchTag;
+    });
+  }
+
+  onTimelineWheel(event: WheelEvent): void {
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    const board = event.currentTarget as HTMLElement;
+    if (board.scrollWidth <= board.clientWidth) return;
+    event.preventDefault();
+    board.scrollLeft += event.deltaY;
   }
 
   eventEntities(): Entity[] {

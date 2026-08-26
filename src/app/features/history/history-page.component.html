@@ -1,38 +1,89 @@
 <div class="history-feature-page">
-  <header class="history-feature-heading">
-    <div>
-      <span class="history-eyebrow">VERSÕES</span>
-      <h1>Histórico recente</h1>
-      <p>Alterações registradas automaticamente no banco local.</p>
+  <!-- Toolbar Compacta do Histórico -->
+  <header class="history-toolbar">
+    <div class="toolbar-left">
+      <div class="toolbar-heading">
+        <span class="history-badge">↻</span>
+        <h2>Histórico de Alterações</h2>
+        <span class="total-badge">{{ store.entries().length }} {{ store.entries().length === 1 ? 'registro' : 'registros' }}</span>
+      </div>
     </div>
-    <button type="button" class="history-refresh" [disabled]="store.loading()" (click)="store.load(universeId)">
-      {{ store.loading() ? 'Atualizando…' : 'Atualizar' }}
-    </button>
+
+    <div class="toolbar-right">
+      <div class="search-box">
+        <span class="search-icon" aria-hidden="true">🔍</span>
+        <input
+          type="text"
+          [ngModel]="searchQuery()"
+          (ngModelChange)="searchQuery.set($event)"
+          placeholder="Filtrar por nome, tipo ou campo…"
+          aria-label="Filtrar histórico"
+        />
+        @if (searchQuery()) {
+          <button type="button" class="clear-search-btn" (click)="searchQuery.set('')" title="Limpar busca">×</button>
+        }
+      </div>
+
+      <button
+        type="button"
+        class="secondary-button history-refresh-btn"
+        [disabled]="store.loading()"
+        (click)="store.load(universeId)"
+        title="Atualizar registros do banco local"
+      >
+        <span [class.spinning]="store.loading()">↻</span> {{ store.loading() ? 'Atualizando…' : 'Atualizar' }}
+      </button>
+    </div>
   </header>
 
   @if (store.error()) {
-    <p class="history-error" role="alert">{{ store.error() }}</p>
+    <div class="history-error" role="alert">
+      <span>{{ store.error() }}</span>
+      <button type="button" (click)="store.load(universeId)" aria-label="Tentar novamente">Recarregar</button>
+    </div>
   }
 
+  <!-- Feed de Auditoria com Altura Total e Rolagem Interna -->
   @if (store.entries().length > 0) {
-    <div class="history-list">
-      @for (entry of store.entries(); track entry.id) {
-        <article>
-          <span class="history-icon">{{ entry.action === 'create' ? '+' : '↻' }}</span>
-          <div>
-            <h3>{{ entry.display_name }}</h3>
-            <p>{{ entry.entity_type }} · {{ entry.field || entry.action }}@if (entry.new_value) { <span> · {{ entry.new_value }}</span> }</p>
+    <div class="history-feed-container">
+      <div class="history-list">
+        @for (entry of filteredEntries(); track entry.id) {
+          <article class="history-item" [attr.data-action]="entry.action">
+            <span class="history-action-badge" [attr.data-action]="entry.action" [title]="actionLabel(entry.action)">
+              {{ actionIcon(entry.action) }}
+            </span>
+
+            <div class="history-content">
+              <div class="history-header-line">
+                <span class="entity-type-pill">{{ entry.entity_type }}</span>
+                <strong class="item-name">{{ entry.display_name }}</strong>
+                <span class="action-tag" [attr.data-action]="entry.action">{{ actionLabel(entry.action) }}</span>
+              </div>
+
+              <div class="history-detail-line">
+                @if (entry.field) {
+                  <span class="field-label">Campo: <b>{{ entry.field }}</b></span>
+                }
+                @if (entry.new_value) {
+                  <span class="value-snippet">“{{ entry.new_value }}”</span>
+                }
+              </div>
+            </div>
+
+            <time class="history-time">{{ formatDate(entry.created_at) }}</time>
+          </article>
+        } @empty {
+          <div class="history-search-empty">
+            <p>Nenhuma alteração encontrada para “{{ searchQuery() }}”.</p>
           </div>
-          <time>{{ formatDate(entry.created_at) }}</time>
-        </article>
-      }
+        }
+      </div>
     </div>
   } @else if (!store.loading()) {
     <section class="history-empty">
-      <span>↶</span>
-      <h2>Nenhuma alteração registrada ainda</h2>
-      <p>Novas edições de capítulos e entidades aparecerão aqui.</p>
+      <span class="empty-icon">↻</span>
+      <h2>Nenhuma alteração recente</h2>
+      <p>Conforme você cria histórias, capítulos e entidades, as modificações serão registradas automaticamente no banco local.</p>
     </section>
   }
 </div>
-

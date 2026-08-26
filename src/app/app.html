@@ -355,8 +355,32 @@
             </div>
           } @else if (appState.workspaceView() === 'entities' || appState.workspaceView() === 'entity-sheet') {
             <div class="feature-page entity-view">
-              <header class="feature-heading"><div><span class="eyebrow">WORLDBUILDING</span><h1>{{ entitySectionTitle() }}</h1><p>Construa fichas flexíveis sem conteúdo inventado.</p></div></header>
-              <nav class="entity-tabs" aria-label="Tipos de entidade">@for (tab of [{ label: 'Tudo', type: null }, { label: 'Personagens', type: 'Personagem' }, { label: 'Lugares', type: 'Lugar' }, { label: 'Eventos', type: 'Evento' }, { label: 'Objetos', type: 'Objeto' }, { label: 'Organizações', type: 'Organização' }]; track tab.label) { <button type="button" [class.active]="appState.sidebarEntityFilter() === tab.type" (click)="selectEntityTab($any(tab.type))"><span>{{ tab.label }}</span><small>{{ entityTypeCount($any(tab.type)) }}</small></button> }</nav>
+              @if (appState.workspaceView() === 'entities') {
+                <header class="crm-toolbar entity-toolbar">
+                  <div class="toolbar-left">
+                    <div class="toolbar-heading">
+                      <span class="board-badge">♧</span>
+                      <h2>Worldbuilding</h2>
+                      <span class="total-badge">{{ visibleEntities().length }} {{ visibleEntities().length === 1 ? 'registro' : 'registros' }}</span>
+                    </div>
+
+                    <nav class="entity-tabs-compact" aria-label="Tipos de entidade">
+                      @for (tab of [{ label: 'Tudo', type: null }, { label: 'Personagens', type: 'Personagem' }, { label: 'Lugares', type: 'Lugar' }, { label: 'Eventos', type: 'Evento' }, { label: 'Objetos', type: 'Objeto' }, { label: 'Organizações', type: 'Organização' }]; track tab.label) {
+                        <button type="button" class="entity-tab-pill" [class.active]="appState.sidebarEntityFilter() === tab.type" (click)="selectEntityTab($any(tab.type))">
+                          <span>{{ tab.label }}</span>
+                          <small>{{ entityTypeCount($any(tab.type)) }}</small>
+                        </button>
+                      }
+                    </nav>
+                  </div>
+
+                  <div class="toolbar-right">
+                    <button type="button" class="primary-button crm-action-btn" (click)="beginCreateEntity()">
+                      <span>＋</span> {{ entityCreateLabel() }}
+                    </button>
+                  </div>
+                </header>
+              }
               @if (appState.workspaceView() === 'entity-sheet' && activeEntity()) {
                 <article class="entity-sheet surface-card notion-sheet">
                   <!-- Barra de navegação e ações -->
@@ -509,16 +533,47 @@
                   </section>
                 </article>
               } @else if (!appState.sidebarEntityFilter() && entities().length > 0) {
-                <section class="recent-entities"><header><div><span class="eyebrow">ADICIONADOS RECENTEMENTE</span><h2>Continue construindo seu mundo</h2></div><span>Arraste horizontalmente</span></header><div class="recent-carousel">@for (entity of recentEntities(); track entity.id) { <button type="button" (click)="openEntitySheet(entity)"><span class="recent-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><small>{{ entity.type }}</small><strong>{{ entity.name }}</strong><em>{{ entity.summary || entity.description || 'Sem resumo' }}</em>@if (previewTags('entity', entity.id); as tags) { @if (tags.length) { <span class="preview-tags">@for (tag of tags.slice(0, 2); track tag.id) { <b [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</b> } @if (tags.length > 2) { <b class="tag-overflow">+{{ tags.length - 2 }}</b> }</span> } }</button> }</div></section>
-                 <section class="entity-directory"><header><div><span class="eyebrow">DIRETÓRIO DO UNIVERSO</span><h2>Todas as entidades</h2></div><span>{{ entities().length }} registros</span></header><div class="entity-list">@for (entity of visibleEntities(); track entity.id) { <div class="entity-list-row"><button type="button" class="entity-list-open" (click)="openEntitySheet(entity)"><span class="entity-list-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><span><strong>{{ entity.name }}</strong><small>{{ entity.type }} · {{ entity.canon_status === 'CANON' ? 'Cânone' : entity.canon_status }}</small>@if (previewTags('entity', entity.id); as tags) { @if (tags.length) { <span class="tree-preview-tags">@for (tag of tags.slice(0, 3); track tag.id) { <i [style.--tag-color]="tag.color">{{ tag.name }}</i> } @if (tags.length > 3) { <i>+{{ tags.length - 3 }}</i> }</span> } }</span><em>{{ entity.summary || entity.description || 'Sem resumo' }}</em><i>›</i></button><button type="button" class="entity-list-rename" aria-label="Renomear entidade" title="Renomear" (click)="requestRename('entity', entity.id, entity.name, $event)">✎</button><button type="button" class="entity-list-delete" aria-label="Excluir entidade" title="Excluir entidade" (click)="requestDelete('entity', entity.id, entity.name, $event)">×</button></div> }</div></section>
+                <section class="recent-entities"><header class="section-subheading"><strong>Adicionados recentemente</strong><span>Arraste para o lado</span></header><div class="recent-carousel">@for (entity of recentEntities(); track entity.id) { <button type="button" (click)="openEntitySheet(entity)"><span class="recent-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><small>{{ entity.type }}</small><strong>{{ entity.name }}</strong><em>{{ entity.summary || entity.description || 'Sem resumo' }}</em>@if (previewTags('entity', entity.id); as tags) { @if (tags.length) { <span class="preview-tags">@for (tag of tags.slice(0, 2); track tag.id) { <b [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</b> } @if (tags.length > 2) { <b class="tag-overflow">+{{ tags.length - 2 }}</b> }</span> } }</button> }</div></section>
+                <section class="entity-directory"><header class="section-subheading"><strong>Todas as entidades</strong><span>{{ entities().length }} registros</span></header><div class="entity-list">@for (entity of visibleEntities(); track entity.id) { <div class="entity-list-row"><button type="button" class="entity-list-open" (click)="openEntitySheet(entity)"><span class="entity-list-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><span><strong>{{ entity.name }}</strong><small>{{ entity.type }} · {{ entity.canon_status === 'CANON' ? 'Cânone' : entity.canon_status }}</small>@if (previewTags('entity', entity.id); as tags) { @if (tags.length) { <span class="tree-preview-tags">@for (tag of tags.slice(0, 3); track tag.id) { <i [style.--tag-color]="tag.color">{{ tag.name }}</i> } @if (tags.length > 3) { <i>+{{ tags.length - 3 }}</i> }</span> } }</span><em>{{ entity.summary || entity.description || 'Sem resumo' }}</em><i>›</i></button><button type="button" class="entity-list-rename" aria-label="Renomear entidade" title="Renomear" (click)="requestRename('entity', entity.id, entity.name, $event)">✎</button><button type="button" class="entity-list-delete" aria-label="Excluir entidade" title="Excluir entidade" (click)="requestDelete('entity', entity.id, entity.name, $event)">×</button></div> }</div></section>
               } @else if (visibleEntities().length > 0) {
                 <div class="entity-grid">@for (entity of visibleEntities(); track entity.id; let index = $index) { <div class="entity-card-wrap stagger-card" [style.--delay.ms]="index * 35"><button type="button" class="entity-card" (click)="openEntitySheet(entity)"><span class="entity-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><span><small>{{ entity.type }}</small><strong>{{ entity.name }}</strong><em>{{ entity.summary || entity.description || 'Sem resumo' }}</em>@if (previewTags('entity', entity.id); as tags) { @if (tags.length) { <span class="preview-tags">@for (tag of tags.slice(0, 3); track tag.id) { <b [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</b> } @if (tags.length > 3) { <b class="tag-overflow">+{{ tags.length - 3 }}</b> }</span> } }<i>{{ entity.canon_status === 'CANON' ? '● Cânone' : entity.canon_status }}</i></span></button><button type="button" class="entity-card-rename" aria-label="Renomear entidade" title="Renomear" (click)="requestRename('entity', entity.id, entity.name, $event)">✎</button><button type="button" class="entity-card-delete" aria-label="Excluir entidade" title="Excluir entidade" (click)="requestDelete('entity', entity.id, entity.name, $event)">×</button></div> }</div>
               } @else { <section class="empty-feature"><span>♧</span><h2>Nenhum registro nesta seção</h2><p>{{ appState.sidebarEntityFilter() ? 'Crie o primeiro registro deste tipo.' : 'Escolha uma aba e comece a construir seu universo.' }}</p>@if (appState.sidebarEntityFilter()) { <button type="button" class="primary-button" (click)="beginCreateEntity()">{{ entityCreateLabel() }}</button> }</section> }
             </div>
           } @else if (appState.workspaceView() === 'graph') {
-            <div class="feature-page graph-page"><header class="feature-heading"><div><span class="eyebrow">RELAÇÕES</span><h1>Grafo de conexões</h1><p>Leia como os elementos do seu universo se relacionam.</p></div></header>
-              @if (entities().length > 0) { <app-connections-graph [entities]="entities()" [relations]="relations()" (entityOpened)="openEntitySheet($event)" />
-                @if (relations().length) { <section class="relation-manager" aria-label="Ligações cadastradas"><header><strong>Ligações cadastradas</strong><span>{{ relations().length }}</span></header>@for (relation of relations(); track relation.id) { <div><span><b>{{ relation.source_name }}</b><small>{{ relation.label }}</small><b>{{ relation.target_name }}</b></span><button type="button" aria-label="Excluir ligação" (click)="requestDelete('relation', relation.id, relation.source_name + ' — ' + relation.label + ' — ' + relation.target_name)">×</button></div> }</section> }
+            <div class="feature-page graph-page">
+              <header class="crm-toolbar graph-toolbar">
+                <div class="toolbar-left">
+                  <div class="toolbar-heading">
+                    <span class="board-badge">⌘</span>
+                    <h2>Grafo de Conexões</h2>
+                    <span class="total-badge">{{ entities().length }} entidades · {{ relations().length }} conexões</span>
+                  </div>
+                </div>
+                <div class="toolbar-right">
+                  <button type="button" class="primary-button crm-action-btn" [disabled]="entities().length < 2" (click)="appState.openModal('new-relation')">
+                    <span>＋</span> Nova conexão
+                  </button>
+                </div>
+              </header>
+              @if (entities().length > 0) {
+                <div class="graph-canvas-container">
+                  <app-connections-graph [entities]="entities()" [relations]="relations()" (entityOpened)="openEntitySheet($event)" />
+                </div>
+                @if (relations().length) {
+                  <section class="relation-manager-drawer" aria-label="Ligações cadastradas">
+                    <header><strong>Ligações cadastradas ({{ relations().length }})</strong></header>
+                    <div class="relation-pills-list">
+                      @for (relation of relations(); track relation.id) {
+                        <span class="relation-badge-pill">
+                          <b>{{ relation.source_name }}</b>
+                          <small>{{ relation.label }}</small>
+                          <b>{{ relation.target_name }}</b>
+                          <button type="button" aria-label="Excluir ligação" (click)="requestDelete('relation', relation.id, relation.source_name + ' — ' + relation.label + ' — ' + relation.target_name)">×</button>
+                        </span>
+                      }
+                    </div>
+                  </section>
+                }
               }
               @else { <section class="empty-feature"><span>⌘</span><h2>Conecte seu universo</h2><p>Cadastre ao menos duas entidades e descreva a relação entre elas.</p><button type="button" class="primary-button" [disabled]="entities().length < 2" (click)="appState.openModal('new-relation')">Criar conexão</button></section> }
             </div>

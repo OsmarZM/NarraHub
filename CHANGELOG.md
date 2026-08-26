@@ -2,6 +2,18 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.7.5 — 2026-08-26
+
+### Modernização Global dos Menus (Padrão CRM)
+
+- **Planejamento Kanban**: Altura total fluida com cabeçalhos de coluna fixos e rolagem interna independente por etapa, eliminando o scroll vertical externo.
+- **Toolbar CRM no Planejamento**: Pílulas interativas com contadores por etapa (`Ideias`, `Planejado`, `Escrevendo`, `Revisão`, `Finalizado`), filtro ágil ao clicar, busca por texto e botão de criação direta por coluna.
+- **Linha do Tempo (Timeline)**: Remoção de margens vazias e scroll duplo, adição de toolbar compacta com busca por marcos, contador e suporte à rolagem horizontal via roda do mouse (`wheel`).
+- **Histórico de Auditoria**: Interface reformulada em estilo audit log com rolagem interna suave, busca por registros, e badges semânticos de ação (`Criado`, `Editado`, `Excluído`).
+- **Worldbuilding (Entidades)**: Substituição de banners gigantes por toolbar compacta com pílulas de categorias (`Personagens`, `Lugares`, `Eventos`, etc.) e badges com contagem em tempo real.
+- **Grafo de Conexões**: Canvas Cytoscape maximizado para ocupar a altura total da viewport e gaveta de conexões integrada em badges com remoção rápida.
+- **Ficha CRM e Cards**: Interface limpa sem placeholders repetitivos ou elementos de instrução desnecessários.
+
 ## 0.7.4 — 2026-08-25
 
 ### Réplica de Produção e Integridade

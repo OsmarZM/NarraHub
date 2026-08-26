@@ -1,51 +1,98 @@
 <div class="timeline-feature-page">
-  <header class="timeline-feature-heading">
-    <div>
-      <span class="timeline-eyebrow">CRONOLOGIA</span>
-      <h1>Linha do tempo</h1>
-      <p>Organize marcos, eventos e períodos do universo.</p>
+  <!-- Toolbar Compacta de Cronologia -->
+  <header class="timeline-toolbar">
+    <div class="toolbar-left">
+      <div class="toolbar-heading">
+        <span class="timeline-badge">▷</span>
+        <h2>Linha do Tempo</h2>
+        <span class="total-badge">{{ store.events().length }} {{ store.events().length === 1 ? 'marco' : 'marcos' }}</span>
+      </div>
     </div>
-    @if (store.events().length) {
-      <button type="button" class="timeline-primary" (click)="openCreate()">Adicionar evento</button>
-    }
+
+    <div class="toolbar-right">
+      <div class="search-box">
+        <span class="search-icon" aria-hidden="true">🔍</span>
+        <input
+          type="text"
+          [ngModel]="searchQuery()"
+          (ngModelChange)="searchQuery.set($event)"
+          placeholder="Buscar marcos por título ou data…"
+          aria-label="Buscar marcos na linha do tempo"
+        />
+        @if (searchQuery()) {
+          <button type="button" class="clear-search-btn" (click)="searchQuery.set('')" title="Limpar busca">×</button>
+        }
+      </div>
+
+      <button type="button" class="primary-button timeline-create-btn" (click)="openCreate()">
+        <span>＋</span> Novo marco
+      </button>
+    </div>
   </header>
 
   @if (store.error()) {
-    <p class="timeline-error" role="alert">{{ store.error() }}</p>
+    <div class="timeline-error" role="alert">
+      <span>{{ store.error() }}</span>
+      <button type="button" (click)="store.clearError()" aria-label="Fechar mensagem de erro">×</button>
+    </div>
   }
 
   @if (store.events().length > 0) {
-    <div class="timeline-board">
-      <div class="timeline-axis"></div>
-      @for (event of store.events(); track event.id; let index = $index) {
-        <article class="timeline-card" [attr.data-timeline-id]="event.id" [style.--delay.ms]="index * 45">
-          <div class="timeline-point"></div>
-          <div class="timeline-actions">
-            <button type="button" aria-label="Renomear evento" title="Renomear" (click)="openRename(event.id, event.title, $event)">✎</button>
-            <button type="button" aria-label="Tags do evento" title="Tags" (click)="requestMetadata(event.id, event.title, $event)">#</button>
-            <button type="button" aria-label="Excluir evento" title="Excluir" [disabled]="store.busy()" (click)="delete(event.id, $event)">×</button>
-          </div>
-          <time>{{ event.display_date || formatDate(event.start_date) }}</time>
-          <small>{{ event.entity_id ? 'EVENTO VINCULADO' : event.event_type }}</small>
-          <h3>{{ event.title }}</h3>
-          <p>{{ event.description || 'Sem descrição' }}</p>
-          @if (tags(event.id); as eventTags) {
-            @if (eventTags.length) {
-              <div class="timeline-tags">
-                @for (tag of eventTags.slice(0, 3); track tag.id) { <b [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</b> }
-                @if (eventTags.length > 3) { <b class="tag-overflow">+{{ eventTags.length - 3 }}</b> }
+    <!-- Trilho da Timeline 100% Ajustado à Altura (Scroll Horizontal Suave) -->
+    <div class="timeline-stage" (wheel)="onTimelineWheel($event)">
+      <div class="timeline-board">
+        <div class="timeline-axis"></div>
+        @for (event of filteredEvents(); track event.id; let index = $index) {
+          <article class="timeline-card" [attr.data-timeline-id]="event.id" [style.--delay.ms]="index * 35">
+            <div class="timeline-point"></div>
+
+            <div class="card-header">
+              <time class="event-time">{{ event.display_date || formatDate(event.start_date) }}</time>
+              <div class="timeline-actions">
+                <button type="button" aria-label="Renomear evento" title="Renomear" (click)="openRename(event.id, event.title, $event)">✎</button>
+                <button type="button" aria-label="Tags do evento" title="Tags" (click)="requestMetadata(event.id, event.title, $event)">#</button>
+                <button type="button" aria-label="Excluir evento" title="Excluir" [disabled]="store.busy()" (click)="delete(event.id, $event)">×</button>
               </div>
+            </div>
+
+            @if (event.entity_id) {
+              <span class="event-badge">Evento vinculado</span>
+            } @else if (event.event_type && event.event_type !== 'Geral') {
+              <span class="event-badge type">{{ event.event_type }}</span>
             }
-          }
-        </article>
-      }
+
+            <h3 class="event-title">{{ event.title }}</h3>
+
+            @if (event.description && event.description.trim()) {
+              <p class="event-desc">{{ event.description }}</p>
+            }
+
+            @if (tags(event.id); as eventTags) {
+              @if (eventTags.length) {
+                <div class="timeline-tags">
+                  @for (tag of eventTags.slice(0, 3); track tag.id) {
+                    <b [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</b>
+                  }
+                  @if (eventTags.length > 3) {
+                    <b class="tag-overflow">+{{ eventTags.length - 3 }}</b>
+                  }
+                </div>
+              }
+            }
+          </article>
+        } @empty {
+          <div class="timeline-search-empty">
+            <p>Nenhum marco corresponde à busca “{{ searchQuery() }}”.</p>
+          </div>
+        }
+      </div>
     </div>
   } @else if (!store.busy()) {
     <section class="timeline-empty">
-      <span>▷</span>
+      <span class="empty-icon">▷</span>
       <h2>Nenhum marco criado</h2>
-      <p>Adicione o primeiro acontecimento da cronologia.</p>
-      <button type="button" class="timeline-primary" (click)="openCreate()">Adicionar evento</button>
+      <p>Organize os acontecimentos e períodos históricos do seu universo em ordem cronológica.</p>
+      <button type="button" class="primary-button" (click)="openCreate()">＋ Adicionar primeiro marco</button>
     </section>
   }
 </div>
@@ -54,20 +101,69 @@
   <div class="timeline-modal-backdrop" (mousedown)="closeModal()">
     <form class="timeline-modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       @if (modal() === 'create') {
-        <header><div><span class="timeline-eyebrow">CRONOLOGIA</span><h2>Novo marco</h2></div><button type="button" (click)="closeModal()">×</button></header>
-        <label>Vincular evento existente <span>(opcional)</span><select name="timelineEntity" [(ngModel)]="newEntityId"><option value="">Marco independente</option>@for (entity of eventEntities(); track entity.id) { <option [value]="entity.id">{{ entity.name }}</option> }</select></label>
-        <label>Título<input name="timelineTitle" [(ngModel)]="newTitle" placeholder="Ex.: Queda de Nox" autofocus /></label>
-        <div class="timeline-modal-grid"><label>Data exibida<input name="timelineDisplayDate" [(ngModel)]="newDisplayDate" placeholder="Ex.: Ano 312 da Era do Vale" /></label><label>Ordem cronológica<input type="number" name="timelineSortKey" [(ngModel)]="newSortKey" placeholder="312" /></label></div>
-        <label>Data real <span>(opcional)</span><input type="date" name="timelineDate" [(ngModel)]="newDate" /></label>
-        <label>Descrição <span>(opcional)</span><textarea name="timelineDescription" [(ngModel)]="newDescription"></textarea></label>
-        <footer><button type="button" class="timeline-secondary" (click)="closeModal()">Cancelar</button><button type="submit" class="timeline-primary" [disabled]="store.busy() || !newTitle.trim() || (!newDate && !newDisplayDate.trim())" (click)="create()">{{ store.busy() ? 'Salvando…' : 'Adicionar à timeline' }}</button></footer>
-      } @else {
-        <header><div><span class="timeline-eyebrow">CRONOLOGIA</span><h2>Renomear evento</h2></div><button type="button" (click)="closeModal()">×</button></header>
-        <label>Novo título<input name="timelineRenameTitle" [(ngModel)]="renameTitle" autofocus /></label>
-        <footer><button type="button" class="timeline-secondary" (click)="closeModal()">Cancelar</button><button type="submit" class="timeline-primary" [disabled]="store.busy() || !renameTitle.trim()" (click)="rename()">{{ store.busy() ? 'Salvando…' : 'Salvar nome' }}</button></footer>
+        <header>
+          <h2>Novo marco histórico</h2>
+          <button type="button" (click)="closeModal()" aria-label="Fechar">×</button>
+        </header>
+
+        <label>
+          Vincular evento existente <small>(opcional)</small>
+          <select name="timelineEntity" [(ngModel)]="newEntityId">
+            <option value="">Marco independente</option>
+            @for (entity of eventEntities(); track entity.id) {
+              <option [value]="entity.id">{{ entity.name }}</option>
+            }
+          </select>
+        </label>
+
+        <label>
+          Título
+          <input name="timelineTitle" [(ngModel)]="newTitle" placeholder="Ex.: A Queda de Nox" autofocus />
+        </label>
+
+        <div class="timeline-modal-grid">
+          <label>
+            Data exibida
+            <input name="timelineDisplayDate" [(ngModel)]="newDisplayDate" placeholder="Ex.: Ano 312 da 2ª Era" />
+          </label>
+          <label>
+            Ordem cronológica
+            <input type="number" name="timelineSortKey" [(ngModel)]="newSortKey" placeholder="312" />
+          </label>
+        </div>
+
+        <label>
+          Data real / ISO <small>(opcional)</small>
+          <input type="date" name="timelineDate" [(ngModel)]="newDate" />
+        </label>
+
+        <label>
+          Descrição
+          <textarea name="timelineDescription" [(ngModel)]="newDescription" rows="3" placeholder="Contexto histórico, causas e consequências deste marco"></textarea>
+        </label>
+
+        <footer>
+          <button type="button" class="secondary-button" (click)="closeModal()">Cancelar</button>
+          <button type="submit" class="primary-button" [disabled]="store.busy() || !newTitle.trim()" (click)="create()">
+            {{ store.busy() ? 'Salvando…' : 'Criar marco' }}
+          </button>
+        </footer>
+      } @else if (modal() === 'rename') {
+        <header>
+          <h2>Renomear marco</h2>
+          <button type="button" (click)="closeModal()" aria-label="Fechar">×</button>
+        </header>
+        <label>
+          Título do marco
+          <input name="renameTitleInput" [(ngModel)]="renameTitle" autofocus />
+        </label>
+        <footer>
+          <button type="button" class="secondary-button" (click)="closeModal()">Cancelar</button>
+          <button type="submit" class="primary-button" [disabled]="store.busy() || !renameTitle.trim()" (click)="rename()">
+            {{ store.busy() ? 'Salvando…' : 'Salvar' }}
+          </button>
+        </footer>
       }
-      @if (store.error()) { <p class="timeline-error" role="alert">{{ store.error() }}</p> }
     </form>
   </div>
 }
-

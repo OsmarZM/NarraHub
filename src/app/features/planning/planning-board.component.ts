@@ -59,6 +59,8 @@ export class PlanningBoardComponent implements OnChanges {
   readonly deleteConfirmation = signal(false);
   readonly pendingFieldDeleteId = signal<string | null>(null);
   readonly fieldBuilderOpen = signal(false);
+  readonly searchQuery = signal('');
+  readonly filterStatus = signal<PlanningStatus | null>(null);
 
   editingCard: PlanningItem | null = null;
   cardFieldValues: PlanningFieldValues = {};
@@ -66,6 +68,7 @@ export class PlanningBoardComponent implements OnChanges {
   newDescription = '';
   newChapterId = '';
   newImage = '';
+  newStatus: PlanningStatus = 'IDEIAS';
   newFieldName = '';
   newFieldType: PlanningFieldType = 'text';
   newFieldOptions = '';
@@ -97,13 +100,27 @@ export class PlanningBoardComponent implements OnChanges {
     if (changes['universeId'] && this.universeId) void this.loadMetadata();
   }
 
-  openCreate(): void {
+  openCreate(defaultStatus: PlanningStatus = 'IDEIAS'): void {
     this.error.set('');
     this.newTitle = '';
     this.newDescription = '';
     this.newChapterId = '';
     this.newImage = '';
+    this.newStatus = defaultStatus || 'IDEIAS';
     this.modal.set('create');
+  }
+
+  statusCount(status: PlanningStatus): number {
+    return this.boardItems().filter((item) => item.status === status).length;
+  }
+
+  toggleStatusFilter(status: PlanningStatus): void {
+    this.filterStatus.update((current) => (current === status ? null : status));
+  }
+
+  getChapter(chapterId: string | null | undefined): ChapterOption | undefined {
+    if (!chapterId) return undefined;
+    return this.chapters.find((item) => item.id === chapterId);
   }
 
   async createCard(): Promise<void> {
@@ -120,6 +137,16 @@ export class PlanningBoardComponent implements OnChanges {
         chapter?.id ?? null,
         this.newImage,
       );
+      if (this.newStatus && this.newStatus !== 'IDEIAS') {
+        await this.planningService.saveCard(id, this.universeId, {
+          title,
+          description: this.newDescription,
+          image: this.newImage,
+          status: this.newStatus,
+          chapterId: chapter?.id ?? null,
+          fieldValues: {},
+        });
+      }
       await this.refresh();
       const created = this.boardItems().find((item) => item.id === id);
       if (created) await this.openCard(created);
@@ -161,7 +188,21 @@ export class PlanningBoardComponent implements OnChanges {
   }
 
   itemsByStatus(status: PlanningStatus): PlanningItem[] {
-    return this.boardItems().filter((item) => item.status === status);
+    const activeFilter = this.filterStatus();
+    if (activeFilter && activeFilter !== status) return [];
+    const query = this.searchQuery().trim().toLowerCase();
+    const items = this.boardItems().filter((item) => item.status === status);
+    if (!query) return items;
+    return items.filter((item) => {
+      const matchTitle = (item.title || '').toLowerCase().includes(query);
+      const matchDesc = (item.description || '').toLowerCase().includes(query);
+      const matchStory = (item.story_name || '').toLowerCase().includes(query);
+      const matchBook = (item.book_name || '').toLowerCase().includes(query);
+      const matchChapter = (item.chapter_title || '').toLowerCase().includes(query);
+      const tags = this.cardTags(item.id);
+      const matchTag = tags.some((t) => (t.name || '').toLowerCase().includes(query));
+      return matchTitle || matchDesc || matchStory || matchBook || matchChapter || matchTag;
+    });
   }
 
   async drop(event: CdkDragDrop<PlanningItem[]>, targetStatus: PlanningStatus): Promise<void> {
