@@ -230,12 +230,40 @@ export interface TimelineEvent {
 
 export type PlanningStatus = 'IDEIAS' | 'PLANEJADO' | 'ESCREVENDO' | 'REVISAO' | 'FINALIZADO';
 
+export type PlanningFieldType =
+  | 'text'
+  | 'long_text'
+  | 'number'
+  | 'checkbox'
+  | 'yes_no'
+  | 'select'
+  | 'multi_select'
+  | 'tags'
+  | 'story'
+  | 'character';
+
+export type PlanningFieldValue = string | boolean | string[] | null;
+export type PlanningFieldValues = Record<string, PlanningFieldValue>;
+
+export interface PlanningFieldDefinition {
+  id: string;
+  universe_id: string;
+  name: string;
+  field_type: PlanningFieldType;
+  options_json: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface PlanningItem {
   id: string;
   universe_id: string;
   chapter_id: string | null;
   title: string;
   description: string;
+  image: string;
+  custom_field_values: string;
   status: PlanningStatus;
   target_words: number;
   sort_order: number;

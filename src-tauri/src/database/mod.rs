@@ -1,6 +1,7 @@
 pub mod backup;
 pub mod health;
 pub mod migrations;
+pub mod planning;
 pub mod production_replica;
 pub mod recovery;
 

@@ -1,0 +1,170 @@
+<section class="planning-page">
+  <header class="feature-heading">
+    <div>
+      <span class="eyebrow">FLUXO DE ESCRITA</span>
+      <h1>Planejamento</h1>
+      <p>Arraste as ideias entre etapas e abra cada card como uma ficha de trabalho.</p>
+    </div>
+    <button type="button" class="primary-button" (click)="openCreate()">＋ Novo card</button>
+  </header>
+
+  @if (error()) {
+    <div class="planning-error" role="alert"><span>{{ error() }}</span><button type="button" (click)="error.set('')">×</button></div>
+  }
+
+  <div class="kanban-board" cdkDropListGroup>
+    @for (status of statuses; track status; let columnIndex = $index) {
+      <section class="kanban-column" [attr.data-status]="status">
+        <header><h2>{{ statusLabel(status) }}</h2><span>{{ itemsByStatus(status).length }}</span></header>
+        <div
+          class="kanban-cards"
+          cdkDropList
+          [cdkDropListData]="itemsByStatus(status)"
+          (cdkDropListDropped)="drop($event, status)"
+        >
+          @for (item of itemsByStatus(status); track item.id) {
+            <article
+              class="kanban-card"
+              [class.has-cover]="item.image"
+              [attr.data-planning-id]="item.id"
+              cdkDrag
+              [cdkDragData]="item"
+              (cdkDragStarted)="dragStarted()"
+              (cdkDragEnded)="dragEnded()"
+              (click)="openCard(item)"
+              (keydown.enter)="openCard(item)"
+              tabindex="0"
+            >
+              <div class="card-placeholder" *cdkDragPlaceholder></div>
+              @if (item.image) { <img class="card-cover" [src]="item.image" alt="" /> }
+              <div class="card-toolbar">
+                <span class="card-drag" title="Segure e arraste para outra etapa">⠿</span>
+                <span class="card-status-dot"></span>
+                <button type="button" aria-label="Mover para esquerda" [disabled]="columnIndex === 0" (click)="moveOne(item, -1, $event)">←</button>
+                <button type="button" aria-label="Mover para direita" [disabled]="columnIndex === statuses.length - 1" (click)="moveOne(item, 1, $event)">→</button>
+              </div>
+              <div class="card-copy">
+                @if (item.chapter_id) { <button type="button" class="planning-link" (click)="openLinkedChapter(item, $event)">{{ item.story_name }} / {{ item.book_name }}</button> }
+                <h3>{{ item.title }}</h3>
+                <p>{{ item.description || 'Abra o card para adicionar detalhes.' }}</p>
+                @if (cardTags(item.id).length) {
+                  <div class="preview-tags">
+                    @for (tag of cardTags(item.id).slice(0, 3); track tag.id) { <b [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</b> }
+                    @if (cardTags(item.id).length > 3) { <b class="tag-overflow">+{{ cardTags(item.id).length - 3 }}</b> }
+                  </div>
+                }
+                @if (item.chapter_id) {
+                  <div class="planning-progress"><span [style.width.%]="Math.min(100, ((chapters.find(c => c.id === item.chapter_id)?.word_count || 0) / Math.max(1, item.target_words || 2000)) * 100)"></span></div>
+                }
+              </div>
+            </article>
+          }
+          <button type="button" class="kanban-add" (click)="openCreate()">＋ Adicionar card</button>
+        </div>
+      </section>
+    }
+  </div>
+</section>
+
+@if (modal()) {
+  <div class="planning-modal-backdrop" (mousedown)="closeModal()">
+    @if (modal() === 'create') {
+      <form class="planning-modal create-modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault(); createCard()">
+        <header><div><span class="eyebrow">PLANEJAMENTO</span><h2>Novo card</h2><p>Comece com uma ideia livre ou vincule um capítulo.</p></div><button type="button" (click)="closeModal()">×</button></header>
+        <label class="cover-picker" [class.has-image]="newImage" [style.background-image]="newImage ? 'url(' + newImage + ')' : null">
+          <input type="file" accept="image/*" hidden (change)="onImageSelected($event, 'new')" />
+          <span>{{ newImage ? 'Trocar imagem' : '＋ Imagem do card' }}</span>
+        </label>
+        <label>Capítulo relacionado <small>opcional</small><select name="newPlanningChapter" [(ngModel)]="newChapterId"><option value="">Ideia livre</option>@for (chapter of chapters; track chapter.id) { <option [value]="chapter.id">{{ chapter.story_name }} / {{ chapter.book_name }} / {{ chapter.title }}</option> }</select></label>
+        <label>Título <small>{{ newChapterId ? 'opcional' : 'obrigatório' }}</small><input name="newPlanningTitle" [(ngModel)]="newTitle" placeholder="Ex.: Resolver a motivação do antagonista" autofocus /></label>
+        <label>Descrição <small>opcional</small><textarea name="newPlanningDescription" [(ngModel)]="newDescription" placeholder="Contexto, objetivo e próximos passos"></textarea></label>
+        <footer><button type="button" class="secondary-button" (click)="closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="busy() || (!newTitle.trim() && !newChapterId)">{{ busy() ? 'Criando…' : 'Criar card' }}</button></footer>
+      </form>
+    } @else if (modal() === 'card' && editingCard; as card) {
+      <form class="planning-modal crm-modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault(); saveCard()">
+        <header class="crm-header">
+          <div><span class="eyebrow">FICHA DO PLANEJAMENTO</span><input class="card-title-input" name="cardTitle" [(ngModel)]="card.title" aria-label="Título do card" /></div>
+          <button type="button" aria-label="Fechar" (click)="closeModal()">×</button>
+        </header>
+
+        <div class="crm-body">
+          <main class="card-main-fields">
+            <label class="cover-picker card-cover-picker" [class.has-image]="card.image" [style.background-image]="card.image ? 'url(' + card.image + ')' : null">
+              <input type="file" accept="image/*" hidden (change)="onImageSelected($event, 'card')" />
+              <span>{{ card.image ? 'Trocar imagem' : '＋ Adicionar imagem ao card' }}</span>
+              @if (card.image) { <button type="button" (click)="$event.preventDefault(); card.image = ''">Remover</button> }
+            </label>
+
+            <div class="field-grid two-columns">
+              <label>Etapa<select name="cardStatus" [(ngModel)]="card.status">@for (status of statuses; track status) { <option [value]="status">{{ statusLabel(status) }}</option> }</select></label>
+              <label>Capítulo<select name="cardChapter" [(ngModel)]="card.chapter_id"><option [ngValue]="null">Nenhum</option>@for (chapter of chapters; track chapter.id) { <option [value]="chapter.id">{{ chapter.story_name }} / {{ chapter.book_name }} / {{ chapter.title }}</option> }</select></label>
+            </div>
+            <label>Descrição<textarea name="cardDescription" [(ngModel)]="card.description" rows="7" placeholder="Registre objetivo, contexto, conflito e próximos passos"></textarea></label>
+
+            <section class="tag-section">
+              <header><div><strong>Tags do card</strong><small>Categorização global do universo. Alterações são aplicadas imediatamente.</small></div></header>
+              <div class="tag-list">@for (tag of tags(); track tag.id) { <label class="tag-choice" [style.--tag-color]="tag.color"><input type="checkbox" [checked]="cardTagIds().has(tag.id)" (change)="toggleCardTag(tag, $any($event.target).checked)" /><i></i>{{ tag.name }}</label> } @empty { <small>Nenhuma tag criada.</small> }</div>
+              <div class="new-tag-row"><input type="color" name="planningTagColor" [(ngModel)]="newTagColor" aria-label="Cor da tag" /><input name="planningTagName" [(ngModel)]="newTagName" placeholder="Nova tag" /><button type="button" (click)="createAndAssignTag()" [disabled]="!newTagName.trim()">Criar e aplicar</button></div>
+            </section>
+          </main>
+
+          <aside class="custom-fields-panel">
+            <header class="custom-fields-heading">
+              <div><strong>Campos personalizados</strong><small>Uma ficha flexível para o seu processo.</small></div>
+              <button type="button" class="add-field-button" (click)="fieldBuilderOpen.set(!fieldBuilderOpen())">{{ fieldBuilderOpen() ? 'Fechar' : '＋ Novo campo' }}</button>
+            </header>
+
+            <div class="custom-field-list">
+              @for (field of definitions(); track field.id) {
+                <section class="custom-field">
+                  <header>
+                    @if (editingFieldId === field.id) { <input name="fieldRename" [(ngModel)]="editingFieldName" (keydown.enter)="$event.preventDefault(); saveFieldName(field)" /> }
+                    @else { <div><strong>{{ field.name }}</strong><small>{{ fieldTypeLabel(field.field_type) }}</small></div> }
+                    <span class="field-actions">
+                      @if (editingFieldId === field.id) { <button type="button" (click)="saveFieldName(field)">Salvar</button> }
+                      @else { <button type="button" (click)="startRenameField(field)" title="Renomear campo">✎</button> }
+                      <button type="button" [class.confirm-delete]="pendingFieldDeleteId() === field.id" (click)="deleteField(field)" title="Excluir campo">{{ pendingFieldDeleteId() === field.id ? 'Confirmar' : '×' }}</button>
+                    </span>
+                  </header>
+
+                  @switch (field.field_type) {
+                    @case ('long_text') { <textarea [name]="'field-' + field.id" [ngModel]="fieldText(field.id)" (ngModelChange)="setFieldValue(field.id, $event)" rows="4"></textarea> }
+                    @case ('number') { <input type="number" [name]="'field-' + field.id" [ngModel]="fieldText(field.id)" (ngModelChange)="setFieldValue(field.id, $event)" /> }
+                    @case ('checkbox') { <label class="boolean-field"><input type="checkbox" [checked]="fieldChecked(field.id)" (change)="setFieldValue(field.id, $any($event.target).checked)" /><span>{{ fieldChecked(field.id) ? 'Concluído' : 'Pendente' }}</span></label> }
+                    @case ('yes_no') { <select [name]="'field-' + field.id" [ngModel]="fieldText(field.id)" (ngModelChange)="setFieldValue(field.id, $event)"><option value="">Não definido</option><option value="yes">Sim</option><option value="no">Não</option></select> }
+                    @case ('select') { <select [name]="'field-' + field.id" [ngModel]="fieldText(field.id)" (ngModelChange)="setFieldValue(field.id, $event)"><option value="">Selecione</option>@for (option of fieldOptions(field); track option) { <option [value]="option">{{ option }}</option> }</select> }
+                    @case ('multi_select') { <div class="option-grid">@for (option of fieldOptions(field); track option) { <label><input type="checkbox" [checked]="fieldArray(field.id).includes(option)" (change)="toggleArrayValue(field.id, option, $any($event.target).checked)" />{{ option }}</label> }</div> }
+                    @case ('tags') { <div class="option-grid">@for (tag of tags(); track tag.id) { <label><input type="checkbox" [checked]="fieldArray(field.id).includes(tag.id)" (change)="toggleArrayValue(field.id, tag.id, $any($event.target).checked)" /><i class="color-dot" [style.background]="tag.color"></i>{{ tag.name }}</label> } @empty { <small>Crie uma tag acima para usá-la neste campo.</small> }</div> }
+                    @case ('story') { <div class="option-grid relation-options">@for (story of stories; track story.id) { <label><input type="checkbox" [checked]="fieldArray(field.id).includes(story.id)" (change)="toggleArrayValue(field.id, story.id, $any($event.target).checked)" />{{ story.name }}</label> } @empty { <small>Nenhuma história neste universo.</small> }</div> }
+                    @case ('character') { <div class="option-grid relation-options">@for (character of characters(); track character.id) { <label><input type="checkbox" [checked]="fieldArray(field.id).includes(character.id)" (change)="toggleArrayValue(field.id, character.id, $any($event.target).checked)" />@if (character.image) { <img [src]="character.image" alt="" /> }<span>{{ character.name }}</span></label> } @empty { <small>Nenhum personagem neste universo.</small> }</div> }
+                    @default { <input [name]="'field-' + field.id" [ngModel]="fieldText(field.id)" (ngModelChange)="setFieldValue(field.id, $event)" /> }
+                  }
+                </section>
+              } @empty {
+                <button type="button" class="fields-empty" (click)="fieldBuilderOpen.set(true)"><span>＋</span><strong>Personalize esta ficha</strong><p>Adicione apenas os campos que ajudam no planejamento.</p></button>
+              }
+            </div>
+
+            @if (fieldBuilderOpen()) {
+              <section class="field-builder">
+                <header><strong>Criar campo</strong><small>Campos e tags continuam separados.</small></header>
+                <label>Nome<input name="newCustomFieldName" [(ngModel)]="newFieldName" placeholder="Ex.: Prioridade" autofocus /></label>
+                <label>Tipo<select name="newCustomFieldType" [(ngModel)]="newFieldType">@for (type of fieldTypes; track type.value) { <option [value]="type.value">{{ type.label }}</option> }</select></label>
+                <small class="field-type-hint">{{ fieldTypes.find(item => item.value === newFieldType)?.hint }}</small>
+                @if (requiresOptions()) { <label>Opções<textarea name="newCustomFieldOptions" [(ngModel)]="newFieldOptions" rows="4" placeholder="Uma opção por linha"></textarea></label> }
+                <footer><button type="button" class="secondary-button" (click)="fieldBuilderOpen.set(false)">Cancelar</button><button type="button" class="primary-button" [disabled]="!newFieldName.trim() || busy()" (click)="createField()">Adicionar</button></footer>
+              </section>
+            }
+          </aside>
+        </div>
+
+        <footer class="crm-footer">
+          <button type="button" class="delete-button" [class.confirm]="deleteConfirmation()" (click)="deleteCard()">{{ deleteConfirmation() ? 'Confirmar exclusão' : 'Excluir card' }}</button>
+          <span></span>
+          <button type="button" class="secondary-button" (click)="closeModal()">Cancelar</button>
+          <button type="submit" class="primary-button" [disabled]="busy() || !card.title.trim()">{{ busy() ? 'Salvando…' : 'Salvar ficha' }}</button>
+        </footer>
+      </form>
+    }
+  </div>
+}

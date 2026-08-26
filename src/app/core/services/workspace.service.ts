@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { DatabaseService } from './database.service';
-import { HistoryEntry, PlanningItem, PlanningStatus, RelationCard, TimelineEvent } from '../models';
+import { HistoryEntry, RelationCard, TimelineEvent } from '../models';
 
 @Injectable({ providedIn: 'root' })
 export class WorkspaceService {
@@ -30,54 +30,6 @@ export class WorkspaceService {
   async updateTimelineTitle(id: string, title: string): Promise<void> {
     await this.db.execute(
       'UPDATE timeline_events SET title = $1, updated_at = $2 WHERE id = $3',
-      [title, this.db.now(), id],
-    );
-  }
-
-  listPlanning(universeId: string): Promise<PlanningItem[]> {
-    return this.db.select<PlanningItem>(
-      `SELECT p.*, c.title AS chapter_title, b.name AS book_name, s.name AS story_name
-       FROM planning_items p
-       LEFT JOIN chapters c ON c.id = p.chapter_id
-       LEFT JOIN books b ON b.id = c.book_id
-       LEFT JOIN stories s ON s.id = b.story_id
-       WHERE p.universe_id = $1
-       ORDER BY CASE p.status WHEN 'IDEIAS' THEN 0 WHEN 'PLANEJADO' THEN 1 WHEN 'ESCREVENDO' THEN 2 WHEN 'REVISAO' THEN 3 ELSE 4 END, p.sort_order, p.created_at`,
-      [universeId],
-    );
-  }
-
-  async createPlanning(universeId: string, title: string, description = '', chapterId: string | null = null): Promise<void> {
-    const id = this.db.generateId();
-    const now = this.db.now();
-    await this.db.execute(
-      `INSERT INTO planning_items (id, universe_id, chapter_id, title, description, status, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, 'IDEIAS', $6, $6)`,
-      [id, universeId, chapterId, title, description, now],
-    );
-  }
-
-  async movePlanning(id: string, status: PlanningStatus): Promise<void> {
-    await this.db.execute('UPDATE planning_items SET status = $1, updated_at = $2 WHERE id = $3', [status, this.db.now(), id]);
-  }
-
-  async reorderPlanning(status: PlanningStatus, itemIds: string[]): Promise<void> {
-    const now = this.db.now();
-    for (let index = 0; index < itemIds.length; index++) {
-      await this.db.execute(
-        'UPDATE planning_items SET status = $1, sort_order = $2, updated_at = $3 WHERE id = $4',
-        [status, index, now, itemIds[index]],
-      );
-    }
-  }
-
-  async deletePlanning(id: string): Promise<void> {
-    await this.db.execute('DELETE FROM planning_items WHERE id = $1', [id]);
-  }
-
-  async updatePlanningTitle(id: string, title: string): Promise<void> {
-    await this.db.execute(
-      'UPDATE planning_items SET title = $1, updated_at = $2 WHERE id = $3',
       [title, this.db.now(), id],
     );
   }

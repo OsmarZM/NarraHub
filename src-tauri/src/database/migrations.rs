@@ -1,7 +1,7 @@
 /// NarraHub — Database Migrations
 /// Creates all tables on first run
 
-pub const LATEST_SCHEMA_VERSION: i64 = 10;
+pub const LATEST_SCHEMA_VERSION: i64 = 13;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -15,6 +15,9 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         8 => Some(MIGRATION_V8),
         9 => Some(MIGRATION_V9),
         10 => Some(MIGRATION_V10),
+        11 => Some(MIGRATION_V11),
+        12 => Some(MIGRATION_V12),
+        13 => Some(MIGRATION_V13),
         _ => None,
     }
 }
@@ -515,6 +518,175 @@ CREATE TRIGGER IF NOT EXISTS trg_planning_metadata_delete AFTER DELETE ON planni
 END;
 "#;
 
+pub const MIGRATION_V11: &str = r#"
+ALTER TABLE planning_items ADD COLUMN image TEXT NOT NULL DEFAULT '';
+ALTER TABLE planning_items ADD COLUMN custom_field_values TEXT NOT NULL DEFAULT '{}'
+    CHECK(json_valid(custom_field_values) AND json_type(custom_field_values) = 'object');
+
+CREATE TABLE planning_field_definitions (
+    id TEXT PRIMARY KEY NOT NULL,
+    universe_id TEXT NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    field_type TEXT NOT NULL CHECK(field_type IN (
+        'text','long_text','number','checkbox','yes_no','select','multi_select','tags','story','character'
+    )),
+    options_json TEXT NOT NULL DEFAULT '[]'
+        CHECK(json_valid(options_json) AND json_type(options_json) = 'array'),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(universe_id, name),
+    FOREIGN KEY (universe_id) REFERENCES universes(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_planning_fields_universe_order
+    ON planning_field_definitions(universe_id, sort_order, created_at);
+
+CREATE TRIGGER trg_planning_field_definition_delete
+AFTER DELETE ON planning_field_definitions
+BEGIN
+    UPDATE planning_items
+    SET custom_field_values = json_remove(custom_field_values, '$."' || OLD.id || '"'),
+        updated_at = datetime('now')
+    WHERE universe_id = OLD.universe_id
+      AND json_type(custom_field_values, '$."' || OLD.id || '"') IS NOT NULL;
+END;
+"#;
+
+pub const MIGRATION_V12: &str = r#"
+CREATE TABLE planning_field_links (
+    id TEXT PRIMARY KEY NOT NULL,
+    planning_item_id TEXT NOT NULL,
+    field_definition_id TEXT NOT NULL,
+    story_id TEXT,
+    entity_id TEXT,
+    tag_id TEXT,
+    created_at TEXT NOT NULL,
+    CHECK (
+        (story_id IS NOT NULL) + (entity_id IS NOT NULL) + (tag_id IS NOT NULL) = 1
+    ),
+    FOREIGN KEY (planning_item_id) REFERENCES planning_items(id) ON DELETE CASCADE,
+    FOREIGN KEY (field_definition_id) REFERENCES planning_field_definitions(id) ON DELETE CASCADE,
+    FOREIGN KEY (story_id) REFERENCES stories(id) ON DELETE CASCADE,
+    FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+    FOREIGN KEY (tag_id) REFERENCES content_tags(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX idx_planning_field_story_link
+    ON planning_field_links(planning_item_id, field_definition_id, story_id)
+    WHERE story_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_planning_field_entity_link
+    ON planning_field_links(planning_item_id, field_definition_id, entity_id)
+    WHERE entity_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_planning_field_tag_link
+    ON planning_field_links(planning_item_id, field_definition_id, tag_id)
+    WHERE tag_id IS NOT NULL;
+CREATE INDEX idx_planning_field_links_card
+    ON planning_field_links(planning_item_id, field_definition_id);
+
+CREATE TRIGGER trg_planning_field_link_validate
+BEFORE INSERT ON planning_field_links
+BEGIN
+    SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM planning_items p
+        JOIN planning_field_definitions f ON f.id = NEW.field_definition_id
+        WHERE p.id = NEW.planning_item_id AND p.universe_id = f.universe_id
+    ) THEN RAISE(ABORT, 'planning field and card must belong to the same universe') END;
+    SELECT CASE WHEN NEW.story_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1
+        FROM stories s
+        JOIN planning_items p ON p.id = NEW.planning_item_id
+        JOIN planning_field_definitions f ON f.id = NEW.field_definition_id
+        WHERE s.id = NEW.story_id AND s.universe_id = p.universe_id AND f.field_type = 'story'
+    ) THEN RAISE(ABORT, 'invalid planning story relation') END;
+    SELECT CASE WHEN NEW.entity_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1
+        FROM entities e
+        JOIN planning_items p ON p.id = NEW.planning_item_id
+        JOIN planning_field_definitions f ON f.id = NEW.field_definition_id
+        WHERE e.id = NEW.entity_id AND e.universe_id = p.universe_id
+          AND e.type = 'Personagem' AND f.field_type = 'character'
+    ) THEN RAISE(ABORT, 'invalid planning character relation') END;
+    SELECT CASE WHEN NEW.tag_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1
+        FROM content_tags t
+        JOIN planning_items p ON p.id = NEW.planning_item_id
+        JOIN planning_field_definitions f ON f.id = NEW.field_definition_id
+        WHERE t.id = NEW.tag_id AND t.universe_id = p.universe_id AND f.field_type = 'tags'
+    ) THEN RAISE(ABORT, 'invalid planning tag relation') END;
+END;
+"#;
+
+pub const MIGRATION_V13: &str = r#"
+-- Move relation arrays temporarily written by the schema 11 development build
+-- into the normalized schema introduced by migration 12.
+INSERT OR IGNORE INTO planning_field_links
+    (id, planning_item_id, field_definition_id, story_id, created_at)
+SELECT lower(hex(randomblob(16))), p.id, f.id, s.id, datetime('now')
+FROM planning_items p
+JOIN planning_field_definitions f
+  ON f.universe_id = p.universe_id AND f.field_type = 'story'
+JOIN json_each(p.custom_field_values, '$."' || f.id || '"') legacy
+JOIN stories s ON s.id = legacy.value AND s.universe_id = p.universe_id
+WHERE json_type(p.custom_field_values, '$."' || f.id || '"') = 'array'
+  AND legacy.type = 'text';
+
+INSERT OR IGNORE INTO planning_field_links
+    (id, planning_item_id, field_definition_id, entity_id, created_at)
+SELECT lower(hex(randomblob(16))), p.id, f.id, e.id, datetime('now')
+FROM planning_items p
+JOIN planning_field_definitions f
+  ON f.universe_id = p.universe_id AND f.field_type = 'character'
+JOIN json_each(p.custom_field_values, '$."' || f.id || '"') legacy
+JOIN entities e
+  ON e.id = legacy.value AND e.universe_id = p.universe_id AND e.type = 'Personagem'
+WHERE json_type(p.custom_field_values, '$."' || f.id || '"') = 'array'
+  AND legacy.type = 'text';
+
+INSERT OR IGNORE INTO planning_field_links
+    (id, planning_item_id, field_definition_id, tag_id, created_at)
+SELECT lower(hex(randomblob(16))), p.id, f.id, t.id, datetime('now')
+FROM planning_items p
+JOIN planning_field_definitions f
+  ON f.universe_id = p.universe_id AND f.field_type = 'tags'
+JOIN json_each(p.custom_field_values, '$."' || f.id || '"') legacy
+JOIN content_tags t ON t.id = legacy.value AND t.universe_id = p.universe_id
+WHERE json_type(p.custom_field_values, '$."' || f.id || '"') = 'array'
+  AND legacy.type = 'text';
+
+UPDATE planning_items
+SET custom_field_values = COALESCE((
+        SELECT json_group_object(
+            legacy.key,
+            CASE legacy.type
+                WHEN 'true' THEN json('true')
+                WHEN 'false' THEN json('false')
+                WHEN 'array' THEN json(legacy.value)
+                WHEN 'object' THEN json(legacy.value)
+                ELSE legacy.value
+            END
+        )
+        FROM json_each(planning_items.custom_field_values) legacy
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM planning_field_definitions f
+            WHERE f.universe_id = planning_items.universe_id
+              AND f.id = legacy.key
+              AND f.field_type IN ('story', 'character', 'tags')
+        )
+    ), '{}'),
+    updated_at = datetime('now')
+WHERE EXISTS (
+    SELECT 1
+    FROM json_each(planning_items.custom_field_values) legacy
+    JOIN planning_field_definitions f
+      ON f.universe_id = planning_items.universe_id
+     AND f.id = legacy.key
+     AND f.field_type IN ('story', 'character', 'tags')
+);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -658,5 +830,215 @@ mod tests {
             |row| row.get(0),
         ).expect("count assignments");
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn v11_adds_typed_planning_cards_and_cleans_deleted_field_values() {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys");
+        connection
+            .execute_batch(MIGRATION_V1)
+            .expect("apply migration v1");
+        connection
+            .execute_batch(MIGRATION_V2)
+            .expect("apply migration v2");
+        connection
+            .execute_batch(MIGRATION_V11)
+            .expect("apply migration v11");
+
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO universes (id, name) VALUES ('u1', 'Mundo');
+                INSERT INTO planning_items (id, universe_id, title, created_at, updated_at)
+                VALUES ('p1', 'u1', 'Revelar o segredo', datetime('now'), datetime('now'));
+                INSERT INTO planning_field_definitions
+                    (id, universe_id, name, field_type, options_json, created_at, updated_at)
+                VALUES
+                    ('f1', 'u1', 'Personagens', 'character', '[]', datetime('now'), datetime('now')),
+                    ('f2', 'u1', 'Prioridade', 'select', '["Baixa","Alta"]', datetime('now'), datetime('now'));
+                UPDATE planning_items
+                SET image = 'data:image/png;base64,card',
+                    custom_field_values = '{"f1":["e1"],"f2":"Alta"}'
+                WHERE id = 'p1';
+                "#,
+            )
+            .expect("seed typed planning card");
+
+        let card: (String, String) = connection
+            .query_row(
+                "SELECT image, json_extract(custom_field_values, '$.f2') FROM planning_items WHERE id = 'p1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("load planning card");
+        assert_eq!(card, ("data:image/png;base64,card".into(), "Alta".into()));
+
+        connection
+            .execute("DELETE FROM planning_field_definitions WHERE id = 'f1'", [])
+            .expect("delete field definition");
+        let removed_value: Option<String> = connection
+            .query_row(
+                "SELECT json_extract(custom_field_values, '$.f1') FROM planning_items WHERE id = 'p1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("load cleaned card values");
+        assert!(removed_value.is_none());
+
+        let invalid_type = connection.execute(
+            "INSERT INTO planning_field_definitions (id, universe_id, name, field_type, created_at, updated_at) VALUES ('bad', 'u1', 'Inválido', 'unknown', datetime('now'), datetime('now'))",
+            [],
+        );
+        assert!(invalid_type.is_err());
+    }
+
+    #[test]
+    fn v12_keeps_planning_links_inside_the_universe_and_cascades_deletions() {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys");
+        for migration in [
+            MIGRATION_V1,
+            MIGRATION_V2,
+            MIGRATION_V3,
+            MIGRATION_V6,
+            MIGRATION_V10,
+            MIGRATION_V11,
+            MIGRATION_V12,
+        ] {
+            connection
+                .execute_batch(migration)
+                .expect("apply migration");
+        }
+        connection.execute_batch(
+            r#"
+            INSERT INTO universes (id, name) VALUES ('u1', 'Um'), ('u2', 'Dois');
+            INSERT INTO stories (id, universe_id, name) VALUES ('s1', 'u1', 'História'), ('s2', 'u2', 'Outra');
+            INSERT INTO entities (id, universe_id, type, name) VALUES
+                ('e1', 'u1', 'Personagem', 'Lia'), ('e2', 'u1', 'Lugar', 'Porto');
+            INSERT INTO content_tags (id, universe_id, name, created_at) VALUES ('t1', 'u1', 'Urgente', datetime('now'));
+            INSERT INTO planning_items (id, universe_id, title, created_at, updated_at)
+                VALUES ('p1', 'u1', 'Card', datetime('now'), datetime('now'));
+            INSERT INTO planning_field_definitions (id, universe_id, name, field_type, created_at, updated_at) VALUES
+                ('fs', 'u1', 'Histórias', 'story', datetime('now'), datetime('now')),
+                ('fc', 'u1', 'Personagens', 'character', datetime('now'), datetime('now')),
+                ('ft', 'u1', 'Marcadores', 'tags', datetime('now'), datetime('now'));
+            INSERT INTO planning_field_links (id, planning_item_id, field_definition_id, story_id, created_at)
+                VALUES ('ls', 'p1', 'fs', 's1', datetime('now'));
+            INSERT INTO planning_field_links (id, planning_item_id, field_definition_id, entity_id, created_at)
+                VALUES ('lc', 'p1', 'fc', 'e1', datetime('now'));
+            INSERT INTO planning_field_links (id, planning_item_id, field_definition_id, tag_id, created_at)
+                VALUES ('lt', 'p1', 'ft', 't1', datetime('now'));
+            "#,
+        ).expect("seed valid planning links");
+
+        let cross_universe = connection.execute(
+            "INSERT INTO planning_field_links (id, planning_item_id, field_definition_id, story_id, created_at) VALUES ('bad1', 'p1', 'fs', 's2', datetime('now'))",
+            [],
+        );
+        assert!(cross_universe.is_err());
+        let wrong_entity_type = connection.execute(
+            "INSERT INTO planning_field_links (id, planning_item_id, field_definition_id, entity_id, created_at) VALUES ('bad2', 'p1', 'fc', 'e2', datetime('now'))",
+            [],
+        );
+        assert!(wrong_entity_type.is_err());
+
+        connection
+            .execute("DELETE FROM stories WHERE id = 's1'", [])
+            .expect("delete story");
+        connection
+            .execute("DELETE FROM entities WHERE id = 'e1'", [])
+            .expect("delete character");
+        connection
+            .execute("DELETE FROM content_tags WHERE id = 't1'", [])
+            .expect("delete tag");
+        let remaining: i64 = connection
+            .query_row("SELECT COUNT(*) FROM planning_field_links", [], |row| {
+                row.get(0)
+            })
+            .expect("count remaining links");
+        assert_eq!(remaining, 0);
+        let foreign_key_failures: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("check foreign keys");
+        assert_eq!(foreign_key_failures, 0);
+    }
+
+    #[test]
+    fn v13_moves_legacy_relation_arrays_without_changing_scalar_values() {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys");
+        for migration in [
+            MIGRATION_V1,
+            MIGRATION_V2,
+            MIGRATION_V3,
+            MIGRATION_V6,
+            MIGRATION_V10,
+            MIGRATION_V11,
+            MIGRATION_V12,
+        ] {
+            connection
+                .execute_batch(migration)
+                .expect("apply migration");
+        }
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO universes (id, name) VALUES ('u1', 'Um'), ('u2', 'Dois');
+                INSERT INTO stories (id, universe_id, name) VALUES ('s1', 'u1', 'Principal'), ('s2', 'u2', 'Externa');
+                INSERT INTO entities (id, universe_id, type, name) VALUES ('e1', 'u1', 'Personagem', 'Lia');
+                INSERT INTO content_tags (id, universe_id, name, created_at) VALUES ('t1', 'u1', 'Urgente', datetime('now'));
+                INSERT INTO planning_field_definitions (id, universe_id, name, field_type, options_json, created_at, updated_at) VALUES
+                    ('note', 'u1', 'Nota', 'text', '[]', datetime('now'), datetime('now')),
+                    ('done', 'u1', 'Concluído', 'checkbox', '[]', datetime('now'), datetime('now')),
+                    ('multi', 'u1', 'Opções', 'multi_select', '["A","B"]', datetime('now'), datetime('now')),
+                    ('stories', 'u1', 'Histórias', 'story', '[]', datetime('now'), datetime('now')),
+                    ('characters', 'u1', 'Personagens', 'character', '[]', datetime('now'), datetime('now')),
+                    ('tags', 'u1', 'Tags', 'tags', '[]', datetime('now'), datetime('now'));
+                INSERT INTO planning_items
+                    (id, universe_id, title, custom_field_values, created_at, updated_at)
+                VALUES
+                    ('p1', 'u1', 'Card', '{"note":"Preservar","done":true,"multi":["A","B"],"stories":["s1","s2","missing"],"characters":["e1"],"tags":["t1"]}', datetime('now'), datetime('now'));
+                "#,
+            )
+            .expect("seed legacy planning values");
+
+        connection
+            .execute_batch(MIGRATION_V13)
+            .expect("apply migration v13");
+
+        let links: i64 = connection
+            .query_row("SELECT COUNT(*) FROM planning_field_links", [], |row| {
+                row.get(0)
+            })
+            .expect("count migrated links");
+        assert_eq!(links, 3);
+        let values: String = connection
+            .query_row(
+                "SELECT custom_field_values FROM planning_items WHERE id = 'p1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("load scalar values");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&values).expect("valid JSON"),
+            serde_json::json!({"note":"Preservar","done":true,"multi":["A","B"]})
+        );
+        let cross_universe_links: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM planning_field_links WHERE story_id = 's2'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count invalid migrated links");
+        assert_eq!(cross_universe_links, 0);
     }
 }

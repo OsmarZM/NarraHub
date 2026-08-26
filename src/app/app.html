@@ -298,7 +298,7 @@
               @else if (appState.workspaceView() === 'entities' && appState.sidebarEntityFilter()) { <button type="button" class="primary-button small" (click)="beginCreateEntity()">＋ {{ entityCreateLabel() }}</button> }
               @else if (appState.workspaceView() === 'graph') { <button type="button" class="primary-button small" (click)="appState.openModal('new-relation')" [disabled]="entities().length < 2">＋ Conexão</button> }
               @else if (appState.workspaceView() === 'timeline') { <button type="button" class="primary-button small" (click)="appState.openModal('new-timeline')">＋ Evento</button> }
-              @else if (appState.workspaceView() === 'planning') { <button type="button" class="primary-button small" (click)="appState.openModal('new-planning')">＋ Item</button> }
+              @else if (appState.workspaceView() === 'planning') { <button type="button" class="primary-button small" (click)="beginCreatePlanning()">＋ Card</button> }
             </div>
           </header>
 
@@ -530,9 +530,15 @@
               @else { <section class="empty-feature"><span>◷</span><h2>Nenhum marco criado</h2><p>Adicione o primeiro acontecimento da cronologia.</p><button type="button" class="primary-button" (click)="appState.openModal('new-timeline')">Adicionar evento</button></section> }
             </div>
           } @else if (appState.workspaceView() === 'planning') {
-            <div class="feature-page planning-page"><header class="feature-heading"><div><span class="eyebrow">FLUXO DE ESCRITA</span><h1>Planejamento</h1><p>Mova ideias até a versão final sem perder o contexto.</p></div></header>
-              <div class="kanban-board" cdkDropListGroup>@for (status of planningStatuses; track status; let columnIndex = $index) { <section class="kanban-column"><header><h2>{{ status === 'REVISAO' ? 'Revisão' : status.charAt(0) + status.slice(1).toLowerCase() }}</h2><span>{{ planningByStatus(status).length }}</span></header><div class="kanban-cards" cdkDropList [cdkDropListData]="planningByStatus(status)" (cdkDropListDropped)="dropPlanning($event, status)">@for (item of planningByStatus(status); track item.id) { <article class="kanban-card" [attr.data-planning-id]="item.id" cdkDrag [cdkDragData]="item"><div class="card-actions"><span class="card-drag" title="Segure qualquer parte do cartão para arrastar">⠿</span><button type="button" aria-label="Renomear item" title="Renomear" (click)="requestRename('planning', item.id, item.title, $event)">✎</button><button type="button" aria-label="Tags do item" title="Tags" (click)="openMetadata('planning', item.id, item.title, $event)">#</button><button type="button" aria-label="Mover para esquerda" [disabled]="columnIndex === 0" (click)="movePlanning(item, -1)">←</button><button type="button" aria-label="Mover para direita" [disabled]="columnIndex === planningStatuses.length - 1" (click)="movePlanning(item, 1)">→</button><button type="button" aria-label="Excluir" (click)="deletePlanning(item.id)">×</button></div>@if (item.chapter_id) { <button type="button" class="planning-link" (click)="openPlanningChapter(item)">{{ item.story_name }} / {{ item.book_name }}</button> }<h3>{{ item.title }}</h3><p>{{ item.description || 'Sem descrição' }}</p>@if (previewTags('planning', item.id); as tags) { @if (tags.length) { <div class="preview-tags">@for (tag of tags.slice(0, 3); track tag.id) { <b [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</b> } @if (tags.length > 3) { <b class="tag-overflow">+{{ tags.length - 3 }}</b> }</div> } }@if (item.chapter_id) { <div class="planning-progress"><span [style.width.%]="Math.min(100, ((universeChapters().find(c => c.id === item.chapter_id)?.word_count || 0) / Math.max(1, item.target_words || 2000)) * 100)"></span></div> }</article> }<button type="button" class="kanban-add" (click)="appState.openModal('new-planning')">＋ Adicionar ou vincular</button></div></section> }</div>
-            </div>
+            <app-planning-board
+              [universeId]="appState.activeUniverseId() || ''"
+              [items]="planning()"
+              [chapters]="universeChapters()"
+              [stories]="stories()"
+              [entities]="entities()"
+              (itemsChange)="planning.set($event)"
+              (chapterOpened)="openPlanningChapter($event)"
+            />
           } @else if (appState.workspaceView() === 'history') {
             <div class="feature-page history-page"><header class="feature-heading"><div><span class="eyebrow">VERSÕES</span><h1>Histórico recente</h1><p>Alterações registradas automaticamente no banco local.</p></div><button type="button" class="secondary-button" (click)="loadHistory()">Atualizar</button></header>
               @if (history().length > 0) { <div class="history-list">@for (entry of history(); track entry.id) { <article><span class="history-icon">{{ entry.action === 'create' ? '+' : '↻' }}</span><div><h3>{{ entry.display_name }}</h3><p>{{ entry.entity_type }} · {{ entry.field || entry.action }}@if (entry.new_value) { <span> · {{ entry.new_value }}</span> }</p></div><time>{{ formatDate(entry.created_at) }}</time></article> }</div> }
@@ -620,12 +626,6 @@
         <label>Data real <span>(opcional)</span><input type="date" name="timelineDate" [(ngModel)]="newTimelineDate" /></label>
         <label>Descrição <span>(opcional)</span><textarea name="timelineDescription" [(ngModel)]="newTimelineDescription"></textarea></label>
         <footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newTimelineTitle.trim() || (!newTimelineDate && !newTimelineDisplayDate.trim())" (click)="createTimeline()">Adicionar à timeline</button></footer>
-      } @else if (appState.modalOpen() === 'new-planning') {
-        <header><div><span class="eyebrow">PLANEJAMENTO</span><h2>Adicionar ao quadro</h2></div><button type="button" (click)="appState.closeModal()">×</button></header>
-        <label>Usar capítulo existente <span>(opcional)</span><select name="planningChapter" [(ngModel)]="newPlanningChapterId"><option value="">Criar uma ideia livre</option>@for (chapter of universeChapters(); track chapter.id) { <option [value]="chapter.id">{{ chapter.story_name }} / {{ chapter.book_name }} / {{ chapter.title }}</option> }</select></label>
-        <label>Título <span>{{ newPlanningChapterId ? '(opcional)' : '' }}</span><input name="planningTitle" [(ngModel)]="newPlanningTitle" placeholder="Ex.: Resolver motivação do antagonista" /></label>
-        <label>Descrição <span>(opcional)</span><textarea name="planningDescription" [(ngModel)]="newPlanningDescription"></textarea></label>
-        <footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newPlanningTitle.trim() && !newPlanningChapterId" (click)="createPlanning()">Adicionar ao planejamento</button></footer>
       } @else if (appState.modalOpen() === 'restore-backup' && pendingRestoreBackup(); as backup) {
         <header><div><span class="eyebrow danger-copy">RECUPERAÇÃO LOCAL</span><h2>Restaurar este backup?</h2></div><button type="button" [disabled]="backupBusy()" (click)="appState.closeModal()">×</button></header>
         <p class="delete-warning"><strong>{{ formatDate(backup.createdAt) }}</strong><br />O conteúdo atual será substituído pelo snapshot de schema {{ backup.schemaVersion }}. Antes disso, o NarraHub cria outro backup e mantém os arquivos anteriores em uma área de rollback.</p>

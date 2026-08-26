@@ -6,7 +6,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   Attachment, Book, BookOption, Chapter, ChapterOption, ContentTag, ContentTagAssignment, DEFAULT_ATTRIBUTES, Entity, EntityAttribute, EntityType, EntityWithDetails, HistoryEntry,
-  MentionOccurrence, MetadataOwnerType, PlanningItem, PlanningStatus, RelationCard, Story, SyncServerStatus, TimelineEvent, UniverseWithStats,
+  MentionOccurrence, MetadataOwnerType, PlanningItem, RelationCard, Story, SyncServerStatus, TimelineEvent, UniverseWithStats,
 } from './core/models';
 import { BookService } from './core/services/book.service';
 import { AttachmentService } from './core/services/attachment.service';
@@ -19,6 +19,7 @@ import { EntityService } from './core/services/entity.service';
 import { MentionService } from './core/services/mention.service';
 import { MetadataService } from './core/services/metadata.service';
 import { OnlineShareDocument, OnlineShareService, OnlineShareStatus, SharedUniverse } from './core/services/online-share.service';
+import { PlanningService } from './core/services/planning.service';
 import { StoryService } from './core/services/story.service';
 import { SyncService } from './core/services/sync.service';
 import { ThemePreference, ThemeService } from './core/services/theme.service';
@@ -29,6 +30,7 @@ import { AppState } from './core/state/app.state';
 import { UniversePickerComponent } from './features/universe-picker/universe-picker.component';
 import { ConnectionsGraphComponent } from './features/connections/connections-graph.component';
 import { ProductionReplicaComponent } from './features/production-replica/production-replica.component';
+import { PlanningBoardComponent } from './features/planning/planning-board.component';
 import { AiWritingRequest, WritingEditorComponent } from './features/writing/writing-editor.component';
 import { AppShellComponent } from './shell/app-shell/app-shell.component';
 import { ContextualInspectorComponent } from './shell/contextual-inspector/contextual-inspector.component';
@@ -64,7 +66,7 @@ interface WritingCharacterInsight {
 }
 
 type DeleteKind = 'story' | 'book' | 'chapter' | 'entity' | 'relation';
-type RenameKind = 'universe' | 'story' | 'book' | 'chapter' | 'entity' | 'timeline' | 'planning';
+type RenameKind = 'universe' | 'story' | 'book' | 'chapter' | 'entity' | 'timeline';
 
 interface PendingDelete {
   kind: DeleteKind;
@@ -112,6 +114,7 @@ type SettingsSection = 'general' | 'ai' | 'sync' | 'share' | 'updates';
     UniversePickerComponent,
     ConnectionsGraphComponent,
     ProductionReplicaComponent,
+    PlanningBoardComponent,
     WritingEditorComponent,
   ],
   templateUrl: './app.html',
@@ -134,6 +137,7 @@ export class App implements OnInit, OnDestroy {
   private readonly mentionService = inject(MentionService);
   private readonly metadataService = inject(MetadataService);
   private readonly onlineShareService = inject(OnlineShareService);
+  private readonly planningService = inject(PlanningService);
   private readonly workspaceService = inject(WorkspaceService);
   private readonly syncService = inject(SyncService);
   private readonly updateService = inject(UpdateService);
@@ -237,9 +241,6 @@ export class App implements OnInit, OnDestroy {
   newTimelineEntityId = '';
   newTimelineDisplayDate = '';
   newTimelineSortKey = 0;
-  newPlanningTitle = '';
-  newPlanningDescription = '';
-  newPlanningChapterId = '';
   newRelationSource = '';
   newRelationTarget = '';
   newRelationLabel = '';
@@ -260,7 +261,6 @@ export class App implements OnInit, OnDestroy {
   shareExpiresInDays = 7;
   sharePermission: SharePermission = 'view';
 
-  readonly planningStatuses: PlanningStatus[] = ['IDEIAS', 'PLANEJADO', 'ESCREVENDO', 'REVISAO', 'FINALIZADO'];
   readonly navItems: SidebarNavItem[] = [
     { id: 'inicio', label: 'Início', icon: '⌂', needsUniverse: false },
     { id: 'escrita', label: 'Escrita', icon: '✎', needsUniverse: true },
@@ -313,6 +313,7 @@ export class App implements OnInit, OnDestroy {
   });
 
   @ViewChild(WritingEditorComponent) private writingEditor?: WritingEditorComponent;
+  @ViewChild(PlanningBoardComponent) private planningBoard?: PlanningBoardComponent;
 
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private infoTimer: ReturnType<typeof setTimeout> | null = null;
@@ -485,7 +486,7 @@ export class App implements OnInit, OnDestroy {
 
   renameKindLabel(kind: RenameKind): string {
     return ({
-      universe: 'Universo', story: 'História', book: 'Livro', chapter: 'Capítulo', entity: 'Entidade', timeline: 'Evento', planning: 'Item de planejamento',
+      universe: 'Universo', story: 'História', book: 'Livro', chapter: 'Capítulo', entity: 'Entidade', timeline: 'Evento',
     } as Record<RenameKind, string>)[kind];
   }
 
@@ -528,9 +529,6 @@ export class App implements OnInit, OnDestroy {
       } else if (pending.kind === 'timeline') {
         await this.workspaceService.updateTimelineTitle(pending.id, name);
         this.timeline.update((items) => items.map((item) => item.id === pending.id ? { ...item, title: name } : item));
-      } else {
-        await this.workspaceService.updatePlanningTitle(pending.id, name);
-        this.planning.update((items) => items.map((item) => item.id === pending.id ? { ...item, title: name } : item));
       }
       this.pendingRename.set(null); this.renameValue = ''; this.appState.closeModal();
       this.showInfo(`${this.renameKindLabel(pending.kind)} renomeado(a).`);
@@ -562,7 +560,7 @@ export class App implements OnInit, OnDestroy {
         this.entityService.listByUniverse(id),
         this.chapterService.listByUniverse(id),
         this.workspaceService.listTimeline(id),
-        this.workspaceService.listPlanning(id),
+        this.planningService.list(id),
         this.metadataService.listAssignments([id]),
       ]);
       if (epoch !== this.workspaceEpoch || this.appState.activeUniverseId() !== id) return;
@@ -963,37 +961,8 @@ export class App implements OnInit, OnDestroy {
   }
   async deleteTimeline(id: string): Promise<void> { await this.workspaceService.deleteTimeline(id); await this.loadTimeline(); }
 
-  async loadPlanning(): Promise<void> { const id = this.appState.activeUniverseId(); if (!id) return; const data = await this.workspaceService.listPlanning(id); if (this.appState.activeUniverseId() === id) this.planning.set(data); }
-  planningByStatus(status: PlanningStatus): PlanningItem[] { return this.planning().filter((item) => item.status === status); }
-  async createPlanning(): Promise<void> {
-    const id = this.appState.activeUniverseId(); if (!id) return;
-    const linkedChapter = this.universeChapters().find((chapter) => chapter.id === this.newPlanningChapterId);
-    const title = this.newPlanningTitle.trim() || linkedChapter?.title || '';
-    if (!title) return;
-    await this.workspaceService.createPlanning(id, title, this.newPlanningDescription.trim(), linkedChapter?.id || null);
-    this.newPlanningTitle = ''; this.newPlanningDescription = ''; this.newPlanningChapterId = ''; this.appState.closeModal(); await this.loadPlanning();
-  }
-  async movePlanning(item: PlanningItem, direction: -1 | 1): Promise<void> {
-    const index = this.planningStatuses.indexOf(item.status) + direction; if (index < 0 || index >= this.planningStatuses.length) return;
-    await this.workspaceService.movePlanning(item.id, this.planningStatuses[index]); await this.loadPlanning();
-  }
-  async dropPlanning(event: CdkDragDrop<PlanningItem[]>, targetStatus: PlanningStatus): Promise<void> {
-    const item = event.item.data as PlanningItem;
-    if (!item) return;
-    if (event.previousContainer === event.container) {
-      const reordered = [...event.container.data]; moveItemInArray(reordered, event.previousIndex, event.currentIndex);
-      await this.workspaceService.reorderPlanning(targetStatus, reordered.map((entry) => entry.id));
-    } else {
-      const source = [...event.previousContainer.data]; const target = [...event.container.data];
-      source.splice(event.previousIndex, 1); target.splice(event.currentIndex, 0, { ...item, status: targetStatus });
-      await Promise.all([
-        this.workspaceService.reorderPlanning(item.status, source.map((entry) => entry.id)),
-        this.workspaceService.reorderPlanning(targetStatus, target.map((entry) => entry.id)),
-      ]);
-    }
-    await this.loadPlanning();
-  }
-  async deletePlanning(id: string): Promise<void> { await this.workspaceService.deletePlanning(id); await this.loadPlanning(); }
+  async loadPlanning(): Promise<void> { const id = this.appState.activeUniverseId(); if (!id) return; const data = await this.planningService.list(id); if (this.appState.activeUniverseId() === id) this.planning.set(data); }
+  beginCreatePlanning(): void { this.planningBoard?.openCreate(); }
   async loadHistory(): Promise<void> { const id = this.appState.activeUniverseId(); if (!id) return; const data = await this.workspaceService.listHistory(id); if (this.appState.activeUniverseId() === id) this.history.set(data); }
 
   async openPlanningChapter(item: PlanningItem): Promise<void> {

@@ -23,10 +23,12 @@ const TABLES: &[&str] = &[
     "mentions",
     "timeline_events",
     "planning_items",
+    "planning_field_definitions",
     "attachments",
     "content_tags",
     "content_tag_assignments",
     "content_custom_fields",
+    "planning_field_links",
 ];
 
 #[derive(Default)]
@@ -494,31 +496,16 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::migrations::{
-        MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6,
-    };
+    use crate::database::migrations::{sql_for_version, LATEST_SCHEMA_VERSION};
 
     fn temporary_database(label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("narrahub-{label}-{}.db", Uuid::new_v4()));
         let connection = Connection::open(&path).expect("create temp db");
-        connection
-            .execute_batch(MIGRATION_V1)
-            .expect("migration v1");
-        connection
-            .execute_batch(MIGRATION_V2)
-            .expect("migration v2");
-        connection
-            .execute_batch(MIGRATION_V3)
-            .expect("migration v3");
-        connection
-            .execute_batch(MIGRATION_V4)
-            .expect("migration v4");
-        connection
-            .execute_batch(MIGRATION_V5)
-            .expect("migration v5");
-        connection
-            .execute_batch(MIGRATION_V6)
-            .expect("migration v6");
+        for version in 1..=LATEST_SCHEMA_VERSION {
+            connection
+                .execute_batch(sql_for_version(version).expect("known schema version"))
+                .unwrap_or_else(|error| panic!("migration v{version}: {error}"));
+        }
         path
     }
 
@@ -577,6 +564,55 @@ mod tests {
             .expect("read universe");
 
         assert_eq!(name, "Nome novo");
+        std::fs::remove_file(source).ok();
+        std::fs::remove_file(target).ok();
+    }
+
+    #[test]
+    fn snapshot_round_trip_preserves_planning_field_relations() {
+        let source = temporary_database("planning-source");
+        let target = temporary_database("planning-target");
+        seed_universe(
+            &source,
+            "universe-1",
+            "Cidade sem Sol",
+            "2026-08-20 12:00:00",
+        );
+        let source_connection = Connection::open(&source).expect("open planning source");
+        source_connection
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+                INSERT INTO stories (id, universe_id, name) VALUES ('story-1', 'universe-1', 'Principal');
+                INSERT INTO entities (id, universe_id, type, name) VALUES ('character-1', 'universe-1', 'Personagem', 'Lia');
+                INSERT INTO content_tags (id, universe_id, name, created_at) VALUES ('tag-1', 'universe-1', 'Urgente', datetime('now'));
+                INSERT INTO planning_items (id, universe_id, title, created_at, updated_at)
+                    VALUES ('card-1', 'universe-1', 'Cena inicial', datetime('now'), datetime('now'));
+                INSERT INTO planning_field_definitions (id, universe_id, name, field_type, options_json, created_at, updated_at) VALUES
+                    ('stories-field', 'universe-1', 'Histórias', 'story', '[]', datetime('now'), datetime('now')),
+                    ('characters-field', 'universe-1', 'Personagens', 'character', '[]', datetime('now'), datetime('now')),
+                    ('tags-field', 'universe-1', 'Tags', 'tags', '[]', datetime('now'), datetime('now'));
+                INSERT INTO planning_field_links (id, planning_item_id, field_definition_id, story_id, created_at)
+                    VALUES ('story-link', 'card-1', 'stories-field', 'story-1', datetime('now'));
+                INSERT INTO planning_field_links (id, planning_item_id, field_definition_id, entity_id, created_at)
+                    VALUES ('character-link', 'card-1', 'characters-field', 'character-1', datetime('now'));
+                INSERT INTO planning_field_links (id, planning_item_id, field_definition_id, tag_id, created_at)
+                    VALUES ('tag-link', 'card-1', 'tags-field', 'tag-1', datetime('now'));
+                "#,
+            )
+            .expect("seed planning CRM");
+        drop(source_connection);
+
+        let snapshot = export_snapshot(&source).expect("export planning snapshot");
+        merge_snapshot(&target, &snapshot).expect("merge planning snapshot");
+        let target_connection = Connection::open(&target).expect("open planning target");
+        let links: i64 = target_connection
+            .query_row("SELECT COUNT(*) FROM planning_field_links", [], |row| {
+                row.get(0)
+            })
+            .expect("count planning links");
+        assert_eq!(links, 3);
+
         std::fs::remove_file(source).ok();
         std::fs::remove_file(target).ok();
     }

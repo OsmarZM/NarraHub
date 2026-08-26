@@ -5,8 +5,9 @@ mod online_share;
 mod sync;
 
 use database::migrations::{
-    MIGRATION_V1, MIGRATION_V10, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5,
-    MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9,
+    MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V2,
+    MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8,
+    MIGRATION_V9,
 };
 use tauri_plugin_sql::{Migration, MigrationKind};
 
@@ -110,6 +111,24 @@ pub fn run() {
                             sql: MIGRATION_V10,
                             kind: MigrationKind::Up,
                         },
+                        Migration {
+                            version: 11,
+                            description: "Add typed planning card fields and images",
+                            sql: MIGRATION_V11,
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 12,
+                            description: "Normalize planning card relations",
+                            sql: MIGRATION_V12,
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 13,
+                            description: "Migrate legacy planning card relations",
+                            sql: MIGRATION_V13,
+                            kind: MigrationKind::Up,
+                        },
                     ],
                 )
                 .build(),
@@ -130,6 +149,7 @@ pub fn run() {
             database::production_replica::production_replica_refresh,
             database::production_replica::production_replica_catalog,
             database::production_replica::production_replica_chapter,
+            database::planning::planning_save_card,
             local_ai::local_ai_status,
             local_ai::install_local_ai,
             local_ai::start_local_ai_engine,
