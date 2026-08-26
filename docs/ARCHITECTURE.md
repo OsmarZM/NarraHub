@@ -24,7 +24,7 @@ O esquema principal contém:
 - `entities`, `entity_attributes`, `entity_templates`;
 - `content_tags`, `content_tag_assignments`;
 - `relations`, `mentions`;
-- `timeline_events`, `planning_items`, `attachments`;
+- `timeline_events`, `planning_items`, `planning_field_definitions`, `attachments`;
 - `chapter_revisions`, `change_log`;
 - `devices`, `sync_peers`, `sync_events`, `sync_conflicts`.
 - `collaboration_sessions`, `collaboration_contributions`.
@@ -43,7 +43,7 @@ O plugin updater do Tauri verifica um manifesto `latest.json` publicado no GitHu
 
 ### Assistência à escrita
 
-Ortografia, autocomplete, avatares de personagens e anotação por voz ficam na camada do editor. Tags categorizam qualquer conteúdo do universo; campos personalizáveis existem somente como `entity_attributes` nas fichas. Origem e destino de cena são colunas próprias do capítulo. A IA é opcional, pode usar o runtime local gerenciado ou uma API compatível configurada pelo usuário e recebe um contexto compacto; detalhes do contrato estão em `docs/WRITING_ASSISTANCE.md`.
+Ortografia, autocomplete, avatares de personagens e anotação por voz ficam na camada do editor. Tags categorizam qualquer conteúdo do universo. Campos de entidades continuam em `entity_attributes`; campos tipados do planejamento usam definições próprias por universo, valores escalares em JSON validado e relações normalizadas com foreign keys, sem misturar esses conceitos. Origem e destino de cena são colunas próprias do capítulo. A IA é opcional, pode usar o runtime local gerenciado ou uma API compatível configurada pelo usuário e recebe um contexto compacto; detalhes do contrato estão em `docs/WRITING_ASSISTANCE.md`.
 
 ## Regras
 

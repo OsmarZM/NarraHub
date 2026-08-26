@@ -299,6 +299,22 @@ Somente código; nenhuma tabela de domínio é alterada nesta fase.
 
 ## Fase 2 — Modularização Angular sem mudar persistência
 
+### Estado de implementação
+
+Primeira fatia vertical implementada no planejamento para a próxima versão após `0.7.4`:
+
+- quadro e ficha extraídos de `App` para `PlanningBoardComponent`;
+- SQL do planejamento isolado em `PlanningService`;
+- drag-and-drop usa transformação pura testada e persiste todo o quadro em uma única instrução;
+- migrations 11, 12 e 13 append-only adicionam imagem, valores escalares, definições tipadas, relações normalizadas por universo e migração do formato provisório;
+- campos e tags permanecem domínios separados;
+- salvamento integral da ficha usa um comando Rust transacional como primeiro piloto da Fase 4;
+- snapshot de sincronização inclui definições e relações do planejamento;
+- build Angular, teste da migration, runtime Tauri e suíte pura do quadro exercitados;
+- automação visual de arrastar no WebView e matriz de upgrade do instalador ainda permanecem pendentes.
+
+Essa fatia inicia a fase, mas não conclui a modularização: universo, timeline, entidades, configurações, colaboração e editor ainda precisam dos próprios gateways/stores.
+
 ### Entregas
 
 - Criar gateways e stores por feature.

@@ -63,6 +63,8 @@ Consulte:
 - [Distribuição](docs/DISTRIBUTION.md)
 - [Compartilhamento online](docs/ONLINE_SHARING.md)
 - [Assistência à escrita e IA](docs/WRITING_ASSISTANCE.md)
+- [Planejamento em quadro e fichas](docs/PLANNING_CRM.md)
+- [Compatibilidade aplicativo/schema](docs/APP_SCHEMA_COMPATIBILITY.md)
 - [Atualizações](docs/UPDATES.md)
 - [Histórico de versões](CHANGELOG.md)
 - [Desenvolvimento seguro](docs/DEVELOPMENT.md)
