@@ -343,7 +343,18 @@ Segunda fatia vertical implementada na mesma linha de desenvolvimento:
 - testes automatizados impedem SQL e `WorkspaceService` de voltarem aos componentes, stores e contratos das features;
 - nenhuma migration ou formato persistido foi alterado por essa modularização.
 
-Essa fatia inicia a fase, mas não conclui a modularização: universo, timeline, entidades, configurações, colaboração e editor ainda precisam dos próprios gateways/stores.
+Terceira fatia vertical implementada na mesma linha de desenvolvimento:
+
+- Biblioteca de universos (listar, criar, editar e excluir) foi extraída do `App` para `LibraryPageComponent`, com `UniverseStore` e `UniverseGateway` próprios;
+- `LegacyUniverseGateway` preserva o comportamento atual via `UniverseService` até a migração para um command Rust; a entrada `UniverseGateway → LegacyUniverseGateway` é registrada em `app.config.ts`, no mesmo padrão de Timeline e Histórico;
+- criação, edição, exclusão e atualização de estatísticas do universo ativo passam pelo gateway; `App` não injeta mais `UniverseService` diretamente;
+- `UniversePickerComponent` permanece uma apresentação pura, agora hospedada pelo `LibraryPageComponent`, que também assumiu os modais de criar/editar e excluir universo (antes no modal host compartilhado do `App`);
+- decisões que ainda cruzam domínios não extraídos — abrir um universo, tags da biblioteca e o refresh após revisão colaborativa — continuam orquestradas pelo `App`, que agora só lê/escreve universo através de `UniverseStore`;
+- o carregamento da biblioteca respeita a mesma guarda de ambiente do `ngOnInit` do `App` (sem acesso a banco fora do runtime Tauri), preservando a iteração de UI via `ng serve`;
+- teste de fronteira ampliado cobre os três arquivos da feature e confirma que `app.ts` não referencia mais `UniverseService`;
+- build de produção Angular e a suíte `npm run test:architecture` foram exercitados; verificação da tela de biblioteca (estado vazio e modal de criação) foi feita via `ng serve` no navegador; runtime Tauri empacotado e matriz de upgrade do instalador permanecem como gate de release, não como código da fase.
+
+Essa fatia avança a Ordem 1 (Universo) da fase. Entidades, configurações, colaboração e editor ainda precisam dos próprios gateways/stores.
 
 ### Entregas
 

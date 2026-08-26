@@ -26,15 +26,16 @@ import { StoryService } from './core/services/story.service';
 import { SyncService } from './core/services/sync.service';
 import { ThemePreference, ThemeService } from './core/services/theme.service';
 import { AppUpdateInfo, UpdateService } from './core/services/update.service';
-import { UniverseService } from './core/services/universe.service';
 import { WorkspaceService } from './core/services/workspace.service';
 import { AppState } from './core/state/app.state';
-import { UniversePickerComponent } from './features/universe-picker/universe-picker.component';
+import { fileToDataUrl } from './shared/utils/file-to-data-url';
 import { ConnectionsGraphComponent } from './features/connections/connections-graph.component';
 import { ProductionReplicaComponent } from './features/production-replica/production-replica.component';
 import { PlanningBoardComponent } from './features/planning/planning-board.component';
 import { HistoryPageComponent } from './features/history/history-page.component';
 import { HistoryStore } from './features/history/state/history.store';
+import { LibraryPageComponent } from './features/library/library-page.component';
+import { UniverseStore } from './features/library/state/universe.store';
 import { TimelinePageComponent } from './features/timeline/timeline-page.component';
 import { TimelineStore } from './features/timeline/state/timeline.store';
 import { AiWritingRequest, WritingEditorComponent } from './features/writing/writing-editor.component';
@@ -117,7 +118,7 @@ type SettingsSection = 'general' | 'ai' | 'sync' | 'share' | 'updates';
     TitlebarComponent,
     UniverseSidebarComponent,
     ContextualInspectorComponent,
-    UniversePickerComponent,
+    LibraryPageComponent,
     ConnectionsGraphComponent,
     ProductionReplicaComponent,
     PlanningBoardComponent,
@@ -134,7 +135,7 @@ export class App implements OnInit, OnDestroy {
   readonly theme = inject(ThemeService);
   readonly ai = inject(AiService);
   private readonly db = inject(DatabaseService);
-  private readonly universeService = inject(UniverseService);
+  private readonly universeStore = inject(UniverseStore);
   private readonly storyService = inject(StoryService);
   private readonly bookService = inject(BookService);
   private readonly attachmentService = inject(AttachmentService);
@@ -155,7 +156,7 @@ export class App implements OnInit, OnDestroy {
 
   readonly searchQuery = signal('');
   readonly activeNav = signal('inicio');
-  readonly universes = signal<UniverseWithStats[]>([]);
+  readonly universes = this.universeStore.universes;
   readonly stories = signal<Story[]>([]);
   readonly books = signal<Book[]>([]);
   readonly universeBooks = signal<BookOption[]>([]);
@@ -207,7 +208,6 @@ export class App implements OnInit, OnDestroy {
   readonly restorePreparation = signal<RestorePreparation | null>(null);
   readonly syncStatus = signal<SyncServerStatus>({ running: false, address: null, pairing_code: null, device_name: 'Meu computador' });
   readonly lastOpenedUniverseId = signal<string | null>(localStorage.getItem('narrahub.lastUniverseId'));
-  readonly pendingDeleteUniverse = signal<UniverseWithStats | null>(null);
   readonly pendingDelete = signal<PendingDelete | null>(null);
   readonly pendingRename = signal<PendingRename | null>(null);
   readonly aiBusy = signal(false);
@@ -231,11 +231,6 @@ export class App implements OnInit, OnDestroy {
   readonly expandedStoryIds = signal<Set<string>>(new Set());
   readonly expandedBookIds = signal<Set<string>>(new Set());
 
-  newUniverseName = '';
-  newUniverseDesc = '';
-  newUniverseCoverData = '';
-  editingUniverseId: string | null = null;
-  deleteUniverseConfirmation = '';
   newStoryName = '';
   newBookName = '';
   newChapterTitle = '';
@@ -383,10 +378,8 @@ export class App implements OnInit, OnDestroy {
   }
   async toggleFullscreen(): Promise<void> { if (isTauri()) { const win = getCurrentWindow(); await win.setFullscreen(!(await win.isFullscreen())); } }
   async loadUniverses(): Promise<void> {
-    const universes = await this.universeService.list();
-    this.universes.set(universes);
-    const assignments = await this.metadataService.listAssignments(universes.map((universe) => universe.id), ['universe']);
-    this.libraryPreviewTags.set(this.groupTagAssignments(assignments));
+    await this.universeStore.load();
+    await this.refreshLibraryPreviewTags();
   }
 
   async selectNav(item: SidebarNavItem, updateRoute = true): Promise<void> {
@@ -407,36 +400,6 @@ export class App implements OnInit, OnDestroy {
     if (updateRoute) await this.navigation.navigate(item.id as AppNavigationId, this.appState.activeUniverseId());
   }
 
-  async createUniverse(): Promise<void> {
-    const name = this.newUniverseName.trim(); if (!name) return;
-    try {
-      if (this.editingUniverseId) {
-        await this.universeService.update(this.editingUniverseId, { name, description: this.newUniverseDesc.trim(), cover_image: this.newUniverseCoverData });
-        const active = this.appState.activeUniverse();
-        if (active?.id === this.editingUniverseId) {
-          this.appState.activeUniverse.set({ ...active, name, description: this.newUniverseDesc.trim(), cover_image: this.newUniverseCoverData, updated_at: this.db.now() });
-        }
-        this.resetUniverseForm(); this.appState.closeModal(); await this.loadUniverses(); this.showInfo('Universo atualizado.');
-        return;
-      }
-      const created = await this.universeService.create(name, this.newUniverseDesc.trim());
-      if (this.newUniverseCoverData) await this.universeService.update(created.id, { cover_image: this.newUniverseCoverData });
-      this.resetUniverseForm(); this.appState.closeModal(); await this.loadUniverses();
-      const universe = this.universes().find((item) => item.id === created.id); if (universe) await this.openUniverse(universe);
-    } catch (error) { this.reportError('Não foi possível salvar o universo.', error); }
-  }
-
-  beginCreateUniverse(): void { this.resetUniverseForm(); this.appState.openModal('new-universe'); }
-
-  beginEditUniverse(universe: UniverseWithStats): void {
-    this.editingUniverseId = universe.id; this.newUniverseName = universe.name; this.newUniverseDesc = universe.description; this.newUniverseCoverData = universe.cover_image;
-    this.appState.openModal('new-universe');
-  }
-
-  requestDeleteUniverse(universe: UniverseWithStats): void {
-    this.pendingDeleteUniverse.set(universe); this.deleteUniverseConfirmation = ''; this.appState.openModal('delete-universe');
-  }
-
   async openUniverse(universe: UniverseWithStats, updateRoute = true): Promise<void> {
     await this.saveChapterNow();
     this.workspaceEpoch += 1; this.resetWorkspaceData();
@@ -445,15 +408,12 @@ export class App implements OnInit, OnDestroy {
     if (updateRoute) await this.navigation.navigate('escrita', universe.id);
   }
 
-  async confirmDeleteUniverse(): Promise<void> {
-    const universe = this.pendingDeleteUniverse();
-    if (!universe || this.deleteUniverseConfirmation.trim() !== universe.name) return;
-    try {
-      await this.universeService.delete(universe.id); this.appState.closeModal(); this.pendingDeleteUniverse.set(null); await this.loadUniverses();
-      if (this.lastOpenedUniverseId() === universe.id) { localStorage.removeItem('narrahub.lastUniverseId'); this.lastOpenedUniverseId.set(null); }
-      if (this.appState.activeUniverseId() === universe.id) await this.returnToLibrary();
-      this.showInfo('Universo excluído do banco local.');
-    } catch (error) { this.reportError('Não foi possível excluir o universo.', error); }
+  onUniverseUpdated(): void { this.showInfo('Universo atualizado.'); }
+
+  onUniverseDeleted(universeId: string): void {
+    if (this.lastOpenedUniverseId() === universeId) { localStorage.removeItem('narrahub.lastUniverseId'); this.lastOpenedUniverseId.set(null); }
+    if (this.appState.activeUniverseId() === universeId) void this.returnToLibrary();
+    this.showInfo('Universo excluído do banco local.');
   }
 
   requestDelete(kind: DeleteKind, id: string, name: string, event?: Event): void {
@@ -512,9 +472,8 @@ export class App implements OnInit, OnDestroy {
     try {
       await this.saveChapterNow();
       if (pending.kind === 'universe') {
-        await this.universeService.update(pending.id, { name });
-        this.universes.update((items) => items.map((item) => item.id === pending.id ? { ...item, name, updated_at: this.db.now() } : item));
         this.appState.activeUniverse.update((item) => item?.id === pending.id ? { ...item, name, updated_at: this.db.now() } : item);
+        await this.universeStore.update(pending.id, { name });
       } else if (pending.kind === 'story') {
         await this.storyService.update(pending.id, { name });
         this.stories.update((items) => items.map((item) => item.id === pending.id ? { ...item, name } : item));
@@ -680,7 +639,7 @@ export class App implements OnInit, OnDestroy {
     const input = event.target as HTMLInputElement; const file = input.files?.[0]; input.value = '';
     if (!file) return;
     if (!file.type.startsWith('image/') || file.size > 8 * 1024 * 1024) { this.showInfo('Escolha uma imagem de até 8 MB.'); return; }
-    const cover_image = await this.fileToDataUrl(file); await this.bookService.update(book.id, { cover_image });
+    const cover_image = await fileToDataUrl(file); await this.bookService.update(book.id, { cover_image });
     this.books.update((items) => items.map((item) => item.id === book.id ? { ...item, cover_image } : item));
     this.universeBooks.update((items) => items.map((item) => item.id === book.id ? { ...item, cover_image } : item));
     if (this.activeBook()?.id === book.id) this.activeBook.update((active) => active ? { ...active, cover_image } : active);
@@ -808,14 +767,13 @@ export class App implements OnInit, OnDestroy {
     this.activeEntity.update((entity) => entity ? { ...entity, [field]: value } : entity);
   }
 
-  async onImageSelected(event: Event, target: 'universe' | 'entity-new' | 'entity-active'): Promise<void> {
+  async onImageSelected(event: Event, target: 'entity-new' | 'entity-active'): Promise<void> {
     const input = event.target as HTMLInputElement; const file = input.files?.[0]; input.value = '';
     if (!file) return;
     if (!file.type.startsWith('image/')) { this.showInfo('Escolha um arquivo de imagem.'); return; }
     if (file.size > 8 * 1024 * 1024) { this.showInfo('A imagem deve ter no máximo 8 MB.'); return; }
-    const dataUrl = await this.fileToDataUrl(file);
-    if (target === 'universe') this.newUniverseCoverData = dataUrl;
-    else if (target === 'entity-new') this.newEntityImageData = dataUrl;
+    const dataUrl = await fileToDataUrl(file);
+    if (target === 'entity-new') this.newEntityImageData = dataUrl;
     else {
       const entity = this.activeEntity(); if (!entity) return;
       await this.entityService.update(entity.id, { image: dataUrl });
@@ -948,7 +906,7 @@ export class App implements OnInit, OnDestroy {
     if (!entity || !universeId || entity.universe_id !== universeId || !files.length) return;
     const accepted = files.filter((file) => file.type.startsWith('image/') && file.size <= 8 * 1024 * 1024).slice(0, 12);
     if (accepted.length !== files.length) this.showInfo('Algumas imagens foram ignoradas: use até 12 arquivos de imagem com no máximo 8 MB cada.');
-    for (const file of accepted) await this.attachmentService.create(universeId, 'entity', entity.id, await this.fileToDataUrl(file), file.name);
+    for (const file of accepted) await this.attachmentService.create(universeId, 'entity', entity.id, await fileToDataUrl(file), file.name);
     this.entityGallery.set(await this.attachmentService.list(universeId, 'entity', entity.id));
   }
 
@@ -1508,9 +1466,9 @@ export class App implements OnInit, OnDestroy {
     await this.refreshMentionOccurrences();
   }
   private async refreshUniverseStats(): Promise<void> {
-    const id = this.appState.activeUniverseId(); if (!id) return; const stats = await this.universeService.getStats(id);
-    this.universes.update((items) => items.map((item) => item.id === id ? { ...item, stats } : item));
-    const active = this.appState.activeUniverse(); if (active) this.appState.activeUniverse.set({ ...active, stats });
+    const id = this.appState.activeUniverseId(); if (!id) return;
+    const updated = await this.universeStore.refreshStats(id);
+    if (updated && this.appState.activeUniverseId() === id) this.appState.activeUniverse.set(updated);
   }
   private async refreshUniverseChapters(): Promise<void> {
     const id = this.appState.activeUniverseId(); if (!id) return;
@@ -1700,8 +1658,6 @@ export class App implements OnInit, OnDestroy {
 
   private clearWritingSelection(): void { this.activeStory.set(null); this.activeBook.set(null); this.activeChapter.set(null); this.books.set([]); this.chapters.set([]); this.editorTitle.set(''); this.editorContent.set(''); this.chapterSummary.set(''); this.chapterTags.set([]); }
   private resetWorkspaceData(): void { this.clearWritingSelection(); this.stories.set([]); this.universeBooks.set([]); this.universeChapters.set([]); this.entities.set([]); this.mentionOccurrences.set([]); this.timelineStore.reset(); this.historyStore.reset(); this.planning.set([]); this.relations.set([]); this.activeEntity.set(null); this.entityGallery.set([]); this.entityTags.set([]); this.workspacePreviewTags.set({}); this.expandedStoryIds.set(new Set()); this.expandedBookIds.set(new Set()); }
-  private resetUniverseForm(): void { this.editingUniverseId = null; this.newUniverseName = ''; this.newUniverseDesc = ''; this.newUniverseCoverData = ''; }
-  private fileToDataUrl(file: File): Promise<string> { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error ?? new Error('Falha ao ler a imagem.')); reader.readAsDataURL(file); }); }
   async loadCollaborationReview(): Promise<void> {
     const [sessions, contributions] = await Promise.all([
       this.collaborationService.listSessions(),
@@ -1821,7 +1777,7 @@ export class App implements OnInit, OnDestroy {
     await this.loadUniverses();
     if (!universeId || this.appState.activeUniverseId() !== universeId) return;
     const [universe, chapters, entities] = await Promise.all([
-      this.universeService.get(universeId), this.chapterService.listByUniverse(universeId), this.entityService.listByUniverse(universeId),
+      this.universeStore.get(universeId), this.chapterService.listByUniverse(universeId), this.entityService.listByUniverse(universeId),
     ]);
     if (universe) this.appState.activeUniverse.update((active) => active ? { ...active, ...universe } : active);
     this.universeChapters.set(chapters);

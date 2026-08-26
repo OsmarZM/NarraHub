@@ -277,15 +277,13 @@
           </div>
         </section>
       } @else if (appState.currentView() === 'home') {
-        <app-universe-picker
-          [universes]="universes()"
+        <app-library-page
           [query]="searchQuery()"
           [lastOpenedId]="lastOpenedUniverseId()"
           [tagsByUniverse]="libraryPreviewTags()"
-          (createRequested)="beginCreateUniverse()"
-          (openRequested)="openUniverse($event)"
-          (editRequested)="beginEditUniverse($event)"
-          (deleteRequested)="requestDeleteUniverse($event)"
+          (opened)="openUniverse($event)"
+          (updated)="onUniverseUpdated()"
+          (deleted)="onUniverseDeleted($event)"
         />
       } @else {
         <section class="workspace-view page-enter">
@@ -547,15 +545,7 @@
 @if (appState.modalOpen()) {
   <div class="modal-backdrop" (mousedown)="appState.closeModal()">
     <form class="modal" [class.share-modal]="appState.modalOpen() === 'share-content'" [class.ai-modal]="appState.modalOpen() === 'ai-assistant'" [class.replica-reader-modal]="appState.modalOpen() === 'production-replica-chapter'" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
-      @if (appState.modalOpen() === 'new-universe') {
-        <header><div><span class="eyebrow">{{ editingUniverseId ? 'BIBLIOTECA' : 'NOVO MUNDO' }}</span><h2>{{ editingUniverseId ? 'Editar universo' : 'Criar universo' }}</h2></div><button type="button" (click)="appState.closeModal()">×</button></header>
-        <label class="image-picker wide" [style.background-image]="newUniverseCoverData ? 'url(' + newUniverseCoverData + ')' : null"><input type="file" accept="image/*" hidden (change)="onImageSelected($event, 'universe')" /><span>{{ newUniverseCoverData ? 'Trocar capa' : '＋ Adicionar capa do universo' }}</span></label>
-        <label>Nome do universo<input name="universeName" [(ngModel)]="newUniverseName" placeholder="Ex.: As Crônicas do Vale" autofocus /></label>
-        <label>Descrição <span>(opcional)</span><textarea name="universeDesc" [(ngModel)]="newUniverseDesc" placeholder="Gênero, tema ou uma breve ideia"></textarea></label>
-        <footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newUniverseName.trim()" (click)="createUniverse()">{{ editingUniverseId ? 'Salvar alterações' : 'Criar universo' }}</button></footer>
-      } @else if (appState.modalOpen() === 'delete-universe' && pendingDeleteUniverse(); as universe) {
-        <header><div><span class="eyebrow danger-copy">AÇÃO DESTRUTIVA</span><h2>Excluir {{ universe.name }}?</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><p class="delete-warning">Todos os livros, capítulos, personagens, lugares e eventos deste universo serão removidos do banco local. Backup e exportação ainda não estão disponíveis nesta fase.</p><label>Digite <strong>{{ universe.name }}</strong> para confirmar<input name="deleteConfirmation" [(ngModel)]="deleteUniverseConfirmation" autocomplete="off" /></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button destructive" [disabled]="deleteUniverseConfirmation.trim() !== universe.name" (click)="confirmDeleteUniverse()">Excluir definitivamente</button></footer>
-      } @else if (appState.modalOpen() === 'delete-item' && pendingDelete(); as item) {
+      @if (appState.modalOpen() === 'delete-item' && pendingDelete(); as item) {
         <header><div><span class="eyebrow danger-copy">EXCLUSÃO LOCAL</span><h2>Excluir {{ deleteKindLabel(item.kind).toLocaleLowerCase('pt-BR') }}?</h2></div><button type="button" (click)="pendingDelete.set(null); appState.closeModal()">×</button></header>
         <p class="delete-warning"><strong>{{ item.name }}</strong><br />{{ item.detail }} Esta ação não pode ser desfeita.</p>
         <footer><button type="button" class="secondary-button" (click)="pendingDelete.set(null); appState.closeModal()">Cancelar</button><button type="submit" class="primary-button destructive" (click)="confirmDeleteItem()">Excluir {{ deleteKindLabel(item.kind).toLocaleLowerCase('pt-BR') }}</button></footer>

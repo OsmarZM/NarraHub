@@ -1,0 +1,45 @@
+<app-universe-picker
+  [universes]="store.universes()"
+  [query]="query"
+  [lastOpenedId]="lastOpenedId"
+  [tagsByUniverse]="tagsByUniverse"
+  (createRequested)="openCreate()"
+  (openRequested)="opened.emit($event)"
+  (editRequested)="openEdit($event)"
+  (deleteRequested)="openDelete($event)"
+/>
+
+@if (modal()) {
+  <div class="library-modal-backdrop" (mousedown)="closeModal()">
+    <form class="library-modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+      @if (modal() === 'create' || modal() === 'edit') {
+        <header>
+          <div><span class="library-modal-eyebrow">{{ editingUniverseId ? 'BIBLIOTECA' : 'NOVO MUNDO' }}</span><h2>{{ editingUniverseId ? 'Editar universo' : 'Criar universo' }}</h2></div>
+          <button type="button" (click)="closeModal()">×</button>
+        </header>
+        <label class="library-image-picker" [style.background-image]="coverImageInput ? 'url(' + coverImageInput + ')' : null">
+          <input type="file" accept="image/*" hidden (change)="onCoverSelected($event)" />
+          <span>{{ coverImageInput ? 'Trocar capa' : '＋ Adicionar capa do universo' }}</span>
+        </label>
+        <label>Nome do universo<input name="libraryUniverseName" [(ngModel)]="nameInput" placeholder="Ex.: As Crônicas do Vale" autofocus /></label>
+        <label>Descrição <span>(opcional)</span><textarea name="libraryUniverseDesc" [(ngModel)]="descriptionInput" placeholder="Gênero, tema ou uma breve ideia"></textarea></label>
+        <footer>
+          <button type="button" class="library-secondary" (click)="closeModal()">Cancelar</button>
+          <button type="submit" class="library-primary" [disabled]="store.busy() || !nameInput.trim()" (click)="save()">{{ store.busy() ? 'Salvando…' : (editingUniverseId ? 'Salvar alterações' : 'Criar universo') }}</button>
+        </footer>
+      } @else if (pendingDelete(); as universe) {
+        <header>
+          <div><span class="library-modal-eyebrow danger">AÇÃO DESTRUTIVA</span><h2>Excluir {{ universe.name }}?</h2></div>
+          <button type="button" (click)="closeModal()">×</button>
+        </header>
+        <p class="library-delete-warning">Todos os livros, capítulos, personagens, lugares e eventos deste universo serão removidos do banco local. Backup e exportação ainda não estão disponíveis nesta fase.</p>
+        <label>Digite <strong>{{ universe.name }}</strong> para confirmar<input name="libraryDeleteConfirmation" [(ngModel)]="deleteConfirmation" autocomplete="off" /></label>
+        <footer>
+          <button type="button" class="library-secondary" (click)="closeModal()">Cancelar</button>
+          <button type="submit" class="library-primary library-destructive" [disabled]="store.busy() || deleteConfirmation.trim() !== universe.name" (click)="confirmDelete()">{{ store.busy() ? 'Excluindo…' : 'Excluir definitivamente' }}</button>
+        </footer>
+      }
+      @if (store.error()) { <p class="library-modal-error" role="alert">{{ store.error() }}</p> }
+    </form>
+  </div>
+}
