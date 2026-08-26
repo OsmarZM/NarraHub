@@ -400,6 +400,18 @@ export class PlanningBoardComponent implements OnChanges {
     return this.entities.filter((entity) => entity.type === 'Personagem');
   }
 
+  // O quadro tem mais etapas do que cabem na largura da janela. Um mouse
+  // comum só rola na vertical, então convertemos essa rolagem em
+  // deslocamento horizontal (trackpad e toque continuam rolando na lateral
+  // normalmente, sem interferência).
+  onBoardWheel(event: WheelEvent): void {
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    const board = event.currentTarget as HTMLElement;
+    if (board.scrollWidth <= board.clientWidth) return;
+    event.preventDefault();
+    board.scrollLeft += event.deltaY;
+  }
+
   onImageSelected(event: Event, target: 'new' | 'card'): void {
     const input = event.target as HTMLInputElement;
     const file = input.files?.[0];

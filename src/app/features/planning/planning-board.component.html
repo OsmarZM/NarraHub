@@ -12,7 +12,7 @@
     <div class="planning-error" role="alert"><span>{{ error() }}</span><button type="button" (click)="error.set('')">×</button></div>
   }
 
-  <div class="kanban-board" cdkDropListGroup>
+  <div class="kanban-board" cdkDropListGroup (wheel)="onBoardWheel($event)">
     @for (status of statuses; track status; let columnIndex = $index) {
       <section class="kanban-column" [attr.data-status]="status">
         <header><h2>{{ statusLabel(status) }}</h2><span>{{ itemsByStatus(status).length }}</span></header>

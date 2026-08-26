@@ -1,21 +1,21 @@
 :host { display: block; flex: 0 0 auto; }
-.nh-sidebar { position: relative; width: var(--nh-sidebar-width); height: 100%; display: flex; flex-direction: column; padding: 18px 12px 14px; border-right: 1px solid var(--nh-border); background: color-mix(in srgb, var(--nh-surface) 94%, transparent); transition: width .25s ease; }
+.nh-sidebar { position: relative; width: var(--nh-sidebar-width); height: 100%; display: flex; flex-direction: column; padding: 18px 12px 14px; overflow-y: auto; overflow-x: hidden; border-right: 1px solid var(--nh-border); background: color-mix(in srgb, var(--nh-surface) 94%, transparent); transition: width .25s ease; }
 .nh-sidebar.collapsed { width: 72px; }
 .nh-sidebar-collapse { position: absolute; z-index: 2; top: 12px; right: -12px; width: 24px; height: 24px; border: 1px solid var(--nh-border); border-radius: 7px; color: var(--nh-ink-muted); background: var(--nh-surface); box-shadow: var(--nh-shadow-soft); }
-.nh-active-universe { display: flex; align-items: center; gap: 10px; min-height: 68px; padding: 8px; border-bottom: 1px solid var(--nh-border); }
+.nh-active-universe { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; min-height: 68px; padding: 8px; border-bottom: 1px solid var(--nh-border); }
 .nh-universe-thumb { width: 46px; height: 56px; flex: 0 0 46px; display: grid; place-items: center; border-radius: 8px; color: #fff; background: linear-gradient(145deg, var(--nh-wine), #173242); background-size: cover; background-position: center; font: 700 22px Georgia, serif; }
 .nh-active-universe > div:last-child { min-width: 0; display: grid; gap: 5px; }
 .nh-active-universe strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 700 12px Georgia, serif; }
 .nh-active-universe small { color: var(--nh-ink-muted); font-size: 8px; line-height: 1.35; }
-.nh-change-universe { height: 38px; display: flex; align-items: center; gap: 10px; margin: 8px 0 13px; padding: 0 10px; border: 0; border-radius: 9px; color: var(--nh-ink-muted); background: transparent; font-size: 10px; }
+.nh-change-universe { flex: 0 0 auto; height: 38px; display: flex; align-items: center; gap: 10px; margin: 8px 0 13px; padding: 0 10px; border: 0; border-radius: 9px; color: var(--nh-ink-muted); background: transparent; font-size: 10px; }
 .nh-change-universe:hover { color: var(--nh-wine); background: var(--nh-surface-muted); }
-.nh-sidebar nav { display: flex; flex-direction: column; gap: 4px; }
-.nh-sidebar nav button { position: relative; height: 42px; display: flex; align-items: center; gap: 11px; padding: 0 12px; border: 0; border-radius: 9px; color: var(--nh-ink-muted); background: transparent; text-align: left; font-size: 11px; }
+.nh-sidebar nav { flex: 0 0 auto; display: flex; flex-direction: column; gap: 4px; }
+.nh-sidebar nav button { position: relative; flex: 0 0 auto; height: 42px; display: flex; align-items: center; gap: 11px; padding: 0 12px; border: 0; border-radius: 9px; color: var(--nh-ink-muted); background: transparent; text-align: left; font-size: 11px; }
 .nh-sidebar nav button:hover { color: var(--nh-ink); background: var(--nh-surface-muted); }
 .nh-sidebar nav button.active { color: var(--nh-wine); background: color-mix(in srgb, var(--nh-wine) 8%, var(--nh-surface)); font-weight: 700; }
 .nh-sidebar nav button.active::before { position: absolute; left: 0; width: 3px; height: 21px; border-radius: 3px; background: var(--nh-wine); content: ''; }
 .nh-nav-icon { width: 18px; text-align: center; font-size: 17px; }
-.nh-help { height: 40px; display: flex; align-items: center; gap: 10px; margin-top: auto; padding: 0 11px; border: 1px solid var(--nh-border); border-radius: 9px; color: var(--nh-ink-muted); background: transparent; font-size: 10px; }
+.nh-help { flex: 0 0 auto; height: 40px; display: flex; align-items: center; gap: 10px; margin-top: auto; padding: 0 11px; border: 1px solid var(--nh-border); border-radius: 9px; color: var(--nh-ink-muted); background: transparent; font-size: 10px; }
 .nh-help > span:first-child { width: 18px; height: 18px; display: grid; place-items: center; border: 1px solid currentColor; border-radius: 50%; }
 .nh-sidebar.collapsed .nh-active-universe > div:last-child,.nh-sidebar.collapsed .nh-change-universe span:last-child,.nh-sidebar.collapsed .nh-nav-label,.nh-sidebar.collapsed .nh-help span:last-child { display: none; }
 .nh-sidebar.collapsed .nh-active-universe,.nh-sidebar.collapsed .nh-change-universe,.nh-sidebar.collapsed nav button,.nh-sidebar.collapsed .nh-help { justify-content: center; padding-inline: 0; }
