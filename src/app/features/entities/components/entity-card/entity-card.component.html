@@ -1,0 +1,19 @@
+<div class="entity-card-wrap stagger-card" [style.--delay.ms]="delay">
+  <button type="button" class="entity-card" (click)="opened.emit(entity)">
+    <span class="entity-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span>
+    <span>
+      <small>{{ entity.type }}</small>
+      <strong>{{ entity.name }}</strong>
+      <em>{{ entity.summary || entity.description || 'Sem resumo' }}</em>
+      @if (tags.length) {
+        <span class="preview-tags">
+          @for (tag of tags.slice(0, 3); track tag.id) { <b [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</b> }
+          @if (tags.length > 3) { <b class="tag-overflow">+{{ tags.length - 3 }}</b> }
+        </span>
+      }
+      <i>{{ entity.canon_status === 'CANON' ? '● Cânone' : entity.canon_status }}</i>
+    </span>
+  </button>
+  <button type="button" class="entity-card-rename" aria-label="Renomear entidade" title="Renomear" (click)="renameRequested.emit({ entity, sourceEvent: $event })">✎</button>
+  <button type="button" class="entity-card-delete" aria-label="Excluir entidade" title="Excluir entidade" (click)="deleteRequested.emit({ entity, sourceEvent: $event })">×</button>
+</div>

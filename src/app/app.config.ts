@@ -1,6 +1,8 @@
 import { ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { routes } from './app.routes';
+import { EntityGateway } from './features/entities/gateways/entity.gateway';
+import { LegacyEntityGateway } from './features/entities/gateways/legacy-entity.gateway';
 import { HistoryGateway } from './features/history/gateways/history.gateway';
 import { LegacyHistoryGateway } from './features/history/gateways/legacy-history.gateway';
 import { LegacyUniverseGateway } from './features/library/gateways/legacy-universe.gateway';
@@ -12,6 +14,7 @@ export const appConfig: ApplicationConfig = {
   providers: [
     provideBrowserGlobalErrorListeners(),
     provideRouter(routes),
+    { provide: EntityGateway, useExisting: LegacyEntityGateway },
     { provide: HistoryGateway, useExisting: LegacyHistoryGateway },
     { provide: TimelineGateway, useExisting: LegacyTimelineGateway },
     { provide: UniverseGateway, useExisting: LegacyUniverseGateway },

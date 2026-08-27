@@ -1,0 +1,21 @@
+<header class="crm-toolbar entity-toolbar">
+  <div class="toolbar-left">
+    <div class="toolbar-heading">
+      <span class="board-badge">♧</span>
+      <h2>Worldbuilding</h2>
+      <span class="total-badge">{{ visibleCount }} {{ visibleCount === 1 ? 'registro' : 'registros' }}</span>
+    </div>
+
+    <app-entity-type-filter
+      [selected]="selectedType"
+      [counts]="counts"
+      (selectedChange)="typeSelected.emit($event)"
+    />
+  </div>
+
+  <div class="toolbar-right">
+    <button type="button" class="primary-button crm-action-btn" (click)="createRequested.emit()">
+      <span>＋</span> {{ createLabel }}
+    </button>
+  </div>
+</header>

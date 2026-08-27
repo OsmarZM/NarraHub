@@ -354,7 +354,18 @@ Terceira fatia vertical implementada na mesma linha de desenvolvimento:
 - teste de fronteira ampliado cobre os três arquivos da feature e confirma que `app.ts` não referencia mais `UniverseService`;
 - build de produção Angular e a suíte `npm run test:architecture` foram exercitados; verificação da tela de biblioteca (estado vazio e modal de criação) foi feita via `ng serve` no navegador; runtime Tauri empacotado e matriz de upgrade do instalador permanecem como gate de release, não como código da fase.
 
-Essa fatia avança a Ordem 1 (Universo) da fase. Entidades, configurações, colaboração e editor ainda precisam dos próprios gateways/stores.
+Quarta fatia vertical implementada na mesma linha de desenvolvimento:
+
+- Worldbuilding/Entidades (listar, filtrar por tipo, criar, editar, excluir, ficha completa, propriedades, galeria de imagens e as três ações de IA) foi extraído do `App` para `features/entities/`, com `EntityStore`, `EntityGateway`/`LegacyEntityGateway` e uma árvore de componentes própria (`EntitiesPageComponent` orquestrando `EntityToolbarComponent` → `EntityTypeFilterComponent`, `EntityCardComponent` e `EntitySheetComponent`);
+- `LegacyEntityGateway` encapsula `EntityService` e `AttachmentService` (galeria); nenhuma migration ou formato persistido foi alterado;
+- a lógica de IA (montar ficha nova, sugerir campos, resumir) e o parser tolerante a JSON malformado da IA local migraram junto, como orquestração da página, não do store — mantém o mesmo contrato de erro tipado por trás de `AiService`;
+- `App` não injeta mais `EntityService`/`AttachmentService`; `AppState` perdeu `sidebarEntityFilter`/`activeEntityId`, que agora vivem em `EntityStore` (`filter`/`activeEntity`);
+- decisões que cruzam domínios não extraídos — abrir a ficha a partir da busca global ou dos lugares mencionados no editor, atualizar estatísticas do universo após criar/excluir, atualizar menções e relações após renomear/excluir — continuam orquestradas pelo `App` via os eventos `(opened)/(mutated)/(info)/(failed)` da feature;
+- estilos da feature usam `ViewEncapsulation.None` com todas as regras prefixadas por `app-entities-page`, evitando vazar CSS global e mantendo o visual da 0.7.5 inalterado; o CSS equivalente permanece (não utilizado) em `app.css` — remoção documentada como limpeza pendente, não como parte desta fatia;
+- teste de fronteira ampliado cobre os sete arquivos da feature e confirma que `app.ts`/`app.html` não referenciam mais `EntityService`, `AttachmentService` ou o estado antigo da ficha ativa;
+- build de produção Angular, `npm run test:architecture` e `npm run test:ai` foram exercitados; verificação de console limpo via `ng serve` cobre apenas a tela de biblioteca, já que abrir uma ficha de entidade exige um universo real (runtime Tauri) — isso permanece como verificação pendente no app empacotado, não como código da fase.
+
+Essa fatia avança a Ordem 3 (Entidades) da fase — o restante do Knowledge (relações, menções e tags) continua no `App`, ainda chamando `WorkspaceService`/`MetadataService`/`MentionService` diretamente. Configurações, colaboração e o manuscrito (história/livro/capítulo/editor) também ainda precisam dos próprios gateways/stores.
 
 ### Entregas
 

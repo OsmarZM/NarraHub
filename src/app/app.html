@@ -293,7 +293,7 @@
               @if (appState.activeUniverse(); as activeUniverse) { <button type="button" class="secondary-button" title="Renomear universo" (click)="requestRename('universe', activeUniverse.id, activeUniverse.name)">✎ Renomear</button><button type="button" class="secondary-button metadata-button" title="Tags do universo" (click)="openMetadata('universe', activeUniverse.id, activeUniverse.name)"># Tags</button> }
               <button type="button" class="secondary-button" (click)="openShareModal()">↗ Compartilhar</button>
               @if (appState.workspaceView() === 'editor') { <button type="button" class="secondary-button" [class.active]="inspectorOpen()" [disabled]="!activeChapter()" (click)="toggleInspector()">{{ inspectorOpen() ? 'Ocultar resumo' : 'Resumo do capítulo' }}</button><button type="button" class="secondary-button" (click)="appState.openModal('new-chapter')" [disabled]="!activeBook()">＋ Capítulo</button> }
-              @else if (appState.workspaceView() === 'entities' && appState.sidebarEntityFilter()) { <button type="button" class="primary-button small" (click)="beginCreateEntity()">＋ {{ entityCreateLabel() }}</button> }
+              @else if (appState.workspaceView() === 'entities' && entityFilter()) { <button type="button" class="primary-button small" (click)="beginCreateEntity()">＋ {{ entityCreateLabel() }}</button> }
               @else if (appState.workspaceView() === 'graph') { <button type="button" class="primary-button small" (click)="appState.openModal('new-relation')" [disabled]="entities().length < 2">＋ Conexão</button> }
               @else if (appState.workspaceView() === 'timeline') { <button type="button" class="primary-button small" (click)="beginCreateTimeline()">＋ Evento</button> }
               @else if (appState.workspaceView() === 'planning') { <button type="button" class="primary-button small" (click)="beginCreatePlanning()">＋ Card</button> }
@@ -354,191 +354,19 @@
               }
             </div>
           } @else if (appState.workspaceView() === 'entities' || appState.workspaceView() === 'entity-sheet') {
-            <div class="feature-page entity-view">
-              @if (appState.workspaceView() === 'entities') {
-                <header class="crm-toolbar entity-toolbar">
-                  <div class="toolbar-left">
-                    <div class="toolbar-heading">
-                      <span class="board-badge">♧</span>
-                      <h2>Worldbuilding</h2>
-                      <span class="total-badge">{{ visibleEntities().length }} {{ visibleEntities().length === 1 ? 'registro' : 'registros' }}</span>
-                    </div>
-
-                    <nav class="entity-tabs-compact" aria-label="Tipos de entidade">
-                      @for (tab of [{ label: 'Tudo', type: null }, { label: 'Personagens', type: 'Personagem' }, { label: 'Lugares', type: 'Lugar' }, { label: 'Eventos', type: 'Evento' }, { label: 'Objetos', type: 'Objeto' }, { label: 'Organizações', type: 'Organização' }]; track tab.label) {
-                        <button type="button" class="entity-tab-pill" [class.active]="appState.sidebarEntityFilter() === tab.type" (click)="selectEntityTab($any(tab.type))">
-                          <span>{{ tab.label }}</span>
-                          <small>{{ entityTypeCount($any(tab.type)) }}</small>
-                        </button>
-                      }
-                    </nav>
-                  </div>
-
-                  <div class="toolbar-right">
-                    <button type="button" class="primary-button crm-action-btn" (click)="beginCreateEntity()">
-                      <span>＋</span> {{ entityCreateLabel() }}
-                    </button>
-                  </div>
-                </header>
-              }
-              @if (appState.workspaceView() === 'entity-sheet' && activeEntity()) {
-                <article class="entity-sheet surface-card notion-sheet">
-                  <!-- Barra de navegação e ações -->
-                  <div class="sheet-topbar">
-                    <button type="button" class="text-button" (click)="appState.openEntityList(appState.sidebarEntityFilter())">← Voltar para lista</button>
-                    <div class="sheet-actions">
-                      <button type="button" class="secondary-button small" (click)="openMetadata('entity', activeEntity()!.id, activeEntity()!.name)"># Tags</button>
-                      <button type="button" class="secondary-button small danger-outline" (click)="requestDelete('entity', activeEntity()!.id, activeEntity()!.name)">Excluir entidade</button>
-                      <button type="button" class="primary-button small" (click)="updateActiveEntity()">Salvar ficha</button>
-                    </div>
-                  </div>
-
-                  <!-- Banner de Capa & Avatar Notion -->
-                  <div class="notion-header-cover" [class.has-cover]="activeEntity()?.image">
-                    @if (activeEntity()?.image) {
-                      <div class="notion-cover-image" [style.background-image]="'url(' + activeEntity()?.image + ')'"></div>
-                    }
-                    <div class="notion-avatar-wrap">
-                      <label class="notion-avatar" [style.background-image]="activeEntity()?.image ? 'url(' + activeEntity()?.image + ')' : null" title="Clique para alterar imagem">
-                        <span>{{ activeEntity()?.image ? '' : (activeEntity()?.name?.charAt(0)?.toUpperCase() || activeEntity()?.type?.charAt(0)) }}</span>
-                        <input type="file" accept="image/*" hidden (change)="onImageSelected($event, 'entity-active')" />
-                        <span class="avatar-edit-badge">📷</span>
-                      </label>
-                      <div class="avatar-controls">
-                        <label class="btn-change-image">
-                          {{ activeEntity()?.image ? 'Alterar foto' : 'Adicionar foto' }}
-                          <input type="file" accept="image/*" hidden (change)="onImageSelected($event, 'entity-active')" />
-                        </label>
-                        @if (activeEntity()?.image) {
-                          <button type="button" class="btn-remove-image" (click)="removeEntityImage()">Remover</button>
-                        }
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- Título do Personagem e Badges de Metadados -->
-                  <div class="notion-title-section">
-                    <div class="notion-meta-badges">
-                      <span class="entity-type-badge">{{ activeEntity()?.type }}</span>
-                      <label class="canon-badge-select" [attr.data-status]="activeEntity()?.canon_status">
-                        <span class="status-dot"></span>
-                        <select [ngModel]="activeEntity()?.canon_status" (ngModelChange)="patchActiveEntity('canon_status', $event)">
-                          <option value="CANON">● Cânone</option>
-                          <option value="IDEIA">▲ Ideia</option>
-                          <option value="ALTERNATIVO">◆ Alternativo</option>
-                          <option value="DESCARTADO">✕ Descartado</option>
-                        </select>
-                      </label>
-                    </div>
-                    <input class="notion-title-input" placeholder="Nome do personagem..." aria-label="Nome" [ngModel]="activeEntity()?.name" (ngModelChange)="patchActiveEntity('name', $event)" />
-                    @if (entityTags().length) { <div class="entity-sheet-tags">@for (tag of entityTags(); track tag.id) { <span [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</span> }</div> }
-                  </div>
-
-                  <section class="entity-summary-section">
-                    <header><div><span class="eyebrow">RESUMO DA ENTIDADE</span><small>Visão rápida separada das suas notas de desenvolvimento.</small></div><button type="button" class="secondary-button small" [disabled]="entityAiBusy()" (click)="summarizeActiveEntityWithAi()">✦ Gerar resumo</button></header>
-                    <textarea [ngModel]="activeEntity()?.summary" (ngModelChange)="patchActiveEntity('summary', $event)" placeholder="Resuma identidade, papel narrativo e conflito central."></textarea>
-                  </section>
-
-                  <!-- Tabela de Propriedades Estilo Notion -->
-                  <section class="notion-properties-section">
-                    <div class="notion-section-title">
-                      <div><span class="eyebrow">CAMPOS DA FICHA</span><small>Propriedades exclusivas de personagens, lugares, eventos, objetos e organizações.</small></div>
-                      <div class="entity-ai-actions"><button type="button" class="secondary-button small" [disabled]="entityAiBusy()" (click)="suggestActiveEntityFieldsWithAi()">✦ Sugerir campos</button></div>
-                    </div>
-
-                    @if (entityAiBusy()) { <div class="entity-ai-status"><span></span>Consultando o contexto deste universo…</div> }
-                    @if (entityAiError()) { <div class="ai-install-error" role="alert"><strong>A IA não conseguiu concluir</strong><span>{{ entityAiError() }}</span></div> }
-
-                    <div class="notion-properties-table">
-                      @for (attribute of activeEntity()?.attributes; track attribute.id) {
-                        <div class="notion-prop-row">
-                          <div class="notion-prop-key">
-                            <span class="prop-icon">◦</span>
-                            <input class="prop-key-input" [(ngModel)]="attribute.key" placeholder="Propriedade" />
-                          </div>
-                          <div class="notion-prop-value">
-                            <textarea class="prop-value-input" [(ngModel)]="attribute.value" [placeholder]="'Preencha ' + attribute.key.toLocaleLowerCase('pt-BR') + '...'"></textarea>
-                            @if (extractFirstUrl(attribute.value); as propUrl) {
-                              <button type="button" class="prop-link-btn" (click)="openExternalLink(propUrl)" title="Abrir link">↗ Abrir link</button>
-                            }
-                          </div>
-                          <button type="button" class="notion-prop-delete" (click)="removeAttributeFromActiveEntity(attribute)" title="Remover esta propriedade">×</button>
-                        </div>
-                      }
-
-                      <button type="button" class="notion-add-prop-btn" (click)="addAttributeToActiveEntity()">
-                        <span>＋</span> Adicionar propriedade
-                      </button>
-                    </div>
-                  </section>
-
-                  <!-- Seção de Observações & Anotações (com suporte a links Notion) -->
-                  <section class="sheet-section notion-notes-section">
-                    <header class="notes-header">
-                      <div>
-                        <span class="eyebrow">NOTAS & OBSERVAÇÕES</span>
-                        <h3>Observações & Links externos</h3>
-                      </div>
-                      <small>Espaço livre para notas, psicologia do personagem ou links do Notion</small>
-                    </header>
-
-                    @if (extractFirstUrl(activeEntity()?.description); as notionUrl) {
-                      <div class="detected-link-banner">
-                        <span class="link-icon">🔗</span>
-                        <div class="link-info">
-                          <strong>Link do Notion / Web detectado:</strong>
-                          <span>{{ notionUrl }}</span>
-                        </div>
-                        <button type="button" class="primary-button small" (click)="openExternalLink(notionUrl)">Abrir página ↗</button>
-                      </div>
-                    }
-
-                    <div class="notion-notes-editor">
-                      <textarea [ngModel]="activeEntity()?.description" (ngModelChange)="patchActiveEntity('description', $event)" placeholder="Escreva observações gerais, psicologia, notas de desenvolvimento ou cole links do Notion (ex: https://notion.so/...)..."></textarea>
-                    </div>
-                  </section>
-
-                  <!-- Galeria de Imagens e Referências Visuais -->
-                  <section class="sheet-section">
-                    <header class="gallery-heading">
-                      <div>
-                        <span class="eyebrow">REFERÊNCIAS VISUAIS</span>
-                        <h3>Galeria de imagens</h3>
-                      </div>
-                      <label class="secondary-button small">＋ Adicionar imagens<input type="file" accept="image/*" multiple hidden (change)="addEntityGalleryImages($event)" /></label>
-                    </header>
-                    <div class="entity-gallery">
-                      @for (image of entityGallery(); track image.id) {
-                        <figure>
-                          <img [src]="image.data_url" [alt]="image.caption || activeEntity()?.name" />
-                          <figcaption>{{ image.caption || 'Sem legenda' }}</figcaption>
-                          <button type="button" aria-label="Remover imagem" (click)="deleteEntityGalleryImage(image.id)">×</button>
-                        </figure>
-                      } @empty {
-                        <p>Adicione retratos, trajes, mapas, símbolos ou outras referências deste registro.</p>
-                      }
-                    </div>
-                  </section>
-
-                  <!-- Conexões e Aparições -->
-                  <section class="sheet-section">
-                    <header>
-                      <span class="eyebrow">CONEXÕES</span>
-                      <h3>Relações e aparições</h3>
-                    </header>
-                    <div class="sheet-summary">
-                      <span><b>{{ activeEntity()?.relations?.length || 0 }}</b> relações</span>
-                      <span><b>{{ activeEntity()?.mentions?.length || 0 }}</b> aparições em capítulos</span>
-                    </div>
-                  </section>
-                </article>
-              } @else if (!appState.sidebarEntityFilter() && entities().length > 0) {
-                <section class="recent-entities"><header class="section-subheading"><strong>Adicionados recentemente</strong><span>Arraste para o lado</span></header><div class="recent-carousel">@for (entity of recentEntities(); track entity.id) { <button type="button" (click)="openEntitySheet(entity)"><span class="recent-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><small>{{ entity.type }}</small><strong>{{ entity.name }}</strong><em>{{ entity.summary || entity.description || 'Sem resumo' }}</em>@if (previewTags('entity', entity.id); as tags) { @if (tags.length) { <span class="preview-tags">@for (tag of tags.slice(0, 2); track tag.id) { <b [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</b> } @if (tags.length > 2) { <b class="tag-overflow">+{{ tags.length - 2 }}</b> }</span> } }</button> }</div></section>
-                <section class="entity-directory"><header class="section-subheading"><strong>Todas as entidades</strong><span>{{ entities().length }} registros</span></header><div class="entity-list">@for (entity of visibleEntities(); track entity.id) { <div class="entity-list-row"><button type="button" class="entity-list-open" (click)="openEntitySheet(entity)"><span class="entity-list-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><span><strong>{{ entity.name }}</strong><small>{{ entity.type }} · {{ entity.canon_status === 'CANON' ? 'Cânone' : entity.canon_status }}</small>@if (previewTags('entity', entity.id); as tags) { @if (tags.length) { <span class="tree-preview-tags">@for (tag of tags.slice(0, 3); track tag.id) { <i [style.--tag-color]="tag.color">{{ tag.name }}</i> } @if (tags.length > 3) { <i>+{{ tags.length - 3 }}</i> }</span> } }</span><em>{{ entity.summary || entity.description || 'Sem resumo' }}</em><i>›</i></button><button type="button" class="entity-list-rename" aria-label="Renomear entidade" title="Renomear" (click)="requestRename('entity', entity.id, entity.name, $event)">✎</button><button type="button" class="entity-list-delete" aria-label="Excluir entidade" title="Excluir entidade" (click)="requestDelete('entity', entity.id, entity.name, $event)">×</button></div> }</div></section>
-              } @else if (visibleEntities().length > 0) {
-                <div class="entity-grid">@for (entity of visibleEntities(); track entity.id; let index = $index) { <div class="entity-card-wrap stagger-card" [style.--delay.ms]="index * 35"><button type="button" class="entity-card" (click)="openEntitySheet(entity)"><span class="entity-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><span><small>{{ entity.type }}</small><strong>{{ entity.name }}</strong><em>{{ entity.summary || entity.description || 'Sem resumo' }}</em>@if (previewTags('entity', entity.id); as tags) { @if (tags.length) { <span class="preview-tags">@for (tag of tags.slice(0, 3); track tag.id) { <b [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</b> } @if (tags.length > 3) { <b class="tag-overflow">+{{ tags.length - 3 }}</b> }</span> } }<i>{{ entity.canon_status === 'CANON' ? '● Cânone' : entity.canon_status }}</i></span></button><button type="button" class="entity-card-rename" aria-label="Renomear entidade" title="Renomear" (click)="requestRename('entity', entity.id, entity.name, $event)">✎</button><button type="button" class="entity-card-delete" aria-label="Excluir entidade" title="Excluir entidade" (click)="requestDelete('entity', entity.id, entity.name, $event)">×</button></div> }</div>
-              } @else { <section class="empty-feature"><span>♧</span><h2>Nenhum registro nesta seção</h2><p>{{ appState.sidebarEntityFilter() ? 'Crie o primeiro registro deste tipo.' : 'Escolha uma aba e comece a construir seu universo.' }}</p>@if (appState.sidebarEntityFilter()) { <button type="button" class="primary-button" (click)="beginCreateEntity()">{{ entityCreateLabel() }}</button> }</section> }
-            </div>
+            <app-entities-page
+              [universeId]="appState.activeUniverseId() || ''"
+              [universeName]="appState.activeUniverse()?.name || ''"
+              [universeDescription]="appState.activeUniverse()?.description || ''"
+              [view]="appState.workspaceView() === 'entity-sheet' ? 'entity-sheet' : 'entities'"
+              [query]="searchQuery()"
+              [tagsByOwner]="workspacePreviewTags()"
+              (viewChanged)="onEntityViewChanged($event)"
+              (metadataRequested)="openMetadata('entity', $event.id, $event.title)"
+              (mutated)="onEntityMutation($event)"
+              (info)="onEntityInfo($event)"
+              (failed)="onEntityFailure($event)"
+            />
           } @else if (appState.workspaceView() === 'graph') {
             <div class="feature-page graph-page">
               <header class="crm-toolbar graph-toolbar">
@@ -615,20 +443,6 @@
         <header><div><span class="eyebrow">ESTRUTURA</span><h2>Novo livro</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Nome do livro<input name="bookName" [(ngModel)]="newBookName" placeholder="Ex.: Livro I — O Despertar" autofocus /></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newBookName.trim()" (click)="createBook()">Criar livro</button></footer>
       } @else if (appState.modalOpen() === 'new-chapter') {
         <header><div><span class="eyebrow">ESCRITA</span><h2>Novo capítulo</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Título do capítulo<input name="chapterTitle" [(ngModel)]="newChapterTitle" placeholder="Ex.: Capítulo 1 — O chamado" autofocus /></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newChapterTitle.trim()" (click)="createChapter()">Criar capítulo</button></footer>
-      } @else if (appState.modalOpen() === 'new-entity') {
-        <header><div><span class="eyebrow">WORLDBUILDING</span><h2>Novo {{ newEntityType.toLocaleLowerCase('pt-BR') }}</h2></div><button type="button" (click)="appState.closeModal()">×</button></header>
-        <p class="modal-guidance">Descreva a ideia ou preencha manualmente. A IA usa somente o universo atual para propor uma ficha editável.</p>
-        <label class="image-picker" [style.background-image]="newEntityImageData ? 'url(' + newEntityImageData + ')' : null"><input type="file" accept="image/*" hidden (change)="onImageSelected($event, 'entity-new')" /><span>{{ newEntityImageData ? 'Trocar imagem' : '＋ Adicionar imagem principal' }}</span></label>
-        <section class="entity-creation-ai">
-          <label>Briefing para a IA <span>(opcional)</span><textarea name="entityBrief" [(ngModel)]="newEntityBrief" placeholder="Ex.: capitã veterana que protege a cidade, mas esconde sua ligação com o inimigo"></textarea></label>
-          <button type="button" class="secondary-button" [disabled]="entityAiBusy() || !ai.enabled()" (click)="suggestNewEntityWithAi()">{{ entityAiBusy() ? 'Montando ficha…' : '✦ Montar proposta com IA' }}</button>
-          @if (!ai.enabled()) { <small>Ative uma IA em Configurações para gerar a proposta. A criação manual continua disponível.</small> }
-          @if (entityAiError()) { <div class="ai-install-error" role="alert"><span>{{ entityAiError() }}</span></div> }
-        </section>
-        <label>Nome<input name="entityName" [(ngModel)]="newEntityName" [placeholder]="newEntityType === 'Personagem' ? 'Nome do personagem' : newEntityType === 'Lugar' ? 'Nome do lugar' : newEntityType === 'Evento' ? 'Nome do evento' : newEntityType === 'Objeto' ? 'Nome do objeto' : 'Nome da organização'" autofocus /></label>
-        <label>Descrição <span>(opcional)</span><textarea name="entityDescription" [(ngModel)]="newEntityDescription"></textarea></label>
-        <div class="entity-initial-fields"><strong>Campos iniciais da ficha</strong><small>Você poderá alterar ou remover todos eles depois.</small><div>@for (field of defaultFieldsForNewEntity(); track field) { <span>{{ field }}</span> } @for (attribute of newEntityAiAttributes; track attribute.key) { <span class="ai-field">✦ {{ attribute.key }}</span> }</div></div>
-        <footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newEntityName.trim()" (click)="createEntity()">Criar e preencher ficha</button></footer>
       } @else if (appState.modalOpen() === 'metadata' && metadataTarget(); as target) {
         <header><div><span class="eyebrow">ORGANIZAÇÃO</span><h2>Tags</h2></div><button type="button" (click)="appState.closeModal()">×</button></header>
         <p class="modal-guidance"><strong>{{ target.name }}</strong> · Tags categorizam conteúdos. Campos pertencem somente às fichas de entidades.</p>

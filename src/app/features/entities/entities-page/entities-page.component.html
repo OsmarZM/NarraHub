@@ -1,0 +1,91 @@
+<div class="feature-page entity-view">
+  @if (view === 'entities') {
+    <app-entity-toolbar
+      [visibleCount]="store.visibleEntities().length"
+      [createLabel]="store.createLabel()"
+      [selectedType]="store.filter()"
+      [counts]="counts()"
+      (createRequested)="openCreate()"
+      (typeSelected)="selectType($event)"
+    />
+  }
+
+  @if (store.error()) { <div class="entity-error" role="alert"><span>{{ store.error() }}</span><button type="button" (click)="store.clearError()">×</button></div> }
+
+  @if (view === 'entity-sheet' && store.activeEntity(); as entity) {
+    <app-entity-sheet
+      [entity]="entity"
+      [gallery]="store.gallery()"
+      [tags]="activeTags()"
+      [aiBusy]="entityAiBusy()"
+      [aiError]="entityAiError()"
+      [busy]="store.busy()"
+      (backRequested)="backToList()"
+      (metadataRequested)="requestMetadata()"
+      (deleteRequested)="openDelete(entity)"
+      (saveRequested)="saveActive()"
+      (patchRequested)="store.patchActive($event.field, $event.value)"
+      (imageSelected)="onImageSelected($event, 'active')"
+      (imageRemoveRequested)="removeEntityImage()"
+      (summaryRequested)="summarizeActiveEntityWithAi()"
+      (fieldsSuggested)="suggestActiveEntityFieldsWithAi()"
+      (attributeAdded)="store.addAttribute()"
+      (attributeRemoved)="removeAttribute($event)"
+      (gallerySelected)="addGalleryImages($event)"
+      (galleryImageDeleted)="deleteGalleryImage($event)"
+    />
+  } @else if (!store.filter() && store.entities().length > 0) {
+    <section class="recent-entities">
+      <header class="section-subheading"><strong>Adicionados recentemente</strong><span>Arraste para o lado</span></header>
+      <div class="recent-carousel">
+        @for (entity of store.recentEntities(); track entity.id) {
+          <button type="button" (click)="openEntity(entity)">
+            <span class="recent-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><small>{{ entity.type }}</small><strong>{{ entity.name }}</strong><em>{{ entity.summary || entity.description || 'Sem resumo' }}</em>
+            @if (tags(entity.id); as entityTags) { @if (entityTags.length) { <span class="preview-tags">@for (tag of entityTags.slice(0, 2); track tag.id) { <b [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</b> } @if (entityTags.length > 2) { <b class="tag-overflow">+{{ entityTags.length - 2 }}</b> }</span> } }
+          </button>
+        }
+      </div>
+    </section>
+    <section class="entity-directory">
+      <header class="section-subheading"><strong>Todas as entidades</strong><span>{{ store.entities().length }} registros</span></header>
+      <div class="entity-list">
+        @for (entity of store.visibleEntities(); track entity.id) {
+          <div class="entity-list-row">
+            <button type="button" class="entity-list-open" (click)="openEntity(entity)"><span class="entity-list-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null">{{ entity.image ? '' : entity.name.charAt(0).toUpperCase() }}</span><span><strong>{{ entity.name }}</strong><small>{{ entity.type }} · {{ entity.canon_status === 'CANON' ? 'Cânone' : entity.canon_status }}</small>@if (tags(entity.id); as entityTags) { @if (entityTags.length) { <span class="tree-preview-tags">@for (tag of entityTags.slice(0, 3); track tag.id) { <i [style.--tag-color]="tag.color">{{ tag.name }}</i> } @if (entityTags.length > 3) { <i>+{{ entityTags.length - 3 }}</i> }</span> } }</span><em>{{ entity.summary || entity.description || 'Sem resumo' }}</em><i>›</i></button>
+            <button type="button" class="entity-list-rename" aria-label="Renomear entidade" title="Renomear" (click)="openRename(entity, $event)">✎</button><button type="button" class="entity-list-delete" aria-label="Excluir entidade" title="Excluir entidade" (click)="openDelete(entity, $event)">×</button>
+          </div>
+        }
+      </div>
+    </section>
+  } @else if (store.visibleEntities().length > 0) {
+    <div class="entity-grid">
+      @for (entity of store.visibleEntities(); track entity.id; let index = $index) {
+        <app-entity-card [entity]="entity" [tags]="tags(entity.id)" [delay]="index * 35" (opened)="openEntity($event)" (renameRequested)="openRename($event.entity, $event.sourceEvent)" (deleteRequested)="openDelete($event.entity, $event.sourceEvent)" />
+      }
+    </div>
+  } @else if (view === 'entities') {
+    <section class="empty-feature"><span>♧</span><h2>Nenhum registro nesta seção</h2><p>{{ store.filter() ? 'Crie o primeiro registro deste tipo.' : 'Escolha uma aba e comece a construir seu universo.' }}</p>@if (store.filter()) { <button type="button" class="primary-button" (click)="openCreate()">{{ store.createLabel() }}</button> }</section>
+  }
+</div>
+
+@if (modal()) {
+  <div class="entity-modal-backdrop" (mousedown)="closeModal()">
+    <form class="entity-modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+      @if (modal() === 'create') {
+        <header><div><span class="eyebrow">WORLDBUILDING</span><h2>Novo {{ newEntityType.toLocaleLowerCase('pt-BR') }}</h2></div><button type="button" (click)="closeModal()">×</button></header>
+        <p class="modal-guidance">Descreva a ideia ou preencha manualmente. A IA usa somente o universo atual para propor uma ficha editável.</p>
+        <label class="image-picker" [style.background-image]="newEntityImageData ? 'url(' + newEntityImageData + ')' : null"><input type="file" accept="image/*" hidden (change)="onImageSelected($event, 'new')" /><span>{{ newEntityImageData ? 'Trocar imagem' : '＋ Adicionar imagem principal' }}</span></label>
+        <section class="entity-creation-ai"><label>Briefing para a IA <span>(opcional)</span><textarea name="entityBrief" [(ngModel)]="newEntityBrief" placeholder="Ex.: capitã veterana que protege a cidade, mas esconde sua ligação com o inimigo"></textarea></label><button type="button" class="secondary-button" [disabled]="entityAiBusy() || !ai.enabled()" (click)="suggestNewEntityWithAi()">{{ entityAiBusy() ? 'Montando ficha…' : '✦ Montar proposta com IA' }}</button>@if (!ai.enabled()) { <small>Ative uma IA em Configurações para gerar a proposta. A criação manual continua disponível.</small> }@if (entityAiError()) { <div class="ai-install-error" role="alert"><span>{{ entityAiError() }}</span></div> }</section>
+        <label>Nome<input name="entityName" [(ngModel)]="newEntityName" [placeholder]="newEntityType === 'Personagem' ? 'Nome do personagem' : newEntityType === 'Lugar' ? 'Nome do lugar' : newEntityType === 'Evento' ? 'Nome do evento' : newEntityType === 'Objeto' ? 'Nome do objeto' : 'Nome da organização'" autofocus /></label>
+        <label>Descrição <span>(opcional)</span><textarea name="entityDescription" [(ngModel)]="newEntityDescription"></textarea></label>
+        <div class="entity-initial-fields"><strong>Campos iniciais da ficha</strong><small>Você poderá alterar ou remover todos eles depois.</small><div>@for (field of defaultFieldsForNewEntity(); track field) { <span>{{ field }}</span> } @for (attribute of newEntityAiAttributes; track attribute.key) { <span class="ai-field">✦ {{ attribute.key }}</span> }</div></div>
+        <footer><button type="button" class="secondary-button" (click)="closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="store.busy() || !newEntityName.trim()" (click)="createEntity()">Criar e preencher ficha</button></footer>
+      } @else if (modal() === 'rename' && pendingEntity(); as entity) {
+        <header><div><span class="eyebrow">EDIÇÃO RÁPIDA</span><h2>Renomear entidade</h2></div><button type="button" (click)="closeModal()">×</button></header><p class="modal-guidance">A alteração será aplicada imediatamente em todas as prévias e referências locais.</p><label>Novo nome<input name="entityRenameValue" [(ngModel)]="renameValue" [placeholder]="entity.name" autofocus (keydown.enter)="confirmRename()" /></label><footer><button type="button" class="secondary-button" (click)="closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="store.busy() || !renameValue.trim()" (click)="confirmRename()">Salvar nome</button></footer>
+      } @else if (pendingEntity(); as entity) {
+        <header><div><span class="eyebrow danger-copy">EXCLUSÃO LOCAL</span><h2>Excluir entidade?</h2></div><button type="button" (click)="closeModal()">×</button></header><p class="delete-warning"><strong>{{ entity.name }}</strong><br />As propriedades, imagens, menções e ligações desta entidade também serão excluídas. Esta ação não pode ser desfeita.</p><footer><button type="button" class="secondary-button" (click)="closeModal()">Cancelar</button><button type="submit" class="primary-button destructive" [disabled]="store.busy()" (click)="confirmDelete()">Excluir entidade</button></footer>
+      }
+      @if (store.error()) { <p class="entity-modal-error" role="alert">{{ store.error() }}</p> }
+    </form>
+  </div>
+}

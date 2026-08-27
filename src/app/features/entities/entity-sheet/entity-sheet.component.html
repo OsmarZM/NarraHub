@@ -1,0 +1,76 @@
+<article class="entity-sheet surface-card notion-sheet">
+  <div class="sheet-topbar">
+    <button type="button" class="text-button" (click)="backRequested.emit()">← Voltar para lista</button>
+    <div class="sheet-actions">
+      <button type="button" class="secondary-button small" (click)="metadataRequested.emit()"># Tags</button>
+      <button type="button" class="secondary-button small danger-outline" (click)="deleteRequested.emit()">Excluir entidade</button>
+      <button type="button" class="primary-button small" [disabled]="busy" (click)="saveRequested.emit()">Salvar ficha</button>
+    </div>
+  </div>
+
+  <div class="notion-header-cover" [class.has-cover]="entity.image">
+    @if (entity.image) { <div class="notion-cover-image" [style.background-image]="'url(' + entity.image + ')' "></div> }
+    <div class="notion-avatar-wrap">
+      <label class="notion-avatar" [style.background-image]="entity.image ? 'url(' + entity.image + ')' : null" title="Clique para alterar imagem">
+        <span>{{ entity.image ? '' : (entity.name.charAt(0).toUpperCase() || entity.type.charAt(0)) }}</span>
+        <input type="file" accept="image/*" hidden (change)="imageSelected.emit($event)" />
+        <span class="avatar-edit-badge">📷</span>
+      </label>
+      <div class="avatar-controls">
+        <label class="btn-change-image">{{ entity.image ? 'Alterar foto' : 'Adicionar foto' }}<input type="file" accept="image/*" hidden (change)="imageSelected.emit($event)" /></label>
+        @if (entity.image) { <button type="button" class="btn-remove-image" (click)="imageRemoveRequested.emit()">Remover</button> }
+      </div>
+    </div>
+  </div>
+
+  <div class="notion-title-section">
+    <div class="notion-meta-badges">
+      <span class="entity-type-badge">{{ entity.type }}</span>
+      <label class="canon-badge-select" [attr.data-status]="entity.canon_status">
+        <span class="status-dot"></span>
+        <select [ngModel]="entity.canon_status" (ngModelChange)="patchRequested.emit({ field: 'canon_status', value: $event })">
+          <option value="CANON">● Cânone</option><option value="IDEIA">▲ Ideia</option><option value="ALTERNATIVO">◆ Alternativo</option><option value="DESCARTADO">✕ Descartado</option>
+        </select>
+      </label>
+    </div>
+    <input class="notion-title-input" placeholder="Nome do personagem..." aria-label="Nome" [ngModel]="entity.name" (ngModelChange)="patchRequested.emit({ field: 'name', value: $event })" />
+    @if (tags.length) { <div class="entity-sheet-tags">@for (tag of tags; track tag.id) { <span [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</span> }</div> }
+  </div>
+
+  <section class="entity-summary-section">
+    <header><div><span class="eyebrow">RESUMO DA ENTIDADE</span><small>Visão rápida separada das suas notas de desenvolvimento.</small></div><button type="button" class="secondary-button small" [disabled]="aiBusy" (click)="summaryRequested.emit()">✦ Gerar resumo</button></header>
+    <textarea [ngModel]="entity.summary" (ngModelChange)="patchRequested.emit({ field: 'summary', value: $event })" placeholder="Resuma identidade, papel narrativo e conflito central."></textarea>
+  </section>
+
+  <section class="notion-properties-section">
+    <div class="notion-section-title"><div><span class="eyebrow">CAMPOS DA FICHA</span><small>Propriedades exclusivas de personagens, lugares, eventos, objetos e organizações.</small></div><div class="entity-ai-actions"><button type="button" class="secondary-button small" [disabled]="aiBusy" (click)="fieldsSuggested.emit()">✦ Sugerir campos</button></div></div>
+    @if (aiBusy) { <div class="entity-ai-status"><span></span>Consultando o contexto deste universo…</div> }
+    @if (aiError) { <div class="ai-install-error" role="alert"><strong>A IA não conseguiu concluir</strong><span>{{ aiError }}</span></div> }
+    <div class="notion-properties-table">
+      @for (attribute of entity.attributes; track attribute.id) {
+        <div class="notion-prop-row">
+          <div class="notion-prop-key"><span class="prop-icon">◦</span><input class="prop-key-input" [(ngModel)]="attribute.key" placeholder="Propriedade" /></div>
+          <div class="notion-prop-value"><textarea class="prop-value-input" [(ngModel)]="attribute.value" [placeholder]="'Preencha ' + attribute.key.toLocaleLowerCase('pt-BR') + '...'"></textarea>@if (extractFirstUrl(attribute.value); as propUrl) { <button type="button" class="prop-link-btn" (click)="openExternalLink(propUrl)" title="Abrir link">↗ Abrir link</button> }</div>
+          <button type="button" class="notion-prop-delete" (click)="attributeRemoved.emit(attribute)" title="Remover esta propriedade">×</button>
+        </div>
+      }
+      <button type="button" class="notion-add-prop-btn" (click)="attributeAdded.emit()"><span>＋</span> Adicionar propriedade</button>
+    </div>
+  </section>
+
+  <section class="sheet-section notion-notes-section">
+    <header class="notes-header"><div><span class="eyebrow">NOTAS & OBSERVAÇÕES</span><h3>Observações & Links externos</h3></div><small>Espaço livre para notas, psicologia do personagem ou links do Notion</small></header>
+    @if (extractFirstUrl(entity.description); as notionUrl) { <div class="detected-link-banner"><span class="link-icon">🔗</span><div class="link-info"><strong>Link do Notion / Web detectado:</strong><span>{{ notionUrl }}</span></div><button type="button" class="primary-button small" (click)="openExternalLink(notionUrl)">Abrir página ↗</button></div> }
+    <div class="notion-notes-editor"><textarea [ngModel]="entity.description" (ngModelChange)="patchRequested.emit({ field: 'description', value: $event })" placeholder="Escreva observações gerais, psicologia, notas de desenvolvimento ou cole links do Notion (ex: https://notion.so/...)..."></textarea></div>
+  </section>
+
+  <section class="sheet-section">
+    <header class="gallery-heading"><div><span class="eyebrow">REFERÊNCIAS VISUAIS</span><h3>Galeria de imagens</h3></div><label class="secondary-button small">＋ Adicionar imagens<input type="file" accept="image/*" multiple hidden (change)="gallerySelected.emit($event)" /></label></header>
+    <div class="entity-gallery">
+      @for (image of gallery; track image.id) { <figure><img [src]="image.data_url" [alt]="image.caption || entity.name" /><figcaption>{{ image.caption || 'Sem legenda' }}</figcaption><button type="button" aria-label="Remover imagem" (click)="galleryImageDeleted.emit(image.id)">×</button></figure> }
+      @empty { <p>Adicione retratos, trajes, mapas, símbolos ou outras referências deste registro.</p> }
+    </div>
+  </section>
+
+  <section class="sheet-section"><header><span class="eyebrow">CONEXÕES</span><h3>Relações e aparições</h3></header><div class="sheet-summary"><span><b>{{ entity.relations.length || 0 }}</b> relações</span><span><b>{{ entity.mentions.length || 0 }}</b> aparições em capítulos</span></div></section>
+</article>

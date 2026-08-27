@@ -1,0 +1,8 @@
+<nav class="entity-tabs-compact" aria-label="Tipos de entidade">
+  @for (tab of tabs; track tab.label) {
+    <button type="button" class="entity-tab-pill" [class.active]="selected === tab.type" (click)="selectedChange.emit(tab.type)">
+      <span>{{ tab.label }}</span>
+      <small>{{ count(tab.type) }}</small>
+    </button>
+  }
+</nav>

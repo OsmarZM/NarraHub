@@ -7,7 +7,6 @@ import { UniverseWithStats } from '../models';
 
 export type AppView = 'home' | 'workspace';
 export type WorkspaceView = 'editor' | 'entities' | 'entity-sheet' | 'graph' | 'timeline' | 'planning' | 'history' | 'settings';
-export type EntityListFilter = string | null; // entity type or null for all
 
 @Injectable({ providedIn: 'root' })
 export class AppState {
@@ -21,13 +20,11 @@ export class AppState {
 
   // ── Sidebar ─────────────────────────────────
   readonly sidebarCollapsed = signal(false);
-  readonly sidebarEntityFilter = signal<EntityListFilter>(null);
 
   // ── Active Selection ────────────────────────
   readonly activeStoryId = signal<string | null>(null);
   readonly activeBookId = signal<string | null>(null);
   readonly activeChapterId = signal<string | null>(null);
-  readonly activeEntityId = signal<string | null>(null);
 
   // ── UI State ────────────────────────────────
   readonly isLoading = signal(false);
@@ -42,7 +39,6 @@ export class AppState {
     this.activeStoryId.set(null);
     this.activeBookId.set(null);
     this.activeChapterId.set(null);
-    this.activeEntityId.set(null);
   }
 
   goHome(): void {
@@ -51,18 +47,14 @@ export class AppState {
     this.activeStoryId.set(null);
     this.activeBookId.set(null);
     this.activeChapterId.set(null);
-    this.activeEntityId.set(null);
   }
 
-  openEntityList(type: string | null = null): void {
+  openEntityList(): void {
     this.workspaceView.set('entities');
-    this.sidebarEntityFilter.set(type);
-    this.activeEntityId.set(null);
   }
 
-  openEntitySheet(entityId: string): void {
+  openEntitySheet(): void {
     this.workspaceView.set('entity-sheet');
-    this.activeEntityId.set(entityId);
   }
 
   openEditor(chapterId?: string): void {
