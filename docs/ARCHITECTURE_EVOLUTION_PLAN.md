@@ -546,6 +546,16 @@ Estado do corte atual:
 
 Migrar, uma por vez, History, Timeline, Planning, Entities e Connections para filhos lazy de `WorkspaceLayout`. Cada página carrega o próprio domínio usando o `universeId` resolvido e descarta respostas atrasadas. Não manter a árvore antiga e a árvore roteada ativas ao mesmo tempo.
 
+**Histórico concluído (piloto):**
+
+- `provideRouter` ganhou `withComponentInputBinding()` + `withRouterConfig({ paramsInheritanceStrategy: 'always' })`: a partir de agora, qualquer rota filha de `/workspace/:universeId` que declare um `@Input()` com o mesmo nome de um parâmetro da rota (`universeId`) recebe o valor automaticamente, sem o layout precisar passar `[universeId]` manualmente. Essa é a infraestrutura que as próximas fatias (Timeline, Planning, Entities, Connections) reaproveitam sem repetir a configuração;
+- a rota `history` trocou `children: []` por `loadComponent: () => import('./features/history/history-page.component')...` — `HistoryPageComponent` não mudou nenhuma linha própria, só passou a ser resolvida pelo Router em vez de instanciada pelo `@if` do `WorkspaceLayout`;
+- `WorkspaceLayoutComponent` perdeu o import de `HistoryPageComponent` e o ramo `@else if (appState.workspaceView() === 'history')` do template; a página chega pelo `<router-outlet />` que já existia (antes vazio);
+- teste de fronteira novo confirma a rota lazy, a ausência de uma segunda instância de `<app-history-page>` na árvore legacy, e que o contrato de `@Input()` do componente não mudou;
+- build de produção mostra `history-page-component` como chunk lazy separado (13kB) e `workspace-layout-component` encolheu na mesma proporção (código de Histórico saiu do bundle eager do layout); `npm run test:architecture` (20/20); verificado via `ng serve`: deep link para um universo inexistente com `/history` no final continua caindo no mesmo ramo de erro recuperável do resolver (sem crash), e `/settings` continua funcionando após a mudança de configuração do `provideRouter`.
+
+Pendente: Timeline, Planning, Entities e Connections — mesmo padrão do piloto, uma fatia por vez.
+
 #### Fase 3.3 — Writing por último
 
 Migrar Writing somente depois das demais rotas. `CanDeactivate` protege navegação Angular, mas não substitui o primitivo explícito `saveNow()`, que continua obrigatório para fechar janela, instalar atualização, restaurar backup e outros eventos fora do Router.

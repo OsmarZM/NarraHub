@@ -21,7 +21,6 @@ import { ConnectionsStore } from './features/connections/state/connections.store
 import { EntitiesPageComponent, EntityMutationKind } from './features/entities/entities-page/entities-page.component';
 import { EntityHubType, EntityStore } from './features/entities/state/entity.store';
 import { PlanningBoardComponent } from './features/planning/planning-board.component';
-import { HistoryPageComponent } from './features/history/history-page.component';
 import { HistoryStore } from './features/history/state/history.store';
 import { KnowledgeStore } from './features/knowledge/state/knowledge.store';
 import { TagsModalComponent } from './features/knowledge/tags-modal/tags-modal.component';
@@ -53,7 +52,6 @@ interface GlobalSearchResult {
     EntitiesPageComponent,
     ConnectionsPageComponent,
     PlanningBoardComponent,
-    HistoryPageComponent,
     ShareModalComponent,
     TagsModalComponent,
     TimelinePageComponent,

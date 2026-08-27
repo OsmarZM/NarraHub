@@ -17,7 +17,11 @@ const workspaceSections: Routes = [
   { path: 'connections', data: navigationData('conexoes', 'Conexões', '⌘', true, 30), children: [] },
   { path: 'timeline', data: navigationData('timeline', 'Timeline', '◷', true, 40), children: [] },
   { path: 'planning', data: navigationData('planejamento', 'Planejamento', '☑', true, 50), children: [] },
-  { path: 'history', data: navigationData('historico', 'Histórico', '↶', true, 60), children: [] },
+  {
+    path: 'history',
+    data: navigationData('historico', 'Histórico', '↶', true, 60),
+    loadComponent: () => import('./features/history/history-page.component').then((module) => module.HistoryPageComponent),
+  },
 ];
 
 export const routes: Routes = [

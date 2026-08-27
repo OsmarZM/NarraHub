@@ -133,6 +133,21 @@ test('WorkspaceLayout mantém uma única árvore legacy e delega entidades para 
   assert.equal((template.match(/<app-entities-page/gu) || []).length, 1);
 });
 
+test('Histórico é a primeira seção do workspace migrada para rota lazy própria (Fase 3.2)', () => {
+  const config = readFileSync(new URL('../src/app/app.config.ts', import.meta.url), 'utf8');
+  assert.match(config, /withComponentInputBinding\(\)/u, 'universeId da rota precisa chegar como @Input() sem binding manual');
+  assert.match(config, /paramsInheritanceStrategy: 'always'/u, 'a rota filha de história precisa herdar :universeId da rota pai do workspace');
+  const routes = readFileSync(new URL('../src/app/app.routes.ts', import.meta.url), 'utf8');
+  const workspaceSource = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
+  const workspaceTemplate = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
+  const history = readFileSync(new URL('../src/app/features/history/history-page.component.ts', import.meta.url), 'utf8');
+  assert.match(routes, /path: 'history'[\s\S]*?loadComponent: \(\) => import\('\.\/features\/history\/history-page\.component'\)/u);
+  assert.doesNotMatch(workspaceSource, /HistoryPageComponent/u, 'WorkspaceLayout não deve mais importar/declarar HistoryPageComponent — ele chega pelo router-outlet');
+  assert.doesNotMatch(workspaceTemplate, /<app-history-page/u, 'a árvore legacy não deve montar uma segunda instância da página de histórico');
+  assert.match(workspaceTemplate, /<router-outlet/u);
+  assert.match(history, /@Input\(\{ required: true \}\) universeId/u, 'segue recebendo universeId por Input — agora vindo de withComponentInputBinding()/paramsInheritanceStrategy, não de um binding manual do layout');
+});
+
 test('Settings é rota global lazy e não depende de universo ativo', () => {
   const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
   const template = readFileSync(new URL('../src/app/root-layout.component.html', import.meta.url), 'utf8');

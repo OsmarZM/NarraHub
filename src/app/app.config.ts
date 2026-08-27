@@ -1,5 +1,5 @@
 import { ApplicationConfig, inject, provideAppInitializer, provideBrowserGlobalErrorListeners } from '@angular/core';
-import { provideRouter } from '@angular/router';
+import { provideRouter, withComponentInputBinding, withRouterConfig } from '@angular/router';
 import { routes } from './app.routes';
 import { AppBootstrapService } from './bootstrap/app-bootstrap.service';
 import { CollaborationGateway } from './features/collaboration/gateways/collaboration.gateway';
@@ -23,7 +23,11 @@ export const appConfig: ApplicationConfig = {
   providers: [
     provideBrowserGlobalErrorListeners(),
     provideAppInitializer(() => inject(AppBootstrapService).initialize()),
-    provideRouter(routes),
+    provideRouter(
+      routes,
+      withComponentInputBinding(),
+      withRouterConfig({ paramsInheritanceStrategy: 'always' }),
+    ),
     { provide: CollaborationGateway, useExisting: LegacyCollaborationGateway },
     { provide: ConnectionsGateway, useExisting: LegacyConnectionsGateway },
     { provide: EntityGateway, useExisting: LegacyEntityGateway },

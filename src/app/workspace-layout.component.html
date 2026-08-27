@@ -86,8 +86,6 @@
             (itemsChange)="planning.set($event)"
             (chapterOpened)="openPlanningChapter($event)"
           />
-        } @else if (appState.workspaceView() === 'history') {
-          <app-history-page [universeId]="universe.id" />
         }
       </section>
       <router-outlet />
