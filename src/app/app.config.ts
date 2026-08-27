@@ -1,6 +1,7 @@
-import { ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
+import { ApplicationConfig, inject, provideAppInitializer, provideBrowserGlobalErrorListeners } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { routes } from './app.routes';
+import { AppBootstrapService } from './core/bootstrap/app-bootstrap.service';
 import { CollaborationGateway } from './features/collaboration/gateways/collaboration.gateway';
 import { LegacyCollaborationGateway } from './features/collaboration/gateways/legacy-collaboration.gateway';
 import { ConnectionsGateway } from './features/connections/gateways/connections.gateway';
@@ -21,6 +22,7 @@ import { TimelineGateway } from './features/timeline/gateways/timeline.gateway';
 export const appConfig: ApplicationConfig = {
   providers: [
     provideBrowserGlobalErrorListeners(),
+    provideAppInitializer(() => inject(AppBootstrapService).initialize()),
     provideRouter(routes),
     { provide: CollaborationGateway, useExisting: LegacyCollaborationGateway },
     { provide: ConnectionsGateway, useExisting: LegacyConnectionsGateway },

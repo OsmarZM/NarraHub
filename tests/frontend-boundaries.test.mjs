@@ -81,6 +81,16 @@ test('App raiz é somente o outlet do Router', () => {
   assert.doesNotMatch(source, /features\/|AppState|DatabaseService|SettingsStore/u);
 });
 
+test('bootstrap global termina antes do Router e não depende do RootLayout', () => {
+  const config = readFileSync(new URL('../src/app/app.config.ts', import.meta.url), 'utf8');
+  const bootstrap = readFileSync(new URL('../src/app/core/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
+  const layout = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
+  assert.match(config, /provideAppInitializer\(\(\) => inject\(AppBootstrapService\)\.initialize\(\)\)/u);
+  assert.match(bootstrap, /await this\.db\.init\(\)/u);
+  assert.doesNotMatch(bootstrap, /RootLayoutComponent|ActivatedRoute|Router/u);
+  assert.doesNotMatch(layout, /ngOnInit|this\.db\.init\(\)|this\.ai\.initialize\(\)/u);
+});
+
 test('RootLayout não acessa o serviço legado de universos diretamente', () => {
   const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /UniverseService/u, 'RootLayout deve depender de UniverseStore/UniverseGateway, não do serviço legado');

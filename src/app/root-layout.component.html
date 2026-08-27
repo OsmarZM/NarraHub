@@ -24,6 +24,7 @@
   }
 
   <div class="content-stage" [class.focus-mode]="isFocusMode()">
+      @if (bootstrap.error()) { <div class="alert error-alert" role="alert"><span>Não foi possível inicializar o NarraHub. {{ bootstrap.error() }}</span></div> }
       @if (errorMessage()) { <div class="alert error-alert" role="alert"><span>{{ errorMessage() }}</span><button type="button" (click)="errorMessage.set('')">×</button></div> }
       @if (infoMessage()) { <div class="toast" role="status">{{ infoMessage() }}</div> }
       @if (globalSearchResults().length || (searchQuery().trim().length >= 2 && appState.currentView() === 'workspace')) {

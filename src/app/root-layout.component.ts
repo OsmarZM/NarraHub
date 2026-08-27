@@ -1,14 +1,14 @@
 import { CommonModule } from '@angular/common';
-import { Component, HostListener, OnDestroy, OnInit, ViewChild, computed, effect, inject, signal } from '@angular/core';
+import { Component, HostListener, OnDestroy, ViewChild, computed, effect, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterOutlet } from '@angular/router';
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { AppBootstrapService } from './core/bootstrap/app-bootstrap.service';
 import {
   BookOption, ChapterOption, Entity, EntityWithDetails, MetadataOwnerType, PlanningItem, UniverseWithStats,
 } from './core/models';
 import { BackupManifest } from './core/services/backup.service';
-import { AiService } from './core/services/ai.service';
 import { DatabaseService } from './core/services/database.service';
 import { AppNavigationId, AppRouteState } from './core/navigation/app-navigation';
 import { AppNavigationService } from './core/navigation/app-navigation.service';
@@ -68,10 +68,10 @@ interface GlobalSearchResult {
   templateUrl: './root-layout.component.html',
   styleUrl: './root-layout.component.css',
 })
-export class RootLayoutComponent implements OnInit, OnDestroy {
+export class RootLayoutComponent implements OnDestroy {
   readonly Math = Math;
   readonly appState = inject(AppState);
-  readonly ai = inject(AiService);
+  readonly bootstrap = inject(AppBootstrapService);
   readonly knowledgeStore = inject(KnowledgeStore);
   private readonly db = inject(DatabaseService);
   private readonly universeStore = inject(UniverseStore);
@@ -99,7 +99,7 @@ export class RootLayoutComponent implements OnInit, OnDestroy {
   readonly saveMessage = this.manuscriptStore.saveMessage;
   readonly isSaving = this.manuscriptStore.isSaving;
   readonly inspectorOpen = this.manuscriptStore.inspectorOpen;
-  readonly isLoading = signal(true);
+  readonly isLoading = computed(() => !this.bootstrap.ready());
   readonly isFocusMode = signal(false);
   readonly errorMessage = signal('');
   readonly infoMessage = signal('');
@@ -146,7 +146,6 @@ export class RootLayoutComponent implements OnInit, OnDestroy {
   @ViewChild(EntitiesPageComponent) readonly entitiesPage?: EntitiesPageComponent;
 
   private infoTimer: ReturnType<typeof setTimeout> | null = null;
-  private collaborationTimer: ReturnType<typeof setInterval> | null = null;
   private workspaceEpoch = 0;
   private restoringRoute = false;
 
@@ -164,29 +163,8 @@ export class RootLayoutComponent implements OnInit, OnDestroy {
     });
   }
 
-  async ngOnInit(): Promise<void> {
-    await this.ai.initialize().catch((error) => {
-      console.error('[NarraHub] Não foi possível inicializar o gerenciador da IA local.', error);
-    });
-    if (!isTauri()) { this.isLoading.set(false); return; }
-    try {
-      await this.db.init();
-      await this.loadUniverses();
-      await this.collaborationStore.refreshShareStatus();
-      await this.collaborationStore.loadReview();
-      this.collaborationTimer = setInterval(() => void this.collaborationStore.syncIncoming(), 2500);
-      await this.settingsStore.primeCurrentVersion();
-      if (await this.settingsStore.isUpdateConfigured()) setTimeout(() => void this.checkForUpdates(true), 1800);
-    } catch (error) {
-      this.reportError('Não foi possível abrir o banco local do NarraHub.', error);
-    } finally { this.isLoading.set(false); }
-  }
-
   ngOnDestroy(): void {
     if (this.infoTimer) clearTimeout(this.infoTimer);
-    if (this.collaborationTimer) clearInterval(this.collaborationTimer);
-    this.settingsStore.dispose();
-    this.ai.dispose();
   }
 
   @HostListener('document:keydown.control.k', ['$event'])
@@ -205,7 +183,10 @@ export class RootLayoutComponent implements OnInit, OnDestroy {
     await this.collaborationStore.syncIncoming();
     await this.collaborationStore.endAllActiveQuietly();
     await this.collaborationStore.stopShareQuietly();
-    if (isTauri()) await getCurrentWindow().close();
+    if (isTauri()) {
+      this.bootstrap.shutdown();
+      await getCurrentWindow().close();
+    }
   }
   async toggleFullscreen(): Promise<void> { if (isTauri()) { const win = getCurrentWindow(); await win.setFullscreen(!(await win.isFullscreen())); } }
   async loadUniverses(): Promise<void> {

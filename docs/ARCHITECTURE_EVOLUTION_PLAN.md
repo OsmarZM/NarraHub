@@ -509,11 +509,34 @@ Não foi incluído nesta fatia: `WorkspaceLayout`, `AppBootstrapService`, resolv
 
 #### Fase 3.1 — WorkspaceLayout, bootstrap e resolver
 
+Ordem obrigatória, sem inversão de dependências:
+
+```text
+3.1.1 AppBootstrapService
+      ↓
+3.1.2 provideAppInitializer
+      ↓
+3.1.3 WorkspaceLayout
+      ↓
+3.1.4 UniverseResolver
+      ↓
+3.1.5 route.data para sidebar/breadcrumb
+```
+
+- mover a inicialização global para `AppBootstrapService`;
+- registrar o serviço com `provideAppInitializer`, garantindo que a inicialização termine antes de qualquer resolver consultar SQLite;
 - criar `WorkspaceLayoutComponent` para sidebar, cabeçalho contextual e outlet do workspace;
-- mover a inicialização global para `AppBootstrapService`, registrado com `provideAppInitializer`, concluída antes de qualquer resolver consultar SQLite;
 - manter `UniverseResolver` pequeno: validar o ID, selecionar/carregar o universo e retornar estado recuperável; não carregar entidades, manuscrito, timeline, planejamento ou demais domínios;
 - fazer menu e breadcrumb consumirem `route.data` como fonte única de rótulos e identidade de navegação;
 - validar cold start e deep link no runtime Tauri, além do navegador.
+
+O `UniverseResolver` nunca pode depender de inicialização ainda executada em `RootLayout.ngOnInit()`. Quando o resolver for registrado, o acesso ao banco necessário para resolvê-lo já deve estar garantido pelo initializer.
+
+Estado do corte atual:
+
+- **3.1.1 concluída:** `AppBootstrapService` assumiu inicialização de IA, SQLite, biblioteca, previews de Knowledge, colaboração e versão/update, além dos timers globais;
+- **3.1.2 concluída:** `provideAppInitializer` aguarda esse serviço antes da navegação inicial; `RootLayout` não implementa mais `ngOnInit` nem inicializa banco/IA;
+- **3.1.3–3.1.5 pendentes:** `WorkspaceLayout`, `UniverseResolver` e consumo efetivo de `route.data` serão implementados nessa ordem, sem criar um resolver que dependa da árvore visual legada.
 
 #### Fase 3.2 — rotas das features
 
@@ -522,6 +545,21 @@ Migrar, uma por vez, History, Timeline, Planning, Entities e Connections para fi
 #### Fase 3.3 — Writing por último
 
 Migrar Writing somente depois das demais rotas. `CanDeactivate` protege navegação Angular, mas não substitui o primitivo explícito `saveNow()`, que continua obrigatório para fechar janela, instalar atualização, restaurar backup e outros eventos fora do Router.
+
+### Regra de orquestração cross-domain
+
+Layouts não assumem regras de domínio nem coordenação permanente entre features. Dependências cross-domain — por exemplo, capítulo persistido → atualizar menções → atualizar estatísticas — devem migrar para um application service, facade ou evento explícito quando a feature correspondente for roteada. Esta regra não exige event bus nesta fase; ela impede apenas que a desmontagem do layout transfira coordenação de domínio para outro componente monolítico.
+
+### Critério de saída da navegação híbrida
+
+Ao final da Fase 3:
+
+- `RootLayout` não decide qual feature renderizar;
+- `RootLayout` não importa páginas de domínio;
+- não existe `@if` baseado em `workspaceView`/`currentView` para escolher páginas;
+- `AppState` não representa a rota ativa;
+- Router é a única fonte de verdade da navegação;
+- `activeNav`, `currentView` e `workspaceView` foram removidos da seleção de rota.
 
 ### Entregas
 
@@ -552,6 +590,16 @@ Migrar Writing somente depois das demais rotas. `CanDeactivate` protege navegaç
 - abrir `/settings` e deep links de workspace com o aplicativo Tauri totalmente fechado;
 - validar fallback de rota no protocolo de produção do Tauri, não apenas no `ng serve`;
 - confirmar visual da versão 0.7.5 em `/library`, `/settings` e no shell do workspace.
+
+Para cada feature convertida em rota, os gates obrigatórios são:
+
+- o layout não possui import estático da página;
+- o build produz chunk lazy separado;
+- deep link funciona;
+- reload e reabertura funcionam no Tauri;
+- URL inválida ou ID inexistente produz estado recuperável;
+- sair da rota destrói o componente e suas subscriptions;
+- nenhuma segunda instância da feature permanece montada pela árvore legacy.
 
 ### Rollback
 
