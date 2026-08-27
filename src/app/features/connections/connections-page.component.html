@@ -1,0 +1,59 @@
+<div class="feature-page graph-page">
+  <header class="crm-toolbar graph-toolbar">
+    <div class="toolbar-left">
+      <div class="toolbar-heading">
+        <span class="board-badge">⌘</span>
+        <h2>Grafo de Conexões</h2>
+        <span class="total-badge">{{ entities.length }} entidades · {{ store.relations().length }} conexões</span>
+      </div>
+    </div>
+    <div class="toolbar-right">
+      <button type="button" class="primary-button" [disabled]="entities.length < 2" (click)="openCreateRelation()">
+        <span>＋</span> Nova conexão
+      </button>
+    </div>
+  </header>
+  @if (entities.length > 0) {
+    <div class="graph-canvas-container">
+      <app-connections-graph [entities]="entities" [relations]="store.relations()" (entityOpened)="openEntity($event)" />
+    </div>
+    @if (store.relations().length) {
+      <section class="relation-manager-drawer" aria-label="Ligações cadastradas">
+        <header><strong>Ligações cadastradas ({{ store.relations().length }})</strong></header>
+        <div class="relation-pills-list">
+          @for (relation of store.relations(); track relation.id) {
+            <span class="relation-badge-pill">
+              <b>{{ relation.source_name }}</b>
+              <small>{{ relation.label }}</small>
+              <b>{{ relation.target_name }}</b>
+              <button type="button" aria-label="Excluir ligação" (click)="requestDelete(relation.id, relation.source_name + ' — ' + relation.label + ' — ' + relation.target_name)">×</button>
+            </span>
+          }
+        </div>
+      </section>
+    }
+  } @else {
+    <section class="empty-feature"><span>⌘</span><h2>Conecte seu universo</h2><p>Cadastre ao menos duas entidades e descreva a relação entre elas.</p><button type="button" class="primary-button" [disabled]="entities.length < 2" (click)="openCreateRelation()">Criar conexão</button></section>
+  }
+</div>
+
+@if (showNewRelation()) {
+  <div class="modal-backdrop" (mousedown)="closeCreateRelation()">
+    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+      <header><div><span class="eyebrow">CONEXÕES</span><h2>Nova conexão</h2></div><button type="button" (click)="closeCreateRelation()">×</button></header>
+      <label>Origem<select name="relationSource" [(ngModel)]="newRelationSource"><option value="">Selecione</option>@for (entity of entities; track entity.id) { <option [value]="entity.id">{{ entity.name }} · {{ entity.type }}</option> }</select></label>
+      <label>Relação<input name="relationLabel" [(ngModel)]="newRelationLabel" placeholder="Ex.: é irmão de" /></label>
+      <label>Destino<select name="relationTarget" [(ngModel)]="newRelationTarget"><option value="">Selecione</option>@for (entity of entities; track entity.id) { <option [value]="entity.id">{{ entity.name }} · {{ entity.type }}</option> }</select></label>
+      <footer><button type="button" class="secondary-button" (click)="closeCreateRelation()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newRelationSource || !newRelationTarget || !newRelationLabel.trim()" (click)="createRelation()">Criar conexão</button></footer>
+    </form>
+  </div>
+}
+@if (pendingDelete(); as item) {
+  <div class="modal-backdrop" (mousedown)="pendingDelete.set(null)">
+    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+      <header><div><span class="eyebrow danger-copy">EXCLUSÃO LOCAL</span><h2>Excluir ligação?</h2></div><button type="button" (click)="pendingDelete.set(null)">×</button></header>
+      <p class="delete-warning"><strong>{{ item.label }}</strong><br />A ligação será removida. As entidades conectadas serão preservadas. Esta ação não pode ser desfeita.</p>
+      <footer><button type="button" class="secondary-button" (click)="pendingDelete.set(null)">Cancelar</button><button type="submit" class="primary-button destructive" (click)="confirmDelete()">Excluir ligação</button></footer>
+    </form>
+  </div>
+}

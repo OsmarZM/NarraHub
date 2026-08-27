@@ -1,0 +1,25 @@
+@if (store.metadataTarget(); as target) {
+  <div class="modal-backdrop" (mousedown)="close()">
+    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+      <header><div><span class="eyebrow">ORGANIZAÇÃO</span><h2>Tags</h2></div><button type="button" (click)="close()">×</button></header>
+      <p class="modal-guidance"><strong>{{ target.name }}</strong> · Tags categorizam conteúdos. Campos pertencem somente às fichas de entidades.</p>
+      <section class="metadata-section">
+        <header><strong>Tags do universo</strong><small>As mesmas tags podem ser usadas em universos, histórias, livros, capítulos, fichas, timeline e planejamento.</small></header>
+        <div class="metadata-tags">
+          @for (tag of store.metadataTags(); track tag.id) {
+            <span class="metadata-tag-item" [style.--tag-color]="tag.color">
+              <button type="button" [class.active]="store.isTagAssigned(tag.id)" (click)="toggleTag(tag)"><i></i>{{ tag.name }}<small>{{ tag.assigned || 0 }}</small></button>
+              <button type="button" class="metadata-tag-delete" [attr.aria-label]="'Excluir tag ' + tag.name" (click)="deleteTag(tag)">×</button>
+            </span>
+          } @empty { <p>Nenhuma tag criada neste universo.</p> }
+        </div>
+        <div class="metadata-new-tag">
+          <input name="newTagColor" type="color" [(ngModel)]="newTagColor" aria-label="Cor da tag" />
+          <input name="newTagName" [(ngModel)]="newTagName" placeholder="Nova tag, ex.: fantasia sombria" (keydown.enter)="createTag()" />
+          <button type="button" class="secondary-button" [disabled]="!newTagName.trim()" (click)="createTag()">Criar e aplicar</button>
+        </div>
+      </section>
+      <footer><button type="button" class="primary-button" (click)="close()">Concluir</button></footer>
+    </form>
+  </div>
+}

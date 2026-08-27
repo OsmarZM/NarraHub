@@ -3,10 +3,14 @@ import { provideRouter } from '@angular/router';
 import { routes } from './app.routes';
 import { CollaborationGateway } from './features/collaboration/gateways/collaboration.gateway';
 import { LegacyCollaborationGateway } from './features/collaboration/gateways/legacy-collaboration.gateway';
+import { ConnectionsGateway } from './features/connections/gateways/connections.gateway';
+import { LegacyConnectionsGateway } from './features/connections/gateways/legacy-connections.gateway';
 import { EntityGateway } from './features/entities/gateways/entity.gateway';
 import { LegacyEntityGateway } from './features/entities/gateways/legacy-entity.gateway';
 import { HistoryGateway } from './features/history/gateways/history.gateway';
 import { LegacyHistoryGateway } from './features/history/gateways/legacy-history.gateway';
+import { KnowledgeGateway } from './features/knowledge/gateways/knowledge.gateway';
+import { LegacyKnowledgeGateway } from './features/knowledge/gateways/legacy-knowledge.gateway';
 import { LegacyUniverseGateway } from './features/library/gateways/legacy-universe.gateway';
 import { UniverseGateway } from './features/library/gateways/universe.gateway';
 import { LegacyManuscriptGateway } from './features/manuscript/gateways/legacy-manuscript.gateway';
@@ -19,8 +23,10 @@ export const appConfig: ApplicationConfig = {
     provideBrowserGlobalErrorListeners(),
     provideRouter(routes),
     { provide: CollaborationGateway, useExisting: LegacyCollaborationGateway },
+    { provide: ConnectionsGateway, useExisting: LegacyConnectionsGateway },
     { provide: EntityGateway, useExisting: LegacyEntityGateway },
     { provide: HistoryGateway, useExisting: LegacyHistoryGateway },
+    { provide: KnowledgeGateway, useExisting: LegacyKnowledgeGateway },
     { provide: ManuscriptGateway, useExisting: LegacyManuscriptGateway },
     { provide: TimelineGateway, useExisting: LegacyTimelineGateway },
     { provide: UniverseGateway, useExisting: LegacyUniverseGateway },

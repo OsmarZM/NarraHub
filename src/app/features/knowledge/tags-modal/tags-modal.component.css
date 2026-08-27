@@ -1,0 +1,37 @@
+/* Copiado de app.css durante a extração do domínio de Knowledge (Fase 2).
+   Encapsulamento padrão do Angular escopa este arquivo ao template deste
+   componente. */
+
+.eyebrow { color: var(--brand); font-size: 9px; font-weight: 800; letter-spacing: .14em; }
+.primary-button,.secondary-button { min-height: 39px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 16px; border-radius: 10px; font-size: 11px; font-weight: 720; transition: transform .18s,box-shadow .18s,background .18s; }
+.primary-button { border: 0; color: #fff; background: linear-gradient(135deg,var(--brand-2),var(--brand)); box-shadow: 0 8px 18px color-mix(in srgb,var(--brand) 24%,transparent); }
+.primary-button:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 12px 24px color-mix(in srgb,var(--brand) 30%,transparent); }
+.secondary-button { border: 1px solid var(--line); color: var(--text); background: var(--surface); }
+.secondary-button:hover:not(:disabled) { border-color: color-mix(in srgb,var(--brand) 40%,var(--line)); background: var(--brand-soft); }
+
+.modal-backdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 20px; background: rgba(10,8,18,.55); backdrop-filter: blur(7px); }
+.modal { width: min(460px,100%); max-height: 90vh; overflow-y: auto; padding: 22px; border: 1px solid var(--line); border-radius: 17px; color: var(--text); background: var(--surface); box-shadow: 0 35px 100px rgba(0,0,0,.32); }
+.modal header { display: flex; justify-content: space-between; margin-bottom: 20px; }
+.modal header h2 { margin: 5px 0 0; font-size: 21px; }
+.modal header > button { width: 30px; height: 30px; border: 0; border-radius: 8px; color: var(--muted); background: var(--surface-2); }
+.modal footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+.modal-guidance { margin: -5px 0 16px; color: var(--muted); font-size: 9px; line-height: 1.55; }
+
+.metadata-section { display:grid; gap:10px; margin-bottom:16px; padding:13px; border:1px solid var(--line); border-radius:12px; background:var(--surface-2); }
+.metadata-section > header { display:grid; gap:3px; }
+.metadata-section > header strong { font-size:11px; }
+.metadata-section > header small { color:var(--muted); font-size:8px; }
+.metadata-tags { display:flex; flex-wrap:wrap; gap:6px; }
+.metadata-tags > p { margin:5px 0; color:var(--muted); font-size:9px; }
+.metadata-tags button { min-height:30px; display:flex; align-items:center; gap:6px; padding:0 9px; border:1px solid var(--line); border-radius:999px; color:var(--muted); background:var(--surface); font-size:8px; }
+.metadata-tags button i { width:7px; height:7px; border-radius:50%; background:var(--tag-color); }
+.metadata-tags button small { color:var(--subtle); }
+.metadata-tags button.active { color:var(--tag-color); border-color:color-mix(in srgb,var(--tag-color) 50%,var(--line)); background:color-mix(in srgb,var(--tag-color) 10%,var(--surface)); }
+.metadata-new-tag { display:grid; grid-template-columns:36px minmax(0,1fr) auto; gap:7px; }
+.metadata-new-tag input[type=color] { width:36px; height:36px; padding:3px; border:1px solid var(--line); border-radius:8px; background:var(--surface); }
+.metadata-new-tag input:not([type=color]) { min-width:0; padding:8px 9px; border:1px solid var(--line); border-radius:8px; color:var(--text); background:var(--surface); font-size:9px; }
+
+@media (max-width:680px) {
+  .metadata-new-tag { grid-template-columns:1fr; }
+  .metadata-new-tag input[type=color] { width:100%; }
+}

@@ -75,7 +75,7 @@
         <app-library-page
           [query]="searchQuery()"
           [lastOpenedId]="lastOpenedUniverseId()"
-          [tagsByUniverse]="libraryPreviewTags()"
+          [tagsByUniverse]="knowledgeStore.libraryPreviewTags()"
           (opened)="openUniverse($event)"
           (updated)="onUniverseUpdated()"
           (deleted)="onUniverseDeleted($event)"
@@ -89,7 +89,7 @@
               <button type="button" class="secondary-button" (click)="openShareModal()">↗ Compartilhar</button>
               @if (appState.workspaceView() === 'editor') { <button type="button" class="secondary-button" [class.active]="inspectorOpen()" [disabled]="!activeChapter()" (click)="toggleInspector()">{{ inspectorOpen() ? 'Ocultar resumo' : 'Resumo do capítulo' }}</button><button type="button" class="secondary-button" (click)="beginCreateChapter()" [disabled]="!activeBook()">＋ Capítulo</button> }
               @else if (appState.workspaceView() === 'entities' && entityFilter()) { <button type="button" class="primary-button small" (click)="beginCreateEntity()">＋ {{ entityCreateLabel() }}</button> }
-              @else if (appState.workspaceView() === 'graph') { <button type="button" class="primary-button small" (click)="appState.openModal('new-relation')" [disabled]="entities().length < 2">＋ Conexão</button> }
+              @else if (appState.workspaceView() === 'graph') { <button type="button" class="primary-button small" (click)="beginCreateConnection()" [disabled]="entities().length < 2">＋ Conexão</button> }
               @else if (appState.workspaceView() === 'timeline') { <button type="button" class="primary-button small" (click)="beginCreateTimeline()">＋ Evento</button> }
               @else if (appState.workspaceView() === 'planning') { <button type="button" class="primary-button small" (click)="beginCreatePlanning()">＋ Card</button> }
             </div>
@@ -102,7 +102,7 @@
               [universeDescription]="appState.activeUniverse()?.description || ''"
               [entities]="entities()"
               [mentionOccurrences]="mentionOccurrences()"
-              [tagsByOwner]="workspacePreviewTags()"
+              [tagsByOwner]="knowledgeStore.workspacePreviewTags()"
               [focusMode]="isFocusMode()"
               (focusModeChange)="isFocusMode.set($event)"
               (fullscreenRequested)="toggleFullscreen()"
@@ -118,7 +118,7 @@
               [universeDescription]="appState.activeUniverse()?.description || ''"
               [view]="appState.workspaceView() === 'entity-sheet' ? 'entity-sheet' : 'entities'"
               [query]="searchQuery()"
-              [tagsByOwner]="workspacePreviewTags()"
+              [tagsByOwner]="knowledgeStore.workspacePreviewTags()"
               (viewChanged)="onEntityViewChanged($event)"
               (metadataRequested)="openMetadata('entity', $event.id, $event.title)"
               (mutated)="onEntityMutation($event)"
@@ -126,45 +126,15 @@
               (failed)="onEntityFailure($event)"
             />
           } @else if (appState.workspaceView() === 'graph') {
-            <div class="feature-page graph-page">
-              <header class="crm-toolbar graph-toolbar">
-                <div class="toolbar-left">
-                  <div class="toolbar-heading">
-                    <span class="board-badge">⌘</span>
-                    <h2>Grafo de Conexões</h2>
-                    <span class="total-badge">{{ entities().length }} entidades · {{ relations().length }} conexões</span>
-                  </div>
-                </div>
-                <div class="toolbar-right">
-                  <button type="button" class="primary-button crm-action-btn" [disabled]="entities().length < 2" (click)="appState.openModal('new-relation')">
-                    <span>＋</span> Nova conexão
-                  </button>
-                </div>
-              </header>
-              @if (entities().length > 0) {
-                <div class="graph-canvas-container">
-                  <app-connections-graph [entities]="entities()" [relations]="relations()" (entityOpened)="openEntitySheet($event)" />
-                </div>
-                @if (relations().length) {
-                  <section class="relation-manager-drawer" aria-label="Ligações cadastradas">
-                    <header><strong>Ligações cadastradas ({{ relations().length }})</strong></header>
-                    <div class="relation-pills-list">
-                      @for (relation of relations(); track relation.id) {
-                        <span class="relation-badge-pill">
-                          <b>{{ relation.source_name }}</b>
-                          <small>{{ relation.label }}</small>
-                          <b>{{ relation.target_name }}</b>
-                          <button type="button" aria-label="Excluir ligação" (click)="requestDeleteRelation(relation.id, relation.source_name + ' — ' + relation.label + ' — ' + relation.target_name)">×</button>
-                        </span>
-                      }
-                    </div>
-                  </section>
-                }
-              }
-              @else { <section class="empty-feature"><span>⌘</span><h2>Conecte seu universo</h2><p>Cadastre ao menos duas entidades e descreva a relação entre elas.</p><button type="button" class="primary-button" [disabled]="entities().length < 2" (click)="appState.openModal('new-relation')">Criar conexão</button></section> }
-            </div>
+            <app-connections-page
+              [universeId]="appState.activeUniverseId() || ''"
+              [entities]="entities()"
+              (entityOpenRequested)="openEntitySheet($event)"
+              (info)="onConnectionsInfo($event)"
+              (failed)="onConnectionsFailed($event)"
+            />
           } @else if (appState.workspaceView() === 'timeline') {
-            <app-timeline-page [universeId]="appState.activeUniverseId() || ''" [entities]="entities()" [tagsByOwner]="workspacePreviewTags()" (metadataRequested)="openMetadata('timeline', $event.id, $event.title, $event.sourceEvent)" />
+            <app-timeline-page [universeId]="appState.activeUniverseId() || ''" [entities]="entities()" [tagsByOwner]="knowledgeStore.workspacePreviewTags()" (metadataRequested)="openMetadata('timeline', $event.id, $event.title, $event.sourceEvent)" />
           } @else if (appState.workspaceView() === 'planning') {
             <app-planning-board
               [universeId]="appState.activeUniverseId() || ''"
@@ -183,31 +153,23 @@
   </div>
 </app-shell>
 
-@if (appState.modalOpen() && appState.modalOpen() !== 'share-content') {
+@if (appState.modalOpen() === 'rename-item' && renamingUniverse()) {
   <div class="modal-backdrop" (mousedown)="appState.closeModal()">
-    <form class="modal" [class.ai-modal]="appState.modalOpen() === 'ai-assistant'" [class.replica-reader-modal]="appState.modalOpen() === 'production-replica-chapter'" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
-      @if (appState.modalOpen() === 'delete-item' && pendingRelationDelete(); as item) {
-        <header><div><span class="eyebrow danger-copy">EXCLUSÃO LOCAL</span><h2>Excluir ligação?</h2></div><button type="button" (click)="pendingRelationDelete.set(null); appState.closeModal()">×</button></header>
-        <p class="delete-warning"><strong>{{ item.label }}</strong><br />A ligação será removida. As entidades conectadas serão preservadas. Esta ação não pode ser desfeita.</p>
-        <footer><button type="button" class="secondary-button" (click)="pendingRelationDelete.set(null); appState.closeModal()">Cancelar</button><button type="submit" class="primary-button destructive" (click)="confirmDeleteRelation()">Excluir ligação</button></footer>
-      } @else if (appState.modalOpen() === 'rename-item' && renamingUniverse()) {
-        <header><div><span class="eyebrow">EDIÇÃO RÁPIDA</span><h2>Renomear universo</h2></div><button type="button" (click)="renamingUniverse.set(false); appState.closeModal()">×</button></header>
-        <p class="modal-guidance">A alteração será aplicada imediatamente em todas as prévias e referências locais.</p>
-        <label>Novo nome<input name="renameValue" [(ngModel)]="renameValue" autofocus (keydown.enter)="confirmRenameUniverse()" /></label>
-        <footer><button type="button" class="secondary-button" (click)="renamingUniverse.set(false); appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!renameValue.trim()" (click)="confirmRenameUniverse()">Salvar nome</button></footer>
-      } @else if (appState.modalOpen() === 'metadata' && metadataTarget(); as target) {
-        <header><div><span class="eyebrow">ORGANIZAÇÃO</span><h2>Tags</h2></div><button type="button" (click)="appState.closeModal()">×</button></header>
-        <p class="modal-guidance"><strong>{{ target.name }}</strong> · Tags categorizam conteúdos. Campos pertencem somente às fichas de entidades.</p>
-        <section class="metadata-section"><header><strong>Tags do universo</strong><small>As mesmas tags podem ser usadas em universos, histórias, livros, capítulos, fichas, timeline e planejamento.</small></header>
-          <div class="metadata-tags">@for (tag of metadataTags(); track tag.id) { <span class="metadata-tag-item" [style.--tag-color]="tag.color"><button type="button" [class.active]="isMetadataTagAssigned(tag.id)" (click)="toggleMetadataTag(tag)"><i></i>{{ tag.name }}<small>{{ tag.assigned || 0 }}</small></button><button type="button" class="metadata-tag-delete" [attr.aria-label]="'Excluir tag ' + tag.name" (click)="deleteMetadataTag(tag)">×</button></span> } @empty { <p>Nenhuma tag criada neste universo.</p> }</div>
-          <div class="metadata-new-tag"><input name="newTagColor" type="color" [(ngModel)]="newTagColor" aria-label="Cor da tag" /><input name="newTagName" [(ngModel)]="newTagName" placeholder="Nova tag, ex.: fantasia sombria" /><button type="button" class="secondary-button" [disabled]="!newTagName.trim()" (click)="createMetadataTag()">Criar e aplicar</button></div>
-        </section>
-        <footer><button type="button" class="primary-button" (click)="appState.closeModal()">Concluir</button></footer>
-      } @else if (appState.modalOpen() === 'new-relation') {
-        <header><div><span class="eyebrow">CONEXÕES</span><h2>Nova conexão</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Origem<select name="relationSource" [(ngModel)]="newRelationSource"><option value="">Selecione</option>@for (entity of entities(); track entity.id) { <option [value]="entity.id">{{ entity.name }} · {{ entity.type }}</option> }</select></label><label>Relação<input name="relationLabel" [(ngModel)]="newRelationLabel" placeholder="Ex.: é irmão de" /></label><label>Destino<select name="relationTarget" [(ngModel)]="newRelationTarget"><option value="">Selecione</option>@for (entity of entities(); track entity.id) { <option [value]="entity.id">{{ entity.name }} · {{ entity.type }}</option> }</select></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newRelationSource || !newRelationTarget || !newRelationLabel.trim()" (click)="createRelation()">Criar conexão</button></footer>
-      }
+    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+      <header><div><span class="eyebrow">EDIÇÃO RÁPIDA</span><h2>Renomear universo</h2></div><button type="button" (click)="renamingUniverse.set(false); appState.closeModal()">×</button></header>
+      <p class="modal-guidance">A alteração será aplicada imediatamente em todas as prévias e referências locais.</p>
+      <label>Novo nome<input name="renameValue" [(ngModel)]="renameValue" autofocus (keydown.enter)="confirmRenameUniverse()" /></label>
+      <footer><button type="button" class="secondary-button" (click)="renamingUniverse.set(false); appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!renameValue.trim()" (click)="confirmRenameUniverse()">Salvar nome</button></footer>
     </form>
   </div>
+}
+
+@if (appState.modalOpen() === 'metadata') {
+  <app-tags-modal
+    [activeUniverseId]="appState.activeUniverseId()"
+    (closeRequested)="closeMetadata()"
+    (failed)="onKnowledgeFailed($event)"
+  />
 }
 
 @if (appState.modalOpen() === 'share-content') {

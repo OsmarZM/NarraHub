@@ -4,28 +4,27 @@ import { FormsModule } from '@angular/forms';
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
-  BookOption, ChapterOption, ContentTag, ContentTagAssignment, Entity, EntityWithDetails,
-  MentionOccurrence, MetadataOwnerType, PlanningItem, RelationCard, UniverseWithStats,
+  BookOption, ChapterOption, Entity, EntityWithDetails, MetadataOwnerType, PlanningItem, UniverseWithStats,
 } from './core/models';
 import { BackupManifest } from './core/services/backup.service';
 import { AiService } from './core/services/ai.service';
 import { DatabaseService } from './core/services/database.service';
 import { AppNavigationId, AppRouteState } from './core/navigation/app-navigation';
 import { AppNavigationService } from './core/navigation/app-navigation.service';
-import { MentionService } from './core/services/mention.service';
-import { MetadataService } from './core/services/metadata.service';
 import { OnlineShareDocument, SharedUniverse } from './core/services/online-share.service';
 import { PlanningService } from './core/services/planning.service';
-import { WorkspaceService } from './core/services/workspace.service';
 import { AppState } from './core/state/app.state';
 import { ShareCreateRequest, ShareModalComponent } from './features/collaboration/share-modal/share-modal.component';
 import { CollaborationStore } from './features/collaboration/state/collaboration.store';
-import { ConnectionsGraphComponent } from './features/connections/connections-graph.component';
+import { ConnectionsPageComponent } from './features/connections/connections-page.component';
+import { ConnectionsStore } from './features/connections/state/connections.store';
 import { EntitiesPageComponent, EntityMutationKind } from './features/entities/entities-page/entities-page.component';
 import { EntityHubType, EntityStore } from './features/entities/state/entity.store';
 import { PlanningBoardComponent } from './features/planning/planning-board.component';
 import { HistoryPageComponent } from './features/history/history-page.component';
 import { HistoryStore } from './features/history/state/history.store';
+import { KnowledgeStore } from './features/knowledge/state/knowledge.store';
+import { TagsModalComponent } from './features/knowledge/tags-modal/tags-modal.component';
 import { LibraryPageComponent } from './features/library/library-page.component';
 import { UniverseStore } from './features/library/state/universe.store';
 import { ManuscriptMetadataRequest, WritingPageComponent } from './features/manuscript/writing-page.component';
@@ -46,17 +45,6 @@ interface GlobalSearchResult {
   icon: string;
 }
 
-interface PendingRelationDelete {
-  id: string;
-  label: string;
-}
-
-interface MetadataTarget {
-  type: MetadataOwnerType;
-  id: string;
-  name: string;
-}
-
 @Component({
   selector: 'app-root',
   standalone: true,
@@ -68,11 +56,12 @@ interface MetadataTarget {
     UniverseSidebarComponent,
     LibraryPageComponent,
     EntitiesPageComponent,
-    ConnectionsGraphComponent,
+    ConnectionsPageComponent,
     PlanningBoardComponent,
     HistoryPageComponent,
     SettingsPageComponent,
     ShareModalComponent,
+    TagsModalComponent,
     TimelinePageComponent,
     WritingPageComponent,
   ],
@@ -83,15 +72,14 @@ export class App implements OnInit, OnDestroy {
   readonly Math = Math;
   readonly appState = inject(AppState);
   readonly ai = inject(AiService);
+  readonly knowledgeStore = inject(KnowledgeStore);
   private readonly db = inject(DatabaseService);
   private readonly universeStore = inject(UniverseStore);
   private readonly collaborationStore = inject(CollaborationStore);
+  private readonly connectionsStore = inject(ConnectionsStore);
   private readonly entityStore = inject(EntityStore);
   private readonly manuscriptStore = inject(ManuscriptStore);
-  private readonly mentionService = inject(MentionService);
-  private readonly metadataService = inject(MetadataService);
   private readonly planningService = inject(PlanningService);
-  private readonly workspaceService = inject(WorkspaceService);
   private readonly settingsStore = inject(SettingsStore);
   private readonly historyStore = inject(HistoryStore);
   private readonly timelineStore = inject(TimelineStore);
@@ -102,10 +90,9 @@ export class App implements OnInit, OnDestroy {
   readonly universes = this.universeStore.universes;
   readonly entities = this.entityStore.entities;
   readonly entityFilter = this.entityStore.filter;
-  readonly mentionOccurrences = signal<MentionOccurrence[]>([]);
+  readonly mentionOccurrences = this.knowledgeStore.mentionOccurrences;
   readonly timeline = this.timelineStore.events;
   readonly planning = signal<PlanningItem[]>([]);
-  readonly relations = signal<RelationCard[]>([]);
   readonly activeStory = this.manuscriptStore.activeStory;
   readonly activeBook = this.manuscriptStore.activeBook;
   readonly activeChapter = this.manuscriptStore.activeChapter;
@@ -122,19 +109,8 @@ export class App implements OnInit, OnDestroy {
   readonly updateProgress = this.settingsStore.updateProgress;
   readonly updatePromptDismissed = this.settingsStore.updatePromptDismissed;
   readonly lastOpenedUniverseId = signal<string | null>(localStorage.getItem('narrahub.lastUniverseId'));
-  readonly pendingRelationDelete = signal<PendingRelationDelete | null>(null);
   readonly renamingUniverse = signal(false);
-  readonly metadataTarget = signal<MetadataTarget | null>(null);
-  readonly metadataTags = signal<ContentTag[]>([]);
-  readonly metadataOwnerTags = signal<ContentTag[]>([]);
-  readonly libraryPreviewTags = signal<Record<string, ContentTag[]>>({});
-  readonly workspacePreviewTags = signal<Record<string, ContentTag[]>>({});
 
-  newRelationSource = '';
-  newRelationTarget = '';
-  newRelationLabel = '';
-  newTagName = '';
-  newTagColor = '#7d3650';
   renameValue = '';
 
   readonly navItems: SidebarNavItem[] = [
@@ -164,6 +140,7 @@ export class App implements OnInit, OnDestroy {
   });
 
   @ViewChild(WritingPageComponent) private writingPage?: WritingPageComponent;
+  @ViewChild(ConnectionsPageComponent) private connectionsPage?: ConnectionsPageComponent;
   @ViewChild(PlanningBoardComponent) private planningBoard?: PlanningBoardComponent;
   @ViewChild(TimelinePageComponent) private timelinePage?: TimelinePageComponent;
   @ViewChild(EntitiesPageComponent) readonly entitiesPage?: EntitiesPageComponent;
@@ -174,13 +151,12 @@ export class App implements OnInit, OnDestroy {
   private restoringRoute = false;
 
   constructor() {
-    // Hook cross-domain: menções (Knowledge, ainda não extraído) e estatísticas
-    // do universo dependem de um capítulo ter sido salvo, mas o ManuscriptStore
-    // não pode conhecer MentionService/UniverseStore. Ver o comentário do campo
-    // no próprio store.
+    // Hook cross-domain: o ManuscriptStore não pode conhecer o KnowledgeStore
+    // (menções são um domínio à parte). Ver o comentário do campo no próprio
+    // ManuscriptStore.
     this.manuscriptStore.onChapterPersisted = (chapterId, content) => {
-      void this.mentionService.syncChapterMentions(chapterId, this.entityIdsInContent(content, this.entities()));
-      void Promise.all([this.refreshUniverseStats(), this.refreshMentionOccurrences()]);
+      void this.knowledgeStore.syncChapterMentions(chapterId, content, this.entities());
+      void this.refreshUniverseStats();
     };
     effect(() => {
       const route = this.navigation.route();
@@ -234,7 +210,7 @@ export class App implements OnInit, OnDestroy {
   async toggleFullscreen(): Promise<void> { if (isTauri()) { const win = getCurrentWindow(); await win.setFullscreen(!(await win.isFullscreen())); } }
   async loadUniverses(): Promise<void> {
     await this.universeStore.load();
-    await this.refreshLibraryPreviewTags();
+    await this.knowledgeStore.refreshLibraryPreviewTags();
   }
 
   async selectNav(item: SidebarNavItem, updateRoute = true): Promise<void> {
@@ -251,7 +227,9 @@ export class App implements OnInit, OnDestroy {
       this.entityStore.setFilter(null);
       this.appState.openEntityList();
     }
-    else if (item.id === 'conexoes') { this.appState.openGraph(); await this.loadRelations(); }
+    // A própria ConnectionsPageComponent carrega as relações do universo ao
+    // montar (ngOnChanges em [universeId]); não é preciso pré-carregar aqui.
+    else if (item.id === 'conexoes') this.appState.openGraph();
     else if (item.id === 'timeline') this.appState.openTimeline();
     else if (item.id === 'planejamento') { this.appState.openPlanning(); await this.loadPlanning(); }
     else if (item.id === 'historico') this.appState.openHistory();
@@ -272,24 +250,6 @@ export class App implements OnInit, OnDestroy {
     if (this.lastOpenedUniverseId() === universeId) { localStorage.removeItem('narrahub.lastUniverseId'); this.lastOpenedUniverseId.set(null); }
     if (this.appState.activeUniverseId() === universeId) void this.returnToLibrary();
     this.showInfo('Universo excluído do banco local.');
-  }
-
-  requestDeleteRelation(id: string, label: string, event?: Event): void {
-    event?.stopPropagation();
-    this.pendingRelationDelete.set({ id, label });
-    this.appState.openModal('delete-item');
-  }
-
-  async confirmDeleteRelation(): Promise<void> {
-    const pending = this.pendingRelationDelete();
-    if (!pending) return;
-    try {
-      await this.workspaceService.deleteRelation(pending.id);
-      this.pendingRelationDelete.set(null);
-      this.appState.closeModal();
-      await Promise.all([this.refreshUniverseStats(), this.loadRelations()]);
-      this.showInfo('Ligação excluída do banco local.');
-    } catch (error) { this.reportError(`Não foi possível excluir ${pending.label}.`, error); }
   }
 
   beginRenameUniverse(): void {
@@ -332,6 +292,7 @@ export class App implements OnInit, OnDestroy {
   }
 
   beginCreateChapter(): void { this.writingPage?.openCreateChapter(); }
+  beginCreateConnection(): void { this.connectionsPage?.openCreateRelation(); }
   toggleInspector(): void { this.manuscriptStore.toggleInspector(); }
   manuscriptStories() { return this.manuscriptStore.stories(); }
   manuscriptChapters() { return this.manuscriptStore.universeChapters(); }
@@ -340,17 +301,16 @@ export class App implements OnInit, OnDestroy {
     const id = this.appState.activeUniverseId(); if (!id) return;
     const epoch = this.workspaceEpoch;
     try {
-      const [, , , planning, tagAssignments] = await Promise.all([
+      const [, , , planning] = await Promise.all([
         this.entityStore.load(id, true),
         this.timelineStore.load(id),
         this.manuscriptStore.load(id),
         this.planningService.list(id),
-        this.metadataService.listAssignments([id]),
+        this.knowledgeStore.load(id),
       ]);
       if (epoch !== this.workspaceEpoch || this.appState.activeUniverseId() !== id) return;
       this.planning.set(planning);
-      this.workspacePreviewTags.set(this.groupTagAssignments(tagAssignments));
-      void this.rebuildMentionIndex(id, this.manuscriptStore.universeChapters(), this.entityStore.entities());
+      void this.knowledgeStore.rebuildMentionIndex(id, this.manuscriptStore.universeChapters(), this.entityStore.entities());
     } catch (error) { this.reportError('Não foi possível carregar os dados do universo.', error); }
   }
 
@@ -394,14 +354,18 @@ export class App implements OnInit, OnDestroy {
   }
 
   async onEntityMutation(kind: EntityMutationKind): Promise<void> {
+    const universeId = this.appState.activeUniverseId();
     if (kind === 'created') await this.refreshUniverseStats();
-    else if (kind === 'renamed') await Promise.all([this.loadRelations(), this.refreshMentionOccurrences()]);
+    else if (kind === 'renamed') await Promise.all([
+      universeId ? this.connectionsStore.load(universeId) : Promise.resolve(),
+      universeId ? this.knowledgeStore.refreshMentionOccurrences(universeId) : Promise.resolve(),
+    ]);
     else if (kind === 'deleted') {
       await Promise.all([
         this.refreshUniverseStats(),
         this.manuscriptStore.refreshUniverseLists(),
-        this.loadRelations(),
-        this.refreshMentionOccurrences(),
+        universeId ? this.connectionsStore.load(universeId) : Promise.resolve(),
+        universeId ? this.knowledgeStore.refreshMentionOccurrences(universeId) : Promise.resolve(),
       ]);
     }
   }
@@ -417,6 +381,8 @@ export class App implements OnInit, OnDestroy {
   onManuscriptMetadata(request: ManuscriptMetadataRequest): void {
     void this.openMetadata(request.type, request.id, request.name);
   }
+
+  onKnowledgeFailed(message: string): void { this.reportError(message, message); }
 
   async openGlobalSearchResult(result: GlobalSearchResult): Promise<void> {
     this.searchQuery.set('');
@@ -436,13 +402,8 @@ export class App implements OnInit, OnDestroy {
     }
   }
 
-  async loadRelations(): Promise<void> { const id = this.appState.activeUniverseId(); if (!id) return; const data = await this.workspaceService.listRelations(id); if (this.appState.activeUniverseId() === id) this.relations.set(data); }
-  async createRelation(): Promise<void> {
-    const id = this.appState.activeUniverseId(); if (!id || !this.newRelationSource || !this.newRelationTarget || !this.newRelationLabel.trim()) return;
-    if (this.newRelationSource === this.newRelationTarget) { this.showInfo('Escolha duas entidades diferentes.'); return; }
-    await this.workspaceService.createRelation(id, this.newRelationSource, this.newRelationTarget, this.newRelationLabel.trim());
-    this.newRelationSource = ''; this.newRelationTarget = ''; this.newRelationLabel = ''; this.appState.closeModal(); await this.loadRelations();
-  }
+  onConnectionsInfo(message: string): void { this.showInfo(message); }
+  onConnectionsFailed(message: string): void { this.reportError(message, message); }
 
   async loadPlanning(): Promise<void> { const id = this.appState.activeUniverseId(); if (!id) return; const data = await this.planningService.list(id); if (this.appState.activeUniverseId() === id) this.planning.set(data); }
   beginCreatePlanning(): void { this.planningBoard?.openCreate(); }
@@ -455,35 +416,13 @@ export class App implements OnInit, OnDestroy {
 
   async openMetadata(type: MetadataOwnerType, id: string, name: string, event?: Event): Promise<void> {
     event?.stopPropagation();
-    const universeId = type === 'universe' ? id : this.appState.activeUniverseId(); if (!universeId) return;
-    this.metadataTarget.set({ type, id, name }); this.newTagName = '';
-    const [tags, ownerTags] = await Promise.all([
-      this.metadataService.listTags(universeId), this.metadataService.listOwnerTags(type, id),
-    ]);
-    this.metadataTags.set(tags); this.metadataOwnerTags.set(ownerTags); this.appState.openModal('metadata');
+    await this.knowledgeStore.openMetadata(type, id, name, this.appState.activeUniverseId());
+    this.appState.openModal('metadata');
   }
 
-  isMetadataTagAssigned(id: string): boolean { return this.metadataOwnerTags().some((tag) => tag.id === id); }
-
-  async createMetadataTag(): Promise<void> {
-    const target = this.metadataTarget(); const universeId = target?.type === 'universe' ? target.id : this.appState.activeUniverseId(); const name = this.newTagName.trim();
-    if (!universeId || !target || !name) return;
-    try {
-      const tag = await this.metadataService.createTag(universeId, name, this.newTagColor);
-      await this.metadataService.setTag(target.type, target.id, tag.id, true); this.newTagName = '';
-      await this.reloadMetadataTarget();
-    } catch (error) { this.reportError('Não foi possível criar a tag. Verifique se esse nome já existe.', error); }
-  }
-
-  async toggleMetadataTag(tag: ContentTag): Promise<void> {
-    const target = this.metadataTarget(); if (!target) return;
-    await this.metadataService.setTag(target.type, target.id, tag.id, !this.isMetadataTagAssigned(tag.id)); await this.reloadMetadataTarget();
-  }
-
-  async deleteMetadataTag(tag: ContentTag): Promise<void> {
-    if (!window.confirm(`Excluir a tag “${tag.name}” de todo o universo?`)) return;
-    await this.metadataService.deleteTag(tag.id);
-    await this.reloadMetadataTarget();
+  closeMetadata(): void {
+    this.knowledgeStore.closeMetadata();
+    this.appState.closeModal();
   }
 
   onSettingsInfo(message: string): void { this.showInfo(message); }
@@ -572,81 +511,7 @@ export class App implements OnInit, OnDestroy {
     if (updated && this.appState.activeUniverseId() === id) this.appState.activeUniverse.set(updated);
   }
 
-  private async refreshMentionOccurrences(): Promise<void> {
-    const id = this.appState.activeUniverseId(); if (!id) return;
-    const mentions = await this.mentionService.listByUniverse(id);
-    if (this.appState.activeUniverseId() === id) this.mentionOccurrences.set(mentions);
-  }
-
-  private async rebuildMentionIndex(universeId: string, chapters: ChapterOption[], entities: Entity[]): Promise<void> {
-    try {
-      for (const chapter of chapters) {
-        if (this.appState.activeUniverseId() !== universeId) return;
-        await this.mentionService.syncChapterMentions(chapter.id, this.entityIdsInContent(chapter.content || '', entities));
-      }
-      await this.refreshMentionOccurrences();
-    } catch (error) { console.warn('[NarraHub] Não foi possível atualizar o índice de menções.', error); }
-  }
-
-  private entityIdsInContent(content: string, entities: Entity[]): string[] {
-    const text = this.contentParagraphs(content).join(' ');
-    return entities.filter((entity) => this.textMentionsEntity(text, entity.name)).map((entity) => entity.id);
-  }
-
-  private contentParagraphs(content: string): string[] {
-    if (!content.trim()) return [];
-    const document = new DOMParser().parseFromString(content, 'text/html');
-    const blocks = [...document.querySelectorAll('p, blockquote, h1, h2, h3, li')].map((node) => node.textContent?.trim() || '').filter(Boolean);
-    const fallback = document.body.textContent?.trim();
-    return blocks.length ? blocks : fallback ? fallback.split(/\n+/u).map((value) => value.trim()).filter(Boolean) : [];
-  }
-
-  private textMentionsEntity(text: string, name: string): boolean {
-    const normalizedText = this.normalizeSearch(text); const normalizedName = this.normalizeSearch(name);
-    if (normalizedName.length < 2) return false;
-    const escaped = normalizedName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-    return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`, 'u').test(normalizedText);
-  }
-
   private normalizeSearch(value: string): string { return value.normalize('NFD').replace(/[̀-ͯ]/gu, '').toLocaleLowerCase('pt-BR').trim(); }
-
-  private async reloadMetadataTarget(): Promise<void> {
-    const target = this.metadataTarget(); const universeId = target?.type === 'universe' ? target.id : this.appState.activeUniverseId(); if (!universeId || !target) return;
-    const [tags, ownerTags] = await Promise.all([
-      this.metadataService.listTags(universeId), this.metadataService.listOwnerTags(target.type, target.id),
-    ]);
-    this.metadataTags.set(tags); this.metadataOwnerTags.set(ownerTags);
-    if (this.appState.activeUniverseId() === universeId) await this.refreshWorkspacePreviewTags(universeId);
-    if (target.type === 'universe') await this.refreshLibraryPreviewTags();
-  }
-
-  private async refreshLibraryPreviewTags(): Promise<void> {
-    const universeIds = this.universes().map((universe) => universe.id);
-    const assignments = await this.metadataService.listAssignments(universeIds, ['universe']);
-    this.libraryPreviewTags.set(this.groupTagAssignments(assignments));
-  }
-
-  private async refreshWorkspacePreviewTags(universeId: string): Promise<void> {
-    const assignments = await this.metadataService.listAssignments([universeId]);
-    if (this.appState.activeUniverseId() === universeId) this.workspacePreviewTags.set(this.groupTagAssignments(assignments));
-  }
-
-  private groupTagAssignments(assignments: ContentTagAssignment[]): Record<string, ContentTag[]> {
-    const grouped: Record<string, ContentTag[]> = {};
-    for (const assignment of assignments) {
-      const key = this.tagPreviewKey(assignment.owner_type, assignment.owner_id);
-      (grouped[key] ??= []).push({
-        id: assignment.id,
-        universe_id: assignment.universe_id,
-        name: assignment.name,
-        color: assignment.color,
-        created_at: assignment.created_at,
-      });
-    }
-    return grouped;
-  }
-
-  private tagPreviewKey(type: MetadataOwnerType, id: string): string { return `${type}:${id}`; }
 
   setWorkspaceNavigation(navId: Exclude<AppNavigationId, 'inicio' | 'configuracoes'>): void {
     this.activeNav.set(navId);
@@ -687,12 +552,11 @@ export class App implements OnInit, OnDestroy {
   private resetWorkspaceData(): void {
     this.manuscriptStore.reset();
     this.entityStore.reset();
-    this.mentionOccurrences.set([]);
+    this.knowledgeStore.reset();
+    this.connectionsStore.reset();
     this.timelineStore.reset();
     this.historyStore.reset();
     this.planning.set([]);
-    this.relations.set([]);
-    this.workspacePreviewTags.set({});
   }
 
   private async buildSharedUniverse(universe: UniverseWithStats, includeChapters: boolean, includeEntities: boolean): Promise<SharedUniverse> {

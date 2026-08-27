@@ -26,12 +26,18 @@ const featureFiles = [
   '../src/app/features/manuscript/writing-page.component.ts',
   '../src/app/features/manuscript/state/manuscript.store.ts',
   '../src/app/features/manuscript/gateways/manuscript.gateway.ts',
+  '../src/app/features/connections/connections-page.component.ts',
+  '../src/app/features/connections/state/connections.store.ts',
+  '../src/app/features/connections/gateways/connections.gateway.ts',
+  '../src/app/features/knowledge/state/knowledge.store.ts',
+  '../src/app/features/knowledge/gateways/knowledge.gateway.ts',
+  '../src/app/features/knowledge/tags-modal/tags-modal.component.ts',
 ];
 
 test('features extraídas não conhecem SQL nem o serviço legado', () => {
   for (const path of featureFiles) {
     const source = readFileSync(new URL(path, import.meta.url), 'utf8');
-    assert.doesNotMatch(source, /DatabaseService|WorkspaceService|UniverseService|EntityService|AttachmentService|CollaborationService|StoryService|BookService|ChapterService|MentionService|\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE FROM\b/u, path);
+    assert.doesNotMatch(source, /DatabaseService|WorkspaceService|UniverseService|EntityService|AttachmentService|CollaborationService|StoryService|BookService|ChapterService|MentionService|MetadataService|\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE FROM\b/u, path);
   }
 });
 
@@ -62,6 +68,11 @@ test('dependência SQL temporária fica restrita aos adapters legados', () => {
   assert.match(manuscriptSource, /StoryService/u);
   assert.match(manuscriptSource, /BookService/u);
   assert.match(manuscriptSource, /ChapterService/u);
+  const connectionsSource = readFileSync(new URL('../src/app/features/connections/gateways/legacy-connections.gateway.ts', import.meta.url), 'utf8');
+  assert.match(connectionsSource, /WorkspaceService/u);
+  const knowledgeSource = readFileSync(new URL('../src/app/features/knowledge/gateways/legacy-knowledge.gateway.ts', import.meta.url), 'utf8');
+  assert.match(knowledgeSource, /MetadataService/u);
+  assert.match(knowledgeSource, /MentionService/u);
 });
 
 test('App raiz não acessa mais o serviço legado de universos diretamente', () => {
@@ -99,4 +110,20 @@ test('App raiz delega história/livro/capítulo e o editor para a feature de Man
   assert.doesNotMatch(source, /StoryService|BookService|ChapterService|newStoryName|newChapterTitle|editorContent\(|applyFormat/u);
   assert.doesNotMatch(template, /selectTreeChapter\(|chapter-editor|activeEntityId/u);
   assert.match(template, /<app-writing-page/u);
+});
+
+test('App raiz delega conexões (relações) para a feature', () => {
+  const source = readFileSync(new URL('../src/app/app.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/app.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /WorkspaceService|newRelationSource|newRelationTarget|newRelationLabel|loadRelations|createRelation\b/u);
+  assert.doesNotMatch(template, /app-connections-graph|relation-pills-list|new-relation/u);
+  assert.match(template, /<app-connections-page/u);
+});
+
+test('App raiz delega tags e menções (Knowledge) para a feature', () => {
+  const source = readFileSync(new URL('../src/app/app.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/app.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /MetadataService|MentionService|metadataTarget|metadataTags|newTagName|newTagColor|groupTagAssignments|contentParagraphs|textMentionsEntity/u);
+  assert.doesNotMatch(template, /metadata-tag-item|metadata-new-tag/u);
+  assert.match(template, /<app-tags-modal/u);
 });

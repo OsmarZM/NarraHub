@@ -437,6 +437,40 @@ Com esta fatia, as sete ordens da Fase 2 estão endereçadas. O que **não** foi
 
 Os gateways continuam apontando para os serviços SQL existentes. Nenhuma migration é necessária.
 
+## Fase 2.1 — Conexões e Knowledge (relações, tags, menções)
+
+### Estado de implementação
+
+Fase adicional, fora do escopo original das 7 ordens da Fase 2, para fechar os dois gaps deixados por ela: a página de Conexões/Grafo e o domínio de Knowledge (tags e menções). Implementada em uma única fatia:
+
+- **Conexões** ganhou `features/connections/`: `ConnectionsGateway`/`LegacyConnectionsGateway` (envolvendo `WorkspaceService`, que já tinha os métodos de relação — o mesmo serviço que `LegacyTimelineGateway`/`LegacyHistoryGateway` também envolvem, cada um com sua própria fatia do contrato), um `ConnectionsStore` cobrindo a lista de relações do universo, e `ConnectionsPageComponent` hospedando o `<app-connections-graph>` (componente de apresentação já existente, sem mudanças) mais a lista de ligações e os próprios modais de criar/excluir conexão;
+- diferente de Entidades/Timeline (que o `App` carrega antecipadamente porque outras áreas leem os dados deles), relações só importam para quem está na própria tela de Conexões — por isso `ConnectionsPageComponent` carrega sozinho (`ngOnChanges` em `[universeId]`) e o `App` não faz mais um carregamento antecipado ao trocar de universo ou navegar para "conexões";
+- **Knowledge** ganhou `features/knowledge/`: um único `KnowledgeGateway`/`LegacyKnowledgeGateway` cobrindo tags (`MetadataService`) e menções (`MentionService`) — duas tabelas SQL diferentes, mas um único contrato, porque as duas são utilitários cross-cutting consumidos pelas mesmas features (Entidades, Timeline, Manuscrito, Biblioteca) sem ter uma tela própria; um `KnowledgeStore` cobrindo os previews de tags (biblioteca e workspace), o estado do modal de tags e o índice de menções; e `TagsModalComponent`, que substitui o caso `'metadata'` do modal compartilhado do `App` — o mesmo padrão do `ShareModalComponent` na fatia de Colaboração;
+- o `KnowledgeStore` injeta `UniverseStore` diretamente (para saber quais universos existem ao recarregar os previews de tags da Biblioteca) — é uma composição entre dois stores de domínios diferentes, não um acesso a serviço legado, então não fere o limite que os testes de fronteira protegem;
+- sincronizar menções ao salvar um capítulo continua uma escrita cross-domain: o hook `onChapterPersisted` do `ManuscriptStore` (criado na fatia anterior) agora chama `KnowledgeStore.syncChapterMentions(...)` em vez de `MentionService` direto — o `ManuscriptStore` nunca precisou saber qual serviço trata menções, só que *algo* precisa ser notificado;
+- o host de modais compartilhado do `App` ficou reduzido a **um único caso**: renomear universo. Excluir relação e a organização de tags — os dois últimos usos do host genérico — agora são autocontidos nas respectivas features, mesmo padrão de Entidades/Manuscrito;
+- CSS de grafo/relações e do modal de tags copiado para o CSS próprio de cada componente novo (encapsulamento padrão do Angular, já que não havia necessidade de reaproveitar nomes de classe fora do componente). As cópias antigas em `app.css` (`.graph-toolbar`, `.relation-*`, `.metadata-section`/`.metadata-tags`/`.metadata-new-tag`) ficam como dívida documentada, mesmo tratamento das fatias anteriores;
+- teste de fronteira cobre os seis arquivos novos e confirma que `app.ts`/`app.html` não referenciam mais `WorkspaceService` (para relações), `MetadataService` nem `MentionService`, nem os campos de formulário dos modais antigos;
+- build de produção Angular e `npm run test:architecture` foram exercitados (14/14). Verificado via `ng serve` em aba nova, sem erro de console — como o `App` injeta `KnowledgeStore`/`ConnectionsStore` diretamente (e cada um resolve seu gateway no construtor), um provider faltando em `app.config.ts` teria aparecido como `NG0201` já no boot da aplicação, não só ao navegar para uma tela específica.
+
+Com esta fatia, os dois gaps documentados ao final da Fase 2 estão fechados. Não ficou nenhum domínio de conteúdo (história, livro, capítulo, entidade, timeline, planejamento, relação, tag, menção) chamando um serviço Angular legado direto do `App` — o que resta em `App` é orquestração cross-domínio genuína (busca global, restaurar rota, montar o payload de Compartilhamento) e o único modal que nenhuma feature reivindicou (renomear universo).
+
+### Entregas
+
+- `ConnectionsGateway`/`LegacyConnectionsGateway`, `ConnectionsStore`, `ConnectionsPageComponent`.
+- `KnowledgeGateway`/`LegacyKnowledgeGateway`, `KnowledgeStore`, `TagsModalComponent`.
+- Reduzir o host de modais compartilhado do `App` ao caso restante sem feature própria (renomear universo).
+
+### Testes reais
+
+- teste de fronteira cobrindo os seis arquivos novos e a delegação em `app.ts`/`app.html`;
+- build de produção Angular;
+- checagem visual via `ng serve` em aba nova, sem erro de console.
+
+### Rollback
+
+Os gateways continuam apontando para os serviços SQL existentes (`WorkspaceService`, `MetadataService`, `MentionService`). Nenhuma migration é necessária.
+
 ## Fase 3 — Router e carregamento por feature
 
 ### Estado de implementação
