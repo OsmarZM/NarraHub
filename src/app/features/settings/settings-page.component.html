@@ -1,4 +1,6 @@
 <section class="feature-page settings-page page-enter">
+  @if (errorMessage()) { <div class="settings-feedback error" role="alert"><span>{{ errorMessage() }}</span><button type="button" (click)="errorMessage.set('')">×</button></div> }
+  @if (infoMessage()) { <div class="settings-feedback info" role="status"><span>{{ infoMessage() }}</span><button type="button" (click)="infoMessage.set('')">×</button></div> }
   <header class="feature-heading"><div><span class="eyebrow">PREFERÊNCIAS</span><h1>Configurações</h1><p>Escolha uma área para ajustar sem misturar recursos diferentes.</p></div></header>
   <div class="settings-shell">
     <nav class="settings-nav" aria-label="Seções das configurações">
@@ -115,10 +117,10 @@
         }
         @if (aiMode !== 'local') { <small class="security-note">A IA local permanece neste computador. APIs remotas precisam usar HTTPS.</small> }
         <section class="ai-creative-profile">
-          <header><div><span>CONTEXTO CRIATIVO LOCAL</span><strong>Como a IA deve colaborar com você?</strong></div><small>{{ aiMemoryCount(activeUniverseId) }} decisão(ões) aceita(s) neste universo</small></header>
+          <header><div><span>ORIENTAÇÃO GLOBAL LOCAL</span><strong>Como a IA deve colaborar com você?</strong></div><small>Válido neste dispositivo</small></header>
           <textarea [(ngModel)]="aiWriterGuidance" maxlength="2000" placeholder="Ex.: Prefiro nomes curtos, conflitos moralmente ambíguos e desenvolvimento gradual. Evite soluções convenientes."></textarea>
-          <div><button type="button" class="secondary-button" (click)="saveWriterGuidance()">Salvar orientações</button><button type="button" class="text-button danger-outline" [disabled]="!aiMemoryCount(activeUniverseId)" (click)="clearAiLearning(activeUniverseId)">Esquecer decisões deste universo</button></div>
-          <p>O NarraHub combina essas orientações com as fichas, relações e decisões que você aceitou. Ele não treina o modelo nem envia o universo inteiro.</p>
+          <div><button type="button" class="secondary-button" (click)="saveWriterGuidance()">Salvar orientações</button></div>
+          <p>As orientações são globais. A memória criativa de cada universo será administrada no futuro contexto de configurações do próprio workspace.</p>
         </section>
       </article>
 

@@ -475,34 +475,72 @@ Os gateways continuam apontando para os serviços SQL existentes (`WorkspaceServ
 
 ### Estado de implementação
 
-A fundação do Router foi iniciada sem duplicar telas nem trocar a fonte de estado das features:
+A fundação do Router começou sem duplicar telas nem trocar a fonte de estado das features. A direção consolidada para a fase é:
 
-- rotas de alto nível representam biblioteca, configurações e seções do workspace;
-- URLs usam o ID estável do universo e nomes estáveis de seção;
-- o shell restaura uma rota profunda válida após inicializar o banco local;
-- uma rota para universo inexistente retorna à biblioteca com mensagem recuperável;
-- Signals e `AppState` continuam controlando a apresentação enquanto os demais ciclos de vida são extraídos;
-- navegação real entre `/library` e `/settings`, além do fallback de deep link inválido, foi validada em Chromium;
-- resolvers, guards de autosave, componentes roteados e lazy loading permanecem para as próximas fatias desta fase.
+```text
+App (somente RouterOutlet)
+└── RootLayout (titlebar e infraestrutura global)
+    ├── /library
+    ├── /settings
+    └── WorkspaceLayout (/workspace/:universeId)
+        ├── writing
+        ├── entities
+        ├── connections
+        ├── timeline
+        ├── planning
+        └── history
+```
+
+O Router é a fonte do estado de navegação (`rota`, `universeId`, `section` e IDs profundos). Stores continuam sendo a fonte do estado de domínio. Signals locais continuam sendo a fonte do estado efêmero de UI. `AppState` não deve competir com a URL; sua redução será gradual conforme cada rota assumir o próprio ciclo de vida.
+
+#### Fase 3.0 — infraestrutura e piloto de Settings
+
+Implementada nesta fatia:
+
+- `App` foi reduzido ao `RouterOutlet`; o shell anterior passou a ser um `RootLayoutComponent` roteado, sem reescrever seu visual;
+- `/settings` passou a carregar `SettingsPageComponent` por `loadComponent`, como primeira feature lazy real;
+- Settings foi mantida como rota global: não lê `AppState.activeUniverseId` nem recebe universo ativo implicitamente;
+- as orientações de IA que são globais continuam em `/settings`; a memória criativa específica de universo fica reservada para uma futura rota explícita `/workspace/:universeId/settings`, sem misturar os dois escopos;
+- ações de backup, restauração, update, sync e colaboração são orquestradas pela própria feature; o layout não faz binding de eventos de domínio da página roteada;
+- metadados básicos de navegação (`navigationId` e `label`) foram colocados em `route.data`; a substituição do menu hardcoded por esse contrato ocorrerá junto do `WorkspaceLayout`;
+- `/library` e `/workspace/:universeId/:section` ainda usam o ciclo de vida legado dentro do `RootLayout`. Isso é uma ponte temporária, não uma segunda arquitetura nem dual-write.
+
+Não foi incluído nesta fatia: `WorkspaceLayout`, `AppBootstrapService`, resolver de universo, guard do editor ou migração das demais features para componentes roteados.
+
+#### Fase 3.1 — WorkspaceLayout, bootstrap e resolver
+
+- criar `WorkspaceLayoutComponent` para sidebar, cabeçalho contextual e outlet do workspace;
+- mover a inicialização global para `AppBootstrapService`, registrado com `provideAppInitializer`, concluída antes de qualquer resolver consultar SQLite;
+- manter `UniverseResolver` pequeno: validar o ID, selecionar/carregar o universo e retornar estado recuperável; não carregar entidades, manuscrito, timeline, planejamento ou demais domínios;
+- fazer menu e breadcrumb consumirem `route.data` como fonte única de rótulos e identidade de navegação;
+- validar cold start e deep link no runtime Tauri, além do navegador.
+
+#### Fase 3.2 — rotas das features
+
+Migrar, uma por vez, History, Timeline, Planning, Entities e Connections para filhos lazy de `WorkspaceLayout`. Cada página carrega o próprio domínio usando o `universeId` resolvido e descarta respostas atrasadas. Não manter a árvore antiga e a árvore roteada ativas ao mesmo tempo.
+
+#### Fase 3.3 — Writing por último
+
+Migrar Writing somente depois das demais rotas. `CanDeactivate` protege navegação Angular, mas não substitui o primitivo explícito `saveNow()`, que continua obrigatório para fechar janela, instalar atualização, restaurar backup e outros eventos fora do Router.
 
 ### Entregas
 
 ```text
-/universes
-/universe/:universeId/write/:chapterId?
-/universe/:universeId/entities/:entityId?
-/universe/:universeId/connections
-/universe/:universeId/timeline
-/universe/:universeId/planning
-/universe/:universeId/history
-/universe/:universeId/share
+/library
 /settings
+/workspace/:universeId/writing/:chapterId?
+/workspace/:universeId/entities/:entityId?
+/workspace/:universeId/connections
+/workspace/:universeId/timeline
+/workspace/:universeId/planning
+/workspace/:universeId/history
 ```
 
-- Resolver carrega o universo pelo ID.
-- Guard salva o editor antes de sair.
+- Resolver valida e seleciona o universo pelo ID sem carregar todos os domínios.
+- Guard salva o editor antes de navegação Angular; eventos nativos continuam chamando `saveNow()`.
 - URLs guardam IDs, nunca nomes mutáveis.
 - Features pesadas são lazy-loaded.
+- `route.data` é a fonte de navegação e breadcrumb.
 
 ### Testes reais
 
@@ -511,6 +549,9 @@ A fundação do Router foi iniciada sem duplicar telas nem trocar a fonte de est
 - renomear item sem quebrar URL;
 - abrir URL de item excluído e mostrar estado recuperável;
 - medir bundle inicial e garantir que grafo/configurações não carreguem na escrita.
+- abrir `/settings` e deep links de workspace com o aplicativo Tauri totalmente fechado;
+- validar fallback de rota no protocolo de produção do Tauri, não apenas no `ng serve`;
+- confirmar visual da versão 0.7.5 em `/library`, `/settings` e no shell do workspace.
 
 ### Rollback
 

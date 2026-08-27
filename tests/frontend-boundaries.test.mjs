@@ -75,54 +75,66 @@ test('dependência SQL temporária fica restrita aos adapters legados', () => {
   assert.match(knowledgeSource, /MentionService/u);
 });
 
-test('App raiz não acessa mais o serviço legado de universos diretamente', () => {
+test('App raiz é somente o outlet do Router', () => {
   const source = readFileSync(new URL('../src/app/app.ts', import.meta.url), 'utf8');
-  assert.doesNotMatch(source, /UniverseService/u, 'app.ts deve depender de UniverseStore/UniverseGateway, não do serviço legado');
+  assert.match(source, /RouterOutlet/u);
+  assert.doesNotMatch(source, /features\/|AppState|DatabaseService|SettingsStore/u);
 });
 
-test('App raiz delega o domínio de entidades para a feature', () => {
-  const source = readFileSync(new URL('../src/app/app.ts', import.meta.url), 'utf8');
-  const template = readFileSync(new URL('../src/app/app.html', import.meta.url), 'utf8');
+test('RootLayout não acessa o serviço legado de universos diretamente', () => {
+  const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /UniverseService/u, 'RootLayout deve depender de UniverseStore/UniverseGateway, não do serviço legado');
+});
+
+test('RootLayout delega o domínio de entidades para a feature', () => {
+  const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/root-layout.component.html', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /EntityService|AttachmentService|newEntityName|entityGallery|entityAiBusy/u);
   assert.doesNotMatch(template, /activeEntity\(|newEntityName|entityGallery\(|patchActiveEntity|updateActiveEntity/u);
   assert.match(template, /<app-entities-page/u);
 });
 
-test('App raiz delega configurações, backup, IA local, sync e atualização para a feature', () => {
-  const source = readFileSync(new URL('../src/app/app.ts', import.meta.url), 'utf8');
-  const template = readFileSync(new URL('../src/app/app.html', import.meta.url), 'utf8');
+test('Settings é rota global lazy e não depende de universo ativo', () => {
+  const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/root-layout.component.html', import.meta.url), 'utf8');
+  const settings = readFileSync(new URL('../src/app/features/settings/settings-page.component.ts', import.meta.url), 'utf8');
+  const routes = readFileSync(new URL('../src/app/app.routes.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /BackupService|SyncService|UpdateService|ThemeService|aiInstallBusy|aiSelectedProfile/u);
   assert.doesNotMatch(template, /settingsSection\(|theme\.preference\(|backupBusy\(|syncStatus\(/u);
-  assert.match(template, /<app-settings-page/u);
+  assert.match(template, /<router-outlet/u);
+  assert.match(routes, /features\/settings\/settings-page\.component/u);
+  assert.match(routes, /path: 'library'.*children: \[\]/u, 'a rota marcadora da biblioteca precisa ser válida no runtime Angular');
+  assert.match(routes, /path: 'workspace\/.*children: \[\]/u, 'a rota marcadora do workspace precisa ser válida no runtime Angular');
+  assert.doesNotMatch(settings, /activeUniverseId|AppState/u);
 });
 
-test('App raiz delega colaboração e compartilhamento para a feature', () => {
-  const source = readFileSync(new URL('../src/app/app.ts', import.meta.url), 'utf8');
-  const template = readFileSync(new URL('../src/app/app.html', import.meta.url), 'utf8');
+test('RootLayout delega colaboração e compartilhamento para a feature', () => {
+  const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/root-layout.component.html', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /CollaborationService|\bOnlineShareService\b|shareSelectedUniverseIds|rememberShare/u);
   assert.doesNotMatch(template, /isUniverseSelectedForShare|selectAllShareUniverses|shareChoice/u);
   assert.match(template, /<app-share-modal/u);
 });
 
-test('App raiz delega história/livro/capítulo e o editor para a feature de Manuscrito', () => {
-  const source = readFileSync(new URL('../src/app/app.ts', import.meta.url), 'utf8');
-  const template = readFileSync(new URL('../src/app/app.html', import.meta.url), 'utf8');
+test('RootLayout delega história/livro/capítulo e o editor para a feature de Manuscrito', () => {
+  const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/root-layout.component.html', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /StoryService|BookService|ChapterService|newStoryName|newChapterTitle|editorContent\(|applyFormat/u);
   assert.doesNotMatch(template, /selectTreeChapter\(|chapter-editor|activeEntityId/u);
   assert.match(template, /<app-writing-page/u);
 });
 
-test('App raiz delega conexões (relações) para a feature', () => {
-  const source = readFileSync(new URL('../src/app/app.ts', import.meta.url), 'utf8');
-  const template = readFileSync(new URL('../src/app/app.html', import.meta.url), 'utf8');
+test('RootLayout delega conexões (relações) para a feature', () => {
+  const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/root-layout.component.html', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /WorkspaceService|newRelationSource|newRelationTarget|newRelationLabel|loadRelations|createRelation\b/u);
   assert.doesNotMatch(template, /app-connections-graph|relation-pills-list|new-relation/u);
   assert.match(template, /<app-connections-page/u);
 });
 
-test('App raiz delega tags e menções (Knowledge) para a feature', () => {
-  const source = readFileSync(new URL('../src/app/app.ts', import.meta.url), 'utf8');
-  const template = readFileSync(new URL('../src/app/app.html', import.meta.url), 'utf8');
+test('RootLayout delega tags e menções (Knowledge) para a feature', () => {
+  const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/root-layout.component.html', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /MetadataService|MentionService|metadataTarget|metadataTags|newTagName|newTagColor|groupTagAssignments|contentParagraphs|textMentionsEntity/u);
   assert.doesNotMatch(template, /metadata-tag-item|metadata-new-tag/u);
   assert.match(template, /<app-tags-modal/u);

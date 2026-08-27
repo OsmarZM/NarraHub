@@ -60,17 +60,7 @@
       @if (isLoading()) {
         <section class="center-state"><div class="loader"></div><p>Abrindo seu workspace local...</p></section>
       } @else if (activeNav() === 'configuracoes') {
-        <app-settings-page
-          [activeUniverseId]="appState.activeUniverseId()"
-          (info)="onSettingsInfo($event)"
-          (failed)="onSettingsFailed($event)"
-          (backupCreateRequested)="createManualBackup()"
-          (restorePrepareRequested)="prepareRestoreBackup($event)"
-          (updateCheckRequested)="checkForUpdates()"
-          (updateInstallRequested)="installUpdate()"
-          (synced)="loadUniverses()"
-          (collaborationApplied)="onCollaborationApplied($event)"
-        />
+        <router-outlet />
       } @else if (appState.currentView() === 'home') {
         <app-library-page
           [query]="searchQuery()"

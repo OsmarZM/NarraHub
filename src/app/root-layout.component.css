@@ -1,3 +1,4 @@
+/* Estilos do shell legado, agora hospedado pelo RootLayout roteado. */
 :host {
   --bg: var(--nh-bg); --panel: color-mix(in srgb, var(--nh-surface) 94%, transparent); --surface: var(--nh-surface); --surface-2: var(--nh-surface-muted);
   --text: var(--nh-ink); --muted: var(--nh-ink-muted); --subtle: color-mix(in srgb, var(--nh-ink-muted) 76%, transparent); --line: var(--nh-border);
@@ -559,4 +560,3 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   color: #fff;
   background: var(--nh-danger);
 }
-

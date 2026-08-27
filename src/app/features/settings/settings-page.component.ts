@@ -1,4 +1,4 @@
-import { Component, EventEmitter, Input, OnInit, Output, ViewEncapsulation, inject, signal } from '@angular/core';
+import { Component, OnInit, ViewEncapsulation, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { AiMode, AiModelProfile, AiService } from '../../core/services/ai.service';
 import { BackupManifest } from '../../core/services/backup.service';
@@ -22,22 +22,6 @@ type RestoreModal = 'restore-backup' | null;
   encapsulation: ViewEncapsulation.None,
 })
 export class SettingsPageComponent implements OnInit {
-  // A memória criativa da IA é isolada por universo (Assistance depende de
-  // Workspace); o universo ativo em si continua vivendo no AppState.
-  @Input() activeUniverseId: string | null = null;
-
-  @Output() readonly info = new EventEmitter<string>();
-  @Output() readonly failed = new EventEmitter<string>();
-  @Output() readonly backupCreateRequested = new EventEmitter<void>();
-  @Output() readonly restorePrepareRequested = new EventEmitter<BackupManifest>();
-  @Output() readonly updateCheckRequested = new EventEmitter<void>();
-  @Output() readonly updateInstallRequested = new EventEmitter<void>();
-  @Output() readonly synced = new EventEmitter<void>();
-  // Emitido só quando uma revisão/aprovação em lote de fato altera conteúdo
-  // canônico — o App ainda precisa atualizar capítulo/ficha ativos (Editor
-  // não foi extraído) e as estatísticas do universo.
-  @Output() readonly collaborationApplied = new EventEmitter<string>();
-
   readonly store = inject(SettingsStore);
   readonly collaboration = inject(CollaborationStore);
   readonly ai = inject(AiService);
@@ -46,6 +30,8 @@ export class SettingsPageComponent implements OnInit {
   readonly section = signal<SettingsSection>('general');
   readonly restoreModal = signal<RestoreModal>(null);
   readonly pendingRestoreBackup = signal<BackupManifest | null>(null);
+  readonly infoMessage = signal('');
+  readonly errorMessage = signal('');
 
   aiMode: AiMode = this.ai.settings().mode;
   aiEndpoint = this.ai.settings().endpoint;
@@ -64,6 +50,8 @@ export class SettingsPageComponent implements OnInit {
   ngOnInit(): void {
     this.aiSelectedProfile = (this.ai.localStatus().installedProfile as AiModelProfile['id']) || this.ai.localStatus().recommended.id;
     void this.store.refreshSyncStatus();
+    void this.store.refreshBackupStatus();
+    void this.store.primeCurrentVersion();
   }
 
   selectSection(section: SettingsSection): void {
@@ -82,7 +70,7 @@ export class SettingsPageComponent implements OnInit {
     this.aiInstallError.set('');
     if (mode === 'off') {
       this.ai.disable();
-      this.info.emit('Assistência por IA desativada.');
+      this.showInfo('Assistência por IA desativada.');
     } else if (mode === 'local') {
       this.aiEndpoint = '';
       this.aiModel = '';
@@ -111,7 +99,7 @@ export class SettingsPageComponent implements OnInit {
       await this.ai.installLocal(profile);
       this.aiMode = 'local';
       this.aiSelectedProfile = profile;
-      this.info.emit('IA local instalada e iniciada. Ela será carregada automaticamente com o NarraHub.');
+      this.showInfo('IA local instalada e iniciada. Ela será carregada automaticamente com o NarraHub.');
     } catch (error) {
       console.error('[NarraHub] A instalação da IA local falhou.', error);
       this.aiInstallError.set(this.messageOf(error));
@@ -128,7 +116,7 @@ export class SettingsPageComponent implements OnInit {
       this.ai.configure({ mode: 'local', endpoint: '', model: '' }, '');
       await this.ai.startLocalEngine(this.ai.localStatus().state === 'error');
       this.aiMode = 'local';
-      this.info.emit('IA local iniciada.');
+      this.showInfo('IA local iniciada.');
     } catch (error) {
       this.aiInstallError.set(this.messageOf(error));
     } finally {
@@ -142,7 +130,7 @@ export class SettingsPageComponent implements OnInit {
     this.aiInstallError.set('');
     try {
       await this.ai.startLocalEngine(true);
-      this.info.emit('IA local reiniciada em modo seguro.');
+      this.showInfo('IA local reiniciada em modo seguro.');
     } catch (error) {
       this.aiInstallError.set(this.messageOf(error));
     } finally {
@@ -167,36 +155,28 @@ export class SettingsPageComponent implements OnInit {
       if (this.aiMode === 'local') { void this.activateLocalAi(); return; }
       this.ai.configure({ mode: this.aiMode, endpoint: this.aiEndpoint, model: this.aiModel }, this.aiApiKey);
       this.aiEndpoint = this.ai.settings().endpoint;
-      this.info.emit(this.aiMode === 'off' ? 'Assistência por IA desativada.' : 'API própria configurada para esta sessão.');
+      this.showInfo(this.aiMode === 'off' ? 'Assistência por IA desativada.' : 'API própria configurada para esta sessão.');
     } catch (error) {
-      this.failed.emit(this.messageOf(error));
+      this.showError(this.messageOf(error));
     }
   }
 
   saveWriterGuidance(): void {
     this.ai.setWriterGuidance(this.aiWriterGuidance);
-    this.info.emit('Perfil criativo salvo somente neste dispositivo.');
-  }
-
-  clearAiLearning(universeId: string | null): void {
-    if (!universeId || !window.confirm('Esquecer as decisões de IA registradas neste universo?')) return;
-    this.ai.forgetCreativeMemory(universeId);
-    this.info.emit('Memória de decisões deste universo removida.');
-  }
-
-  aiMemoryCount(universeId: string | null): number {
-    return universeId ? this.ai.creativeMemory().filter((item) => item.scope === universeId).length : 0;
+    this.showInfo('Perfil criativo salvo somente neste dispositivo.');
   }
 
   // ── Backup e integridade ─────────────────────────────────
 
-  requestManualBackup(): void {
-    this.backupCreateRequested.emit();
+  async requestManualBackup(): Promise<void> {
+    const result = await this.store.createBackup('manual');
+    if (result.ok) this.showInfo('Backup local criado e validado.');
+    else if (result.error) this.showError(result.error);
   }
 
   async validateBackup(backupId: string): Promise<void> {
     const result = await this.store.validateBackup(backupId);
-    if (result.ok) this.info.emit('Backup íntegro e compatível com o manifesto.');
+    if (result.ok) this.showInfo('Backup íntegro e compatível com o manifesto.');
   }
 
   requestRestoreBackup(backup: BackupManifest): void {
@@ -212,26 +192,34 @@ export class SettingsPageComponent implements OnInit {
     this.pendingRestoreBackup.set(null);
   }
 
-  requestPrepareRestore(): void {
+  async requestPrepareRestore(): Promise<void> {
     const backup = this.pendingRestoreBackup();
-    if (backup) this.restorePrepareRequested.emit(backup);
+    if (!backup) return;
+    if (this.collaboration.shareSession().running || this.store.syncStatus().running) {
+      this.store.backupError.set('Encerre o compartilhamento e a sincronização antes de restaurar um backup.');
+      return;
+    }
+    const result = await this.store.prepareRestore(backup.backupId);
+    if (!result.ok && result.error) this.showError(result.error);
   }
 
   async confirmRestore(): Promise<void> {
     const preparation = this.store.restorePreparation();
     if (!preparation || this.restoreConfirmation.trim() !== 'RESTAURAR' || this.store.backupBusy()) return;
     const result = await this.store.commitRestore(preparation.token);
-    if (!result.ok) this.failed.emit(result.error || 'Não foi possível concluir a restauração recuperável.');
+    if (!result.ok) this.showError(result.error || 'Não foi possível concluir a restauração recuperável.');
   }
 
   // ── Atualizações ─────────────────────────────────────────
 
-  requestUpdateCheck(): void {
-    this.updateCheckRequested.emit();
+  async requestUpdateCheck(): Promise<void> {
+    const result = await this.store.checkForUpdates(false);
+    if (result.message) result.ok ? this.showInfo(result.message) : this.showError(result.message);
   }
 
-  requestUpdateInstall(): void {
-    this.updateInstallRequested.emit();
+  async requestUpdateInstall(): Promise<void> {
+    const result = await this.store.installUpdate();
+    if (!result.ok && result.error) this.showError(result.error);
   }
 
   dismissUpdatePrompt(): void {
@@ -243,60 +231,57 @@ export class SettingsPageComponent implements OnInit {
   saveDeviceName(): void {
     this.deviceName = this.deviceName.trim() || 'Meu computador';
     localStorage.setItem('narrahub.deviceName', this.deviceName);
-    this.info.emit('Nome do dispositivo salvo.');
+    this.showInfo('Nome do dispositivo salvo.');
   }
 
   async startSync(): Promise<void> {
     this.saveDeviceName();
     const result = await this.store.startSync(this.deviceName);
-    if (!result.ok && result.error) this.failed.emit(result.error);
+    if (!result.ok && result.error) this.showError(result.error);
   }
 
   async stopSync(): Promise<void> {
     const result = await this.store.stopSync();
-    if (!result.ok && result.error) this.failed.emit(result.error);
+    if (!result.ok && result.error) this.showError(result.error);
   }
 
   async connectSync(): Promise<void> {
     const result = await this.store.connectSync(this.remoteAddress, this.pairingCode, this.deviceName);
-    if (!result.ok) { if (result.error) this.failed.emit(result.error); return; }
-    this.synced.emit();
+    if (!result.ok) { if (result.error) this.showError(result.error); return; }
     const peer = result.result;
-    if (peer) this.info.emit(`Sincronizado com ${peer.peer_name}: ${peer.received} recebidos, ${peer.sent} enviados, ${peer.conflicts} conflitos.`);
+    if (peer) this.showInfo(`Sincronizado com ${peer.peer_name}: ${peer.received} recebidos, ${peer.sent} enviados, ${peer.conflicts} conflitos.`);
   }
 
   // ── Compartilhamento e colaboração ───────────────────────
 
   async startShare(): Promise<void> {
     const result = await this.collaboration.startShareSession();
-    if (result.ok) this.info.emit('Compartilhamento temporário disponível enquanto o NarraHub estiver aberto.');
-    else this.failed.emit(result.error || 'Não foi possível abrir o compartilhamento temporário.');
+    if (result.ok) this.showInfo('Compartilhamento temporário disponível enquanto o NarraHub estiver aberto.');
+    else this.showError(result.error || 'Não foi possível abrir o compartilhamento temporário.');
   }
 
   async stopShare(): Promise<void> {
     const result = await this.collaboration.stopShareSession();
-    if (result.ok) this.info.emit('Sessão encerrada. Todos os links temporários foram invalidados.');
-    else this.failed.emit(result.error || 'Não foi possível encerrar o compartilhamento.');
+    if (result.ok) this.showInfo('Sessão encerrada. Todos os links temporários foram invalidados.');
+    else this.showError(result.error || 'Não foi possível encerrar o compartilhamento.');
   }
 
   async revokeShare(share: StoredOnlineShare): Promise<void> {
     const result = await this.collaboration.revokeShare(share);
-    if (result.ok) this.info.emit('Compartilhamento revogado. O link não pode mais ser aberto.');
-    else this.failed.emit(result.error || 'Não foi possível revogar o compartilhamento.');
+    if (result.ok) this.showInfo('Compartilhamento revogado. O link não pode mais ser aberto.');
+    else this.showError(result.error || 'Não foi possível revogar o compartilhamento.');
   }
 
   async reviewContribution(item: CollaborationContribution, decision: 'approved' | 'rejected'): Promise<void> {
     const result = await this.collaboration.review(item, decision);
-    if (!result.ok) { this.failed.emit(result.error || 'Não foi possível revisar a alteração colaborativa.'); return; }
-    this.info.emit(decision === 'approved' ? 'Alteração aprovada e aplicada ao banco local.' : 'Alteração rejeitada e preservada no histórico da sessão.');
-    if (result.universeId) this.collaborationApplied.emit(result.universeId);
+    if (!result.ok) { this.showError(result.error || 'Não foi possível revisar a alteração colaborativa.'); return; }
+    this.showInfo(decision === 'approved' ? 'Alteração aprovada e aplicada ao banco local.' : 'Alteração rejeitada e preservada no histórico da sessão.');
   }
 
   async approveAllContributions(sessionId: string): Promise<void> {
     const result = await this.collaboration.approveAll(sessionId);
-    if (!result.ok) { this.failed.emit(result.error || 'Não foi possível aprovar as alterações em lote.'); return; }
-    this.info.emit(`${result.count} alteração(ões) aprovada(s) e aplicada(s).`);
-    if (this.activeUniverseId) this.collaborationApplied.emit(this.activeUniverseId);
+    if (!result.ok) { this.showError(result.error || 'Não foi possível aprovar as alterações em lote.'); return; }
+    this.showInfo(`${result.count} alteração(ões) aprovada(s) e aplicada(s).`);
   }
 
   sharePermissionLabel(permission: SharePermission): string {
@@ -312,6 +297,16 @@ export class SettingsPageComponent implements OnInit {
     if (!value) return 'Sem data';
     const date = new Date(value.length === 10 ? `${value}T12:00:00` : value);
     return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+
+  private showInfo(message: string): void {
+    this.errorMessage.set('');
+    this.infoMessage.set(message);
+  }
+
+  private showError(message: string): void {
+    this.infoMessage.set('');
+    this.errorMessage.set(message);
   }
 
   private messageOf(error: unknown): string {
