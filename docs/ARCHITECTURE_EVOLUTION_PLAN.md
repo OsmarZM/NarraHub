@@ -367,6 +367,19 @@ Quarta fatia vertical implementada na mesma linha de desenvolvimento:
 
 Essa fatia avança a Ordem 3 (Entidades) da fase — o restante do Knowledge (relações, menções e tags) continua no `App`, ainda chamando `WorkspaceService`/`MetadataService`/`MentionService` diretamente. Configurações, colaboração e o manuscrito (história/livro/capítulo/editor) também ainda precisam dos próprios gateways/stores.
 
+Quinta fatia vertical implementada na mesma linha de desenvolvimento:
+
+- Configurações e IA (Ordem 4) foram extraídas do `App` para `features/settings/`, com `SettingsPageComponent` hospedando as cinco abas (Geral, Inteligência, Dispositivos, Compartilhar, Atualizações) e um `SettingsStore` cobrindo backup, atualização e sincronização;
+- diferente dos demais, este domínio não tem `LegacyXGateway`: `BackupService`, `SyncService` e `UpdateService` já são comandos Tauri nativos, sem SQL por trás — não existe fronteira SQL-vs-Rust para abstrair aqui. A única exceção documentada e testada é o `SettingsStore` injetar `DatabaseService` diretamente, só para fechar/reabrir o pool SQLite durante uma restauração de backup (ciclo de vida da conexão, não SQL de domínio);
+- IA local (instalar, ativar, reiniciar, perfil recomendado, orientações de escrita, memória criativa) passou a ser 100% orquestrada pelo `SettingsPageComponent` injetando `AiService` diretamente, sem round-trip pelo `App`;
+- backup/restauração e atualização continuam cruzando para fora da feature só onde precisam de `saveChapterNow()` (Editor, não extraído) — `criarBackup`, `prepararRestauração` e `instalarAtualização` são solicitados por evento e o `App` decide se salva o capítulo antes de delegar ao store;
+- a aba "Compartilhar" mostra a UI completa de sessões colaborativas e revisão de contribuições, mas os dados e as ações continuam vindo do `App` por `@Input()`/`@Output()` — Colaboração é a Ordem 5, ainda não extraída, e essa aba será migrada para consumir o futuro `CollaborationStore` quando essa fatia acontecer;
+- `AppState` não tinha estado de configurações para remover; o `App` perdeu `ThemeService`, `BackupService`, `SyncService` e `UpdateService` como injeções diretas, mantendo só os alias de leitura que o banner global de atualização (fora da tela de Configurações) ainda precisa;
+- teste de fronteira cobre a feature nova com uma regra própria para o `SettingsStore` (permite `DatabaseService`, continua proibindo SQL e os serviços legados de outros domínios) e confirma que `app.ts`/`app.html` não referenciam mais os serviços de configurações;
+- build de produção Angular, `npm run test:architecture` e `npm run test:ai` foram exercitados; as cinco abas foram verificadas via `ng serve` (a tela de Configurações não depende de um universo aberto, então deu para clicar em cada aba e no botão "Verificar agora" sem erro de console) — o fluxo real de backup/restauração/atualização com o SQLite de verdade continua exigindo o app Tauri empacotado.
+
+Essa fatia conclui a Ordem 4 (Configurações e IA). Colaboração e o manuscrito (história/livro/capítulo/editor) são as duas fatias que restam na Fase 2.
+
 ### Entregas
 
 - Criar gateways e stores por feature.

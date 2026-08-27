@@ -42,6 +42,17 @@ export interface OnlineShareDocument {
   sharedAt: string;
 }
 
+export interface StoredOnlineShare {
+  id: string;
+  revokeToken: string;
+  expiresAt: string;
+  title: string;
+  encryptionKey: string;
+  permission: SharePermission;
+  universeIds: string[];
+  lastSequence: number;
+}
+
 interface EncryptedShareEnvelope {
   version: 1;
   algorithm: 'A256GCM';

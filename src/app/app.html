@@ -60,222 +60,30 @@
       @if (isLoading()) {
         <section class="center-state"><div class="loader"></div><p>Abrindo seu workspace local...</p></section>
       } @else if (activeNav() === 'configuracoes') {
-        <section class="feature-page settings-page page-enter">
-          <header class="feature-heading"><div><span class="eyebrow">PREFERÊNCIAS</span><h1>Configurações</h1><p>Escolha uma área para ajustar sem misturar recursos diferentes.</p></div></header>
-          <div class="settings-shell">
-            <nav class="settings-nav" aria-label="Seções das configurações">
-              <button type="button" [class.active]="settingsSection() === 'general'" (click)="selectSettingsSection('general')"><span>◐</span><strong>Geral</strong><small>Aparência</small></button>
-              <button type="button" [class.active]="settingsSection() === 'ai'" (click)="selectSettingsSection('ai')"><span>✦</span><strong>Inteligência</strong><small>Modelo e memória</small></button>
-              <button type="button" [class.active]="settingsSection() === 'sync'" (click)="selectSettingsSection('sync')"><span>⇄</span><strong>Dispositivos</strong><small>Sincronização</small></button>
-              <button type="button" [class.active]="settingsSection() === 'share'" (click)="selectSettingsSection('share')"><span>↗</span><strong>Compartilhar</strong><small>Links temporários</small></button>
-              <button type="button" [class.active]="settingsSection() === 'updates'" (click)="selectSettingsSection('updates')"><span>⇧</span><strong>Atualizações</strong><small>Versão instalada</small></button>
-            </nav>
-            <div class="settings-grid">
-            <article class="surface-card" [hidden]="settingsSection() !== 'general'">
-              <div class="card-icon">◐</div><h2>Aparência</h2><p>O tema é aplicado imediatamente e fica salvo neste dispositivo.</p>
-              <div class="theme-picker" role="group" aria-label="Tema">
-                <button type="button" [attr.aria-pressed]="theme.preference() === 'light'" [class.active]="theme.preference() === 'light'" (click)="setTheme('light')"><span>☀</span>Claro</button>
-                <button type="button" [attr.aria-pressed]="theme.preference() === 'dark'" [class.active]="theme.preference() === 'dark'" (click)="setTheme('dark')"><span>☾</span>Escuro</button>
-                <button type="button" [attr.aria-pressed]="theme.preference() === 'system'" [class.active]="theme.preference() === 'system'" (click)="setTheme('system')"><span>◐</span>Sistema</button>
-              </div>
-            </article>
-
-            <app-production-replica [hidden]="settingsSection() !== 'general'" />
-
-
-            <article class="surface-card settings-wide-card backup-card" [hidden]="settingsSection() !== 'general'">
-              <div class="card-head"><div><div class="card-icon">▣</div><h2>Backup e integridade</h2></div><span class="status-badge" [class.online]="databaseHealth()?.healthy" [class.error]="databaseHealth() && !databaseHealth()?.healthy">@if (backupBusy()) { Verificando… } @else if (databaseHealth()?.healthy) { Banco íntegro } @else if (databaseHealth()) { Atenção necessária } @else { Não verificado }</span></div>
-              <p>Cria um snapshot consistente do SQLite, mesmo com WAL ativo, e só publica o backup depois de gerar manifesto e hashes.</p>
-              <div class="backup-actions"><button type="button" class="primary-button" [disabled]="backupBusy()" (click)="createManualBackup()">{{ backupBusy() ? 'Processando…' : 'Criar backup agora' }}</button><button type="button" class="secondary-button" [disabled]="backupBusy()" (click)="refreshBackupStatus()">Verificar banco</button></div>
-              @if (databaseHealth(); as health) {
-                <dl class="backup-health"><div><dt>Schema</dt><dd>v{{ health.schemaVersion }}</dd></div><div><dt>SQLite</dt><dd>{{ health.integrityResult }}</dd></div><div><dt>Foreign keys</dt><dd>{{ health.foreignKeyViolations }}</dd></div><div><dt>Última verificação</dt><dd>{{ formatDate(health.checkedAt) }}</dd></div></dl>
-                @if (health.issues.length) { <div class="security-callout warning"><strong>Invariantes que precisam de atenção</strong><span>@for (issue of health.issues; track issue.code) { {{ issue.message }} ({{ issue.count }}){{ $last ? '' : ' · ' }} }</span></div> }
-              }
-              @if (backupError()) { <div class="ai-install-error" role="alert"><strong>Backup não concluído</strong><span>{{ backupError() }}</span></div> }
-              @if (lastBackupValidation()?.warnings?.length) { <div class="security-callout warning"><strong>Backup preservado com avisos</strong><span>{{ lastBackupValidation()?.warnings?.join(' · ') }}</span></div> }
-              @if (backups().length) {
-                <div class="backup-list"><strong>Backups neste dispositivo</strong>
-                  @for (backup of backups(); track backup.backupId) {
-                    <div class="backup-row"><span><b>{{ formatDate(backup.createdAt) }} · {{ backupReasonLabel(backup.reason) }}</b><small>Schema {{ backup.schemaVersion }} · app {{ backup.appVersion }} · {{ formatBackupSize(backup.database.sizeBytes + backup.assets.totalBytes) }}</small></span><div class="backup-row-actions"><button type="button" class="text-button" [disabled]="backupBusy()" (click)="validateBackup(backup.backupId)">Validar</button><button type="button" class="text-button danger-copy" [disabled]="backupBusy()" (click)="requestRestoreBackup(backup)">Restaurar</button></div></div>
-                  }
-                </div>
-              } @else if (!backupBusy()) { <div class="review-empty"><strong>Nenhum backup criado</strong><p>Crie o primeiro snapshot antes da próxima atualização.</p></div> }
-              <small class="security-note">Ao restaurar, o NarraHub valida uma cópia temporária, cria um backup do estado atual, preserva rollback e reinicia o desktop.</small>
-            </article>
-
-            <article class="surface-card settings-wide-card ai-settings-card" [hidden]="settingsSection() !== 'ai'">
-              <div class="card-head"><div><div class="card-icon">✦</div><h2>Inteligência local</h2></div><span class="status-badge" [class.online]="ai.localStatus().state === 'ready'" [class.error]="ai.localStatus().state === 'error'">@switch (ai.localStatus().state) { @case ('ready') { Disponível } @case ('installing') { Instalando } @case ('starting') { Iniciando } @case ('error') { Atenção } @default { {{ ai.localStatus().installed ? 'Instalada' : 'Não instalada' }} } }</span></div>
-              <p>O NarraHub gerencia um motor privado para escrita. Ele inicia com o aplicativo, recebe somente o contexto necessário e libera o modelo da memória após alguns minutos sem uso.</p>
-              <div class="ai-recommendation-hero">
-                <div><span>RECOMENDADA PARA ESTE COMPUTADOR</span><strong>{{ ai.localStatus().recommended.name }}</strong><p>{{ aiRecommendationReason() }}</p></div>
-                <button type="button" class="primary-button" (click)="useRecommendedAi()">{{ ai.localStatus().installed ? 'Usar recomendada' : 'Ver instalação recomendada' }}</button>
-              </div>
-              <div class="ai-mode-picker" role="group" aria-label="Modo da inteligência artificial">
-                <button type="button" [class.active]="aiMode === 'off'" (click)="setAiMode('off')">Desativada</button>
-                <button type="button" [class.active]="aiMode === 'local'" (click)="setAiMode('local')">Neste computador</button>
-                <button type="button" [class.active]="aiMode === 'custom'" (click)="setAiMode('custom')">API própria</button>
-              </div>
-              @if (aiMode === 'local') {
-                <section class="local-ai-manager" aria-live="polite">
-                  <div class="ai-device-summary">
-                    <div><small>ANÁLISE DO DISPOSITIVO</small><strong>{{ ai.localStatus().hardware.score || '—' }}<span>/100</span></strong></div>
-                    <dl>
-                      <div><dt>Memória</dt><dd>{{ ai.localStatus().hardware.totalMemoryGb || '—' }} GB</dd></div>
-                      <div><dt>CPU</dt><dd>{{ ai.localStatus().hardware.logicalCores }} processadores</dd></div>
-                      <div><dt>GPU</dt><dd>{{ ai.localStatus().hardware.gpu || 'Não identificada' }}</dd></div>
-                      <div><dt>Espaço livre</dt><dd>{{ ai.localStatus().hardware.availableStorageGb || '—' }} GB</dd></div>
-                    </dl>
-                  </div>
-
-                  <div class="ai-runtime-state" [class.online]="ai.localStatus().state === 'ready'" [class.error]="ai.localStatus().state === 'error'">
-                    <i></i><span><strong>@if (ai.localStatus().state === 'ready') { Pronta para escrever } @else if (ai.localStatus().state === 'starting') { Inicializando o motor local } @else if (ai.localStatus().state === 'installing') { Instalando com sua autorização } @else if (ai.localStatus().state === 'error') { O motor precisa de atenção } @else if (ai.localStatus().installed) { Instalada neste computador } @else { Instalação necessária }</strong><small>{{ ai.localStatus().message }}</small></span>
-                  </div>
-
-                  @if (ai.installProgress(); as progress) {
-                    <div class="ai-install-progress">
-                      <div><span>{{ progress.message }}</span><b>{{ progress.percent }}%</b></div>
-                      <div class="ai-progress-track" role="progressbar" [attr.aria-valuenow]="progress.percent" aria-valuemin="0" aria-valuemax="100"><i [style.width.%]="progress.percent"></i></div>
-                      @if (progress.totalBytes) { <small>{{ formatAiSize(progress.downloadedBytes) }} de {{ formatAiSize(progress.totalBytes) }}</small> }
-                    </div>
-                  } @else if (!ai.localStatus().installed) {
-                    <div class="ai-consent-callout">
-                      <span>PRIMEIRA UTILIZAÇÃO</span>
-                      <strong>Nada será baixado sem sua permissão</strong>
-                      <p>Ao continuar, o NarraHub baixa o motor llama.cpp e um perfil de escrita verificado. Os arquivos ficam somente neste dispositivo e podem ocupar o espaço indicado.</p>
-                    </div>
-                    <div class="ai-profile-options" role="radiogroup" aria-label="Perfil da inteligência local">
-                      @for (profile of ai.localStatus().profiles; track profile.id) {
-                        <button type="button" role="radio" [attr.aria-checked]="aiSelectedProfile === profile.id" [class.selected]="aiSelectedProfile === profile.id" [class.recommended]="ai.localStatus().recommended.id === profile.id" [disabled]="aiInstallBusy() || (!!ai.localStatus().hardware.totalMemoryGb && profile.minimumMemoryGb > ai.localStatus().hardware.totalMemoryGb)" (click)="aiSelectedProfile = profile.id">
-                          <span>@if (ai.localStatus().recommended.id === profile.id) { RECOMENDADO } @else { {{ profile.id === 'lite' ? 'LEVE' : profile.id === 'advanced' ? 'MAIS QUALIDADE' : 'EQUILIBRADO' }} }</span>
-                          <strong>{{ profile.name }}</strong>
-                          <p>{{ profile.description }}</p>
-                          <small>{{ formatAiSize(profile.downloadBytes) }} · {{ profile.useCases.join(' · ') }}</small>
-                        </button>
-                      }
-                    </div>
-                    <button type="button" class="primary-button ai-install-button" [disabled]="aiInstallBusy() || !ai.localStatus().supported" (click)="installLocalAi(aiSelectedProfile)">{{ aiInstallBusy() ? 'Preparando instalação…' : 'Permitir e instalar ' + formatAiSize(selectedAiProfile().downloadBytes) }}</button>
-                    <small class="security-note">Download por HTTPS com verificação SHA-256. O nome técnico do modelo fica oculto porque o NarraHub escolhe e gerencia essa parte.</small>
-                  } @else {
-                    <div class="ai-installed-profile">
-                      <span>PERFIL INSTALADO</span>
-                      <strong>{{ installedAiProfile().name }}</strong>
-                      <p>O processo inicia junto com o NarraHub. O modelo só trabalha quando você usa uma ação de IA e entra em repouso após 5 minutos.</p>
-                      <div>
-                        @if (!ai.localStatus().running) { <button type="button" class="primary-button" [disabled]="aiInstallBusy()" (click)="activateLocalAi()">Iniciar agora</button> }
-                        <button type="button" class="secondary-button" [disabled]="aiInstallBusy()" (click)="restartLocalAi()">Reiniciar em modo seguro</button>
-                      </div>
-                    </div>
-                  }
-                  @if (aiInstallError()) { <div class="ai-install-error" role="alert"><strong>Não foi possível concluir</strong><span>{{ aiInstallError() }}</span></div> }
-                </section>
-              } @else if (aiMode === 'custom') {
-                <div class="field-row ai-fields">
-                  <label class="field-label">Endpoint compatível<input [(ngModel)]="aiEndpoint" placeholder="http://127.0.0.1:8080/v1" autocomplete="url" /></label>
-                  <label class="field-label">Modelo<input [(ngModel)]="aiModel" placeholder="nome-do-modelo" autocomplete="off" /></label>
-                </div>
-                <label class="field-label">Chave da API <span>(mantida somente nesta sessão)</span><input type="password" [(ngModel)]="aiApiKey" placeholder="Não será salva no banco" autocomplete="off" /></label>
-                <button type="button" class="secondary-button" (click)="saveAiSettings()">Usar esta API</button>
-              }
-              @if (aiMode !== 'local') { <small class="security-note">A IA local permanece neste computador. APIs remotas precisam usar HTTPS.</small> }
-              <section class="ai-creative-profile">
-                <header><div><span>CONTEXTO CRIATIVO LOCAL</span><strong>Como a IA deve colaborar com você?</strong></div><small>{{ aiMemoryCount() }} decisão(ões) aceita(s) neste universo</small></header>
-                <textarea [(ngModel)]="aiWriterGuidance" maxlength="2000" placeholder="Ex.: Prefiro nomes curtos, conflitos moralmente ambíguos e desenvolvimento gradual. Evite soluções convenientes."></textarea>
-                <div><button type="button" class="secondary-button" (click)="saveWriterGuidance()">Salvar orientações</button><button type="button" class="text-button danger-outline" [disabled]="!aiMemoryCount()" (click)="clearAiLearning()">Esquecer decisões deste universo</button></div>
-                <p>O NarraHub combina essas orientações com as fichas, relações e decisões que você aceitou. Ele não treina o modelo nem envia o universo inteiro.</p>
-              </section>
-            </article>
-
-            <article class="surface-card sync-card" [hidden]="settingsSection() !== 'sync'">
-              <div class="card-icon">⌁</div><h2>Este dispositivo</h2><p>Nome mostrado durante o pareamento na mesma rede Wi-Fi.</p>
-              <label class="field-label">Nome do dispositivo<input [(ngModel)]="deviceName" maxlength="60" /></label>
-              <button type="button" class="secondary-button" (click)="saveDeviceName()">Salvar nome</button>
-            </article>
-
-            <article class="surface-card sync-host-card" [hidden]="settingsSection() !== 'sync'">
-              <div class="card-head"><div><div class="card-icon">⇄</div><h2>Receber sincronização</h2></div><span class="status-badge" [class.online]="syncStatus().running">{{ syncStatus().running ? 'Disponível' : 'Desativado' }}</span></div>
-              <p>Deixe esta tela aberta e informe o endereço e código ao outro dispositivo.</p>
-              @if (syncStatus().running) {
-                <div class="pairing-panel"><small>Endereço local</small><strong>{{ syncStatus().address }}</strong><small>Código temporário</small><b>{{ syncStatus().pairing_code }}</b></div>
-                <button type="button" class="secondary-button danger-outline" [disabled]="syncBusy()" (click)="stopSync()">Parar compartilhamento</button>
-              } @else {
-                <button type="button" class="primary-button" [disabled]="syncBusy()" (click)="startSync()">Disponibilizar na rede</button>
-              }
-              <small class="security-note">Use apenas em uma rede Wi-Fi privada. O código muda a cada sessão.</small>
-            </article>
-
-            <article class="surface-card sync-connect-card" [hidden]="settingsSection() !== 'sync'">
-              <div class="card-icon">⌁</div><h2>Conectar a outro dispositivo</h2><p>Digite os dados exibidos no computador ou celular que receberá a conexão.</p>
-              <div class="field-row"><label class="field-label">Endereço<input [(ngModel)]="remoteAddress" placeholder="192.168.0.10:41337" /></label><label class="field-label code-field">Código<input [(ngModel)]="pairingCode" inputmode="numeric" maxlength="6" placeholder="000000" /></label></div>
-              <button type="button" class="primary-button" [disabled]="syncBusy() || !remoteAddress.trim() || pairingCode.trim().length !== 6" (click)="connectSync()">Sincronizar agora</button>
-            </article>
-
-            <article class="surface-card settings-wide-card" [hidden]="settingsSection() !== 'share'">
-              <div class="card-head"><div><div class="card-icon">↗</div><h2>Sessões colaborativas</h2></div><span class="status-badge" [class.online]="shareSession().running">{{ shareSession().running ? 'Online agora' : 'Desativado' }}</span></div>
-              <p>Compartilhe um ou mais universos para leitura, anotações ou propostas de edição. O texto local só muda quando você aprova.</p>
-              @if (shareSession().running) {
-                <div class="share-session-panel"><span><small>Endereço temporário</small><strong>{{ shareSession().publicUrl }}</strong></span><span><small>Links ativos</small><b>{{ shareSession().shareCount }}</b></span></div>
-                <button type="button" class="secondary-button danger-outline" [disabled]="shareBusy()" (click)="stopOnlineShareSession()">Encerrar e invalidar todos os links</button>
-              } @else {
-                <button type="button" class="primary-button" [disabled]="shareBusy()" (click)="startOnlineShareSession()">{{ shareBusy() ? 'Abrindo túnel…' : 'Disponibilizar temporariamente' }}</button>
-              }
-              @if (onlineShares().length) {
-                <div class="share-history"><strong>Links ativos neste dispositivo</strong>
-                  @for (share of onlineShares(); track share.id) {
-                    <div class="share-history-row"><span><b>{{ share.title }}</b><small>{{ sharePermissionLabel(share.permission) }} · expira em {{ formatDate(share.expiresAt) }}</small></span><button type="button" class="text-button danger-outline" [disabled]="shareBusy()" (click)="revokeOnlineShare(share)">Revogar</button></div>
-                  }
-                </div>
-              }
-              <div class="security-callout"><strong>Conteúdo e contribuições cifrados de ponta a ponta.</strong><span>A chave fica depois de <code>#k=</code> no link. Edições recebidas entram numa fila local de revisão, nunca direto nos textos.</span></div>
-
-              <section class="collaboration-review">
-                <header><div><span class="eyebrow">REVISÃO LOCAL</span><h3>Alterações e anotações</h3></div><span class="review-count">{{ pendingCollaborationCount() }} pendente(s)</span></header>
-                @if (collaborationSessions().length) {
-                  <div class="collaboration-layout">
-                    <nav class="collaboration-sessions" aria-label="Sessões compartilhadas">
-                      @for (session of collaborationSessions(); track session.id) {
-                        <button type="button" [class.active]="selectedCollaborationSessionId() === session.id" (click)="selectCollaborationSession(session.id)">
-                          <strong>{{ session.title }}</strong><small>{{ sharePermissionLabel(session.permission) }} · {{ session.status === 'active' ? 'ativa' : 'encerrada' }}</small>
-                          <span>{{ session.pending_count || 0 }} edição(ões) · {{ session.note_count || 0 }} nota(s)</span>
-                        </button>
-                      }
-                    </nav>
-                    <div class="collaboration-feed">
-                      @if (selectedCollaborationSessionId(); as sessionId) {
-                        @if (selectedCollaborationHasPending()) { <button type="button" class="primary-button small approve-all" (click)="approveAllCollaboration(sessionId)">Aprovar todas as pendentes</button> }
-                        @for (item of selectedCollaborationContributions(); track item.id) {
-                          <article class="contribution-card" [class.note]="item.kind === 'note'" [class.reviewed]="item.status === 'approved' || item.status === 'rejected'">
-                            <header><span><b>{{ item.contributor }}</b><small>{{ item.target_label }} · {{ item.kind === 'note' ? 'anotação' : contributionFieldLabel(item.field) }}</small></span><em [class.approved]="item.status === 'approved'" [class.rejected]="item.status === 'rejected'">{{ item.status === 'pending' ? 'Aguardando revisão' : item.status === 'noted' ? 'Anotação' : item.status === 'approved' ? 'Aprovada' : 'Rejeitada' }}</em></header>
-                            @if (item.kind === 'note') { <p>{{ item.message }}</p> }
-                            @else { <div class="contribution-diff"><div><small>Antes</small><pre>{{ item.original_value }}</pre></div><div><small>Proposta</small><pre>{{ item.proposed_value }}</pre></div></div> }
-                            @if (item.status === 'pending') { <footer><button type="button" class="secondary-button danger-outline" (click)="reviewCollaboration(item, 'rejected')">Rejeitar</button><button type="button" class="primary-button" (click)="reviewCollaboration(item, 'approved')">Aprovar e aplicar</button></footer> }
-                          </article>
-                        } @empty { <div class="review-empty"><strong>Nenhuma contribuição nesta sessão</strong><p>As anotações e propostas aparecerão aqui enquanto o link estiver ativo.</p></div> }
-                      }
-                    </div>
-                  </div>
-                } @else { <div class="review-empty"><strong>Nenhuma sessão compartilhada</strong><p>Crie um link colaborativo para começar uma revisão com leitores ou coautores.</p></div> }
-              </section>
-            </article>
-
-            <article class="surface-card settings-wide-card update-card" [hidden]="settingsSection() !== 'updates'">
-              <div class="card-head"><div><div class="card-icon">⇧</div><h2>Atualizações do aplicativo</h2></div><span class="status-badge" [class.online]="updatePhase() === 'current'">v{{ updateInfo().currentVersion }}</span></div>
-              @if (updatePhase() === 'available') {
-                <h3>Versão {{ updateInfo().availableVersion }} disponível</h3><p>{{ updateInfo().notes || 'Nova versão assinada disponível no canal oficial.' }}</p>
-                <button type="button" class="primary-button" [disabled]="updateBusy()" (click)="installUpdate()">Baixar e instalar</button>
-              } @else if (updatePhase() === 'backing-up') {
-                <p>Criando e validando um backup local antes de baixar a versão {{ updateInfo().availableVersion }}…</p><div class="update-progress indeterminate" role="progressbar"><span></span></div><small>Nenhum arquivo será instalado sem um snapshot válido.</small>
-              } @else if (updatePhase() === 'downloading') {
-                <p>Baixando e validando a assinatura da versão {{ updateInfo().availableVersion }}…</p><div class="update-progress" role="progressbar" [attr.aria-valuenow]="updateProgress()" aria-valuemin="0" aria-valuemax="100"><span [style.width.%]="updateProgress()"></span></div><small>{{ updateProgress() }}%</small>
-              } @else {
-                <p>{{ updatePhase() === 'current' ? 'Você está usando a versão mais recente publicada.' : 'O NarraHub verifica o manifesto assinado no GitHub Releases.' }}</p>
-                @if (updateError()) { <div class="security-callout warning"><strong>Verificação indisponível</strong><span>{{ updateError() }}</span></div> }
-                <button type="button" class="secondary-button" [disabled]="updateBusy()" (click)="checkForUpdates()">{{ updatePhase() === 'checking' ? 'Verificando…' : 'Verificar agora' }}</button>
-              }
-              <small class="security-note">Uma atualização só é instalada depois que a assinatura Tauri é validada. Push comum no GitHub não atualiza aplicativos instalados.</small>
-            </article>
-            </div>
-          </div>
-        </section>
+        <app-settings-page
+          [activeUniverseId]="appState.activeUniverseId()"
+          [shareSession]="shareSession()"
+          [shareBusy]="shareBusy()"
+          [onlineShares]="onlineShares()"
+          [collaborationSessions]="collaborationSessions()"
+          [selectedCollaborationSessionId]="selectedCollaborationSessionId()"
+          [selectedCollaborationHasPending]="selectedCollaborationHasPending()"
+          [selectedCollaborationContributions]="selectedCollaborationContributions()"
+          [pendingCollaborationCount]="pendingCollaborationCount()"
+          (info)="onSettingsInfo($event)"
+          (failed)="onSettingsFailed($event)"
+          (backupCreateRequested)="createManualBackup()"
+          (restorePrepareRequested)="prepareRestoreBackup($event)"
+          (updateCheckRequested)="checkForUpdates()"
+          (updateInstallRequested)="installUpdate()"
+          (synced)="loadUniverses()"
+          (shareStartRequested)="startOnlineShareSession()"
+          (shareStopRequested)="stopOnlineShareSession()"
+          (shareRevokeRequested)="revokeOnlineShare($event)"
+          (collaborationSessionSelected)="selectCollaborationSession($event)"
+          (collaborationApproveAllRequested)="approveAllCollaboration($event)"
+          (collaborationReviewRequested)="reviewCollaboration($event.item, $event.decision)"
+        />
       } @else if (appState.currentView() === 'home') {
         <app-library-page
           [query]="searchQuery()"
@@ -471,19 +279,6 @@
         <footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Fechar</button>@if (shareLink()) { <button type="button" class="secondary-button" (click)="copyShareLink()">Copiar novamente</button> } @else { <button type="button" class="primary-button" [disabled]="shareBusy() || shareSelectionCount() === 0" (click)="createOnlineShare()">{{ shareBusy() ? 'Preparando…' : 'Criar link temporário' }}</button> }</footer>
       } @else if (appState.modalOpen() === 'new-relation') {
         <header><div><span class="eyebrow">CONEXÕES</span><h2>Nova conexão</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Origem<select name="relationSource" [(ngModel)]="newRelationSource"><option value="">Selecione</option>@for (entity of entities(); track entity.id) { <option [value]="entity.id">{{ entity.name }} · {{ entity.type }}</option> }</select></label><label>Relação<input name="relationLabel" [(ngModel)]="newRelationLabel" placeholder="Ex.: é irmão de" /></label><label>Destino<select name="relationTarget" [(ngModel)]="newRelationTarget"><option value="">Selecione</option>@for (entity of entities(); track entity.id) { <option [value]="entity.id">{{ entity.name }} · {{ entity.type }}</option> }</select></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newRelationSource || !newRelationTarget || !newRelationLabel.trim()" (click)="createRelation()">Criar conexão</button></footer>
-      } @else if (appState.modalOpen() === 'restore-backup' && pendingRestoreBackup(); as backup) {
-        <header><div><span class="eyebrow danger-copy">RECUPERAÇÃO LOCAL</span><h2>Restaurar este backup?</h2></div><button type="button" [disabled]="backupBusy()" (click)="appState.closeModal()">×</button></header>
-        <p class="delete-warning"><strong>{{ formatDate(backup.createdAt) }}</strong><br />O conteúdo atual será substituído pelo snapshot de schema {{ backup.schemaVersion }}. Antes disso, o NarraHub cria outro backup e mantém os arquivos anteriores em uma área de rollback.</p>
-        @if (!restorePreparation()) {
-          <div class="restore-summary"><span><b>{{ backupReasonLabel(backup.reason) }}</b><small>Origem do snapshot</small></span><span><b>{{ formatBackupSize(backup.database.sizeBytes + backup.assets.totalBytes) }}</b><small>Banco e assets</small></span><span><b>Schema {{ backup.schemaVersion }}</b><small>Será migrado ao reiniciar, se necessário</small></span></div>
-          <p class="modal-guidance">A preparação não altera o conteúdo ativo. Ela valida o snapshot e cria um backup de segurança do estado atual.</p>
-        } @else if (restorePreparation(); as preparation) {
-          <div class="security-callout"><strong>Preparação concluída</strong><span>Backup atual preservado: {{ preparation.safetyBackupId }}. A cópia restaurável foi validada fora da base ativa.</span></div>
-          @if (preparation.warnings.length) { <div class="security-callout warning"><strong>Avisos preservados no snapshot</strong><span>{{ preparation.warnings.join(' · ') }}</span></div> }
-          <label>Digite <strong>RESTAURAR</strong> para trocar a base e reiniciar<input name="restoreConfirmation" [(ngModel)]="restoreConfirmation" autocomplete="off" /></label>
-        }
-        @if (backupError()) { <div class="ai-install-error" role="alert"><strong>Restauração interrompida</strong><span>{{ backupError() }}</span></div> }
-        <footer><button type="button" class="secondary-button" [disabled]="backupBusy()" (click)="appState.closeModal()">Cancelar</button>@if (!restorePreparation()) { <button type="button" class="primary-button" [disabled]="backupBusy()" (click)="prepareRestoreBackup()">{{ backupBusy() ? 'Preparando e validando…' : 'Preparar restauração' }}</button> } @else { <button type="button" class="primary-button destructive" [disabled]="backupBusy() || restoreConfirmation.trim() !== 'RESTAURAR'" (click)="confirmRestoreBackup()">{{ backupBusy() ? 'Restaurando…' : 'Restaurar e reiniciar' }}</button> }</footer>
       }
     </form>
   </div>

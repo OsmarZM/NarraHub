@@ -6,11 +6,11 @@ import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   Book, BookOption, Chapter, ChapterOption, ContentTag, ContentTagAssignment, Entity, EntityWithDetails,
-  MentionOccurrence, MetadataOwnerType, PlanningItem, RelationCard, Story, SyncServerStatus, UniverseWithStats,
+  MentionOccurrence, MetadataOwnerType, PlanningItem, RelationCard, Story, UniverseWithStats,
 } from './core/models';
 import { BookService } from './core/services/book.service';
-import { BackupManifest, BackupService, BackupValidation, DatabaseHealthReport, RestorePreparation } from './core/services/backup.service';
-import { AiMode, AiModelProfile, AiService } from './core/services/ai.service';
+import { BackupManifest } from './core/services/backup.service';
+import { AiService } from './core/services/ai.service';
 import { ChapterService } from './core/services/chapter.service';
 import { CollaborationContribution, CollaborationService, CollaborationSession, SharePermission } from './core/services/collaboration.service';
 import { DatabaseService } from './core/services/database.service';
@@ -18,24 +18,22 @@ import { AppNavigationId, AppRouteState } from './core/navigation/app-navigation
 import { AppNavigationService } from './core/navigation/app-navigation.service';
 import { MentionService } from './core/services/mention.service';
 import { MetadataService } from './core/services/metadata.service';
-import { OnlineShareDocument, OnlineShareService, OnlineShareStatus, SharedUniverse } from './core/services/online-share.service';
+import { OnlineShareDocument, OnlineShareService, OnlineShareStatus, SharedUniverse, StoredOnlineShare } from './core/services/online-share.service';
 import { PlanningService } from './core/services/planning.service';
 import { StoryService } from './core/services/story.service';
-import { SyncService } from './core/services/sync.service';
-import { ThemePreference, ThemeService } from './core/services/theme.service';
-import { AppUpdateInfo, UpdateService } from './core/services/update.service';
 import { WorkspaceService } from './core/services/workspace.service';
 import { AppState } from './core/state/app.state';
 import { fileToDataUrl } from './shared/utils/file-to-data-url';
 import { ConnectionsGraphComponent } from './features/connections/connections-graph.component';
 import { EntitiesPageComponent, EntityMutationKind } from './features/entities/entities-page/entities-page.component';
 import { EntityHubType, EntityStore } from './features/entities/state/entity.store';
-import { ProductionReplicaComponent } from './features/production-replica/production-replica.component';
 import { PlanningBoardComponent } from './features/planning/planning-board.component';
 import { HistoryPageComponent } from './features/history/history-page.component';
 import { HistoryStore } from './features/history/state/history.store';
 import { LibraryPageComponent } from './features/library/library-page.component';
 import { UniverseStore } from './features/library/state/universe.store';
+import { SettingsPageComponent } from './features/settings/settings-page.component';
+import { SettingsStore } from './features/settings/state/settings.store';
 import { TimelinePageComponent } from './features/timeline/timeline-page.component';
 import { TimelineStore } from './features/timeline/state/timeline.store';
 import { AiWritingRequest, WritingEditorComponent } from './features/writing/writing-editor.component';
@@ -43,17 +41,6 @@ import { AppShellComponent } from './shell/app-shell/app-shell.component';
 import { ContextualInspectorComponent } from './shell/contextual-inspector/contextual-inspector.component';
 import { TitlebarComponent } from './shell/titlebar/titlebar.component';
 import { SidebarNavItem, UniverseSidebarComponent } from './shell/universe-sidebar/universe-sidebar.component';
-
-interface StoredOnlineShare {
-  id: string;
-  revokeToken: string;
-  expiresAt: string;
-  title: string;
-  encryptionKey: string;
-  permission: SharePermission;
-  universeIds: string[];
-  lastSequence: number;
-}
 
 interface GlobalSearchResult {
   id: string;
@@ -92,8 +79,6 @@ interface MetadataTarget {
   name: string;
 }
 
-type SettingsSection = 'general' | 'ai' | 'sync' | 'share' | 'updates';
-
 @Component({
   selector: 'app-root',
   standalone: true,
@@ -108,9 +93,9 @@ type SettingsSection = 'general' | 'ai' | 'sync' | 'share' | 'updates';
     LibraryPageComponent,
     EntitiesPageComponent,
     ConnectionsGraphComponent,
-    ProductionReplicaComponent,
     PlanningBoardComponent,
     HistoryPageComponent,
+    SettingsPageComponent,
     TimelinePageComponent,
     WritingEditorComponent,
   ],
@@ -120,13 +105,11 @@ type SettingsSection = 'general' | 'ai' | 'sync' | 'share' | 'updates';
 export class App implements OnInit, OnDestroy {
   readonly Math = Math;
   readonly appState = inject(AppState);
-  readonly theme = inject(ThemeService);
   readonly ai = inject(AiService);
   private readonly db = inject(DatabaseService);
   private readonly universeStore = inject(UniverseStore);
   private readonly storyService = inject(StoryService);
   private readonly bookService = inject(BookService);
-  private readonly backupService = inject(BackupService);
   private readonly chapterService = inject(ChapterService);
   private readonly collaborationService = inject(CollaborationService);
   private readonly entityStore = inject(EntityStore);
@@ -135,8 +118,7 @@ export class App implements OnInit, OnDestroy {
   private readonly onlineShareService = inject(OnlineShareService);
   private readonly planningService = inject(PlanningService);
   private readonly workspaceService = inject(WorkspaceService);
-  private readonly syncService = inject(SyncService);
-  private readonly updateService = inject(UpdateService);
+  private readonly settingsStore = inject(SettingsStore);
   private readonly historyStore = inject(HistoryStore);
   private readonly timelineStore = inject(TimelineStore);
   private readonly navigation = inject(AppNavigationService);
@@ -166,7 +148,6 @@ export class App implements OnInit, OnDestroy {
   readonly saveMessage = signal('');
   readonly errorMessage = signal('');
   readonly infoMessage = signal('');
-  readonly syncBusy = signal(false);
   readonly shareBusy = signal(false);
   readonly shareProgressMessage = signal('');
   readonly shareSession = signal<OnlineShareStatus>({ running: false, publicUrl: null, shareCount: 0 });
@@ -179,28 +160,17 @@ export class App implements OnInit, OnDestroy {
   readonly collaborationSessions = signal<CollaborationSession[]>([]);
   readonly collaborationContributions = signal<CollaborationContribution[]>([]);
   readonly selectedCollaborationSessionId = signal<string | null>(null);
-  readonly updateBusy = signal(false);
-  readonly updateProgress = signal(0);
-  readonly updatePhase = signal<'idle' | 'checking' | 'available' | 'backing-up' | 'downloading' | 'current' | 'error'>('idle');
-  readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.7.4', availableVersion: null, notes: '', publishedAt: null });
-  readonly updateError = signal('');
-  readonly updatePromptDismissed = signal(false);
-  readonly backupBusy = signal(false);
-  readonly backupError = signal('');
-  readonly databaseHealth = signal<DatabaseHealthReport | null>(null);
-  readonly backups = signal<BackupManifest[]>([]);
-  readonly lastBackupValidation = signal<BackupValidation | null>(null);
-  readonly pendingRestoreBackup = signal<BackupManifest | null>(null);
-  readonly restorePreparation = signal<RestorePreparation | null>(null);
-  readonly syncStatus = signal<SyncServerStatus>({ running: false, address: null, pairing_code: null, device_name: 'Meu computador' });
+  readonly updateBusy = this.settingsStore.updateBusy;
+  readonly updatePhase = this.settingsStore.updatePhase;
+  readonly updateInfo = this.settingsStore.updateInfo;
+  readonly updateProgress = this.settingsStore.updateProgress;
+  readonly updatePromptDismissed = this.settingsStore.updatePromptDismissed;
   readonly lastOpenedUniverseId = signal<string | null>(localStorage.getItem('narrahub.lastUniverseId'));
   readonly pendingDelete = signal<PendingDelete | null>(null);
   readonly pendingRename = signal<PendingRename | null>(null);
   readonly aiBusy = signal(false);
   readonly aiResponse = signal('');
   readonly aiError = signal('');
-  readonly aiInstallBusy = signal(false);
-  readonly aiInstallError = signal('');
   readonly aiWritingRequest = signal<AiWritingRequest | null>(null);
   readonly chapterSummary = signal('');
   readonly inspectorOpen = signal(localStorage.getItem('narrahub.inspectorOpen') !== 'false');
@@ -210,7 +180,6 @@ export class App implements OnInit, OnDestroy {
   readonly libraryPreviewTags = signal<Record<string, ContentTag[]>>({});
   readonly workspacePreviewTags = signal<Record<string, ContentTag[]>>({});
   readonly chapterTags = signal<ContentTag[]>([]);
-  readonly settingsSection = signal<SettingsSection>('general');
   readonly expandedStoryIds = signal<Set<string>>(new Set());
   readonly expandedBookIds = signal<Set<string>>(new Set());
 
@@ -220,20 +189,10 @@ export class App implements OnInit, OnDestroy {
   newRelationSource = '';
   newRelationTarget = '';
   newRelationLabel = '';
-  aiMode: AiMode = this.ai.settings().mode;
-  aiEndpoint = this.ai.settings().endpoint;
-  aiModel = this.ai.settings().model;
-  aiApiKey = this.ai.sessionApiKey;
-  aiWriterGuidance = this.ai.writerGuidance();
-  aiSelectedProfile: AiModelProfile['id'] = this.ai.localStatus().recommended.id;
   aiPrompt = '';
   newTagName = '';
   newTagColor = '#7d3650';
   renameValue = '';
-  restoreConfirmation = '';
-  deviceName = localStorage.getItem('narrahub.deviceName') || 'Meu computador';
-  remoteAddress = '';
-  pairingCode = '';
   shareExpiresInDays = 7;
   sharePermission: SharePermission = 'view';
 
@@ -308,20 +267,16 @@ export class App implements OnInit, OnDestroy {
   async ngOnInit(): Promise<void> {
     await this.ai.initialize().catch((error) => {
       console.error('[NarraHub] Não foi possível inicializar o gerenciador da IA local.', error);
-      this.aiInstallError.set(error instanceof Error ? error.message : String(error));
     });
-    this.aiSelectedProfile = this.ai.localStatus().installedProfile as AiModelProfile['id'] || this.ai.localStatus().recommended.id;
     if (!isTauri()) { this.isLoading.set(false); return; }
     try {
       await this.db.init();
       await this.loadUniverses();
-      this.syncStatus.set(await this.syncService.status());
       this.shareSession.set(await this.onlineShareService.status());
       await this.loadCollaborationReview();
       this.collaborationTimer = setInterval(() => void this.syncCollaborationContributions(), 2500);
-      const currentVersion = await this.updateService.currentVersion();
-      this.updateInfo.update((info) => ({ ...info, currentVersion }));
-      if (await this.updateService.isConfigured()) setTimeout(() => void this.checkForUpdates(true), 1800);
+      await this.settingsStore.primeCurrentVersion();
+      if (await this.settingsStore.isUpdateConfigured()) setTimeout(() => void this.checkForUpdates(true), 1800);
     } catch (error) {
       this.reportError('Não foi possível abrir o banco local do NarraHub.', error);
     } finally { this.isLoading.set(false); }
@@ -331,7 +286,7 @@ export class App implements OnInit, OnDestroy {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     if (this.infoTimer) clearTimeout(this.infoTimer);
     if (this.collaborationTimer) clearInterval(this.collaborationTimer);
-    this.updateService.dispose();
+    this.settingsStore.dispose();
     this.ai.dispose();
   }
 
@@ -484,7 +439,7 @@ export class App implements OnInit, OnDestroy {
     if (updateRoute) await this.navigation.navigate('inicio', null);
   }
 
-  openSettings(updateRoute = true): void { this.searchQuery.set(''); this.activeNav.set('configuracoes'); this.appState.openSettings(); void this.refreshBackupStatus(); if (updateRoute) void this.navigation.navigate('configuracoes', null); }
+  openSettings(updateRoute = true): void { this.searchQuery.set(''); this.activeNav.set('configuracoes'); this.appState.openSettings(); void this.settingsStore.refreshBackupStatus(); if (updateRoute) void this.navigation.navigate('configuracoes', null); }
 
   openShareModal(): void {
     if (!this.appState.activeUniverse()) { this.showInfo('Abra um universo antes de compartilhar.'); return; }
@@ -824,219 +779,46 @@ export class App implements OnInit, OnDestroy {
     finally { this.aiBusy.set(false); }
   }
 
-  setTheme(value: string): void { this.theme.setTheme(value as ThemePreference); }
+  onSettingsInfo(message: string): void { this.showInfo(message); }
+  onSettingsFailed(message: string): void { this.reportError(message, message); }
 
-  setAiMode(mode: AiMode): void {
-    this.aiMode = mode;
-    this.aiInstallError.set('');
-    if (mode === 'off') {
-      this.ai.disable();
-      this.showInfo('Assistência por IA desativada.');
-    } else if (mode === 'local') {
-      this.aiEndpoint = '';
-      this.aiModel = '';
-      this.aiSelectedProfile = this.ai.localStatus().installedProfile as AiModelProfile['id'] || this.ai.localStatus().recommended.id;
+  async checkForUpdates(silent = false): Promise<void> {
+    const result = await this.settingsStore.checkForUpdates(silent);
+    if (result.message) this.showInfo(result.message);
+  }
+
+  async installUpdate(): Promise<void> {
+    await this.saveChapterNow();
+    if (this.saveMessage() === 'Erro ao salvar') {
+      this.reportError('Não foi possível instalar a atualização.', new Error('A atualização foi interrompida porque o capítulo atual não pôde ser salvo.'));
+      return;
     }
+    const result = await this.settingsStore.installUpdate();
+    if (!result.ok) this.reportError('Não foi possível instalar a atualização.', new Error(result.error || ''));
   }
 
-  async installLocalAi(profile: AiModelProfile['id']): Promise<void> {
-    if (this.aiInstallBusy()) return;
-    this.aiInstallBusy.set(true);
-    this.aiInstallError.set('');
-    try {
-      await this.ai.installLocal(profile);
-      this.aiMode = 'local';
-      this.aiSelectedProfile = profile;
-      this.showInfo('IA local instalada e iniciada. Ela será carregada automaticamente com o NarraHub.');
-    } catch (error) {
-      console.error('[NarraHub] A instalação da IA local falhou.', error);
-      this.aiInstallError.set(error instanceof Error ? error.message : String(error));
-    } finally { this.aiInstallBusy.set(false); }
-  }
-
-  async activateLocalAi(): Promise<void> {
-    if (this.aiInstallBusy()) return;
-    this.aiInstallBusy.set(true);
-    this.aiInstallError.set('');
-    try {
-      this.ai.configure({ mode: 'local', endpoint: '', model: '' }, '');
-      await this.ai.startLocalEngine(this.ai.localStatus().state === 'error');
-      this.aiMode = 'local';
-      this.showInfo('IA local iniciada.');
-    } catch (error) { this.aiInstallError.set(error instanceof Error ? error.message : String(error)); }
-    finally { this.aiInstallBusy.set(false); }
-  }
-
-  async restartLocalAi(): Promise<void> {
-    if (this.aiInstallBusy()) return;
-    this.aiInstallBusy.set(true);
-    this.aiInstallError.set('');
-    try { await this.ai.startLocalEngine(true); this.showInfo('IA local reiniciada em modo seguro.'); }
-    catch (error) { this.aiInstallError.set(error instanceof Error ? error.message : String(error)); }
-    finally { this.aiInstallBusy.set(false); }
-  }
-
-  formatAiSize(bytes: number): string {
-    return bytes >= 1_000_000_000 ? `${(bytes / 1_000_000_000).toFixed(1)} GB` : `${Math.round(bytes / 1_000_000)} MB`;
-  }
-
-  selectedAiProfile(): AiModelProfile {
-    return this.ai.localStatus().profiles.find((profile) => profile.id === this.aiSelectedProfile) || this.ai.localStatus().recommended;
-  }
-
-  installedAiProfile(): AiModelProfile {
-    return this.ai.localStatus().profiles.find((profile) => profile.id === this.ai.localStatus().installedProfile) || this.ai.localStatus().recommended;
-  }
-
-  selectSettingsSection(section: SettingsSection): void { this.settingsSection.set(section); if (section === 'general') void this.refreshBackupStatus(); }
-
-  async refreshBackupStatus(): Promise<void> {
-    if (!isTauri() || this.backupBusy()) return;
-    this.backupBusy.set(true); this.backupError.set('');
-    try {
-      const [health, backups] = await Promise.all([this.backupService.health(), this.backupService.list()]);
-      this.databaseHealth.set(health); this.backups.set(backups);
-    } catch (error) {
-      this.backupError.set(error instanceof Error ? error.message : String(error));
-    } finally { this.backupBusy.set(false); }
-  }
+  dismissUpdatePrompt(): void { this.settingsStore.dismissUpdatePrompt(); }
 
   async createManualBackup(): Promise<void> {
-    if (this.backupBusy()) return;
     await this.saveChapterNow();
-    this.backupBusy.set(true); this.backupError.set(''); this.lastBackupValidation.set(null);
-    try {
-      const manifest = await this.backupService.create('manual');
-      const validation = await this.backupService.validate(manifest.backupId);
-      this.lastBackupValidation.set(validation);
-      this.backups.set(await this.backupService.list());
-      this.databaseHealth.set(validation.databaseHealth);
-      if (!validation.valid) throw new Error(validation.errors.join(' '));
-      this.showInfo('Backup local criado e validado.');
-    } catch (error) {
-      this.backupError.set(error instanceof Error ? error.message : String(error));
-      this.reportError('Não foi possível criar um backup válido.', error);
-    } finally { this.backupBusy.set(false); }
+    const result = await this.settingsStore.createBackup('manual');
+    if (result.ok) this.showInfo('Backup local criado e validado.');
+    else this.reportError('Não foi possível criar um backup válido.', new Error(result.error || ''));
   }
 
-  async validateBackup(backupId: string): Promise<void> {
-    if (this.backupBusy()) return;
-    this.backupBusy.set(true); this.backupError.set('');
-    try {
-      const validation = await this.backupService.validate(backupId);
-      this.lastBackupValidation.set(validation);
-      if (validation.valid) this.showInfo('Backup íntegro e compatível com o manifesto.');
-      else this.backupError.set(validation.errors.join(' '));
-    } catch (error) {
-      this.backupError.set(error instanceof Error ? error.message : String(error));
-    } finally { this.backupBusy.set(false); }
-  }
-
-
-
-  requestRestoreBackup(backup: BackupManifest): void {
-    this.pendingRestoreBackup.set(backup);
-    this.restorePreparation.set(null);
-    this.restoreConfirmation = '';
-    this.backupError.set('');
-    this.appState.openModal('restore-backup');
-  }
-
-  async prepareRestoreBackup(): Promise<void> {
-    const backup = this.pendingRestoreBackup();
-    if (!backup || this.backupBusy()) return;
-    if (this.shareSession().running || this.syncStatus().running) {
-      this.backupError.set('Encerre o compartilhamento e a sincronização antes de restaurar um backup.');
+  async prepareRestoreBackup(backup: BackupManifest): Promise<void> {
+    if (this.shareSession().running || this.settingsStore.syncStatus().running) {
+      this.settingsStore.backupError.set('Encerre o compartilhamento e a sincronização antes de restaurar um backup.');
       return;
     }
     await this.saveChapterNow();
     if (this.saveMessage() === 'Erro ao salvar') {
-      this.backupError.set('A restauração foi interrompida porque o capítulo atual não pôde ser salvo.');
+      this.settingsStore.backupError.set('A restauração foi interrompida porque o capítulo atual não pôde ser salvo.');
       return;
     }
-    this.backupBusy.set(true);
-    this.backupError.set('');
-    try {
-      const preparation = await this.backupService.prepareRestore(backup.backupId);
-      this.restorePreparation.set(preparation);
-      this.backups.set(await this.backupService.list());
-    } catch (error) {
-      this.backupError.set(error instanceof Error ? error.message : String(error));
-    } finally {
-      this.backupBusy.set(false);
-    }
+    await this.settingsStore.prepareRestore(backup.backupId);
   }
 
-  async confirmRestoreBackup(): Promise<void> {
-    const preparation = this.restorePreparation();
-    if (!preparation || this.restoreConfirmation.trim() !== 'RESTAURAR' || this.backupBusy()) return;
-    this.backupBusy.set(true);
-    this.backupError.set('');
-    try {
-      await this.db.close();
-      await this.backupService.commitRestore(preparation.token);
-      await this.updateService.relaunch();
-    } catch (error) {
-      await this.db.init().catch((reopenError) => console.error('[NarraHub] Database reopen failed after restore error.', reopenError));
-      this.backupError.set(error instanceof Error ? error.message : String(error));
-      this.reportError('Não foi possível concluir a restauração recuperável.', error);
-    } finally {
-      this.backupBusy.set(false);
-    }
-  }
-
-  backupReasonLabel(reason: BackupManifest['reason']): string {
-    if (reason === 'manual') return 'Manual';
-    if (reason === 'pre_update') return 'Antes de atualizar';
-    if (reason === 'pre_migration') return 'Antes de migrar';
-    if (reason === 'pre_restore') return 'Antes de restaurar';
-    return 'Automático';
-  }
-
-  formatBackupSize(bytes: number): string {
-    if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-    if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-    return `${Math.max(1, Math.round(bytes / 1_000))} KB`;
-  }
-
-  useRecommendedAi(): void {
-    this.setAiMode('local');
-    this.aiSelectedProfile = this.ai.localStatus().recommended.id;
-  }
-
-  aiRecommendationReason(): string {
-    const hardware = this.ai.localStatus().hardware;
-    const profile = this.ai.localStatus().recommended;
-    if (!hardware.totalMemoryGb) return `${profile.name} oferece o melhor equilíbrio estimado para este dispositivo.`;
-    const gpu = hardware.gpuMemoryGb ? ` e ${hardware.gpuMemoryGb.toFixed(1)} GB de memória gráfica` : '';
-    return `Recomendação calculada com ${hardware.totalMemoryGb.toFixed(1)} GB de RAM, ${hardware.logicalCores} processadores lógicos${gpu} e pontuação ${hardware.score}/100.`;
-  }
-
-  saveWriterGuidance(): void {
-    this.ai.setWriterGuidance(this.aiWriterGuidance);
-    this.showInfo('Perfil criativo salvo somente neste dispositivo.');
-  }
-
-  clearAiLearning(): void {
-    const universeId = this.appState.activeUniverseId();
-    if (!universeId || !window.confirm('Esquecer as decisões de IA registradas neste universo?')) return;
-    this.ai.forgetCreativeMemory(universeId);
-    this.showInfo('Memória de decisões deste universo removida.');
-  }
-
-  aiMemoryCount(): number {
-    const universeId = this.appState.activeUniverseId();
-    return universeId ? this.ai.creativeMemory().filter((item) => item.scope === universeId).length : 0;
-  }
-
-  saveAiSettings(): void {
-    try {
-      if (this.aiMode === 'local') { void this.activateLocalAi(); return; }
-      this.ai.configure({ mode: this.aiMode, endpoint: this.aiEndpoint, model: this.aiModel }, this.aiApiKey);
-      this.aiEndpoint = this.ai.settings().endpoint;
-      this.showInfo(this.aiMode === 'off' ? 'Assistência por IA desativada.' : 'API própria configurada para esta sessão.');
-    } catch (error) { this.reportError('A configuração de IA não é válida.', error); }
-  }
   openAiAssistant(request: AiWritingRequest | null = null): void {
     if (!this.ai.enabled()) { this.showInfo('Configure a IA nas preferências antes de usar o assistente.'); return; }
     if (!request?.instruction.trim()) return;
@@ -1170,62 +952,6 @@ export class App implements OnInit, OnDestroy {
     } catch (error) { this.reportError('Não foi possível revogar o compartilhamento.', error); }
     finally { this.shareBusy.set(false); }
   }
-  async checkForUpdates(silent = false): Promise<void> {
-    if (!isTauri()) { if (!silent) this.showInfo('A atualização automática funciona somente no aplicativo instalado.'); return; }
-    if (this.updateBusy()) return;
-    if (!(await this.updateService.isConfigured())) {
-      if (!silent) this.showInfo('Este build de desenvolvimento não possui um canal de atualização configurado.');
-      return;
-    }
-    this.updateBusy.set(true); this.updatePhase.set('checking'); this.updateError.set(''); this.updateProgress.set(0);
-    try {
-      const info = await this.updateService.check(); this.updateInfo.set(info);
-      this.updatePhase.set(info.availableVersion ? 'available' : 'current');
-      if (info.availableVersion) this.updatePromptDismissed.set(false);
-      if (!silent) this.showInfo(info.availableVersion ? `Versão ${info.availableVersion} disponível.` : 'O NarraHub está atualizado.');
-    } catch (error) {
-      this.updatePhase.set('error'); this.updateError.set(error instanceof Error ? error.message : String(error));
-      if (!silent) this.reportError('Não foi possível verificar atualizações.', error);
-    } finally { this.updateBusy.set(false); }
-  }
-  async installUpdate(): Promise<void> {
-    if (!this.updateInfo().availableVersion || this.updateBusy()) return;
-    this.updateBusy.set(true); this.updatePhase.set('backing-up'); this.updateProgress.set(0); this.updateError.set(''); this.backupBusy.set(true);
-    try {
-      await this.saveChapterNow();
-      if (this.saveMessage() === 'Erro ao salvar') throw new Error('A atualização foi interrompida porque o capítulo atual não pôde ser salvo.');
-      const backup = await this.backupService.create('pre_update');
-      const validation = await this.backupService.validate(backup.backupId);
-      this.lastBackupValidation.set(validation);
-      if (!validation.valid) throw new Error(`A atualização foi interrompida porque o backup de segurança não foi validado. ${validation.errors.join(' ')}`);
-      this.backups.set(await this.backupService.list());
-      this.databaseHealth.set(validation.databaseHealth);
-      this.backupBusy.set(false); this.updatePhase.set('downloading');
-      await this.updateService.downloadAndInstall((progress) => this.updateProgress.set(progress));
-      await this.updateService.relaunch();
-    } catch (error) {
-      this.updatePhase.set('error'); this.updateError.set(error instanceof Error ? error.message : String(error));
-      this.reportError('Não foi possível instalar a atualização.', error);
-    } finally { this.updateBusy.set(false); this.backupBusy.set(false); }
-  }
-  dismissUpdatePrompt(): void { this.updatePromptDismissed.set(true); }
-  saveDeviceName(): void { this.deviceName = this.deviceName.trim() || 'Meu computador'; localStorage.setItem('narrahub.deviceName', this.deviceName); this.showInfo('Nome do dispositivo salvo.'); }
-  async startSync(): Promise<void> {
-    if (!isTauri()) { this.showInfo('A sincronização de rede só funciona no aplicativo instalado.'); return; }
-    this.syncBusy.set(true); try { this.saveDeviceName(); this.syncStatus.set(await this.syncService.start(this.deviceName)); }
-    catch (error) { this.reportError('Não foi possível iniciar a sincronização.', error); } finally { this.syncBusy.set(false); }
-  }
-  async stopSync(): Promise<void> { this.syncBusy.set(true); try { this.syncStatus.set(await this.syncService.stop()); } catch (error) { this.reportError('Não foi possível parar a sincronização.', error); } finally { this.syncBusy.set(false); } }
-  async connectSync(): Promise<void> {
-    if (!isTauri()) { this.showInfo('A sincronização de rede só funciona no aplicativo instalado.'); return; }
-    if (!this.remoteAddress.trim() || !/^\d{6}$/.test(this.pairingCode.trim())) { this.showInfo('Informe endereço e código de seis dígitos.'); return; }
-    this.syncBusy.set(true);
-    try {
-      const result = await this.syncService.connect(this.remoteAddress.trim(), this.pairingCode.trim(), this.deviceName); await this.loadUniverses();
-      this.showInfo(`Sincronizado com ${result.peer_name}: ${result.received} recebidos, ${result.sent} enviados, ${result.conflicts} conflitos.`);
-    } catch (error) { this.reportError('A sincronização não foi concluída.', error); } finally { this.syncBusy.set(false); }
-  }
-
   formatNumber(value: number): string { return value.toLocaleString('pt-BR'); }
   formatDate(value: string): string { if (!value) return 'Sem data'; const date = new Date(value.length === 10 ? `${value}T12:00:00` : value); return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' }); }
   private async deleteStoryRecord(id: string): Promise<void> {

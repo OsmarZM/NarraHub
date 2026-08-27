@@ -18,6 +18,21 @@ qualquer resumo aqui — a estrutura pode evoluir sutilmente entre eles:
 - `src/app/features/timeline/` — o exemplo mais completo (gateway com múltiplos métodos, store com mutate genérico, page component com modal próprio).
 - `src/app/features/history/` — o mais simples (só leitura, sem mutação).
 - `src/app/features/library/` — hospeda um component de apresentação pura (`universe-picker`) por dentro; mostra como separar "burro" de "com estado".
+- `src/app/features/entities/` — o maior até agora; mostra como decompor uma página grande em vários components filhos (toolbar → type-filter, card, sheet) em vez de um único template enorme.
+- `src/app/features/settings/` — domínio sem gateway. `BackupService`/`SyncService`/`UpdateService` já são comandos Tauri nativos, sem SQL por trás; não existe fronteira SQL-vs-Rust para abstrair, então o `SettingsStore` injeta esses serviços direto. Veja "Gateway é opcional" abaixo antes de criar um gateway por hábito.
+
+## Gateway é opcional
+
+Nem todo domínio precisa de `XGateway`/`LegacyXGateway`. O gateway existe para
+abstrair a fronteira SQL-vs-Rust (hoje um serviço Angular sobre `DatabaseService`,
+amanhã um command Rust) — se o domínio já fala só com comandos Tauri nativos
+(sem `DatabaseService`/`WorkspaceService` por trás), não há fronteira para
+abstrair. Nesse caso o store injeta os serviços existentes diretamente, como
+`SettingsStore` faz. A única exceção sancionada a "features não conhecem
+`DatabaseService`" é injetá-lo por ciclo de vida do pool (fechar/reabrir a
+conexão, ex.: restaurar um backup), nunca para rodar SQL de domínio — se isso
+acontecer, documente e teste a exceção explicitamente (veja o teste de
+`SettingsStore` em `tests/frontend-boundaries.test.mjs`).
 
 ## Passo a passo
 
