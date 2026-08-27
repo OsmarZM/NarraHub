@@ -224,3 +224,30 @@ test('rotas de biblioteca e workspace são lazy e não coexistem no RootLayout',
   assert.doesNotMatch(rootTemplate, /app-writing-page|app-entities-page|app-library-page/u);
   assert.match(rootTemplate, /<router-outlet/u);
 });
+
+test('restoreRoute() não usa activeNav() pra detectar navegação já processada (regressão do bug de deep link em Histórico/Timeline)', () => {
+  // Bug real: activeNav() é computed(() => navigation.activeData().navigationId), ou seja, é derivado
+  // direto de route.data e já reflete a rota nova assim que o Router resolve — ANTES de
+  // selectNav()/returnToLibrary()/openSettings() rodarem e atualizarem AppState.workspaceView(). Comparar
+  // `route.navId === activeNav()` em restoreRoute() sempre dava "já processado" e a chamada a selectNav()
+  // nunca acontecia depois de um deep link ou reload direto pra uma seção roteada (History, Timeline),
+  // deixando appState.workspaceView() preso na view antiga (ex.: 'editor') por baixo do <router-outlet>.
+  // Reproduzido manualmente via ng serve com um universo fake seedado direto no UniverseStore: navegar
+  // (via URL, sem clicar na sidebar) direto pra /workspace/:id/history mostrava o conteúdo de Escrita E
+  // de Histórico ao mesmo tempo.
+  const source = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(
+    source,
+    /if \(route\.navId === this\.activeNav\(\)\)|route\.navId === this\.activeNav\(\)/u,
+    'restoreRoute() não pode voltar a comparar route.navId com activeNav() — activeNav() é derivado da própria rota e sempre "bate", mascarando quando o workspaceView() de fato precisa ser sincronizado',
+  );
+  assert.match(source, /private lastSyncedRouteKey/u);
+  assert.match(source, /private routeKey\(/u);
+  // selectNav/returnToLibrary/openSettings/setWorkspaceNavigation precisam marcar a chave ANTES do
+  // trabalho assíncrono, senão o effect que dispara restoreRoute() (via navigation.route()) pode competir
+  // com a própria selectNav() em andamento.
+  assert.match(source, /this\.lastSyncedRouteKey = this\.routeKey\(item\.id, targetUniverseId\)/u);
+  assert.match(source, /this\.lastSyncedRouteKey = this\.routeKey\('inicio', null\)/u);
+  assert.match(source, /this\.lastSyncedRouteKey = this\.routeKey\('configuracoes', null\)/u);
+  assert.match(source, /this\.lastSyncedRouteKey = this\.routeKey\(navId, this\.appState\.activeUniverseId\(\)\)/u);
+});

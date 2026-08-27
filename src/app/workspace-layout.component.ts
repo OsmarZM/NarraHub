@@ -150,6 +150,18 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   private workspaceEpoch = 0;
   private restoringRoute = false;
   private loadedUniverseId: string | null = null;
+  /**
+   * Chave da última navegação já refletida em AppState.workspaceView() (e nos
+   * demais efeitos colaterais de selectNav()/returnToLibrary()/openSettings()).
+   * `activeNav()` sozinho não serve mais pra isso: como ele é derivado direto
+   * de route.data, ele já reflete a rota nova assim que o Router resolve,
+   * ANTES de qualquer um desses métodos rodar — comparar `route.navId ===
+   * activeNav()` sempre dava "já processado" e restoreRoute() nunca corrigia
+   * o workspaceView() depois de um deep link/reload direto pra uma seção
+   * roteada (Histórico, Timeline), deixando a view antiga (ex.: 'editor')
+   * grudada por baixo do <router-outlet>.
+   */
+  private lastSyncedRouteKey = '';
   private activeRoutedPage: unknown = null;
 
   constructor() {
@@ -179,6 +191,8 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     if (item.needsUniverse && !this.appState.activeUniverse()) {
       this.showInfo('Selecione ou crie um universo para abrir esta área.'); return;
     }
+    const targetUniverseId = (item.id === 'inicio' || item.id === 'configuracoes') ? null : this.appState.activeUniverseId();
+    this.lastSyncedRouteKey = this.routeKey(item.id, targetUniverseId);
     await this.saveChapterNow();
     if (item.id === 'inicio') { await this.returnToLibrary(updateRoute); return; }
     if (item.id === 'ajuda') { this.showInfo('Ajuda e feedback serão conectados ao fluxo nativo em uma próxima fase.'); return; }
@@ -235,11 +249,13 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   }
 
   async returnToLibrary(updateRoute = true): Promise<void> {
+    this.lastSyncedRouteKey = this.routeKey('inicio', null);
     await this.saveChapterNow(); this.workspaceEpoch += 1; this.appState.goHome(); this.searchQuery.set(''); this.resetWorkspaceData();
     if (updateRoute) await this.navigation.navigate('inicio', null);
   }
 
   async openSettings(updateRoute = true): Promise<void> {
+    this.lastSyncedRouteKey = this.routeKey('configuracoes', null);
     await this.saveChapterNow();
     this.searchQuery.set('');
     this.appState.openSettings();
@@ -484,16 +500,25 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   private normalizeSearch(value: string): string { return value.normalize('NFD').replace(/[̀-ͯ]/gu, '').toLocaleLowerCase('pt-BR').trim(); }
 
   setWorkspaceNavigation(navId: Exclude<AppNavigationId, 'inicio' | 'configuracoes'>): void {
+    // Todo call site já chama (ou está prestes a chamar) o appState.openXxx()
+    // correspondente na mesma expressão — marcar a chave aqui evita que o
+    // effect de restoreRoute() reprocesse a mesma navegação.
+    this.lastSyncedRouteKey = this.routeKey(navId, this.appState.activeUniverseId());
     void this.navigation.navigate(navId, this.appState.activeUniverseId());
+  }
+
+  private routeKey(navId: string, universeId: string | null): string {
+    return `${navId}:${universeId ?? ''}`;
   }
 
   private async restoreRoute(route: AppRouteState): Promise<void> {
     if (this.restoringRoute) return;
-    if (route.navId === 'inicio' && this.activeNav() === 'inicio' && this.appState.currentView() === 'home') return;
-    if (route.navId === 'configuracoes' && this.activeNav() === 'configuracoes') return;
-    if (route.universeId && route.universeId === this.appState.activeUniverseId() && route.navId === this.activeNav()) return;
+    const isRootLevel = route.navId === 'inicio' || route.navId === 'configuracoes';
+    const key = this.routeKey(route.navId, isRootLevel ? null : route.universeId);
+    if (key === this.lastSyncedRouteKey) return;
 
     this.restoringRoute = true;
+    this.lastSyncedRouteKey = key;
     try {
       if (route.navId === 'inicio') {
         await this.returnToLibrary(false);
