@@ -74,8 +74,6 @@
             (info)="onConnectionsInfo($event)"
             (failed)="onConnectionsFailed($event)"
           />
-        } @else if (appState.workspaceView() === 'timeline') {
-          <app-timeline-page [universeId]="universe.id" [entities]="entities()" [tagsByOwner]="knowledgeStore.workspacePreviewTags()" (metadataRequested)="openMetadata('timeline', $event.id, $event.title, $event.sourceEvent)" />
         } @else if (appState.workspaceView() === 'planning') {
           <app-planning-board
             [universeId]="universe.id"
@@ -88,7 +86,7 @@
           />
         }
       </section>
-      <router-outlet />
+      <router-outlet (activate)="onWorkspaceOutletActivate($event)" (deactivate)="onWorkspaceOutletDeactivate()" />
     </div>
   }
 </div>

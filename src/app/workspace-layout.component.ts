@@ -28,7 +28,6 @@ import { UniverseStore } from './features/library/state/universe.store';
 import { ManuscriptMetadataRequest, WritingPageComponent } from './features/manuscript/writing-page.component';
 import { ManuscriptStore } from './features/manuscript/state/manuscript.store';
 import { SettingsStore } from './features/settings/state/settings.store';
-import { TimelinePageComponent } from './features/timeline/timeline-page.component';
 import { TimelineStore } from './features/timeline/state/timeline.store';
 import { ShellState } from './shell/state/shell.state';
 import { SidebarNavItem, UniverseSidebarComponent } from './shell/universe-sidebar/universe-sidebar.component';
@@ -39,6 +38,22 @@ interface GlobalSearchResult {
   label: string;
   context: string;
   icon: string;
+}
+
+/**
+ * Contrato mínimo para uma página roteada (filha de /workspace/:universeId)
+ * expor uma ação de criação disparada pelo cabeçalho persistente do
+ * WorkspaceLayout — que não é mais pai de view da página no sentido do
+ * Angular (ela chega pelo <router-outlet>), então @ViewChild não alcança
+ * mais. O (activate) do outlet entrega a instância ativa; este type guard
+ * evita `any` espalhado pelas próximas fatias que migrarem para rota.
+ */
+interface CreatableRoutedPage {
+  openCreate(): void;
+}
+
+function supportsCreate(page: unknown): page is CreatableRoutedPage {
+  return !!page && typeof (page as CreatableRoutedPage).openCreate === 'function';
 }
 
 @Component({
@@ -54,7 +69,6 @@ interface GlobalSearchResult {
     PlanningBoardComponent,
     ShareModalComponent,
     TagsModalComponent,
-    TimelinePageComponent,
     WritingPageComponent,
   ],
   templateUrl: './workspace-layout.component.html',
@@ -131,12 +145,12 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   @ViewChild(WritingPageComponent) private writingPage?: WritingPageComponent;
   @ViewChild(ConnectionsPageComponent) private connectionsPage?: ConnectionsPageComponent;
   @ViewChild(PlanningBoardComponent) private planningBoard?: PlanningBoardComponent;
-  @ViewChild(TimelinePageComponent) private timelinePage?: TimelinePageComponent;
   @ViewChild(EntitiesPageComponent) readonly entitiesPage?: EntitiesPageComponent;
 
   private workspaceEpoch = 0;
   private restoringRoute = false;
   private loadedUniverseId: string | null = null;
+  private activeRoutedPage: unknown = null;
 
   constructor() {
     // Hook cross-domain: o ManuscriptStore não pode conhecer o KnowledgeStore
@@ -360,7 +374,10 @@ export class WorkspaceLayoutComponent implements OnDestroy {
 
   async loadPlanning(): Promise<void> { const id = this.appState.activeUniverseId(); if (!id) return; const data = await this.planningService.list(id); if (this.appState.activeUniverseId() === id) this.planning.set(data); }
   beginCreatePlanning(): void { this.planningBoard?.openCreate(); }
-  beginCreateTimeline(): void { this.timelinePage?.openCreate(); }
+  beginCreateTimeline(): void { if (supportsCreate(this.activeRoutedPage)) this.activeRoutedPage.openCreate(); }
+
+  onWorkspaceOutletActivate(component: unknown): void { this.activeRoutedPage = component; }
+  onWorkspaceOutletDeactivate(): void { this.activeRoutedPage = null; }
 
   async openPlanningChapter(item: PlanningItem): Promise<void> {
     const option = this.manuscriptStore.universeChapters().find((chapter) => chapter.id === item.chapter_id);

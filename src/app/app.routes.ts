@@ -15,7 +15,11 @@ const workspaceSections: Routes = [
   { path: 'writing', data: navigationData('escrita', 'Escrita', '✎', true, 10), children: [] },
   { path: 'entities', data: navigationData('entidades', 'Entidades', '♧', true, 20), children: [] },
   { path: 'connections', data: navigationData('conexoes', 'Conexões', '⌘', true, 30), children: [] },
-  { path: 'timeline', data: navigationData('timeline', 'Timeline', '◷', true, 40), children: [] },
+  {
+    path: 'timeline',
+    data: navigationData('timeline', 'Timeline', '◷', true, 40),
+    loadComponent: () => import('./features/timeline/timeline-page.component').then((module) => module.TimelinePageComponent),
+  },
   { path: 'planning', data: navigationData('planejamento', 'Planejamento', '☑', true, 50), children: [] },
   {
     path: 'history',

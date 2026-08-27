@@ -1,13 +1,10 @@
-import { Component, EventEmitter, Input, OnChanges, Output, inject, signal } from '@angular/core';
+import { Component, Input, OnChanges, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ContentTag, Entity } from '../../core/models';
+import { AppState } from '../../core/state/app.state';
+import { EntityStore } from '../entities/state/entity.store';
+import { KnowledgeStore } from '../knowledge/state/knowledge.store';
 import { TimelineStore } from './state/timeline.store';
-
-export interface TimelineMetadataRequest {
-  id: string;
-  title: string;
-  sourceEvent: Event;
-}
 
 @Component({
   selector: 'app-timeline-page',
@@ -18,11 +15,11 @@ export interface TimelineMetadataRequest {
 })
 export class TimelinePageComponent implements OnChanges {
   @Input({ required: true }) universeId = '';
-  @Input() entities: Entity[] = [];
-  @Input() tagsByOwner: Record<string, ContentTag[]> = {};
-  @Output() readonly metadataRequested = new EventEmitter<TimelineMetadataRequest>();
 
   readonly store = inject(TimelineStore);
+  private readonly appState = inject(AppState);
+  private readonly entityStore = inject(EntityStore);
+  private readonly knowledgeStore = inject(KnowledgeStore);
   readonly modal = signal<'create' | 'rename' | null>(null);
   readonly searchQuery = signal('');
 
@@ -62,11 +59,11 @@ export class TimelinePageComponent implements OnChanges {
   }
 
   eventEntities(): Entity[] {
-    return this.entities.filter((entity) => entity.type === 'Evento');
+    return this.entityStore.entities().filter((entity) => entity.type === 'Evento');
   }
 
   tags(eventId: string): ContentTag[] {
-    return this.tagsByOwner[`timeline:${eventId}`] ?? [];
+    return this.knowledgeStore.workspacePreviewTags()[`timeline:${eventId}`] ?? [];
   }
 
   openCreate(): void {
@@ -116,7 +113,8 @@ export class TimelinePageComponent implements OnChanges {
 
   requestMetadata(eventId: string, title: string, sourceEvent: Event): void {
     sourceEvent.stopPropagation();
-    this.metadataRequested.emit({ id: eventId, title, sourceEvent });
+    void this.knowledgeStore.openMetadata('timeline', eventId, title, this.appState.activeUniverseId());
+    this.appState.openModal('metadata');
   }
 
   closeModal(): void {

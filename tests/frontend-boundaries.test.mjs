@@ -148,6 +148,26 @@ test('Histórico é a primeira seção do workspace migrada para rota lazy próp
   assert.match(history, /@Input\(\{ required: true \}\) universeId/u, 'segue recebendo universeId por Input — agora vindo de withComponentInputBinding()/paramsInheritanceStrategy, não de um binding manual do layout');
 });
 
+test('Timeline migra para rota lazy própria e passa a injetar EntityStore/KnowledgeStore direto (Fase 3.2)', () => {
+  const routes = readFileSync(new URL('../src/app/app.routes.ts', import.meta.url), 'utf8');
+  const workspaceSource = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
+  const workspaceTemplate = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
+  const timeline = readFileSync(new URL('../src/app/features/timeline/timeline-page.component.ts', import.meta.url), 'utf8');
+  assert.match(routes, /path: 'timeline'[\s\S]*?loadComponent: \(\) => import\('\.\/features\/timeline\/timeline-page\.component'\)/u);
+  assert.doesNotMatch(workspaceSource, /TimelinePageComponent/u, 'WorkspaceLayout não deve mais importar/declarar TimelinePageComponent — ele chega pelo router-outlet');
+  assert.doesNotMatch(workspaceTemplate, /<app-timeline-page/u, 'a árvore legacy não deve montar uma segunda instância da página de timeline');
+  // Timeline não pode mais receber entities/tagsByOwner por @Input() de um pai de template — o pai agora é o
+  // Router, não o WorkspaceLayout — então passa a injetar os stores cross-domain diretamente, como
+  // ManuscriptStore/ConnectionsStore já fazem em suas próprias páginas roteadas/quase-roteadas.
+  assert.doesNotMatch(timeline, /@Input\(\) entities|@Input\(\) tagsByOwner|@Output\(\).*metadataRequested/u);
+  assert.match(timeline, /inject\(EntityStore\)/u);
+  assert.match(timeline, /inject\(KnowledgeStore\)/u);
+  // O gatilho de "+ Evento" no cabeçalho persistente não alcança mais a página roteada por @ViewChild;
+  // o (activate) do <router-outlet> precisa entregar a instância ativa para isso continuar funcionando.
+  assert.match(workspaceTemplate, /\(activate\)="onWorkspaceOutletActivate\(\$event\)"/u);
+  assert.match(workspaceSource, /supportsCreate\(this\.activeRoutedPage\)/u);
+});
+
 test('Settings é rota global lazy e não depende de universo ativo', () => {
   const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
   const template = readFileSync(new URL('../src/app/root-layout.component.html', import.meta.url), 'utf8');
