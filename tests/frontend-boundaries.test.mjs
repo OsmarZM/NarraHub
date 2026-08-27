@@ -225,6 +225,54 @@ test('rotas de biblioteca e workspace são lazy e não coexistem no RootLayout',
   assert.match(rootTemplate, /<router-outlet/u);
 });
 
+test('o <router-outlet> do workspace fica DENTRO de .workspace-view (regressão: página roteada renderizada fora da área visível)', () => {
+  // Bug real reportado como "Histórico parou de funcionar / tela em branco". A página roteada
+  // ESTAVA no DOM (por isso extrair texto da página a encontrava), mas o outlet era irmão logo
+  // DEPOIS de <section class="workspace-view">, que é height:100% dentro de um
+  // .workspace-route-content overflow:hidden. Medido no navegador: .workspace-route-content
+  // top=64/bottom=720, section.workspace-view ocupando os mesmos 656px, e app-history-page
+  // começando em top=720 — ou seja, 100% abaixo da borda visível e cortada pelo overflow.
+  // O outlet precisa ocupar o mesmo slot de conteúdo que as páginas legacy.
+  const template = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
+  const sectionStart = template.indexOf('<section class="workspace-view');
+  const sectionEnd = template.indexOf('</section>', sectionStart);
+  const outlet = template.indexOf('<router-outlet');
+  assert.ok(sectionStart >= 0 && sectionEnd > sectionStart, 'section.workspace-view deve existir');
+  assert.ok(outlet > sectionStart && outlet < sectionEnd,
+    'o <router-outlet> precisa estar dentro de <section class="workspace-view">, não depois dela — fora, a página roteada renderiza abaixo da área visível e some atrás do overflow:hidden');
+});
+
+test('a árvore legacy e o router-outlet leem a MESMA fonte de navegação (regressão: tela em branco por dessincronia)', () => {
+  // Segundo bug encontrado durante a validação: havia duas fontes de verdade para "qual seção
+  // mostrar" — a URL (que alimenta o outlet) e appState.workspaceView() (que alimentava o @if
+  // legacy). Capturado no navegador um estado real com URL em /planning e workspaceView em
+  // 'history': nenhum dos dois renderizava nada e a área de conteúdo ficava vazia. Com o @if
+  // lendo activeNav() (derivado de route.data, mesma fonte do outlet) a dessincronia deixa de
+  // ser representável.
+  const template = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(template, /@if \(appState\.workspaceView\(\)/u,
+    'workspaceView() não pode decidir qual seção renderizar — use activeNav(), derivado da rota');
+  assert.doesNotMatch(template, /@else if \(appState\.workspaceView\(\)/u,
+    'workspaceView() não pode decidir qual seção renderizar — use activeNav(), derivado da rota');
+  for (const nav of ['escrita', 'entidades', 'conexoes', 'planejamento']) {
+    assert.match(template, new RegExp(`activeNav\\(\\) === '${nav}'`, 'u'),
+      `a seção legacy ${nav} deve ser selecionada por activeNav()`);
+  }
+  // workspaceView continua legítimo como SUB-estado dentro da seção de entidades (lista vs. ficha).
+  assert.match(template, /\[view\]="appState\.workspaceView\(\) === 'entity-sheet'/u);
+});
+
+test('carregar dados de um domínio não pode abortar a navegação', () => {
+  // Terceiro defeito encontrado na validação: selectNav() dá await em loadPlanning() ANTES de
+  // chamar navigation.navigate(). Uma rejeição ali abortava a troca de seção inteira — a URL
+  // ficava na seção anterior enquanto workspaceView já havia mudado, produzindo justamente a
+  // dessincronia do teste acima.
+  const source = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
+  const body = source.slice(source.indexOf('async loadPlanning('));
+  assert.match(body.slice(0, 600), /try \{[\s\S]*catch \(error\)/u,
+    'loadPlanning() precisa tratar o próprio erro, senão uma falha de banco impede a navegação');
+});
+
 test('restoreRoute() não usa activeNav() pra detectar navegação já processada (regressão do bug de deep link em Histórico/Timeline)', () => {
   // Bug real: activeNav() é computed(() => navigation.activeData().navigationId), ou seja, é derivado
   // direto de route.data e já reflete a rota nova assim que o Router resolve — ANTES de

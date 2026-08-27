@@ -28,15 +28,22 @@
           <div class="workspace-actions"><span class="save-state" [class.saving]="isSaving()"><i></i>{{ saveMessage() || 'Banco local conectado' }}</span>
             <button type="button" class="secondary-button" title="Renomear universo" (click)="beginRenameUniverse()">✎ Renomear</button><button type="button" class="secondary-button metadata-button" title="Tags do universo" (click)="openMetadata('universe', universe.id, universe.name)"># Tags</button>
             <button type="button" class="secondary-button" (click)="openShareModal()">↗ Compartilhar</button>
-            @if (appState.workspaceView() === 'editor') { <button type="button" class="secondary-button" [class.active]="inspectorOpen()" [disabled]="!activeChapter()" (click)="toggleInspector()">{{ inspectorOpen() ? 'Ocultar resumo' : 'Resumo do capítulo' }}</button><button type="button" class="secondary-button" (click)="beginCreateChapter()" [disabled]="!activeBook()">＋ Capítulo</button> }
-            @else if (appState.workspaceView() === 'entities' && entityFilter()) { <button type="button" class="primary-button small" (click)="beginCreateEntity()">＋ {{ entityCreateLabel() }}</button> }
-            @else if (appState.workspaceView() === 'graph') { <button type="button" class="primary-button small" (click)="beginCreateConnection()" [disabled]="entities().length < 2">＋ Conexão</button> }
-            @else if (appState.workspaceView() === 'timeline') { <button type="button" class="primary-button small" (click)="beginCreateTimeline()">＋ Evento</button> }
-            @else if (appState.workspaceView() === 'planning') { <button type="button" class="primary-button small" (click)="beginCreatePlanning()">＋ Card</button> }
+            @if (activeNav() === 'escrita') { <button type="button" class="secondary-button" [class.active]="inspectorOpen()" [disabled]="!activeChapter()" (click)="toggleInspector()">{{ inspectorOpen() ? 'Ocultar resumo' : 'Resumo do capítulo' }}</button><button type="button" class="secondary-button" (click)="beginCreateChapter()" [disabled]="!activeBook()">＋ Capítulo</button> }
+            @else if (activeNav() === 'entidades' && entityFilter()) { <button type="button" class="primary-button small" (click)="beginCreateEntity()">＋ {{ entityCreateLabel() }}</button> }
+            @else if (activeNav() === 'conexoes') { <button type="button" class="primary-button small" (click)="beginCreateConnection()" [disabled]="entities().length < 2">＋ Conexão</button> }
+            @else if (activeNav() === 'timeline') { <button type="button" class="primary-button small" (click)="beginCreateTimeline()">＋ Evento</button> }
+            @else if (activeNav() === 'planejamento') { <button type="button" class="primary-button small" (click)="beginCreatePlanning()">＋ Card</button> }
           </div>
         </header>
 
-        @if (appState.workspaceView() === 'editor') {
+        <!-- Qual seção renderizar vem de activeNav() (derivado de route.data), a MESMA
+             fonte que alimenta o <router-outlet> abaixo. Usar appState.workspaceView()
+             aqui criava uma segunda fonte de verdade: bastava a URL e o workspaceView
+             discordarem (ex.: URL em /planning com workspaceView 'history') para nenhum
+             dos dois renderizar nada e a área de conteúdo ficar em branco.
+             workspaceView() continua válido só como sub-estado DENTRO de uma seção
+             (lista de entidades vs. ficha aberta). -->
+        @if (activeNav() === 'escrita') {
           <app-writing-page
             [universeId]="universe.id"
             [universeName]="universe.name"
@@ -52,7 +59,7 @@
             (info)="onManuscriptInfo($event)"
             (failed)="onManuscriptFailed($event)"
           />
-        } @else if (appState.workspaceView() === 'entities' || appState.workspaceView() === 'entity-sheet') {
+        } @else if (activeNav() === 'entidades') {
           <app-entities-page
             [universeId]="universe.id"
             [universeName]="universe.name"
@@ -66,7 +73,7 @@
             (info)="onEntityInfo($event)"
             (failed)="onEntityFailure($event)"
           />
-        } @else if (appState.workspaceView() === 'graph') {
+        } @else if (activeNav() === 'conexoes') {
           <app-connections-page
             [universeId]="universe.id"
             [entities]="entities()"
@@ -74,7 +81,7 @@
             (info)="onConnectionsInfo($event)"
             (failed)="onConnectionsFailed($event)"
           />
-        } @else if (appState.workspaceView() === 'planning') {
+        } @else if (activeNav() === 'planejamento') {
           <app-planning-board
             [universeId]="universe.id"
             [items]="planning()"
@@ -85,8 +92,17 @@
             (chapterOpened)="openPlanningChapter($event)"
           />
         }
+
+        <!-- As páginas já migradas para rota (Histórico, Timeline) entram AQUI, no
+             mesmo slot de conteúdo que as páginas legacy acima ocupam. O outlet
+             precisa ficar DENTRO de .workspace-view: essa seção é height:100% e
+             .workspace-route-content é overflow:hidden, então um outlet irmão
+             depois dela renderiza a página inteira fora da área visível. Nenhuma
+             das duas árvores concorre pelo espaço: ambas leem activeNav(), e uma
+             seção ou tem branch legacy acima ou tem loadComponent na rota, nunca
+             os dois. -->
+        <router-outlet (activate)="onWorkspaceOutletActivate($event)" (deactivate)="onWorkspaceOutletDeactivate()" />
       </section>
-      <router-outlet (activate)="onWorkspaceOutletActivate($event)" (deactivate)="onWorkspaceOutletDeactivate()" />
     </div>
   }
 </div>

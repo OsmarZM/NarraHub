@@ -388,7 +388,24 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   onConnectionsInfo(message: string): void { this.showInfo(message); }
   onConnectionsFailed(message: string): void { this.reportError(message, message); }
 
-  async loadPlanning(): Promise<void> { const id = this.appState.activeUniverseId(); if (!id) return; const data = await this.planningService.list(id); if (this.appState.activeUniverseId() === id) this.planning.set(data); }
+  /**
+   * Trata o próprio erro de propósito: selectNav() dá await nisso ANTES de
+   * chamar navigation.navigate(), então uma rejeição aqui abortava a troca de
+   * seção inteira — a URL ficava na seção anterior enquanto workspaceView() já
+   * tinha mudado, deixando a página roteada anterior e a nova página legacy
+   * renderizadas ao mesmo tempo. Carregar dados de um domínio nunca deve
+   * impedir a navegação.
+   */
+  async loadPlanning(): Promise<void> {
+    const id = this.appState.activeUniverseId();
+    if (!id) return;
+    try {
+      const data = await this.planningService.list(id);
+      if (this.appState.activeUniverseId() === id) this.planning.set(data);
+    } catch (error) {
+      this.reportError('Não foi possível carregar o planejamento.', error);
+    }
+  }
   beginCreatePlanning(): void { this.planningBoard?.openCreate(); }
   beginCreateTimeline(): void { if (supportsCreate(this.activeRoutedPage)) this.activeRoutedPage.openCreate(); }
 
