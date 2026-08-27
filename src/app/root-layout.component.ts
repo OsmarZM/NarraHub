@@ -2,7 +2,7 @@ import { Component, HostListener, OnDestroy, ViewEncapsulation, computed, inject
 import { RouterOutlet } from '@angular/router';
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { AppBootstrapService } from './core/bootstrap/app-bootstrap.service';
+import { AppBootstrapService } from './bootstrap/app-bootstrap.service';
 import { AppNavigationService } from './core/navigation/app-navigation.service';
 import { AppState } from './core/state/app.state';
 import { CollaborationStore } from './features/collaboration/state/collaboration.store';

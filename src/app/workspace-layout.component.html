@@ -24,7 +24,7 @@
 
       <section class="workspace-view page-enter">
         <header class="workspace-header">
-          <div class="breadcrumb"><button type="button" (click)="selectNav(navItems[0])">Universos</button><span>/</span><strong>{{ universe.name }}</strong>@if (activeStory() && activeNav() === 'escrita') { <span>/</span><span>{{ activeStory()?.name }}</span> }</div>
+          <div class="breadcrumb"><button type="button" (click)="selectNav(navItems[0])">{{ libraryBreadcrumbLabel }}</button><span>/</span><strong>{{ universe.name }}</strong>@if (activeStory() && activeNav() === 'escrita') { <span>/</span><span>{{ activeStory()?.name }}</span> }</div>
           <div class="workspace-actions"><span class="save-state" [class.saving]="isSaving()"><i></i>{{ saveMessage() || 'Banco local conectado' }}</span>
             <button type="button" class="secondary-button" title="Renomear universo" (click)="beginRenameUniverse()">✎ Renomear</button><button type="button" class="secondary-button metadata-button" title="Tags do universo" (click)="openMetadata('universe', universe.id, universe.name)"># Tags</button>
             <button type="button" class="secondary-button" (click)="openShareModal()">↗ Compartilhar</button>

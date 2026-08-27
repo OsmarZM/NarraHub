@@ -80,7 +80,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   private readonly navigation = inject(AppNavigationService);
 
   readonly searchQuery = this.shell.searchQuery;
-  readonly activeNav = signal('inicio');
+  readonly activeNav = computed(() => this.navigation.activeData().navigationId);
   readonly universes = this.universeStore.universes;
   readonly entities = this.entityStore.entities;
   readonly entityFilter = this.entityStore.filter;
@@ -106,16 +106,14 @@ export class WorkspaceLayoutComponent implements OnDestroy {
 
   renameValue = '';
 
-  readonly navItems: SidebarNavItem[] = [
-    { id: 'inicio', label: 'Início', icon: '⌂', needsUniverse: false },
-    { id: 'escrita', label: 'Escrita', icon: '✎', needsUniverse: true },
-    { id: 'entidades', label: 'Entidades', icon: '♧', needsUniverse: true },
-    { id: 'conexoes', label: 'Conexões', icon: '⌘', needsUniverse: true },
-    { id: 'timeline', label: 'Timeline', icon: '◷', needsUniverse: true },
-    { id: 'planejamento', label: 'Planejamento', icon: '☑', needsUniverse: true },
-    { id: 'historico', label: 'Histórico', icon: '↶', needsUniverse: true },
-    { id: 'configuracoes', label: 'Configurações', icon: '⚙', needsUniverse: false },
-  ];
+  readonly navItems: SidebarNavItem[] = this.navigation.navigationItems.map((item) => ({
+    id: item.navigationId,
+    label: item.sidebarLabel ?? item.label,
+    icon: item.icon,
+    needsUniverse: item.needsUniverse,
+  }));
+  readonly libraryBreadcrumbLabel = this.navigation.navigationItems
+    .find((item) => item.navigationId === 'inicio')?.label ?? 'Universos';
 
   readonly globalSearchResults = computed<GlobalSearchResult[]>(() => {
     if (this.appState.currentView() !== 'workspace') return [];
@@ -170,7 +168,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
       this.showInfo('Selecione ou crie um universo para abrir esta área.'); return;
     }
     await this.saveChapterNow();
-    this.activeNav.set(item.id);
     if (item.id === 'inicio') { await this.returnToLibrary(updateRoute); return; }
     if (item.id === 'ajuda') { this.showInfo('Ajuda e feedback serão conectados ao fluxo nativo em uma próxima fase.'); return; }
     if (item.id === 'configuracoes') { this.openSettings(updateRoute); return; }
@@ -192,7 +189,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     await this.saveChapterNow();
     this.workspaceEpoch += 1; this.resetWorkspaceData();
     localStorage.setItem('narrahub.lastUniverseId', universe.id); this.lastOpenedUniverseId.set(universe.id);
-    this.searchQuery.set(''); this.appState.openUniverse(universe); this.activeNav.set('escrita'); await this.loadWorkspaceData();
+    this.searchQuery.set(''); this.appState.openUniverse(universe); await this.loadWorkspaceData();
     if (updateRoute) await this.navigation.navigate('escrita', universe.id);
   }
 
@@ -226,14 +223,13 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   }
 
   async returnToLibrary(updateRoute = true): Promise<void> {
-    await this.saveChapterNow(); this.workspaceEpoch += 1; this.appState.goHome(); this.activeNav.set('inicio'); this.searchQuery.set(''); this.resetWorkspaceData();
+    await this.saveChapterNow(); this.workspaceEpoch += 1; this.appState.goHome(); this.searchQuery.set(''); this.resetWorkspaceData();
     if (updateRoute) await this.navigation.navigate('inicio', null);
   }
 
   async openSettings(updateRoute = true): Promise<void> {
     await this.saveChapterNow();
     this.searchQuery.set('');
-    this.activeNav.set('configuracoes');
     this.appState.openSettings();
     if (updateRoute) await this.navigation.navigate('configuracoes', null);
   }
@@ -473,7 +469,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   private normalizeSearch(value: string): string { return value.normalize('NFD').replace(/[̀-ͯ]/gu, '').toLocaleLowerCase('pt-BR').trim(); }
 
   setWorkspaceNavigation(navId: Exclude<AppNavigationId, 'inicio' | 'configuracoes'>): void {
-    this.activeNav.set(navId);
     void this.navigation.navigate(navId, this.appState.activeUniverseId());
   }
 
@@ -494,14 +489,8 @@ export class WorkspaceLayoutComponent implements OnDestroy {
         return;
       }
 
-      const universe = this.universes().find((item) => item.id === route.universeId);
-      if (!universe) {
-        await this.navigation.navigate('inicio', null);
-        this.showInfo('O universo desta rota não existe mais neste banco local.');
-        return;
-      }
-      if (this.appState.activeUniverseId() !== universe.id) await this.openUniverse(universe, false);
-      else if (this.loadedUniverseId !== universe.id) await this.loadWorkspaceData();
+      if (!route.universeId || this.appState.activeUniverseId() !== route.universeId) return;
+      if (this.loadedUniverseId !== route.universeId) await this.loadWorkspaceData();
       const navItem = this.navItems.find((item) => item.id === route.navId);
       if (navItem) await this.selectNav(navItem, false);
     } finally {

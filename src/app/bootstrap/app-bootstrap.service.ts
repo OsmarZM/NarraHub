@@ -1,11 +1,11 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { isTauri } from '@tauri-apps/api/core';
-import { AiService } from '../services/ai.service';
-import { DatabaseService } from '../services/database.service';
-import { CollaborationStore } from '../../features/collaboration/state/collaboration.store';
-import { KnowledgeStore } from '../../features/knowledge/state/knowledge.store';
-import { UniverseStore } from '../../features/library/state/universe.store';
-import { SettingsStore } from '../../features/settings/state/settings.store';
+import { AiService } from '../core/services/ai.service';
+import { DatabaseService } from '../core/services/database.service';
+import { CollaborationStore } from '../features/collaboration/state/collaboration.store';
+import { KnowledgeStore } from '../features/knowledge/state/knowledge.store';
+import { UniverseStore } from '../features/library/state/universe.store';
+import { SettingsStore } from '../features/settings/state/settings.store';
 
 @Injectable({ providedIn: 'root' })
 export class AppBootstrapService {

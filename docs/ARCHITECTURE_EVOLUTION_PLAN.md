@@ -534,11 +534,13 @@ O `UniverseResolver` nunca pode depender de inicialização ainda executada em `
 
 Estado do corte atual:
 
-- **3.1.1 concluída:** `AppBootstrapService` assumiu inicialização de IA, SQLite, biblioteca, previews de Knowledge, colaboração e versão/update, além dos timers globais;
+- **3.1.1 concluída:** `AppBootstrapService`, localizado em `app/bootstrap` como composition root (e não em `core`), assumiu inicialização de IA, SQLite, biblioteca, previews de Knowledge, colaboração e versão/update, além dos timers globais;
 - **3.1.2 concluída:** `provideAppInitializer` aguarda esse serviço antes da navegação inicial; `RootLayout` não implementa mais `ngOnInit` nem inicializa banco/IA;
 - **3.1.3 concluída:** `WorkspaceLayoutComponent` assumiu sidebar, cabeçalho contextual, modais e a única árvore legacy de páginas; Biblioteca ganhou host de rota lazy próprio e `RootLayout` ficou sem imports de páginas de domínio;
 - o outlet do workspace já existe, mas permanece vazio até a migração unitária da primeira feature na Fase 3.2; a árvore legacy não possui uma segunda instância escondida;
-- **3.1.4–3.1.5 pendentes:** `UniverseResolver` e consumo efetivo de `route.data` serão implementados nessa ordem, agora sobre um bootstrap e um layout independentes da árvore visual raiz.
+- **3.1.4 concluída:** `UniverseResolver` valida o ID depois do initializer, reutiliza/recarrega apenas a lista de universos, seleciona o universo no estado de compatibilidade e redireciona falhas de bootstrap, IDs inválidos e universos inexistentes para a Biblioteca com mensagem recuperável; nenhum domínio do workspace é carregado pelo resolver;
+- **3.1.5 concluída:** as seções do workspace são rotas explícitas; identidade ativa, labels, ícones, ordem da sidebar e label raiz do breadcrumb vêm de `route.data`. A rota curinga de seção volta para Escrita sem montar uma segunda árvore;
+- build de produção e testes arquiteturais cobrem a composição do bootstrap, o limite do resolver e o consumo dos metadados. `cargo check` no `src-tauri` também foi validado (backend Rust compila sem erros). Cold start (`/`), deep link para rota global lazy (`/settings`) e deep link para universo inexistente (`/workspace/:id/...`) foram exercitados via `ng serve` em abas novas: o primeiro carrega limpo, o segundo carrega o chunk lazy sem erro de console, o terceiro cai no ramo de erro recuperável do resolver (mensagem "Não foi possível validar o universo desta rota." e redirect para `/library`) sem tela em branco — os erros de console nesse terceiro caso são só chamadas de banco tentadas fora do Tauri (`isTauri()` falso), esperado no navegador. **Falta** validar cold start/reload/deep link real dentro do app Tauri empacotado (IPC nativo, `tauri.qualification.conf.json`) antes da rota piloto de History — isso exige o app rodando localmente e não pôde ser feito de forma headless.
 
 #### Fase 3.2 — rotas das features
 

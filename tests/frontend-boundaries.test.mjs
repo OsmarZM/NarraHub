@@ -83,12 +83,39 @@ test('App raiz é somente o outlet do Router', () => {
 
 test('bootstrap global termina antes do Router e não depende do RootLayout', () => {
   const config = readFileSync(new URL('../src/app/app.config.ts', import.meta.url), 'utf8');
-  const bootstrap = readFileSync(new URL('../src/app/core/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
+  const bootstrap = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
   const layout = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
   assert.match(config, /provideAppInitializer\(\(\) => inject\(AppBootstrapService\)\.initialize\(\)\)/u);
+  assert.match(config, /\.\/bootstrap\/app-bootstrap\.service/u);
   assert.match(bootstrap, /await this\.db\.init\(\)/u);
   assert.doesNotMatch(bootstrap, /RootLayoutComponent|ActivatedRoute|Router/u);
   assert.doesNotMatch(layout, /ngOnInit|this\.db\.init\(\)|this\.ai\.initialize\(\)/u);
+});
+
+test('resolver seleciona somente o universo depois do bootstrap e falha de forma recuperável', () => {
+  const routes = readFileSync(new URL('../src/app/app.routes.ts', import.meta.url), 'utf8');
+  const resolver = readFileSync(new URL('../src/app/routing/universe.resolver.ts', import.meta.url), 'utf8');
+  assert.match(routes, /resolve: \{ universe: universeResolver \}/u);
+  assert.match(resolver, /bootstrap\.error\(\)/u);
+  assert.match(resolver, /universes\.universes\(\)\.find/u);
+  assert.match(resolver, /appState\.openUniverse\(universe\)/u);
+  assert.match(resolver, /router\.parseUrl\('\/library'\)/u);
+  assert.doesNotMatch(resolver, /EntityStore|ManuscriptStore|TimelineStore|HistoryStore|PlanningService|ConnectionsStore|KnowledgeStore/u);
+});
+
+test('sidebar e navegação ativa derivam de route.data', () => {
+  const routes = readFileSync(new URL('../src/app/app.routes.ts', import.meta.url), 'utf8');
+  const navigation = readFileSync(new URL('../src/app/core/navigation/app-navigation.service.ts', import.meta.url), 'utf8');
+  const workspace = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
+  assert.match(routes, /navigationData\('historico', 'Histórico'/u);
+  assert.doesNotMatch(routes, /path: ':section'/u);
+  assert.match(navigation, /current\.data/u);
+  assert.match(navigation, /collectNavigationItems\(this\.router\.config\)/u);
+  assert.match(workspace, /this\.navigation\.activeData\(\)\.navigationId/u);
+  assert.match(workspace, /this\.navigation\.navigationItems\.map/u);
+  assert.doesNotMatch(workspace, /activeNav\.set/u);
+  assert.match(template, /libraryBreadcrumbLabel/u);
 });
 
 test('RootLayout não importa páginas de domínio nem serviços legados', () => {

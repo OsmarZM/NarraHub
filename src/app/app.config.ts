@@ -1,7 +1,7 @@
 import { ApplicationConfig, inject, provideAppInitializer, provideBrowserGlobalErrorListeners } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { routes } from './app.routes';
-import { AppBootstrapService } from './core/bootstrap/app-bootstrap.service';
+import { AppBootstrapService } from './bootstrap/app-bootstrap.service';
 import { CollaborationGateway } from './features/collaboration/gateways/collaboration.gateway';
 import { LegacyCollaborationGateway } from './features/collaboration/gateways/legacy-collaboration.gateway';
 import { ConnectionsGateway } from './features/connections/gateways/connections.gateway';

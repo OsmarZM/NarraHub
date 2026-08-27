@@ -13,6 +13,15 @@ export interface AppRouteState {
   universeId: string | null;
 }
 
+export interface AppNavigationData {
+  navigationId: AppNavigationId;
+  label: string;
+  sidebarLabel?: string;
+  icon: string;
+  needsUniverse: boolean;
+  order: number;
+}
+
 const workspacePaths: Record<Exclude<AppNavigationId, 'inicio' | 'configuracoes'>, string> = {
   escrita: 'writing',
   entidades: 'entities',
@@ -50,4 +59,3 @@ function safeDecode(value: string): string {
     return value;
   }
 }
-
