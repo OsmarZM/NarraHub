@@ -21,11 +21,6 @@ export class AppState {
   // ── Sidebar ─────────────────────────────────
   readonly sidebarCollapsed = signal(false);
 
-  // ── Active Selection ────────────────────────
-  readonly activeStoryId = signal<string | null>(null);
-  readonly activeBookId = signal<string | null>(null);
-  readonly activeChapterId = signal<string | null>(null);
-
   // ── UI State ────────────────────────────────
   readonly isLoading = signal(false);
   readonly modalOpen = signal<string | null>(null); // modal identifier
@@ -36,17 +31,11 @@ export class AppState {
     this.activeUniverse.set(universe);
     this.currentView.set('workspace');
     this.workspaceView.set('editor');
-    this.activeStoryId.set(null);
-    this.activeBookId.set(null);
-    this.activeChapterId.set(null);
   }
 
   goHome(): void {
     this.currentView.set('home');
     this.activeUniverse.set(null);
-    this.activeStoryId.set(null);
-    this.activeBookId.set(null);
-    this.activeChapterId.set(null);
   }
 
   openEntityList(): void {
@@ -57,11 +46,8 @@ export class AppState {
     this.workspaceView.set('entity-sheet');
   }
 
-  openEditor(chapterId?: string): void {
+  openEditor(): void {
     this.workspaceView.set('editor');
-    if (chapterId) {
-      this.activeChapterId.set(chapterId);
-    }
   }
 
   openGraph(): void {

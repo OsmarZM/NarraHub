@@ -23,12 +23,15 @@ const featureFiles = [
   '../src/app/features/collaboration/state/collaboration.store.ts',
   '../src/app/features/collaboration/gateways/collaboration.gateway.ts',
   '../src/app/features/collaboration/share-modal/share-modal.component.ts',
+  '../src/app/features/manuscript/writing-page.component.ts',
+  '../src/app/features/manuscript/state/manuscript.store.ts',
+  '../src/app/features/manuscript/gateways/manuscript.gateway.ts',
 ];
 
 test('features extraídas não conhecem SQL nem o serviço legado', () => {
   for (const path of featureFiles) {
     const source = readFileSync(new URL(path, import.meta.url), 'utf8');
-    assert.doesNotMatch(source, /DatabaseService|WorkspaceService|UniverseService|EntityService|AttachmentService|CollaborationService|\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE FROM\b/u, path);
+    assert.doesNotMatch(source, /DatabaseService|WorkspaceService|UniverseService|EntityService|AttachmentService|CollaborationService|StoryService|BookService|ChapterService|MentionService|\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE FROM\b/u, path);
   }
 });
 
@@ -55,6 +58,10 @@ test('dependência SQL temporária fica restrita aos adapters legados', () => {
   assert.match(entitySource, /AttachmentService/u);
   const collaborationSource = readFileSync(new URL('../src/app/features/collaboration/gateways/legacy-collaboration.gateway.ts', import.meta.url), 'utf8');
   assert.match(collaborationSource, /CollaborationService/u);
+  const manuscriptSource = readFileSync(new URL('../src/app/features/manuscript/gateways/legacy-manuscript.gateway.ts', import.meta.url), 'utf8');
+  assert.match(manuscriptSource, /StoryService/u);
+  assert.match(manuscriptSource, /BookService/u);
+  assert.match(manuscriptSource, /ChapterService/u);
 });
 
 test('App raiz não acessa mais o serviço legado de universos diretamente', () => {
@@ -84,4 +91,12 @@ test('App raiz delega colaboração e compartilhamento para a feature', () => {
   assert.doesNotMatch(source, /CollaborationService|\bOnlineShareService\b|shareSelectedUniverseIds|rememberShare/u);
   assert.doesNotMatch(template, /isUniverseSelectedForShare|selectAllShareUniverses|shareChoice/u);
   assert.match(template, /<app-share-modal/u);
+});
+
+test('App raiz delega história/livro/capítulo e o editor para a feature de Manuscrito', () => {
+  const source = readFileSync(new URL('../src/app/app.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/app.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /StoryService|BookService|ChapterService|newStoryName|newChapterTitle|editorContent\(|applyFormat/u);
+  assert.doesNotMatch(template, /selectTreeChapter\(|chapter-editor|activeEntityId/u);
+  assert.match(template, /<app-writing-page/u);
 });

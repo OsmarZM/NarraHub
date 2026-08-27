@@ -85,9 +85,9 @@
           <header class="workspace-header">
             <div class="breadcrumb"><button type="button" (click)="selectNav(navItems[0])">Universos</button><span>/</span><strong>{{ appState.activeUniverse()?.name }}</strong>@if (activeStory() && activeNav() === 'escrita') { <span>/</span><span>{{ activeStory()?.name }}</span> }</div>
             <div class="workspace-actions"><span class="save-state" [class.saving]="isSaving()"><i></i>{{ saveMessage() || 'Banco local conectado' }}</span>
-              @if (appState.activeUniverse(); as activeUniverse) { <button type="button" class="secondary-button" title="Renomear universo" (click)="requestRename('universe', activeUniverse.id, activeUniverse.name)">✎ Renomear</button><button type="button" class="secondary-button metadata-button" title="Tags do universo" (click)="openMetadata('universe', activeUniverse.id, activeUniverse.name)"># Tags</button> }
+              @if (appState.activeUniverse(); as activeUniverse) { <button type="button" class="secondary-button" title="Renomear universo" (click)="beginRenameUniverse()">✎ Renomear</button><button type="button" class="secondary-button metadata-button" title="Tags do universo" (click)="openMetadata('universe', activeUniverse.id, activeUniverse.name)"># Tags</button> }
               <button type="button" class="secondary-button" (click)="openShareModal()">↗ Compartilhar</button>
-              @if (appState.workspaceView() === 'editor') { <button type="button" class="secondary-button" [class.active]="inspectorOpen()" [disabled]="!activeChapter()" (click)="toggleInspector()">{{ inspectorOpen() ? 'Ocultar resumo' : 'Resumo do capítulo' }}</button><button type="button" class="secondary-button" (click)="appState.openModal('new-chapter')" [disabled]="!activeBook()">＋ Capítulo</button> }
+              @if (appState.workspaceView() === 'editor') { <button type="button" class="secondary-button" [class.active]="inspectorOpen()" [disabled]="!activeChapter()" (click)="toggleInspector()">{{ inspectorOpen() ? 'Ocultar resumo' : 'Resumo do capítulo' }}</button><button type="button" class="secondary-button" (click)="beginCreateChapter()" [disabled]="!activeBook()">＋ Capítulo</button> }
               @else if (appState.workspaceView() === 'entities' && entityFilter()) { <button type="button" class="primary-button small" (click)="beginCreateEntity()">＋ {{ entityCreateLabel() }}</button> }
               @else if (appState.workspaceView() === 'graph') { <button type="button" class="primary-button small" (click)="appState.openModal('new-relation')" [disabled]="entities().length < 2">＋ Conexão</button> }
               @else if (appState.workspaceView() === 'timeline') { <button type="button" class="primary-button small" (click)="beginCreateTimeline()">＋ Evento</button> }
@@ -96,58 +96,21 @@
           </header>
 
           @if (appState.workspaceView() === 'editor') {
-            <div class="writing-layout" [class.inspector-open]="inspectorOpen()">
-              <aside class="project-tree">
-                <div class="panel-heading"><div><span class="eyebrow">PROJETO</span><h2>Livros e capítulos</h2></div><button type="button" aria-label="Nova história" (click)="appState.openModal('new-story')">＋</button></div>
-                @if (stories().length === 0) { <div class="tree-empty"><p>Nenhuma história criada.</p><button type="button" class="text-button" (click)="appState.openModal('new-story')">＋ Criar história</button></div> }
-                @for (story of stories(); track story.id) {
-                  <div class="tree-story-row" [class.selected]="activeStory()?.id === story.id"><button type="button" class="tree-expander" [attr.aria-expanded]="isStoryExpanded(story.id)" (click)="toggleStory(story, $event)"><span [class.expanded]="isStoryExpanded(story.id)">›</span></button><button type="button" class="tree-story" [title]="story.name" (click)="selectStory(story)"><span class="folder-icon">▰</span><span class="tree-story-copy"><strong>{{ story.name }}</strong>@if (previewTags('story', story.id); as tags) { @if (tags.length) { <span class="tree-preview-tags">@for (tag of tags.slice(0, 2); track tag.id) { <i [style.--tag-color]="tag.color">{{ tag.name }}</i> } @if (tags.length > 2) { <i>+{{ tags.length - 2 }}</i> }</span> } }</span><small>{{ booksForStory(story.id).length }}</small></button><button type="button" class="tree-rename" aria-label="Renomear história" title="Renomear" (click)="requestRename('story', story.id, story.name, $event)">✎</button><button type="button" class="tree-meta" aria-label="Tags da história" title="Tags" (click)="openMetadata('story', story.id, story.name, $event)">#</button><button type="button" class="tree-delete" aria-label="Excluir história" title="Excluir história" (click)="requestDelete('story', story.id, story.name, $event)">×</button></div>
-                  @if (isStoryExpanded(story.id)) {
-                    <div class="tree-children">
-                      @for (book of booksForStory(story.id); track book.id) {
-                        <div class="tree-book-row" [class.selected]="activeBook()?.id === book.id"><button type="button" class="tree-expander book" [attr.aria-expanded]="isBookExpanded(book.id)" (click)="toggleBook(book, $event)"><span [class.expanded]="isBookExpanded(book.id)">›</span></button><button type="button" class="tree-book" [title]="book.name" (click)="openBookOption(book)"><span class="book-icon" [style.background-image]="book.cover_image ? 'url(' + book.cover_image + ')' : null">{{ book.cover_image ? '' : '▱' }}</span><span class="tree-book-copy"><strong>{{ book.name }}</strong><small>{{ chaptersForBook(book.id).length }} capítulo(s)</small>@if (previewTags('book', book.id); as tags) { @if (tags.length) { <span class="tree-preview-tags">@for (tag of tags.slice(0, 2); track tag.id) { <i [style.--tag-color]="tag.color">{{ tag.name }}</i> } @if (tags.length > 2) { <i>+{{ tags.length - 2 }}</i> }</span> } }</span></button><button type="button" class="tree-rename" aria-label="Renomear livro" title="Renomear" (click)="requestRename('book', book.id, book.name, $event)">✎</button><button type="button" class="tree-meta" aria-label="Tags do livro" title="Tags" (click)="openMetadata('book', book.id, book.name, $event)">#</button><button type="button" class="tree-delete" aria-label="Excluir livro" title="Excluir livro" (click)="requestDelete('book', book.id, book.name, $event)">×</button></div>
-                        @if (isBookExpanded(book.id)) {
-                          <div class="chapter-list" cdkDropList [cdkDropListData]="chaptersForBook(book.id)" (cdkDropListDropped)="dropTreeChapter($event, book)">
-                            @for (chapter of chaptersForBook(book.id); track chapter.id; let first = $first; let last = $last) {
-                              <div class="tree-chapter-row" cdkDrag [cdkDragData]="chapter" [class.selected]="activeChapter()?.id === chapter.id"><button type="button" class="tree-chapter" [title]="chapter.title" (click)="selectTreeChapter(chapter)"><span class="drag-handle" cdkDragHandle>⠿</span><span class="doc-icon">▤</span><span class="chapter-copy"><strong>{{ chapter.title }}</strong><small>{{ chapter.word_count }} palavras</small>@if (previewTags('chapter', chapter.id); as tags) { @if (tags.length) { <span class="tree-preview-tags">@for (tag of tags.slice(0, 2); track tag.id) { <i [style.--tag-color]="tag.color">{{ tag.name }}</i> } @if (tags.length > 2) { <i>+{{ tags.length - 2 }}</i> }</span> } }</span><span class="reorder"><i [class.disabled]="first" (click)="moveTreeChapter(chapter, -1, $event)">↑</i><i [class.disabled]="last" (click)="moveTreeChapter(chapter, 1, $event)">↓</i></span></button><button type="button" class="tree-rename" aria-label="Renomear capítulo" title="Renomear" (click)="requestRename('chapter', chapter.id, chapter.title, $event)">✎</button><button type="button" class="tree-meta" aria-label="Tags do capítulo" title="Tags" (click)="openMetadata('chapter', chapter.id, chapter.title, $event)">#</button><button type="button" class="tree-delete" aria-label="Excluir capítulo" title="Excluir capítulo" (click)="requestDelete('chapter', chapter.id, chapter.title, $event)">×</button></div>
-                            }
-                            @if (activeBook()?.id === book.id) { <button type="button" class="add-tree-item" (click)="appState.openModal('new-chapter')">＋ Novo capítulo</button> }
-                          </div>
-                        }
-                      }
-                      @if (activeStory()?.id === story.id) { <button type="button" class="add-tree-item story-add" (click)="appState.openModal('new-book')">＋ Novo livro</button> }
-                    </div>
-                  }
-                }
-              </aside>
-
-              <article class="editor-panel">
-                @if (!activeStory()) { <section class="editor-empty"><span class="empty-icon">✦</span><h2>Crie a estrutura da sua história</h2><p>Comece com uma história. Depois adicione livro e capítulo.</p><button type="button" class="primary-button" (click)="appState.openModal('new-story')">Criar história</button></section> }
-                @else if (!activeBook()) { <section class="editor-empty"><span class="empty-icon">▱</span><h2>{{ activeStory()?.name }}</h2><p>Esta história ainda não tem livros.</p><button type="button" class="primary-button" (click)="appState.openModal('new-book')">Criar primeiro livro</button></section> }
-                @else if (!activeChapter()) { <section class="editor-empty"><span class="empty-icon">▤</span><h2>{{ activeBook()?.name }}</h2><p>Este livro ainda não tem capítulos.</p><button type="button" class="primary-button" (click)="appState.openModal('new-chapter')">Criar primeiro capítulo</button></section> }
-                @else {
-                  <app-writing-editor [title]="editorTitle()" [content]="editorContent()" [saveMessage]="saveMessage()" [focusMode]="isFocusMode()" [characters]="characterEntities()" [aiEnabled]="ai.enabled()" [aiBusy]="aiBusy()" [aiResponse]="aiResponse()" [aiError]="aiError()" (titleChange)="onTitleInput($event)" (contentChange)="onEditorInput($event)" (saveRequested)="saveChapterNow()" (focusModeChange)="isFocusMode.set($event)" (fullscreenRequested)="toggleFullscreen()" (assistantRequested)="openAiAssistant($event)" (assistantApply)="applyAiResponse($event)" (assistantDismissed)="clearAiAssistant()" />
-                  <footer class="editor-status"><span>{{ formatNumber(wordCount()) }} palavras</span><span>{{ formatNumber(editorContent().length) }} caracteres</span><span>~{{ Math.ceil(wordCount() / 220) || 0 }} min de leitura</span><span class="save-state"><i></i>{{ saveMessage() }}</span></footer>
-                }
-              </article>
-              @if (inspectorOpen() && activeChapter()) {
-              <app-contextual-inspector class="writing-inspector" label="Resumo e contexto do capítulo">
-                <header class="inspector-title"><div><span class="eyebrow">CAPÍTULO ATUAL</span><h3>Resumo e contexto</h3></div><button type="button" aria-label="Recolher painel" title="Recolher painel" (click)="toggleInspector()">×</button></header>
-                <label class="chapter-summary-label"><span>Resumo do capítulo</span><textarea [ngModel]="chapterSummary()" (ngModelChange)="onChapterSummaryInput($event)" (blur)="saveChapterNow()" placeholder="Registre o que acontece, a mudança e o gancho deste capítulo."></textarea></label>
-                <button type="button" class="summary-ai-button" [disabled]="!ai.enabled() || aiBusy()" (click)="summarizeChapterWithAi()">{{ aiBusy() ? 'Resumindo…' : '✦ Gerar resumo com IA' }}</button>
-                @if (chapterTags().length) { <div class="inspector-tags">@for (tag of chapterTags(); track tag.id) { <span [style.--tag-color]="tag.color">{{ tag.name }}</span> }</div> }
-                <div class="scene-route"><label>De onde<input [ngModel]="chapterField('Origem da cena')" (blur)="updateChapterContext('Origem da cena', $any($event.target).value)" placeholder="Lugar de origem" /></label><span>→</span><label>Para onde<input [ngModel]="chapterField('Destino da cena')" (blur)="updateChapterContext('Destino da cena', $any($event.target).value)" placeholder="Lugar de destino" /></label></div>
-                <section class="inspector-places"><header><strong>Lugares mencionados</strong><span>{{ writingPlaces().length }}</span></header>@for (place of writingPlaces(); track place.id) { <button type="button" (click)="setWorkspaceNavigation('entidades'); selectEntityTab('Lugar'); openEntitySheet(place)">{{ place.name }}</button> } @empty { <p>Nenhum lugar cadastrado foi mencionado.</p> }</section>
-                <section class="character-presence"><header><strong>Personagens e falas</strong><span>{{ writingCharacters().length }}</span></header>
-                  @for (insight of writingCharacters(); track insight.entity.id) {
-                    <article [class.current]="insight.mentionedInCurrent"><button type="button" class="character-avatar" [style.background-image]="insight.entity.image ? 'url(' + insight.entity.image + ')' : null" (click)="setWorkspaceNavigation('entidades'); selectEntityTab('Personagem'); openEntitySheet(insight.entity)">{{ insight.entity.image ? '' : insight.entity.name.charAt(0).toUpperCase() }}</button><div><strong>{{ insight.entity.name }}</strong>@if (insight.firstOccurrence) { <small>Primeira aparição: {{ insight.firstOccurrence.chapter_title }}</small> } @else { <small>Aparece neste rascunho</small> }@for (dialogue of insight.dialogueSnippets; track dialogue) { <blockquote>{{ dialogue }}</blockquote> }</div></article>
-                  } @empty { <p>Personagens mencionados serão identificados pelo nome enquanto você escreve.</p> }
-                </section>
-                <button type="button" class="metadata-panel-button" (click)="openMetadata('chapter', activeChapter()!.id, activeChapter()!.title)"># Organizar tags</button>
-                <div class="inspector-note"><strong>Índice automático</strong><p>Personagens, lugares e falas prováveis são extraídos do texto salvo, sem inventar conteúdo.</p></div>
-              </app-contextual-inspector>
-              }
-            </div>
+            <app-writing-page
+              [universeId]="appState.activeUniverseId() || ''"
+              [universeName]="appState.activeUniverse()?.name || ''"
+              [universeDescription]="appState.activeUniverse()?.description || ''"
+              [entities]="entities()"
+              [mentionOccurrences]="mentionOccurrences()"
+              [tagsByOwner]="workspacePreviewTags()"
+              [focusMode]="isFocusMode()"
+              (focusModeChange)="isFocusMode.set($event)"
+              (fullscreenRequested)="toggleFullscreen()"
+              (metadataRequested)="onManuscriptMetadata($event)"
+              (entityOpenRequested)="onManuscriptEntityOpen($event)"
+              (info)="onManuscriptInfo($event)"
+              (failed)="onManuscriptFailed($event)"
+            />
           } @else if (appState.workspaceView() === 'entities' || appState.workspaceView() === 'entity-sheet') {
             <app-entities-page
               [universeId]="appState.activeUniverseId() || ''"
@@ -191,7 +154,7 @@
                           <b>{{ relation.source_name }}</b>
                           <small>{{ relation.label }}</small>
                           <b>{{ relation.target_name }}</b>
-                          <button type="button" aria-label="Excluir ligação" (click)="requestDelete('relation', relation.id, relation.source_name + ' — ' + relation.label + ' — ' + relation.target_name)">×</button>
+                          <button type="button" aria-label="Excluir ligação" (click)="requestDeleteRelation(relation.id, relation.source_name + ' — ' + relation.label + ' — ' + relation.target_name)">×</button>
                         </span>
                       }
                     </div>
@@ -206,8 +169,8 @@
             <app-planning-board
               [universeId]="appState.activeUniverseId() || ''"
               [items]="planning()"
-              [chapters]="universeChapters()"
-              [stories]="stories()"
+              [chapters]="manuscriptChapters()"
+              [stories]="manuscriptStories()"
               [entities]="entities()"
               (itemsChange)="planning.set($event)"
               (chapterOpened)="openPlanningChapter($event)"
@@ -223,21 +186,15 @@
 @if (appState.modalOpen() && appState.modalOpen() !== 'share-content') {
   <div class="modal-backdrop" (mousedown)="appState.closeModal()">
     <form class="modal" [class.ai-modal]="appState.modalOpen() === 'ai-assistant'" [class.replica-reader-modal]="appState.modalOpen() === 'production-replica-chapter'" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
-      @if (appState.modalOpen() === 'delete-item' && pendingDelete(); as item) {
-        <header><div><span class="eyebrow danger-copy">EXCLUSÃO LOCAL</span><h2>Excluir {{ deleteKindLabel(item.kind).toLocaleLowerCase('pt-BR') }}?</h2></div><button type="button" (click)="pendingDelete.set(null); appState.closeModal()">×</button></header>
-        <p class="delete-warning"><strong>{{ item.name }}</strong><br />{{ item.detail }} Esta ação não pode ser desfeita.</p>
-        <footer><button type="button" class="secondary-button" (click)="pendingDelete.set(null); appState.closeModal()">Cancelar</button><button type="submit" class="primary-button destructive" (click)="confirmDeleteItem()">Excluir {{ deleteKindLabel(item.kind).toLocaleLowerCase('pt-BR') }}</button></footer>
-      } @else if (appState.modalOpen() === 'rename-item' && pendingRename(); as item) {
-        <header><div><span class="eyebrow">EDIÇÃO RÁPIDA</span><h2>Renomear {{ renameKindLabel(item.kind).toLocaleLowerCase('pt-BR') }}</h2></div><button type="button" (click)="pendingRename.set(null); appState.closeModal()">×</button></header>
+      @if (appState.modalOpen() === 'delete-item' && pendingRelationDelete(); as item) {
+        <header><div><span class="eyebrow danger-copy">EXCLUSÃO LOCAL</span><h2>Excluir ligação?</h2></div><button type="button" (click)="pendingRelationDelete.set(null); appState.closeModal()">×</button></header>
+        <p class="delete-warning"><strong>{{ item.label }}</strong><br />A ligação será removida. As entidades conectadas serão preservadas. Esta ação não pode ser desfeita.</p>
+        <footer><button type="button" class="secondary-button" (click)="pendingRelationDelete.set(null); appState.closeModal()">Cancelar</button><button type="submit" class="primary-button destructive" (click)="confirmDeleteRelation()">Excluir ligação</button></footer>
+      } @else if (appState.modalOpen() === 'rename-item' && renamingUniverse()) {
+        <header><div><span class="eyebrow">EDIÇÃO RÁPIDA</span><h2>Renomear universo</h2></div><button type="button" (click)="renamingUniverse.set(false); appState.closeModal()">×</button></header>
         <p class="modal-guidance">A alteração será aplicada imediatamente em todas as prévias e referências locais.</p>
-        <label>Novo nome<input name="renameValue" [(ngModel)]="renameValue" [placeholder]="item.name" autofocus (keydown.enter)="confirmRename()" /></label>
-        <footer><button type="button" class="secondary-button" (click)="pendingRename.set(null); appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!renameValue.trim()" (click)="confirmRename()">Salvar nome</button></footer>
-      } @else if (appState.modalOpen() === 'new-story') {
-        <header><div><span class="eyebrow">ESTRUTURA</span><h2>Nova história</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Nome da história<input name="storyName" [(ngModel)]="newStoryName" placeholder="Ex.: A saga principal" autofocus /></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newStoryName.trim()" (click)="createStory()">Criar história</button></footer>
-      } @else if (appState.modalOpen() === 'new-book') {
-        <header><div><span class="eyebrow">ESTRUTURA</span><h2>Novo livro</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Nome do livro<input name="bookName" [(ngModel)]="newBookName" placeholder="Ex.: Livro I — O Despertar" autofocus /></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newBookName.trim()" (click)="createBook()">Criar livro</button></footer>
-      } @else if (appState.modalOpen() === 'new-chapter') {
-        <header><div><span class="eyebrow">ESCRITA</span><h2>Novo capítulo</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Título do capítulo<input name="chapterTitle" [(ngModel)]="newChapterTitle" placeholder="Ex.: Capítulo 1 — O chamado" autofocus /></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newChapterTitle.trim()" (click)="createChapter()">Criar capítulo</button></footer>
+        <label>Novo nome<input name="renameValue" [(ngModel)]="renameValue" autofocus (keydown.enter)="confirmRenameUniverse()" /></label>
+        <footer><button type="button" class="secondary-button" (click)="renamingUniverse.set(false); appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!renameValue.trim()" (click)="confirmRenameUniverse()">Salvar nome</button></footer>
       } @else if (appState.modalOpen() === 'metadata' && metadataTarget(); as target) {
         <header><div><span class="eyebrow">ORGANIZAÇÃO</span><h2>Tags</h2></div><button type="button" (click)="appState.closeModal()">×</button></header>
         <p class="modal-guidance"><strong>{{ target.name }}</strong> · Tags categorizam conteúdos. Campos pertencem somente às fichas de entidades.</p>
