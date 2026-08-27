@@ -2,6 +2,22 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.7.6 — 2026-08-27
+
+### Tema Cósmico Glassmorphic, Menus Arredondados e Identidade Visual
+
+- **Fundo Cósmico & Estrelas Animadas**: Adicionado fundo estelar em alta resolução com camada tripla de estrelas cintilantes com aceleração por GPU via CSS.
+- **Folha Celestial Iluminada**: Editor de escrita estilizado com bússola estelar, cantoneiras e moldura suave.
+- **Menus Flutuantes Arredondados (18px)**: Substituição das divisórias retangulares secas por cartões flutuantes translúcidos com bordas arredondadas e efeito de vidro fosco (`backdrop-filter: blur(24px)`).
+- **Workspace Header em Cápsula**: Barra de breadcrumbs e ações rápidas redesenhada como cápsula flutuante arredondada de 14px.
+- **Novas Logos Oficiais e Ícones Nativos**:
+  - Nova logo horizontal instalada na barra de título do aplicativo.
+  - Novo ícone estelar multi-resolução gerado para o Windows (`.ico`, `.png`, `32x32`, `128x128`) e favicons web.
+  - Injeção programática do ícone nativo nas janelas do Windows no bootstrap do Tauri (`win.set_icon(...)`), eliminando o ícone genérico do Angular da barra de tarefas.
+- **Desbloqueio da Barra Superior (Titlebar)**: Isolamento de arrasto com `-webkit-app-region: no-drag` para todos os controles interativos, garantindo resposta imediata a cliques na busca, tema e controles de janela.
+- **Contraste de Tipografia**: Clareamento de todas as fontes secundárias, textos inativos, metadados e tags para conforto visual e alta legibilidade.
+- **Migração v14 do Banco**: Preparação de tabelas de Canvas (`canvas_nodes`, `canvas_edges`) para grafos conceituais.
+
 ## 0.7.5 — 2026-08-26
 
 ### Modernização Global dos Menus (Padrão CRM)

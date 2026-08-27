@@ -118,7 +118,16 @@
 }
 
 <div class="nh-document-scroll">
-  <article class="nh-document" aria-label="Página do capítulo">
+  <article class="nh-document celestial-manuscript" aria-label="Página do capítulo">
+    <div class="celestial-corner top-left" aria-hidden="true"></div>
+    <div class="celestial-corner top-right" aria-hidden="true"></div>
+    <div class="celestial-corner bottom-left" aria-hidden="true"></div>
+    <div class="celestial-corner bottom-right" aria-hidden="true"></div>
+
+    <div class="celestial-header-emblem" aria-hidden="true">
+      <span class="celestial-star-compass">✦</span>
+    </div>
+
     <textarea
       #titleInput
       class="nh-chapter-title"
@@ -132,6 +141,11 @@
       (ngModelChange)="onTitleInput($event)"
       (blur)="saveRequested.emit()"
     ></textarea>
+
+    <div class="celestial-title-divider" aria-hidden="true">
+      <i></i><span>✦</span><i></i>
+    </div>
+
     <div #editorHost class="nh-rich-editor"></div>
   </article>
 </div>

@@ -1,15 +1,131 @@
 .nh-app-shell {
+  position: relative;
   width: 100vw;
   height: 100vh;
   overflow: hidden;
   color: var(--nh-ink);
-  background:
-    radial-gradient(circle at 86% -10%, color-mix(in srgb, var(--nh-ochre) 8%, transparent), transparent 34%),
-    var(--nh-bg);
+  background: var(--nh-bg);
   transition: color .24s ease, background-color .24s ease;
 }
 
+/* ── Fundo Cósmico & Estrelas Cintilantes ── */
+.cosmic-universe-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  background-color: #0b0813;
+}
+
+.cosmic-nebula-art {
+  position: absolute;
+  inset: 0;
+  background:
+    url('/backgrounds/cosmic-nebula.jpg') center center / cover no-repeat,
+    radial-gradient(ellipse at 80% 30%, rgba(142, 68, 173, 0.35) 0%, transparent 60%),
+    radial-gradient(circle at 20% 70%, rgba(192, 57, 120, 0.28) 0%, transparent 50%),
+    #0c0914;
+  opacity: 0.95;
+  will-change: opacity;
+}
+
+.cosmic-starfield {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  will-change: opacity, transform;
+}
+
+/* Camada 1: Estrelas pequenas e densas (pontos brancos e azulados) */
+.stars-layer-1 {
+  background-image:
+    radial-gradient(1px 1px at 25px 35px, #ffffff, transparent),
+    radial-gradient(1px 1px at 80px 120px, rgba(255, 230, 255, 0.9), transparent),
+    radial-gradient(1.5px 1.5px at 150px 60px, rgba(200, 220, 255, 0.8), transparent),
+    radial-gradient(1px 1px at 220px 180px, #ffffff, transparent),
+    radial-gradient(1.5px 1.5px at 310px 90px, rgba(255, 200, 240, 0.85), transparent),
+    radial-gradient(1px 1px at 450px 240px, #ffffff, transparent),
+    radial-gradient(1px 1px at 580px 70px, rgba(210, 240, 255, 0.9), transparent),
+    radial-gradient(1.5px 1.5px at 700px 190px, #ffffff, transparent),
+    radial-gradient(1px 1px at 830px 110px, rgba(255, 220, 240, 0.8), transparent),
+    radial-gradient(1.5px 1.5px at 920px 290px, #ffffff, transparent),
+    radial-gradient(1px 1px at 1050px 80px, rgba(200, 240, 255, 0.85), transparent),
+    radial-gradient(1.5px 1.5px at 1180px 220px, #ffffff, transparent),
+    radial-gradient(1px 1px at 1280px 150px, rgba(255, 230, 220, 0.9), transparent),
+    radial-gradient(1.5px 1.5px at 1390px 320px, #ffffff, transparent),
+    radial-gradient(1px 1px at 1500px 90px, rgba(220, 210, 255, 0.8), transparent),
+    radial-gradient(1.5px 1.5px at 1620px 260px, #ffffff, transparent),
+    radial-gradient(1.5px 1.5px at 1750px 130px, rgba(255, 240, 255, 0.9), transparent),
+    radial-gradient(1.5px 1.5px at 1880px 340px, #ffffff, transparent);
+  background-size: 650px 450px;
+  animation: stars-twinkle-1 4.5s ease-in-out infinite alternate;
+}
+
+/* Camada 2: Estrelas médias (âmbar e violeta cintilantes) */
+.stars-layer-2 {
+  background-image:
+    radial-gradient(2px 2px at 40px 80px, rgba(255, 245, 230, 0.95), transparent),
+    radial-gradient(2px 2px at 190px 240px, rgba(230, 190, 255, 0.9), transparent),
+    radial-gradient(2.5px 2.5px at 340px 150px, rgba(255, 255, 255, 1), transparent),
+    radial-gradient(2px 2px at 520px 330px, rgba(200, 235, 255, 0.95), transparent),
+    radial-gradient(2px 2px at 680px 90px, rgba(255, 215, 235, 0.9), transparent),
+    radial-gradient(2.5px 2.5px at 850px 220px, rgba(255, 255, 255, 0.95), transparent),
+    radial-gradient(2px 2px at 1040px 380px, rgba(255, 230, 210, 0.9), transparent),
+    radial-gradient(2px 2px at 1220px 170px, rgba(210, 200, 255, 0.95), transparent),
+    radial-gradient(2.5px 2.5px at 1410px 290px, rgba(255, 255, 255, 1), transparent),
+    radial-gradient(2px 2px at 1600px 110px, rgba(255, 240, 210, 0.9), transparent);
+  background-size: 820px 580px;
+  animation: stars-twinkle-2 6.5s ease-in-out infinite alternate;
+}
+
+/* Camada 3: Estrelas radiantes de 4 pontas com brilho difuso */
+.stars-layer-3 {
+  background-image:
+    radial-gradient(3px 3px at 110px 190px, rgba(255, 255, 255, 1), rgba(255, 220, 255, 0.5) 4px, transparent 9px),
+    radial-gradient(3.5px 3.5px at 480px 120px, rgba(255, 255, 255, 1), rgba(200, 230, 255, 0.45) 5px, transparent 11px),
+    radial-gradient(3px 3px at 890px 340px, rgba(255, 255, 255, 1), rgba(255, 240, 200, 0.45) 4px, transparent 9px),
+    radial-gradient(4px 4px at 1350px 160px, rgba(255, 255, 255, 1), rgba(240, 200, 255, 0.5) 6px, transparent 13px),
+    radial-gradient(3px 3px at 1720px 280px, rgba(255, 255, 255, 1), rgba(200, 240, 255, 0.45) 4px, transparent 9px);
+  background-size: 1100px 700px;
+  animation: stars-twinkle-3 8.5s ease-in-out infinite alternate;
+}
+
+.cosmic-glow-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 45%, transparent 35%, rgba(10, 8, 16, 0.45) 80%, rgba(8, 6, 14, 0.8) 100%);
+}
+
+@keyframes stars-twinkle-1 {
+  0% { opacity: 0.65; transform: scale(1); }
+  50% { opacity: 0.95; }
+  100% { opacity: 0.72; transform: scale(1.01); }
+}
+
+@keyframes stars-twinkle-2 {
+  0% { opacity: 0.85; transform: translateY(0); }
+  50% { opacity: 0.45; }
+  100% { opacity: 0.92; transform: translateY(-3px); }
+}
+
+@keyframes stars-twinkle-3 {
+  0% { opacity: 0.55; transform: scale(0.97); }
+  50% { opacity: 1; transform: scale(1.05); }
+  100% { opacity: 0.68; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stars-layer-1, .stars-layer-2, .stars-layer-3 {
+    animation: none !important;
+    opacity: 0.85;
+  }
+}
+
+/* ── Conteúdo à frente do fundo (Glassmorphic Frame) ── */
 .nh-app-frame {
+  position: relative;
+  z-index: 2;
   height: calc(100vh - var(--nh-titlebar-height));
   display: flex;
 }

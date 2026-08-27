@@ -1,2 +1,8 @@
-:host { display: block; min-width: 0; }
-.nh-inspector { height: 100%; overflow-y: auto; padding: 18px 14px; border-left: 1px solid var(--nh-border); background: color-mix(in srgb, var(--nh-surface) 94%, transparent); }
+:host { display: block; min-width: 0; height: 100%; }
+.nh-inspector {
+  height: 100%;
+  overflow-y: auto;
+  padding: 18px 14px;
+  border-radius: inherit;
+  background: transparent;
+}

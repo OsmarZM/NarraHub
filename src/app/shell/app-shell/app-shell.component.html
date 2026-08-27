@@ -1,4 +1,13 @@
 <div class="nh-app-shell" [class.has-sidebar]="showSidebar()" [class.focus-mode]="focusMode()">
+  <!-- Fundo Cósmico & Estrelas Animadas -->
+  <div class="cosmic-universe-backdrop" aria-hidden="true">
+    <div class="cosmic-nebula-art"></div>
+    <div class="cosmic-starfield stars-layer-1"></div>
+    <div class="cosmic-starfield stars-layer-2"></div>
+    <div class="cosmic-starfield stars-layer-3"></div>
+    <div class="cosmic-glow-vignette"></div>
+  </div>
+
   <ng-content select="[titlebar]"></ng-content>
   <div class="nh-app-frame">
     @if (showSidebar() && !focusMode()) {

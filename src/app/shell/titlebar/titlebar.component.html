@@ -1,11 +1,6 @@
 <header class="nh-titlebar" data-tauri-drag-region (dblclick)="maximizeRequested.emit()">
   <button type="button" class="nh-brand" aria-label="Voltar à biblioteca de universos" (click)="homeRequested.emit(); $event.stopPropagation()">
-    <svg class="nh-brand-symbol" viewBox="0 0 40 40" role="img" aria-hidden="true">
-      <path d="M5 8.5c5.7.2 10.3 2.2 15 6.6v18c-4.4-3.7-9.1-5.7-15-5.9V8.5Z" />
-      <path d="M35 8.5c-5.7.2-10.3 2.2-15 6.6v18c4.4-3.7 9.1-5.7 15-5.9V8.5Z" />
-      <path d="M9 5.5c4.2.8 7.7 2.6 11 5.5 3.3-2.9 6.8-4.7 11-5.5" />
-    </svg>
-    <span>NarraHub</span>
+    <img src="assets/narrahub-logo-full.png" alt="NarraHub" class="nh-brand-logo-img" />
   </button>
 
   <label class="nh-global-search">
@@ -19,6 +14,8 @@
     />
     <kbd>Ctrl K</kbd>
   </label>
+
+  <div class="nh-title-drag-spacer" data-tauri-drag-region></div>
 
   <div class="nh-title-actions">
     <div class="nh-theme-toggle" role="group" aria-label="Tema da interface">

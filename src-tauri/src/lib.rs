@@ -44,6 +44,15 @@ pub fn run() {
                 app.handle()
                     .plugin(tauri_plugin_updater::Builder::new().build())?;
             }
+            #[cfg(desktop)]
+            {
+                use tauri::Manager;
+                if let Some(icon) = app.default_window_icon() {
+                    for win in app.webview_windows().values() {
+                        let _ = win.set_icon(icon.clone());
+                    }
+                }
+            }
             Ok(())
         })
         .plugin(

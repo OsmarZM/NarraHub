@@ -25,41 +25,46 @@
   --nh-shadow-soft: 0 8px 24px rgba(64, 43, 32, .08);
 }
 
-:root[data-theme='dark'] {
-  --nh-bg: #17151a;
-  --nh-surface: #201d22;
-  --nh-surface-muted: #2a252b;
-  --nh-ink: #f2eadd;
-  --nh-ink-muted: #b3a9a4;
-  --nh-wine: #d18cae;
-  --nh-wine-hover: #e1a5c2;
+:root[data-theme='dark'],
+:root[data-theme=dark] {
+  --nh-bg: #0c0915;
+  --nh-surface: rgba(22, 16, 34, 0.65);
+  --nh-surface-muted: rgba(34, 25, 50, 0.68);
+  --nh-ink: #ffffff;
+  --nh-ink-muted: #dfd3e7;
+  --nh-wine: #e28cb4;
+  --nh-wine-hover: #f0a3c7;
   --nh-coral: #e58b63;
-  --nh-ochre: #d1a45b;
+  --nh-ochre: #dfb26a;
   --nh-sage: #8fac89;
-  --nh-border: #3c353b;
+  --nh-border: rgba(255, 255, 255, 0.1);
+  --nh-border-glow: rgba(226, 140, 180, 0.4);
   --nh-danger: #e27f77;
   --nh-success: #71b889;
-  --nh-shadow: 0 22px 60px rgba(0, 0, 0, .35);
-  --nh-shadow-soft: 0 8px 24px rgba(0, 0, 0, .24);
+  --nh-shadow: 0 24px 70px rgba(0, 0, 0, .55);
+  --nh-shadow-soft: 0 10px 30px rgba(0, 0, 0, .35);
+  --nh-glass-filter: blur(20px);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --nh-bg: #17151a;
-    --nh-surface: #201d22;
-    --nh-surface-muted: #2a252b;
-    --nh-ink: #f2eadd;
-    --nh-ink-muted: #b3a9a4;
-    --nh-wine: #d18cae;
-    --nh-wine-hover: #e1a5c2;
+    --nh-bg: #0c0915;
+    --nh-surface: rgba(22, 16, 34, 0.65);
+    --nh-surface-muted: rgba(34, 25, 50, 0.68);
+    --nh-ink: #ffffff;
+    --nh-ink-muted: #dfd3e7;
+    --nh-wine: #e28cb4;
+    --nh-wine-hover: #f0a3c7;
     --nh-coral: #e58b63;
-    --nh-ochre: #d1a45b;
+    --nh-ochre: #dfb26a;
     --nh-sage: #8fac89;
-    --nh-border: #3c353b;
+    --nh-border: rgba(255, 255, 255, 0.1);
+    --nh-border-glow: rgba(226, 140, 180, 0.4);
     --nh-danger: #e27f77;
     --nh-success: #71b889;
-    --nh-shadow: 0 22px 60px rgba(0, 0, 0, .35);
-    --nh-shadow-soft: 0 8px 24px rgba(0, 0, 0, .24);
+    --nh-shadow: 0 24px 70px rgba(0, 0, 0, .55);
+    --nh-shadow-soft: 0 10px 30px rgba(0, 0, 0, .35);
+    --nh-glass-filter: blur(20px);
   }
 }
 

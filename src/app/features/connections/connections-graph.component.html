@@ -8,12 +8,19 @@
   </aside>
   <div class="graph-stage">
     <div class="graph-toolbar" role="toolbar" aria-label="Controles do grafo">
-      <button type="button" (click)="organize()">Organizar grafo</button>
+      <button type="button" [class.active]="connecting" [attr.aria-pressed]="connecting" (click)="toggleConnectMode()">
+        {{ connecting ? 'Cancelar ligação' : '⇢ Ligar elementos' }}
+      </button>
+      <span></span>
+      <button type="button" (click)="organize()" title="Reposiciona tudo automaticamente e salva o resultado">Organizar grafo</button>
       <span></span>
       <button type="button" aria-label="Diminuir zoom" (click)="zoomOut()">−</button>
       <button type="button" aria-label="Aumentar zoom" (click)="zoomIn()">+</button>
       <button type="button" (click)="fit()">Ajustar</button>
     </div>
+    @if (connecting) {
+      <p class="graph-connect-hint" role="status">{{ connectHint }}</p>
+    }
     <div #graphHost class="graph-host" aria-label="Grafo visual de conexões"></div>
     <div class="graph-legend"><span><i class="circle"></i>Personagem</span><span><i class="hexagon"></i>Lugar</span><span><i class="square"></i>Evento</span><span><i class="triangle"></i>Objeto</span><span><i class="diamond"></i>Organização</span></div>
   </div>

@@ -440,3 +440,40 @@ export const DEFAULT_ATTRIBUTES: Record<string, string[]> = {
     'Objetivo',
   ],
 };
+
+// ── Canvas da tela de Conexões ──────────────────
+// Elementos que existem só no diagrama (não são cânone do universo) e as
+// ligações visuais entre eles. Relações canônicas continuam em `Relation`.
+
+export type CanvasNodeKind = 'title' | 'image' | 'note';
+export type CanvasEndpointKind = 'entity' | 'canvas';
+
+export interface CanvasNode {
+  id: string;
+  universe_id: string;
+  kind: CanvasNodeKind;
+  text: string;
+  image: string;
+  color: string;
+  position_x: number;
+  position_y: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CanvasEdge {
+  id: string;
+  universe_id: string;
+  source_kind: CanvasEndpointKind;
+  source_id: string;
+  target_kind: CanvasEndpointKind;
+  target_id: string;
+  label: string;
+  created_at: string;
+}
+
+export interface CanvasEntityPosition {
+  entity_id: string;
+  position_x: number;
+  position_y: number;
+}

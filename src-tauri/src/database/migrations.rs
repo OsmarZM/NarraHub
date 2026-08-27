@@ -1,7 +1,7 @@
 /// NarraHub — Database Migrations
 /// Creates all tables on first run
 
-pub const LATEST_SCHEMA_VERSION: i64 = 13;
+pub const LATEST_SCHEMA_VERSION: i64 = 14;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -18,6 +18,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         11 => Some(MIGRATION_V11),
         12 => Some(MIGRATION_V12),
         13 => Some(MIGRATION_V13),
+        14 => Some(MIGRATION_V14),
         _ => None,
     }
 }
@@ -687,6 +688,77 @@ WHERE EXISTS (
 );
 "#;
 
+pub const MIGRATION_V14: &str = r#"
+-- ============================================
+-- Canvas da tela de Conexões (schema v14)
+-- ============================================
+-- Permite montar o diagrama livremente: posicionar as entidades onde quiser,
+-- acrescentar elementos que não são entidades (título, imagem, nota) e ligar
+-- qualquer coisa a qualquer coisa.
+--
+-- Por que tabelas novas em vez de estender `relations`:
+--   1. `relations` guarda FATOS canônicos do universo ("X é irmão de Y") e é
+--      lida pela ficha da entidade. Uma seta de uma imagem para uma nota é
+--      anotação visual, não fato do universo — misturar as duas corromperia
+--      o significado do cânone.
+--   2. `relations` tem FK obrigatória para `entities` nas duas pontas.
+--      Aceitar pontas não-entidade exigiria remover essa FK, e o SQLite só
+--      faz isso reconstruindo a tabela — caminho que a ADR-0004 evita.
+-- As duas convivem: `relations` não é tocada por esta migration.
+
+-- Elementos livres do canvas (não são entidades).
+CREATE TABLE IF NOT EXISTS canvas_nodes (
+    id TEXT PRIMARY KEY NOT NULL,
+    universe_id TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'note',
+    text TEXT NOT NULL DEFAULT '',
+    image TEXT NOT NULL DEFAULT '',
+    color TEXT NOT NULL DEFAULT '',
+    position_x REAL NOT NULL DEFAULT 0,
+    position_y REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (universe_id) REFERENCES universes(id) ON DELETE CASCADE,
+    CHECK (kind IN ('title', 'image', 'note'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_canvas_nodes_universe ON canvas_nodes(universe_id);
+
+-- Posição das entidades no canvas. Tabela à parte em vez de colunas em
+-- `entities` porque posição é estado da tela de Conexões, não da ficha:
+-- apagar o layout nunca pode arriscar o dado canônico da entidade.
+CREATE TABLE IF NOT EXISTS canvas_entity_positions (
+    universe_id TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    position_x REAL NOT NULL,
+    position_y REAL NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (universe_id, entity_id),
+    FOREIGN KEY (universe_id) REFERENCES universes(id) ON DELETE CASCADE,
+    FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE
+);
+
+-- Ligações visuais do canvas. As pontas são polimórficas ('entity' | 'canvas'),
+-- então não existe FK em source_id/target_id. A integridade é garantida na
+-- leitura (ligação cuja ponta sumiu não é retornada) e ao excluir um nó livre,
+-- que apaga as próprias ligações na mesma transação.
+CREATE TABLE IF NOT EXISTS canvas_edges (
+    id TEXT PRIMARY KEY NOT NULL,
+    universe_id TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    target_kind TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (universe_id) REFERENCES universes(id) ON DELETE CASCADE,
+    CHECK (source_kind IN ('entity', 'canvas')),
+    CHECK (target_kind IN ('entity', 'canvas'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_canvas_edges_universe ON canvas_edges(universe_id);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1154,5 +1226,89 @@ mod tests {
             )
             .expect("count invalid migrated links");
         assert_eq!(cross_universe_links, 0);
+    }
+
+    #[test]
+    fn v14_adds_canvas_tables_without_touching_canonical_relations() {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO universes (id, name) VALUES ('u1', 'Um');
+                INSERT INTO entities (id, universe_id, type, name) VALUES
+                    ('e1', 'u1', 'Personagem', 'Lia'),
+                    ('e2', 'u1', 'Lugar', 'Porto');
+                -- relação canônica: continua exigindo entidade nas duas pontas
+                INSERT INTO relations (id, universe_id, source_id, target_id, label)
+                VALUES ('r1', 'u1', 'e1', 'e2', 'mora em');
+                -- elementos livres do canvas
+                INSERT INTO canvas_nodes (id, universe_id, kind, text, position_x, position_y)
+                VALUES ('c1', 'u1', 'title', 'Ato I', 10, 20),
+                       ('c2', 'u1', 'note', 'revisar', 30, 40);
+                -- posição salva de uma entidade
+                INSERT INTO canvas_entity_positions (universe_id, entity_id, position_x, position_y)
+                VALUES ('u1', 'e1', 100, 200);
+                -- ligação visual misturando entidade e elemento livre
+                INSERT INTO canvas_edges (id, universe_id, source_kind, source_id, target_kind, target_id, label)
+                VALUES ('ce1', 'u1', 'entity', 'e1', 'canvas', 'c1', 'aparece em');
+                "#,
+            )
+            .expect("seed canvas data");
+
+        // O canvas aceita a ponta que `relations` recusaria.
+        let mixed: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM canvas_edges WHERE source_kind = 'entity' AND target_kind = 'canvas'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count mixed edge");
+        assert_eq!(mixed, 1);
+
+        // `kind` e `*_kind` são restritos.
+        assert!(connection
+            .execute_batch(
+                "INSERT INTO canvas_nodes (id, universe_id, kind) VALUES ('bad', 'u1', 'sticker');"
+            )
+            .is_err());
+        assert!(connection
+            .execute_batch(
+                "INSERT INTO canvas_edges (id, universe_id, source_kind, source_id, target_kind, target_id) \
+                 VALUES ('bad', 'u1', 'chapter', 'x', 'canvas', 'c1');"
+            )
+            .is_err());
+
+        // Excluir a entidade limpa a posição salva mas não mexe no canvas livre.
+        connection
+            .execute_batch("DELETE FROM entities WHERE id = 'e1';")
+            .expect("delete entity");
+        let positions: i64 = connection
+            .query_row("SELECT COUNT(*) FROM canvas_entity_positions", [], |row| row.get(0))
+            .expect("count positions");
+        let free_nodes: i64 = connection
+            .query_row("SELECT COUNT(*) FROM canvas_nodes", [], |row| row.get(0))
+            .expect("count canvas nodes");
+        assert_eq!(positions, 0, "posição da entidade deve cascatear");
+        assert_eq!(free_nodes, 2, "elementos livres não dependem de entidades");
+
+        // Excluir o universo leva tudo do canvas junto.
+        connection
+            .execute_batch("DELETE FROM universes WHERE id = 'u1';")
+            .expect("delete universe");
+        for table in ["canvas_nodes", "canvas_edges", "canvas_entity_positions"] {
+            let remaining: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .expect("count after universe delete");
+            assert_eq!(remaining, 0, "{table} deve cascatear com o universo");
+        }
+
+        let foreign_key_failures: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0))
+            .expect("check foreign keys");
+        assert_eq!(foreign_key_failures, 0);
     }
 }
