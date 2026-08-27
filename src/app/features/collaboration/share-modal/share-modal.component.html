@@ -1,0 +1,55 @@
+<div class="modal-backdrop" (mousedown)="closeRequested.emit()">
+  <form class="modal share-modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+    <header><div><span class="eyebrow">SESSÃO COLABORATIVA</span><h2>Compartilhar universos literários</h2></div><button type="button" (click)="closeRequested.emit()">×</button></header>
+    <p class="modal-guidance">Escolha os universos, o conteúdo visível e o que o convidado poderá fazer. Propostas de edição sempre exigem sua aprovação.</p>
+    @if (!store.shareLink()) {
+      <div class="share-picker">
+        <section class="share-universe-section">
+          <header><strong>Universos</strong><button type="button" class="text-button" (click)="selectAll()">{{ selectionCount() === universeStore.universes().length && universeStore.universes().length ? 'Limpar' : 'Selecionar todos' }}</button></header>
+          <div class="share-choice-list share-universe-list">
+            @for (universe of universeStore.universes(); track universe.id) {
+              <label class="share-choice">
+                <input type="checkbox" [name]="'shareUniverse-' + universe.id" [ngModel]="isSelected(universe.id)" (ngModelChange)="toggleUniverse(universe.id)" />
+                <span class="share-choice-avatar" [style.background-image]="universe.cover_image ? 'url(' + universe.cover_image + ')' : null">{{ universe.cover_image ? '' : universe.name.charAt(0) }}</span>
+                <span><b>{{ universe.name }}</b><small>{{ universe.stats.total_chapters }} capítulos · {{ universe.stats.total_entities }} fichas</small></span>
+              </label>
+            }
+          </div>
+        </section>
+        <section>
+          <header><strong>Conteúdo incluído</strong></header>
+          <div class="share-content-options">
+            <label><input type="checkbox" name="shareChapters" [(ngModel)]="includeChapters" /> <span><b>Livros e capítulos</b><small>Texto, resumo e organização narrativa</small></span></label>
+            <label><input type="checkbox" name="shareEntities" [(ngModel)]="includeEntities" /> <span><b>Fichas do universo</b><small>Personagens, lugares, eventos, objetos e campos</small></span></label>
+          </div>
+        </section>
+        <section>
+          <header><strong>Permissão do link</strong></header>
+          <div class="share-permission-options">
+            <label [class.active]="permission === 'view'"><input type="radio" name="sharePermission" [(ngModel)]="permission" value="view" /><span><b>Somente leitura</b><small>Navega sem enviar conteúdo</small></span></label>
+            <label [class.active]="permission === 'comment'"><input type="radio" name="sharePermission" [(ngModel)]="permission" value="comment" /><span><b>Fazer anotações</b><small>Conversa organizada por seção</small></span></label>
+            <label [class.active]="permission === 'edit'"><input type="radio" name="sharePermission" [(ngModel)]="permission" value="edit" /><span><b>Propor edições</b><small>Você aprova antes de aplicar</small></span></label>
+          </div>
+        </section>
+      </div>
+      <div class="share-options">
+        <label>Validade máxima<select name="shareExpiry" [(ngModel)]="expiresInDays"><option [ngValue]="1">24 horas</option><option [ngValue]="7">7 dias</option><option [ngValue]="30">30 dias</option></select></label>
+        <span><b>{{ selectionCount() }}</b> universo(s) selecionado(s)<small>Fechar o app encerra antes desse prazo.</small></span>
+      </div>
+    }
+    @if (store.shareLink(); as link) {
+      <div class="security-callout"><strong>Link pronto e copiado.</strong><span>Ele funciona somente enquanto esta sessão do NarraHub permanecer ativa.</span></div>
+      <label>Link protegido<textarea class="share-link-field" readonly [value]="link"></textarea></label>
+      <small class="share-expiry">Expira em {{ formatDate(store.shareExpiresAt()) }}. Permissão: {{ sharePermissionLabel(permission) }}.</small>
+    }
+    @if (store.shareProgressMessage()) { <div class="share-progress"><span></span>{{ store.shareProgressMessage() }}</div> }
+    <footer>
+      <button type="button" class="secondary-button" (click)="closeRequested.emit()">Fechar</button>
+      @if (store.shareLink()) {
+        <button type="button" class="secondary-button" (click)="copyShareLink()">Copiar novamente</button>
+      } @else {
+        <button type="button" class="primary-button" [disabled]="store.shareBusy() || selectionCount() === 0" (click)="requestCreate()">{{ store.shareBusy() ? 'Preparando…' : 'Criar link temporário' }}</button>
+      }
+    </footer>
+  </form>
+</div>

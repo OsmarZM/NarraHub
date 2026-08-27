@@ -62,14 +62,6 @@
       } @else if (activeNav() === 'configuracoes') {
         <app-settings-page
           [activeUniverseId]="appState.activeUniverseId()"
-          [shareSession]="shareSession()"
-          [shareBusy]="shareBusy()"
-          [onlineShares]="onlineShares()"
-          [collaborationSessions]="collaborationSessions()"
-          [selectedCollaborationSessionId]="selectedCollaborationSessionId()"
-          [selectedCollaborationHasPending]="selectedCollaborationHasPending()"
-          [selectedCollaborationContributions]="selectedCollaborationContributions()"
-          [pendingCollaborationCount]="pendingCollaborationCount()"
           (info)="onSettingsInfo($event)"
           (failed)="onSettingsFailed($event)"
           (backupCreateRequested)="createManualBackup()"
@@ -77,12 +69,7 @@
           (updateCheckRequested)="checkForUpdates()"
           (updateInstallRequested)="installUpdate()"
           (synced)="loadUniverses()"
-          (shareStartRequested)="startOnlineShareSession()"
-          (shareStopRequested)="stopOnlineShareSession()"
-          (shareRevokeRequested)="revokeOnlineShare($event)"
-          (collaborationSessionSelected)="selectCollaborationSession($event)"
-          (collaborationApproveAllRequested)="approveAllCollaboration($event)"
-          (collaborationReviewRequested)="reviewCollaboration($event.item, $event.decision)"
+          (collaborationApplied)="onCollaborationApplied($event)"
         />
       } @else if (appState.currentView() === 'home') {
         <app-library-page
@@ -233,9 +220,9 @@
   </div>
 </app-shell>
 
-@if (appState.modalOpen()) {
+@if (appState.modalOpen() && appState.modalOpen() !== 'share-content') {
   <div class="modal-backdrop" (mousedown)="appState.closeModal()">
-    <form class="modal" [class.share-modal]="appState.modalOpen() === 'share-content'" [class.ai-modal]="appState.modalOpen() === 'ai-assistant'" [class.replica-reader-modal]="appState.modalOpen() === 'production-replica-chapter'" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+    <form class="modal" [class.ai-modal]="appState.modalOpen() === 'ai-assistant'" [class.replica-reader-modal]="appState.modalOpen() === 'production-replica-chapter'" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       @if (appState.modalOpen() === 'delete-item' && pendingDelete(); as item) {
         <header><div><span class="eyebrow danger-copy">EXCLUSÃO LOCAL</span><h2>Excluir {{ deleteKindLabel(item.kind).toLocaleLowerCase('pt-BR') }}?</h2></div><button type="button" (click)="pendingDelete.set(null); appState.closeModal()">×</button></header>
         <p class="delete-warning"><strong>{{ item.name }}</strong><br />{{ item.detail }} Esta ação não pode ser desfeita.</p>
@@ -259,27 +246,18 @@
           <div class="metadata-new-tag"><input name="newTagColor" type="color" [(ngModel)]="newTagColor" aria-label="Cor da tag" /><input name="newTagName" [(ngModel)]="newTagName" placeholder="Nova tag, ex.: fantasia sombria" /><button type="button" class="secondary-button" [disabled]="!newTagName.trim()" (click)="createMetadataTag()">Criar e aplicar</button></div>
         </section>
         <footer><button type="button" class="primary-button" (click)="appState.closeModal()">Concluir</button></footer>
-      } @else if (appState.modalOpen() === 'share-content') {
-        <header><div><span class="eyebrow">SESSÃO COLABORATIVA</span><h2>Compartilhar universos literários</h2></div><button type="button" (click)="appState.closeModal()">×</button></header>
-        <p class="modal-guidance">Escolha os universos, o conteúdo visível e o que o convidado poderá fazer. Propostas de edição sempre exigem sua aprovação.</p>
-        @if (!shareLink()) {
-          <div class="share-picker">
-            <section class="share-universe-section"><header><strong>Universos</strong><button type="button" class="text-button" (click)="selectAllShareUniverses()">{{ shareSelectedUniverseIds().size === universes().length && universes().length ? 'Limpar' : 'Selecionar todos' }}</button></header><div class="share-choice-list share-universe-list">@for (universe of universes(); track universe.id) { <label class="share-choice"><input type="checkbox" [name]="'shareUniverse-' + universe.id" [ngModel]="isUniverseSelectedForShare(universe.id)" (ngModelChange)="toggleShareUniverse(universe.id)" /><span class="share-choice-avatar" [style.background-image]="universe.cover_image ? 'url(' + universe.cover_image + ')' : null">{{ universe.cover_image ? '' : universe.name.charAt(0) }}</span><span><b>{{ universe.name }}</b><small>{{ universe.stats.total_chapters }} capítulos · {{ universe.stats.total_entities }} fichas</small></span></label> }</div></section>
-            <section><header><strong>Conteúdo incluído</strong></header><div class="share-content-options"><label><input type="checkbox" name="shareChapters" [(ngModel)]="shareIncludeChapters" /> <span><b>Livros e capítulos</b><small>Texto, resumo e organização narrativa</small></span></label><label><input type="checkbox" name="shareEntities" [(ngModel)]="shareIncludeEntities" /> <span><b>Fichas do universo</b><small>Personagens, lugares, eventos, objetos e campos</small></span></label></div></section>
-            <section><header><strong>Permissão do link</strong></header><div class="share-permission-options"><label [class.active]="sharePermission === 'view'"><input type="radio" name="sharePermission" [(ngModel)]="sharePermission" value="view" /><span><b>Somente leitura</b><small>Navega sem enviar conteúdo</small></span></label><label [class.active]="sharePermission === 'comment'"><input type="radio" name="sharePermission" [(ngModel)]="sharePermission" value="comment" /><span><b>Fazer anotações</b><small>Conversa organizada por seção</small></span></label><label [class.active]="sharePermission === 'edit'"><input type="radio" name="sharePermission" [(ngModel)]="sharePermission" value="edit" /><span><b>Propor edições</b><small>Você aprova antes de aplicar</small></span></label></div></section>
-          </div>
-          <div class="share-options"><label>Validade máxima<select name="shareExpiry" [(ngModel)]="shareExpiresInDays"><option [ngValue]="1">24 horas</option><option [ngValue]="7">7 dias</option><option [ngValue]="30">30 dias</option></select></label><span><b>{{ shareSelectionCount() }}</b> universo(s) selecionado(s)<small>Fechar o app encerra antes desse prazo.</small></span></div>
-        }
-        @if (shareLink()) {
-          <div class="security-callout"><strong>Link pronto e copiado.</strong><span>Ele funciona somente enquanto esta sessão do NarraHub permanecer ativa.</span></div>
-          <label>Link protegido<textarea class="share-link-field" readonly [value]="shareLink()"></textarea></label>
-          <small class="share-expiry">Expira em {{ formatDate(shareExpiresAt()) }}. Permissão: {{ sharePermissionLabel(sharePermission) }}.</small>
-        }
-        @if (shareProgressMessage()) { <div class="share-progress"><span></span>{{ shareProgressMessage() }}</div> }
-        <footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Fechar</button>@if (shareLink()) { <button type="button" class="secondary-button" (click)="copyShareLink()">Copiar novamente</button> } @else { <button type="button" class="primary-button" [disabled]="shareBusy() || shareSelectionCount() === 0" (click)="createOnlineShare()">{{ shareBusy() ? 'Preparando…' : 'Criar link temporário' }}</button> }</footer>
       } @else if (appState.modalOpen() === 'new-relation') {
         <header><div><span class="eyebrow">CONEXÕES</span><h2>Nova conexão</h2></div><button type="button" (click)="appState.closeModal()">×</button></header><label>Origem<select name="relationSource" [(ngModel)]="newRelationSource"><option value="">Selecione</option>@for (entity of entities(); track entity.id) { <option [value]="entity.id">{{ entity.name }} · {{ entity.type }}</option> }</select></label><label>Relação<input name="relationLabel" [(ngModel)]="newRelationLabel" placeholder="Ex.: é irmão de" /></label><label>Destino<select name="relationTarget" [(ngModel)]="newRelationTarget"><option value="">Selecione</option>@for (entity of entities(); track entity.id) { <option [value]="entity.id">{{ entity.name }} · {{ entity.type }}</option> }</select></label><footer><button type="button" class="secondary-button" (click)="appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newRelationSource || !newRelationTarget || !newRelationLabel.trim()" (click)="createRelation()">Criar conexão</button></footer>
       }
     </form>
   </div>
+}
+
+@if (appState.modalOpen() === 'share-content') {
+  <app-share-modal
+    [activeUniverseId]="appState.activeUniverseId()"
+    (closeRequested)="appState.closeModal()"
+    (createRequested)="createOnlineShare($event)"
+    (info)="onSettingsInfo($event)"
+  />
 }

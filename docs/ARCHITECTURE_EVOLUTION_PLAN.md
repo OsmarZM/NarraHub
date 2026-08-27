@@ -380,6 +380,18 @@ Quinta fatia vertical implementada na mesma linha de desenvolvimento:
 
 Essa fatia conclui a Ordem 4 (Configurações e IA). Colaboração e o manuscrito (história/livro/capítulo/editor) são as duas fatias que restam na Fase 2.
 
+Sexta fatia vertical implementada na mesma linha de desenvolvimento:
+
+- Colaboração e compartilhamento (Ordem 5) foram extraídos do `App` para `features/collaboration/`, com `CollaborationGateway`/`LegacyCollaborationGateway` (envolvendo `CollaborationService`, que ainda é SQL sobre `DatabaseService` — aqui sim existe fronteira SQL-vs-Rust a abstrair, ao contrário de Configurações) e um `CollaborationStore` cobrindo sessões, contribuições e o ciclo de vida do link temporário (`OnlineShareService`, já nativo, injetado direto no store);
+- o modal de compartilhar saiu do host de modais compartilhado do `App` para `ShareModalComponent`, com backdrop e formulário próprios — o `App` só decide QUANDO abrir (`appState.modalOpen() === 'share-content'`) e monta o documento a compartilhar (ainda depende de `ChapterService` e `EntityStore`, Manuscrito não extraído);
+- a aba Configurações > Compartilhar, que na fatia anterior recebia dados/ações da colaboração por `@Input()`/`@Output()` do `App`, agora injeta `CollaborationStore` diretamente — a dívida documentada naquela fatia foi paga nesta;
+- revisar ou aprovar em lote uma contribuição ainda pode alterar capítulo/ficha ativos e estatísticas do universo (Editor e Manuscrito não extraídos); por isso `SettingsPageComponent` emite `(collaborationApplied)` só quando uma aprovação de fato mudou conteúdo canônico, e o `App` decide o que recarregar;
+- `App` não injeta mais `CollaborationService` nem `OnlineShareService` diretamente; as únicas chamadas que sobraram no `App` são orquestração cross-domínio (`saveChapterNow` antes de criar/restaurar, montar o payload compartilhado a partir de capítulos/entidades);
+- teste de fronteira cobre os três arquivos novos e confirma que `app.ts`/`app.html` não referenciam mais os serviços de colaboração nem os campos de formulário do modal antigo;
+- build de produção Angular e `npm run test:architecture` foram exercitados; a aba Configurações > Compartilhar foi conferida via `ng serve` sem erro de console. Durante a verificação, um provider do novo gateway ficou faltando em `app.config.ts` (erro `NG0201` só visível no runtime) — ficou registrado como lição na skill [[narrahub-feature-extraction]]: sempre confirmar o boot da página no navegador depois de registrar um gateway novo, não só o `npm run build`. O modal de compartilhar em si (aberto de dentro de um universo) e o fluxo real de link/túnel continuam exigindo o app Tauri empacotado.
+
+Restou só uma fatia na Fase 2: o manuscrito (história, livro, capítulo) e o editor com autosave (Ordem 6 e 7).
+
 ### Entregas
 
 - Criar gateways e stores por feature.

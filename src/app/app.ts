@@ -12,18 +12,19 @@ import { BookService } from './core/services/book.service';
 import { BackupManifest } from './core/services/backup.service';
 import { AiService } from './core/services/ai.service';
 import { ChapterService } from './core/services/chapter.service';
-import { CollaborationContribution, CollaborationService, CollaborationSession, SharePermission } from './core/services/collaboration.service';
 import { DatabaseService } from './core/services/database.service';
 import { AppNavigationId, AppRouteState } from './core/navigation/app-navigation';
 import { AppNavigationService } from './core/navigation/app-navigation.service';
 import { MentionService } from './core/services/mention.service';
 import { MetadataService } from './core/services/metadata.service';
-import { OnlineShareDocument, OnlineShareService, OnlineShareStatus, SharedUniverse, StoredOnlineShare } from './core/services/online-share.service';
+import { OnlineShareDocument, SharedUniverse } from './core/services/online-share.service';
 import { PlanningService } from './core/services/planning.service';
 import { StoryService } from './core/services/story.service';
 import { WorkspaceService } from './core/services/workspace.service';
 import { AppState } from './core/state/app.state';
 import { fileToDataUrl } from './shared/utils/file-to-data-url';
+import { ShareCreateRequest, ShareModalComponent } from './features/collaboration/share-modal/share-modal.component';
+import { CollaborationStore } from './features/collaboration/state/collaboration.store';
 import { ConnectionsGraphComponent } from './features/connections/connections-graph.component';
 import { EntitiesPageComponent, EntityMutationKind } from './features/entities/entities-page/entities-page.component';
 import { EntityHubType, EntityStore } from './features/entities/state/entity.store';
@@ -96,6 +97,7 @@ interface MetadataTarget {
     PlanningBoardComponent,
     HistoryPageComponent,
     SettingsPageComponent,
+    ShareModalComponent,
     TimelinePageComponent,
     WritingEditorComponent,
   ],
@@ -111,11 +113,10 @@ export class App implements OnInit, OnDestroy {
   private readonly storyService = inject(StoryService);
   private readonly bookService = inject(BookService);
   private readonly chapterService = inject(ChapterService);
-  private readonly collaborationService = inject(CollaborationService);
+  private readonly collaborationStore = inject(CollaborationStore);
   private readonly entityStore = inject(EntityStore);
   private readonly mentionService = inject(MentionService);
   private readonly metadataService = inject(MetadataService);
-  private readonly onlineShareService = inject(OnlineShareService);
   private readonly planningService = inject(PlanningService);
   private readonly workspaceService = inject(WorkspaceService);
   private readonly settingsStore = inject(SettingsStore);
@@ -148,18 +149,6 @@ export class App implements OnInit, OnDestroy {
   readonly saveMessage = signal('');
   readonly errorMessage = signal('');
   readonly infoMessage = signal('');
-  readonly shareBusy = signal(false);
-  readonly shareProgressMessage = signal('');
-  readonly shareSession = signal<OnlineShareStatus>({ running: false, publicUrl: null, shareCount: 0 });
-  readonly shareLink = signal('');
-  readonly shareExpiresAt = signal('');
-  readonly onlineShares = signal<StoredOnlineShare[]>([]);
-  readonly shareSelectedUniverseIds = signal<Set<string>>(new Set());
-  readonly shareIncludeChapters = signal(true);
-  readonly shareIncludeEntities = signal(true);
-  readonly collaborationSessions = signal<CollaborationSession[]>([]);
-  readonly collaborationContributions = signal<CollaborationContribution[]>([]);
-  readonly selectedCollaborationSessionId = signal<string | null>(null);
   readonly updateBusy = this.settingsStore.updateBusy;
   readonly updatePhase = this.settingsStore.updatePhase;
   readonly updateInfo = this.settingsStore.updateInfo;
@@ -193,8 +182,6 @@ export class App implements OnInit, OnDestroy {
   newTagName = '';
   newTagColor = '#7d3650';
   renameValue = '';
-  shareExpiresInDays = 7;
-  sharePermission: SharePermission = 'view';
 
   readonly navItems: SidebarNavItem[] = [
     { id: 'inicio', label: 'Início', icon: '⌂', needsUniverse: false },
@@ -208,13 +195,6 @@ export class App implements OnInit, OnDestroy {
   ];
 
   readonly wordCount = computed(() => this.countWords(this.editorContent()));
-  readonly shareSelectionCount = computed(() => this.shareSelectedUniverseIds().size);
-  readonly pendingCollaborationCount = computed(() => this.collaborationContributions().filter((item) => item.status === 'pending').length);
-  readonly selectedCollaborationContributions = computed(() => {
-    const id = this.selectedCollaborationSessionId();
-    return id ? this.collaborationContributions().filter((item) => item.session_id === id) : [];
-  });
-  readonly selectedCollaborationHasPending = computed(() => this.selectedCollaborationContributions().some((item) => item.status === 'pending'));
   readonly globalSearchResults = computed<GlobalSearchResult[]>(() => {
     if (this.appState.currentView() !== 'workspace') return [];
     const query = this.normalizeSearch(this.searchQuery());
@@ -272,9 +252,9 @@ export class App implements OnInit, OnDestroy {
     try {
       await this.db.init();
       await this.loadUniverses();
-      this.shareSession.set(await this.onlineShareService.status());
-      await this.loadCollaborationReview();
-      this.collaborationTimer = setInterval(() => void this.syncCollaborationContributions(), 2500);
+      await this.collaborationStore.refreshShareStatus();
+      await this.collaborationStore.loadReview();
+      this.collaborationTimer = setInterval(() => void this.collaborationStore.syncIncoming(), 2500);
       await this.settingsStore.primeCurrentVersion();
       if (await this.settingsStore.isUpdateConfigured()) setTimeout(() => void this.checkForUpdates(true), 1800);
     } catch (error) {
@@ -303,9 +283,9 @@ export class App implements OnInit, OnDestroy {
   async toggleMaximizeWindow(): Promise<void> { if (isTauri()) await getCurrentWindow().toggleMaximize(); }
   async closeWindow(): Promise<void> {
     await this.saveChapterNow();
-    await this.syncCollaborationContributions();
-    await this.collaborationService.endAllActive('ended').catch(() => undefined);
-    await this.onlineShareService.stop().catch((error) => console.warn('[NarraHub] Falha ao encerrar compartilhamento temporário.', error));
+    await this.collaborationStore.syncIncoming();
+    await this.collaborationStore.endAllActiveQuietly();
+    await this.collaborationStore.stopShareQuietly();
     if (isTauri()) await getCurrentWindow().close();
   }
   async toggleFullscreen(): Promise<void> { if (isTauri()) { const win = getCurrentWindow(); await win.setFullscreen(!(await win.isFullscreen())); } }
@@ -443,11 +423,13 @@ export class App implements OnInit, OnDestroy {
 
   openShareModal(): void {
     if (!this.appState.activeUniverse()) { this.showInfo('Abra um universo antes de compartilhar.'); return; }
-    this.shareSelectedUniverseIds.set(new Set([this.appState.activeUniverse()!.id]));
-    this.shareIncludeChapters.set(true);
-    this.shareIncludeEntities.set(true);
-    this.sharePermission = 'view';
-    this.shareLink.set(''); this.shareExpiresAt.set(''); this.shareProgressMessage.set(''); this.appState.openModal('share-content');
+    // O link/progresso ficam no CollaborationStore (compartilhado com a aba
+    // Configurações > Compartilhar), então precisam ser zerados aqui: o
+    // ShareModalComponent nasce de novo a cada abertura, mas o store não.
+    this.collaborationStore.shareLink.set('');
+    this.collaborationStore.shareExpiresAt.set('');
+    this.collaborationStore.shareProgressMessage.set('');
+    this.appState.openModal('share-content');
   }
 
   async loadWorkspaceData(): Promise<void> {
@@ -807,7 +789,7 @@ export class App implements OnInit, OnDestroy {
   }
 
   async prepareRestoreBackup(backup: BackupManifest): Promise<void> {
-    if (this.shareSession().running || this.settingsStore.syncStatus().running) {
+    if (this.collaborationStore.shareSession().running || this.settingsStore.syncStatus().running) {
       this.settingsStore.backupError.set('Encerre o compartilhamento e a sincronização antes de restaurar um backup.');
       return;
     }
@@ -865,92 +847,42 @@ export class App implements OnInit, OnDestroy {
     this.clearAiAssistant();
   }
   clearAiAssistant(): void { this.aiWritingRequest.set(null); this.aiResponse.set(''); this.aiError.set(''); this.aiPrompt = ''; }
-  isUniverseSelectedForShare(id: string): boolean { return this.shareSelectedUniverseIds().has(id); }
-  toggleShareUniverse(id: string): void { this.toggleShareSelection(this.shareSelectedUniverseIds, id); }
-  selectAllShareUniverses(): void {
-    this.shareSelectedUniverseIds.set(this.shareSelectedUniverseIds().size === this.universes().length
-      ? new Set()
-      : new Set(this.universes().map((universe) => universe.id)));
-  }
-  async startOnlineShareSession(showFeedback = true): Promise<boolean> {
-    this.shareBusy.set(true); this.shareProgressMessage.set('Abrindo um túnel seguro e temporário…'); this.errorMessage.set('');
-    try {
-      this.shareSession.set(await this.onlineShareService.start());
-      if (showFeedback) this.showInfo('Compartilhamento temporário disponível enquanto o NarraHub estiver aberto.');
-      return true;
-    } catch (error) {
-      this.reportError('Não foi possível abrir o compartilhamento temporário.', error);
-      return false;
-    } finally { this.shareBusy.set(false); this.shareProgressMessage.set(''); }
-  }
-  async stopOnlineShareSession(): Promise<void> {
-    this.shareBusy.set(true); this.shareProgressMessage.set('Encerrando links públicos…');
-    try {
-      await this.syncCollaborationContributions();
-      this.shareSession.set(await this.onlineShareService.stop());
-      await this.collaborationService.endAllActive('ended');
-      this.onlineShares.set([]); this.shareLink.set(''); this.shareExpiresAt.set('');
-      await this.loadCollaborationReview();
-      this.showInfo('Sessão encerrada. Todos os links temporários foram invalidados.');
-    } catch (error) { this.reportError('Não foi possível encerrar o compartilhamento.', error); }
-    finally { this.shareBusy.set(false); this.shareProgressMessage.set(''); }
-  }
-  async createOnlineShare(): Promise<void> {
-    if (this.shareSelectionCount() === 0) { this.showInfo('Selecione ao menos um universo para compartilhar.'); return; }
+  async createOnlineShare(request: ShareCreateRequest): Promise<void> {
+    if (!request.universeIds.length) { this.showInfo('Selecione ao menos um universo para compartilhar.'); return; }
     this.errorMessage.set('');
-    if (!(await this.startOnlineShareSession(false))) return;
-    this.shareBusy.set(true); this.shareProgressMessage.set('Preparando e criptografando somente os itens selecionados…');
+    const started = await this.collaborationStore.startShareSession();
+    if (!started.ok) { this.reportError('Não foi possível abrir o compartilhamento temporário.', new Error(started.error || '')); return; }
+    this.collaborationStore.shareBusy.set(true);
+    this.collaborationStore.shareProgressMessage.set('Preparando e criptografando somente os itens selecionados…');
     try {
       await this.saveChapterNow();
-      const selectedUniverses = this.universes().filter((universe) => this.isUniverseSelectedForShare(universe.id));
-      const sharedUniverses = await Promise.all(selectedUniverses.map((universe) => this.buildSharedUniverse(universe)));
+      const selectedUniverses = this.universes().filter((universe) => request.universeIds.includes(universe.id));
+      const sharedUniverses = await Promise.all(selectedUniverses.map((universe) => this.buildSharedUniverse(universe, request.includeChapters, request.includeEntities)));
       const title = selectedUniverses.length === 1 ? selectedUniverses[0].name : `${selectedUniverses.length} universos literários`;
       const document: OnlineShareDocument = {
         version: 3,
         kind: 'workspace',
         title,
-        permission: this.sharePermission,
+        permission: request.permission,
         universes: sharedUniverses,
         sharedAt: new Date().toISOString(),
       };
-      const created = await this.onlineShareService.create(document, Number(this.shareExpiresInDays));
-      this.shareLink.set(created.url); this.shareExpiresAt.set(created.expiresAt);
-      this.rememberShare(created.id, created.revokeToken, created.expiresAt, title, created.encryptionKey, this.sharePermission, selectedUniverses.map((item) => item.id));
-      await this.collaborationService.saveSession({
-        id: created.id, title, permission: this.sharePermission, universeIds: selectedUniverses.map((item) => item.id),
-        encryptionKey: created.encryptionKey, revokeToken: created.revokeToken, expiresAt: created.expiresAt,
-      });
-      await this.loadCollaborationReview();
-      this.shareSession.update((status) => ({ ...status, shareCount: status.shareCount + 1 }));
-      const copied = await this.copyShareLink(false);
+      const result = await this.collaborationStore.createShare(document, request.expiresInDays, selectedUniverses.map((item) => item.id));
+      if (!result.ok) { this.reportError('Não foi possível criar o compartilhamento online.', new Error(result.error || '')); return; }
+      const copied = await this.copyToClipboard(this.collaborationStore.shareLink());
       this.showInfo(copied ? 'Link criptografado criado e copiado.' : 'Link criptografado criado. Copie-o manualmente.');
     } catch (error) { this.reportError('Não foi possível criar o compartilhamento online.', error); }
-    finally { this.shareBusy.set(false); this.shareProgressMessage.set(''); }
+    finally { this.collaborationStore.shareBusy.set(false); this.collaborationStore.shareProgressMessage.set(''); }
   }
-  async copyShareLink(showFeedback = true): Promise<boolean> {
-    if (!this.shareLink()) return false;
-    try {
-      await navigator.clipboard.writeText(this.shareLink());
-      if (showFeedback) this.showInfo('Link copiado.');
-      return true;
-    } catch (error) {
-      console.warn('[NarraHub] Não foi possível copiar o link automaticamente.', error);
-      if (showFeedback) this.showInfo('Não foi possível copiar automaticamente. Selecione o link manualmente.');
-      return false;
-    }
+
+  onCollaborationApplied(universeId: string): void {
+    void this.refreshAfterCollaborationReview(universeId);
   }
-  async revokeOnlineShare(share: StoredOnlineShare): Promise<void> {
-    this.shareBusy.set(true); this.errorMessage.set('');
-    try {
-      await this.syncCollaborationContributions();
-      this.shareSession.set(await this.onlineShareService.revoke(share.id, share.revokeToken));
-      await this.collaborationService.endSession(share.id, 'revoked');
-      const remaining = this.onlineShares().filter((item) => item.id !== share.id);
-      this.onlineShares.set(remaining);
-      await this.loadCollaborationReview();
-      this.showInfo('Compartilhamento revogado. O link não pode mais ser aberto.');
-    } catch (error) { this.reportError('Não foi possível revogar o compartilhamento.', error); }
-    finally { this.shareBusy.set(false); }
+
+  private async copyToClipboard(text: string): Promise<boolean> {
+    if (!text) return false;
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch (error) { console.warn('[NarraHub] Não foi possível copiar o link automaticamente.', error); return false; }
   }
   formatNumber(value: number): string { return value.toLocaleString('pt-BR'); }
   formatDate(value: string): string { if (!value) return 'Sem data'; const date = new Date(value.length === 10 ? `${value}T12:00:00` : value); return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' }); }
@@ -1141,93 +1073,13 @@ export class App implements OnInit, OnDestroy {
 
   private clearWritingSelection(): void { this.activeStory.set(null); this.activeBook.set(null); this.activeChapter.set(null); this.books.set([]); this.chapters.set([]); this.editorTitle.set(''); this.editorContent.set(''); this.chapterSummary.set(''); this.chapterTags.set([]); }
   private resetWorkspaceData(): void { this.clearWritingSelection(); this.stories.set([]); this.universeBooks.set([]); this.universeChapters.set([]); this.entityStore.reset(); this.mentionOccurrences.set([]); this.timelineStore.reset(); this.historyStore.reset(); this.planning.set([]); this.relations.set([]); this.workspacePreviewTags.set({}); this.expandedStoryIds.set(new Set()); this.expandedBookIds.set(new Set()); }
-  async loadCollaborationReview(): Promise<void> {
-    const [sessions, contributions] = await Promise.all([
-      this.collaborationService.listSessions(),
-      this.collaborationService.listContributions(),
-    ]);
-    this.collaborationSessions.set(sessions);
-    this.collaborationContributions.set(contributions);
-    const selected = this.selectedCollaborationSessionId();
-    if (!selected || !sessions.some((session) => session.id === selected)) {
-      this.selectedCollaborationSessionId.set(sessions[0]?.id ?? null);
-    }
-  }
 
-  async syncCollaborationContributions(): Promise<void> {
-    if (!isTauri() || !this.onlineShares().length) return;
-    let changed = false;
-    for (const share of this.onlineShares()) {
-      try {
-        const contributions = await this.onlineShareService.contributions(share.id, share.revokeToken, share.encryptionKey, share.lastSequence);
-        let lastSequence = share.lastSequence;
-        for (const item of contributions) {
-          lastSequence = Math.max(lastSequence, item.sequence);
-          const payload = item.payload;
-          const allowed = payload.contributionKind === 'note'
-            ? share.permission !== 'view'
-            : share.permission === 'edit';
-          if (!allowed || !share.universeIds.includes(payload.universeId)) continue;
-          changed = (await this.collaborationService.storeContribution(share.id, item.sequence, {
-            id: payload.id,
-            contributor: payload.contributor,
-            kind: payload.contributionKind,
-            universeId: payload.universeId,
-            targetType: payload.targetType,
-            targetId: payload.targetId,
-            targetLabel: payload.targetLabel,
-            field: payload.field,
-            originalValue: payload.originalValue,
-            proposedValue: payload.proposedValue,
-            message: payload.message,
-            createdAt: payload.createdAt,
-          })) || changed;
-        }
-        if (lastSequence !== share.lastSequence) {
-          this.onlineShares.update((items) => items.map((item) => item.id === share.id ? { ...item, lastSequence } : item));
-        }
-      } catch (error) {
-        console.warn(`[NarraHub] Não foi possível buscar contribuições da sessão ${share.id}.`, error);
-      }
-    }
-    if (changed) await this.loadCollaborationReview();
-  }
-
-  async reviewCollaboration(item: CollaborationContribution, decision: 'approved' | 'rejected'): Promise<void> {
-    try {
-      await this.collaborationService.review(item.id, decision);
-      await this.loadCollaborationReview();
-      if (decision === 'approved') await this.refreshAfterCollaborationReview(item.universe_id);
-      this.showInfo(decision === 'approved' ? 'Alteração aprovada e aplicada ao banco local.' : 'Alteração rejeitada e preservada no histórico da sessão.');
-    } catch (error) { this.reportError('Não foi possível revisar a alteração colaborativa.', error); }
-  }
-
-  async approveAllCollaboration(sessionId: string): Promise<void> {
-    try {
-      const count = await this.collaborationService.approveAll(sessionId);
-      await this.loadCollaborationReview();
-      await this.refreshAfterCollaborationReview(this.appState.activeUniverseId() || '');
-      this.showInfo(`${count} alteração(ões) aprovada(s) e aplicada(s).`);
-    } catch (error) { this.reportError('Não foi possível aprovar as alterações em lote.', error); }
-  }
-
-  selectCollaborationSession(id: string): void { this.selectedCollaborationSessionId.set(id); }
-
-  sharePermissionLabel(permission: SharePermission): string {
-    return permission === 'edit' ? 'Pode propor edições' : permission === 'comment' ? 'Somente anotações' : 'Somente leitura';
-  }
-
-  contributionFieldLabel(field: string): string {
-    if (field.startsWith('attribute:')) return field.slice('attribute:'.length);
-    return ({ name: 'Nome', description: 'Descrição', title: 'Título', content: 'Texto', summary: 'Resumo', canon_status: 'Estado canônico' } as Record<string, string>)[field] || field;
-  }
-
-  private async buildSharedUniverse(universe: UniverseWithStats): Promise<SharedUniverse> {
+  private async buildSharedUniverse(universe: UniverseWithStats, includeChapters: boolean, includeEntities: boolean): Promise<SharedUniverse> {
     const [chapters, entities] = await Promise.all([
-      this.shareIncludeChapters() ? this.chapterService.listByUniverse(universe.id) : Promise.resolve([]),
-      this.shareIncludeEntities() ? this.entityStore.listSnapshot(universe.id) : Promise.resolve([]),
+      includeChapters ? this.chapterService.listByUniverse(universe.id) : Promise.resolve([]),
+      includeEntities ? this.entityStore.listSnapshot(universe.id) : Promise.resolve([]),
     ]);
-    const details = this.shareIncludeEntities()
+    const details = includeEntities
       ? (await Promise.all(entities.map((entity) => this.entityStore.getDetailsSnapshot(entity.id)))).filter((entity): entity is EntityWithDetails => !!entity)
       : [];
     return {
@@ -1273,13 +1125,6 @@ export class App implements OnInit, OnDestroy {
     }
   }
 
-  private toggleShareSelection(target: typeof this.shareSelectedUniverseIds, id: string): void {
-    target.update((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }
   private async prepareShareImage(dataUrl: string): Promise<string> {
     if (!dataUrl || dataUrl.length <= 180_000) return dataUrl;
     return new Promise((resolve) => {
@@ -1295,10 +1140,6 @@ export class App implements OnInit, OnDestroy {
       image.onerror = () => resolve('');
       image.src = dataUrl;
     });
-  }
-  private rememberShare(id: string, revokeToken: string, expiresAt: string, title: string, encryptionKey: string, permission: SharePermission, universeIds: string[]): void {
-    const shares = [{ id, revokeToken, expiresAt, title, encryptionKey, permission, universeIds, lastSequence: 0 }, ...this.onlineShares().filter((item) => item.id !== id)].slice(0, 50);
-    this.onlineShares.set(shares);
   }
   private countWords(content: string): number { const normalized = content.replace(/<[^>]+>/g, ' ').trim(); return normalized ? normalized.split(/\s+/u).length : 0; }
   private showInfo(message: string): void { this.infoMessage.set(message); if (this.infoTimer) clearTimeout(this.infoTimer); this.infoTimer = setTimeout(() => this.infoMessage.set(''), 4200); }

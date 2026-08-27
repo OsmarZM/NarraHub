@@ -2,9 +2,10 @@ import { Component, EventEmitter, Input, OnInit, Output, ViewEncapsulation, inje
 import { FormsModule } from '@angular/forms';
 import { AiMode, AiModelProfile, AiService } from '../../core/services/ai.service';
 import { BackupManifest } from '../../core/services/backup.service';
-import { CollaborationContribution, CollaborationSession, SharePermission } from '../../core/services/collaboration.service';
-import { OnlineShareStatus, StoredOnlineShare } from '../../core/services/online-share.service';
+import { CollaborationContribution, SharePermission } from '../../core/services/collaboration.service';
+import { StoredOnlineShare } from '../../core/services/online-share.service';
 import { ThemeService } from '../../core/services/theme.service';
+import { CollaborationStore } from '../collaboration/state/collaboration.store';
 import { ProductionReplicaComponent } from '../production-replica/production-replica.component';
 import { SettingsStore } from './state/settings.store';
 
@@ -25,18 +26,6 @@ export class SettingsPageComponent implements OnInit {
   // Workspace); o universo ativo em si continua vivendo no AppState.
   @Input() activeUniverseId: string | null = null;
 
-  // Colaboração e compartilhamento ainda não foram extraídos do App (isso é a
-  // próxima fatia da Fase 2); a aba "Compartilhar" só exibe o que o App já
-  // orquestra e devolve as ações por evento, sem duplicar o domínio aqui.
-  @Input() shareSession: OnlineShareStatus = { running: false, publicUrl: null, shareCount: 0 };
-  @Input() shareBusy = false;
-  @Input() onlineShares: StoredOnlineShare[] = [];
-  @Input() collaborationSessions: CollaborationSession[] = [];
-  @Input() selectedCollaborationSessionId: string | null = null;
-  @Input() selectedCollaborationHasPending = false;
-  @Input() selectedCollaborationContributions: CollaborationContribution[] = [];
-  @Input() pendingCollaborationCount = 0;
-
   @Output() readonly info = new EventEmitter<string>();
   @Output() readonly failed = new EventEmitter<string>();
   @Output() readonly backupCreateRequested = new EventEmitter<void>();
@@ -44,14 +33,13 @@ export class SettingsPageComponent implements OnInit {
   @Output() readonly updateCheckRequested = new EventEmitter<void>();
   @Output() readonly updateInstallRequested = new EventEmitter<void>();
   @Output() readonly synced = new EventEmitter<void>();
-  @Output() readonly shareStartRequested = new EventEmitter<void>();
-  @Output() readonly shareStopRequested = new EventEmitter<void>();
-  @Output() readonly shareRevokeRequested = new EventEmitter<StoredOnlineShare>();
-  @Output() readonly collaborationSessionSelected = new EventEmitter<string>();
-  @Output() readonly collaborationApproveAllRequested = new EventEmitter<string>();
-  @Output() readonly collaborationReviewRequested = new EventEmitter<{ item: CollaborationContribution; decision: 'approved' | 'rejected' }>();
+  // Emitido só quando uma revisão/aprovação em lote de fato altera conteúdo
+  // canônico — o App ainda precisa atualizar capítulo/ficha ativos (Editor
+  // não foi extraído) e as estatísticas do universo.
+  @Output() readonly collaborationApplied = new EventEmitter<string>();
 
   readonly store = inject(SettingsStore);
+  readonly collaboration = inject(CollaborationStore);
   readonly ai = inject(AiService);
   readonly theme = inject(ThemeService);
 
@@ -277,7 +265,39 @@ export class SettingsPageComponent implements OnInit {
     if (peer) this.info.emit(`Sincronizado com ${peer.peer_name}: ${peer.received} recebidos, ${peer.sent} enviados, ${peer.conflicts} conflitos.`);
   }
 
-  // ── Compartilhamento e colaboração (repassado ao App) ────
+  // ── Compartilhamento e colaboração ───────────────────────
+
+  async startShare(): Promise<void> {
+    const result = await this.collaboration.startShareSession();
+    if (result.ok) this.info.emit('Compartilhamento temporário disponível enquanto o NarraHub estiver aberto.');
+    else this.failed.emit(result.error || 'Não foi possível abrir o compartilhamento temporário.');
+  }
+
+  async stopShare(): Promise<void> {
+    const result = await this.collaboration.stopShareSession();
+    if (result.ok) this.info.emit('Sessão encerrada. Todos os links temporários foram invalidados.');
+    else this.failed.emit(result.error || 'Não foi possível encerrar o compartilhamento.');
+  }
+
+  async revokeShare(share: StoredOnlineShare): Promise<void> {
+    const result = await this.collaboration.revokeShare(share);
+    if (result.ok) this.info.emit('Compartilhamento revogado. O link não pode mais ser aberto.');
+    else this.failed.emit(result.error || 'Não foi possível revogar o compartilhamento.');
+  }
+
+  async reviewContribution(item: CollaborationContribution, decision: 'approved' | 'rejected'): Promise<void> {
+    const result = await this.collaboration.review(item, decision);
+    if (!result.ok) { this.failed.emit(result.error || 'Não foi possível revisar a alteração colaborativa.'); return; }
+    this.info.emit(decision === 'approved' ? 'Alteração aprovada e aplicada ao banco local.' : 'Alteração rejeitada e preservada no histórico da sessão.');
+    if (result.universeId) this.collaborationApplied.emit(result.universeId);
+  }
+
+  async approveAllContributions(sessionId: string): Promise<void> {
+    const result = await this.collaboration.approveAll(sessionId);
+    if (!result.ok) { this.failed.emit(result.error || 'Não foi possível aprovar as alterações em lote.'); return; }
+    this.info.emit(`${result.count} alteração(ões) aprovada(s) e aplicada(s).`);
+    if (this.activeUniverseId) this.collaborationApplied.emit(this.activeUniverseId);
+  }
 
   sharePermissionLabel(permission: SharePermission): string {
     return permission === 'edit' ? 'Pode propor edições' : permission === 'comment' ? 'Somente anotações' : 'Somente leitura';

@@ -147,44 +147,44 @@
       </article>
 
       <article class="surface-card settings-wide-card" [hidden]="section() !== 'share'">
-        <div class="card-head"><div><div class="card-icon">↗</div><h2>Sessões colaborativas</h2></div><span class="status-badge" [class.online]="shareSession.running">{{ shareSession.running ? 'Online agora' : 'Desativado' }}</span></div>
+        <div class="card-head"><div><div class="card-icon">↗</div><h2>Sessões colaborativas</h2></div><span class="status-badge" [class.online]="collaboration.shareSession().running">{{ collaboration.shareSession().running ? 'Online agora' : 'Desativado' }}</span></div>
         <p>Compartilhe um ou mais universos para leitura, anotações ou propostas de edição. O texto local só muda quando você aprova.</p>
-        @if (shareSession.running) {
-          <div class="share-session-panel"><span><small>Endereço temporário</small><strong>{{ shareSession.publicUrl }}</strong></span><span><small>Links ativos</small><b>{{ shareSession.shareCount }}</b></span></div>
-          <button type="button" class="secondary-button danger-outline" [disabled]="shareBusy" (click)="shareStopRequested.emit()">Encerrar e invalidar todos os links</button>
+        @if (collaboration.shareSession().running) {
+          <div class="share-session-panel"><span><small>Endereço temporário</small><strong>{{ collaboration.shareSession().publicUrl }}</strong></span><span><small>Links ativos</small><b>{{ collaboration.shareSession().shareCount }}</b></span></div>
+          <button type="button" class="secondary-button danger-outline" [disabled]="collaboration.shareBusy()" (click)="stopShare()">Encerrar e invalidar todos os links</button>
         } @else {
-          <button type="button" class="primary-button" [disabled]="shareBusy" (click)="shareStartRequested.emit()">{{ shareBusy ? 'Abrindo túnel…' : 'Disponibilizar temporariamente' }}</button>
+          <button type="button" class="primary-button" [disabled]="collaboration.shareBusy()" (click)="startShare()">{{ collaboration.shareBusy() ? 'Abrindo túnel…' : 'Disponibilizar temporariamente' }}</button>
         }
-        @if (onlineShares.length) {
+        @if (collaboration.onlineShares().length) {
           <div class="share-history"><strong>Links ativos neste dispositivo</strong>
-            @for (share of onlineShares; track share.id) {
-              <div class="share-history-row"><span><b>{{ share.title }}</b><small>{{ sharePermissionLabel(share.permission) }} · expira em {{ formatDate(share.expiresAt) }}</small></span><button type="button" class="text-button danger-outline" [disabled]="shareBusy" (click)="shareRevokeRequested.emit(share)">Revogar</button></div>
+            @for (share of collaboration.onlineShares(); track share.id) {
+              <div class="share-history-row"><span><b>{{ share.title }}</b><small>{{ sharePermissionLabel(share.permission) }} · expira em {{ formatDate(share.expiresAt) }}</small></span><button type="button" class="text-button danger-outline" [disabled]="collaboration.shareBusy()" (click)="revokeShare(share)">Revogar</button></div>
             }
           </div>
         }
         <div class="security-callout"><strong>Conteúdo e contribuições cifrados de ponta a ponta.</strong><span>A chave fica depois de <code>#k=</code> no link. Edições recebidas entram numa fila local de revisão, nunca direto nos textos.</span></div>
 
         <section class="collaboration-review">
-          <header><div><span class="eyebrow">REVISÃO LOCAL</span><h3>Alterações e anotações</h3></div><span class="review-count">{{ pendingCollaborationCount }} pendente(s)</span></header>
-          @if (collaborationSessions.length) {
+          <header><div><span class="eyebrow">REVISÃO LOCAL</span><h3>Alterações e anotações</h3></div><span class="review-count">{{ collaboration.pendingCount() }} pendente(s)</span></header>
+          @if (collaboration.sessions().length) {
             <div class="collaboration-layout">
               <nav class="collaboration-sessions" aria-label="Sessões compartilhadas">
-                @for (session of collaborationSessions; track session.id) {
-                  <button type="button" [class.active]="selectedCollaborationSessionId === session.id" (click)="collaborationSessionSelected.emit(session.id)">
+                @for (session of collaboration.sessions(); track session.id) {
+                  <button type="button" [class.active]="collaboration.selectedSessionId() === session.id" (click)="collaboration.selectSession(session.id)">
                     <strong>{{ session.title }}</strong><small>{{ sharePermissionLabel(session.permission) }} · {{ session.status === 'active' ? 'ativa' : 'encerrada' }}</small>
                     <span>{{ session.pending_count || 0 }} edição(ões) · {{ session.note_count || 0 }} nota(s)</span>
                   </button>
                 }
               </nav>
               <div class="collaboration-feed">
-                @if (selectedCollaborationSessionId; as sessionId) {
-                  @if (selectedCollaborationHasPending) { <button type="button" class="primary-button small approve-all" (click)="collaborationApproveAllRequested.emit(sessionId)">Aprovar todas as pendentes</button> }
-                  @for (item of selectedCollaborationContributions; track item.id) {
+                @if (collaboration.selectedSessionId(); as sessionId) {
+                  @if (collaboration.selectedHasPending()) { <button type="button" class="primary-button small approve-all" (click)="approveAllContributions(sessionId)">Aprovar todas as pendentes</button> }
+                  @for (item of collaboration.selectedContributions(); track item.id) {
                     <article class="contribution-card" [class.note]="item.kind === 'note'" [class.reviewed]="item.status === 'approved' || item.status === 'rejected'">
                       <header><span><b>{{ item.contributor }}</b><small>{{ item.target_label }} · {{ item.kind === 'note' ? 'anotação' : contributionFieldLabel(item.field) }}</small></span><em [class.approved]="item.status === 'approved'" [class.rejected]="item.status === 'rejected'">{{ item.status === 'pending' ? 'Aguardando revisão' : item.status === 'noted' ? 'Anotação' : item.status === 'approved' ? 'Aprovada' : 'Rejeitada' }}</em></header>
                       @if (item.kind === 'note') { <p>{{ item.message }}</p> }
                       @else { <div class="contribution-diff"><div><small>Antes</small><pre>{{ item.original_value }}</pre></div><div><small>Proposta</small><pre>{{ item.proposed_value }}</pre></div></div> }
-                      @if (item.status === 'pending') { <footer><button type="button" class="secondary-button danger-outline" (click)="collaborationReviewRequested.emit({ item, decision: 'rejected' })">Rejeitar</button><button type="button" class="primary-button" (click)="collaborationReviewRequested.emit({ item, decision: 'approved' })">Aprovar e aplicar</button></footer> }
+                      @if (item.status === 'pending') { <footer><button type="button" class="secondary-button danger-outline" (click)="reviewContribution(item, 'rejected')">Rejeitar</button><button type="button" class="primary-button" (click)="reviewContribution(item, 'approved')">Aprovar e aplicar</button></footer> }
                     </article>
                   } @empty { <div class="review-empty"><strong>Nenhuma contribuição nesta sessão</strong><p>As anotações e propostas aparecerão aqui enquanto o link estiver ativo.</p></div> }
                 }

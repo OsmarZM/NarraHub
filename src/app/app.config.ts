@@ -1,6 +1,8 @@
 import { ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { routes } from './app.routes';
+import { CollaborationGateway } from './features/collaboration/gateways/collaboration.gateway';
+import { LegacyCollaborationGateway } from './features/collaboration/gateways/legacy-collaboration.gateway';
 import { EntityGateway } from './features/entities/gateways/entity.gateway';
 import { LegacyEntityGateway } from './features/entities/gateways/legacy-entity.gateway';
 import { HistoryGateway } from './features/history/gateways/history.gateway';
@@ -14,6 +16,7 @@ export const appConfig: ApplicationConfig = {
   providers: [
     provideBrowserGlobalErrorListeners(),
     provideRouter(routes),
+    { provide: CollaborationGateway, useExisting: LegacyCollaborationGateway },
     { provide: EntityGateway, useExisting: LegacyEntityGateway },
     { provide: HistoryGateway, useExisting: LegacyHistoryGateway },
     { provide: TimelineGateway, useExisting: LegacyTimelineGateway },

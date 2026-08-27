@@ -86,6 +86,14 @@ compartilhado do `app.html`, ele está sendo desmontado aos poucos.
 { provide: <Dominio>Gateway, useExisting: Legacy<Dominio>Gateway }
 ```
 
+Se esquecer este passo, `npm run build` compila normalmente — o erro só
+aparece em runtime (`NG0201: No provider found for <Dominio>Gateway`), e só
+quando algo que injeta o gateway é de fato instanciado (pode nem ser na
+primeira tela). Isso já aconteceu na fatia de Colaboração: build limpo, e o
+app quebrava ao abrir a página que usava o store novo. Por isso o passo 7
+(validar) não é opcional mesmo quando o build passa — é o único jeito de
+pegar esse tipo de erro.
+
 ### 4. Enxugue o `App`
 
 Remova do `app.ts`/`app.html` tudo que migrou para a feature. O que **fica**
