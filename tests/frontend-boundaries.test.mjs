@@ -91,17 +91,19 @@ test('bootstrap global termina antes do Router e não depende do RootLayout', ()
   assert.doesNotMatch(layout, /ngOnInit|this\.db\.init\(\)|this\.ai\.initialize\(\)/u);
 });
 
-test('RootLayout não acessa o serviço legado de universos diretamente', () => {
+test('RootLayout não importa páginas de domínio nem serviços legados', () => {
   const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /UniverseService/u, 'RootLayout deve depender de UniverseStore/UniverseGateway, não do serviço legado');
+  assert.doesNotMatch(source, /LibraryPageComponent|WritingPageComponent|EntitiesPageComponent|ConnectionsPageComponent|TimelinePageComponent|PlanningBoardComponent|HistoryPageComponent/u);
 });
 
-test('RootLayout delega o domínio de entidades para a feature', () => {
-  const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
-  const template = readFileSync(new URL('../src/app/root-layout.component.html', import.meta.url), 'utf8');
+test('WorkspaceLayout mantém uma única árvore legacy e delega entidades para a feature', () => {
+  const source = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /EntityService|AttachmentService|newEntityName|entityGallery|entityAiBusy/u);
   assert.doesNotMatch(template, /activeEntity\(|newEntityName|entityGallery\(|patchActiveEntity|updateActiveEntity/u);
   assert.match(template, /<app-entities-page/u);
+  assert.equal((template.match(/<app-entities-page/gu) || []).length, 1);
 });
 
 test('Settings é rota global lazy e não depende de universo ativo', () => {
@@ -113,39 +115,50 @@ test('Settings é rota global lazy e não depende de universo ativo', () => {
   assert.doesNotMatch(template, /settingsSection\(|theme\.preference\(|backupBusy\(|syncStatus\(/u);
   assert.match(template, /<router-outlet/u);
   assert.match(routes, /features\/settings\/settings-page\.component/u);
-  assert.match(routes, /path: 'library'.*children: \[\]/u, 'a rota marcadora da biblioteca precisa ser válida no runtime Angular');
-  assert.match(routes, /path: 'workspace\/.*children: \[\]/u, 'a rota marcadora do workspace precisa ser válida no runtime Angular');
+  assert.match(routes, /features\/library\/library-route\.component/u);
+  assert.match(routes, /workspace-layout\.component/u);
   assert.doesNotMatch(settings, /activeUniverseId|AppState/u);
 });
 
-test('RootLayout delega colaboração e compartilhamento para a feature', () => {
-  const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
-  const template = readFileSync(new URL('../src/app/root-layout.component.html', import.meta.url), 'utf8');
+test('WorkspaceLayout delega colaboração e compartilhamento para a feature', () => {
+  const source = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /CollaborationService|\bOnlineShareService\b|shareSelectedUniverseIds|rememberShare/u);
   assert.doesNotMatch(template, /isUniverseSelectedForShare|selectAllShareUniverses|shareChoice/u);
   assert.match(template, /<app-share-modal/u);
 });
 
-test('RootLayout delega história/livro/capítulo e o editor para a feature de Manuscrito', () => {
-  const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
-  const template = readFileSync(new URL('../src/app/root-layout.component.html', import.meta.url), 'utf8');
+test('WorkspaceLayout delega história/livro/capítulo e o editor para a feature de Manuscrito', () => {
+  const source = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /StoryService|BookService|ChapterService|newStoryName|newChapterTitle|editorContent\(|applyFormat/u);
   assert.doesNotMatch(template, /selectTreeChapter\(|chapter-editor|activeEntityId/u);
   assert.match(template, /<app-writing-page/u);
 });
 
-test('RootLayout delega conexões (relações) para a feature', () => {
-  const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
-  const template = readFileSync(new URL('../src/app/root-layout.component.html', import.meta.url), 'utf8');
+test('WorkspaceLayout delega conexões (relações) para a feature', () => {
+  const source = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /WorkspaceService|newRelationSource|newRelationTarget|newRelationLabel|loadRelations|createRelation\b/u);
   assert.doesNotMatch(template, /app-connections-graph|relation-pills-list|new-relation/u);
   assert.match(template, /<app-connections-page/u);
 });
 
-test('RootLayout delega tags e menções (Knowledge) para a feature', () => {
-  const source = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
-  const template = readFileSync(new URL('../src/app/root-layout.component.html', import.meta.url), 'utf8');
+test('WorkspaceLayout delega tags e menções (Knowledge) para a feature', () => {
+  const source = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /MetadataService|MentionService|metadataTarget|metadataTags|newTagName|newTagColor|groupTagAssignments|contentParagraphs|textMentionsEntity/u);
   assert.doesNotMatch(template, /metadata-tag-item|metadata-new-tag/u);
   assert.match(template, /<app-tags-modal/u);
+});
+
+test('rotas de biblioteca e workspace são lazy e não coexistem no RootLayout', () => {
+  const routes = readFileSync(new URL('../src/app/app.routes.ts', import.meta.url), 'utf8');
+  const root = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
+  const rootTemplate = readFileSync(new URL('../src/app/root-layout.component.html', import.meta.url), 'utf8');
+  assert.match(routes, /loadComponent: \(\) => import\('\.\/workspace-layout\.component'\)/u);
+  assert.match(routes, /loadComponent: \(\) => import\('\.\/features\/library\/library-route\.component'\)/u);
+  assert.doesNotMatch(root, /WorkspaceLayoutComponent|LibraryRouteComponent/u);
+  assert.doesNotMatch(rootTemplate, /app-writing-page|app-entities-page|app-library-page/u);
+  assert.match(rootTemplate, /<router-outlet/u);
 });

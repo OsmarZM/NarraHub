@@ -1,5 +1,5 @@
-/* Estilos do shell legado, agora hospedado pelo RootLayout roteado. */
-:host {
+/* Estilos globais temporários do shell 0.7.5 enquanto as páginas são roteadas. */
+app-root-layout {
   --bg: var(--nh-bg); --panel: color-mix(in srgb, var(--nh-surface) 94%, transparent); --surface: var(--nh-surface); --surface-2: var(--nh-surface-muted);
   --text: var(--nh-ink); --muted: var(--nh-ink-muted); --subtle: color-mix(in srgb, var(--nh-ink-muted) 76%, transparent); --line: var(--nh-border);
   --brand: var(--nh-wine); --brand-2: var(--nh-coral); --brand-soft: color-mix(in srgb, var(--nh-wine) 9%, var(--nh-surface)); --green: var(--nh-success);

@@ -1,0 +1,115 @@
+<div class="workspace-route-frame" [class.focus-mode]="isFocusMode()">
+  @if (appState.activeUniverse(); as universe) {
+    @if (!isFocusMode()) {
+      <app-universe-sidebar
+        [universe]="universe"
+        [items]="navItems"
+        [activeItem]="activeNav()"
+        [collapsed]="appState.sidebarCollapsed()"
+        (itemSelected)="selectNav($event)"
+        (changeUniverse)="returnToLibrary()"
+        (collapseToggled)="appState.toggleSidebar()"
+      />
+    }
+
+    <div class="workspace-route-content">
+      @if (globalSearchResults().length || searchQuery().trim().length >= 2) {
+        <section class="global-search-results" aria-label="Resultados da busca global">
+          <header><span>Busca no universo</span><button type="button" (click)="searchQuery.set('')">Esc Fechar</button></header>
+          @for (result of globalSearchResults(); track result.kind + result.id) {
+            <button type="button" class="global-result" (click)="openGlobalSearchResult(result)"><span>{{ result.icon }}</span><strong>{{ result.label }}</strong><small>{{ result.context }}</small><i>↗</i></button>
+          } @empty { <p>Nenhum resultado em histórias, livros, capítulos, entidades, timeline ou planejamento.</p> }
+        </section>
+      }
+
+      <section class="workspace-view page-enter">
+        <header class="workspace-header">
+          <div class="breadcrumb"><button type="button" (click)="selectNav(navItems[0])">Universos</button><span>/</span><strong>{{ universe.name }}</strong>@if (activeStory() && activeNav() === 'escrita') { <span>/</span><span>{{ activeStory()?.name }}</span> }</div>
+          <div class="workspace-actions"><span class="save-state" [class.saving]="isSaving()"><i></i>{{ saveMessage() || 'Banco local conectado' }}</span>
+            <button type="button" class="secondary-button" title="Renomear universo" (click)="beginRenameUniverse()">✎ Renomear</button><button type="button" class="secondary-button metadata-button" title="Tags do universo" (click)="openMetadata('universe', universe.id, universe.name)"># Tags</button>
+            <button type="button" class="secondary-button" (click)="openShareModal()">↗ Compartilhar</button>
+            @if (appState.workspaceView() === 'editor') { <button type="button" class="secondary-button" [class.active]="inspectorOpen()" [disabled]="!activeChapter()" (click)="toggleInspector()">{{ inspectorOpen() ? 'Ocultar resumo' : 'Resumo do capítulo' }}</button><button type="button" class="secondary-button" (click)="beginCreateChapter()" [disabled]="!activeBook()">＋ Capítulo</button> }
+            @else if (appState.workspaceView() === 'entities' && entityFilter()) { <button type="button" class="primary-button small" (click)="beginCreateEntity()">＋ {{ entityCreateLabel() }}</button> }
+            @else if (appState.workspaceView() === 'graph') { <button type="button" class="primary-button small" (click)="beginCreateConnection()" [disabled]="entities().length < 2">＋ Conexão</button> }
+            @else if (appState.workspaceView() === 'timeline') { <button type="button" class="primary-button small" (click)="beginCreateTimeline()">＋ Evento</button> }
+            @else if (appState.workspaceView() === 'planning') { <button type="button" class="primary-button small" (click)="beginCreatePlanning()">＋ Card</button> }
+          </div>
+        </header>
+
+        @if (appState.workspaceView() === 'editor') {
+          <app-writing-page
+            [universeId]="universe.id"
+            [universeName]="universe.name"
+            [universeDescription]="universe.description"
+            [entities]="entities()"
+            [mentionOccurrences]="mentionOccurrences()"
+            [tagsByOwner]="knowledgeStore.workspacePreviewTags()"
+            [focusMode]="isFocusMode()"
+            (focusModeChange)="isFocusMode.set($event)"
+            (fullscreenRequested)="toggleFullscreen()"
+            (metadataRequested)="onManuscriptMetadata($event)"
+            (entityOpenRequested)="onManuscriptEntityOpen($event)"
+            (info)="onManuscriptInfo($event)"
+            (failed)="onManuscriptFailed($event)"
+          />
+        } @else if (appState.workspaceView() === 'entities' || appState.workspaceView() === 'entity-sheet') {
+          <app-entities-page
+            [universeId]="universe.id"
+            [universeName]="universe.name"
+            [universeDescription]="universe.description"
+            [view]="appState.workspaceView() === 'entity-sheet' ? 'entity-sheet' : 'entities'"
+            [query]="searchQuery()"
+            [tagsByOwner]="knowledgeStore.workspacePreviewTags()"
+            (viewChanged)="onEntityViewChanged($event)"
+            (metadataRequested)="openMetadata('entity', $event.id, $event.title)"
+            (mutated)="onEntityMutation($event)"
+            (info)="onEntityInfo($event)"
+            (failed)="onEntityFailure($event)"
+          />
+        } @else if (appState.workspaceView() === 'graph') {
+          <app-connections-page
+            [universeId]="universe.id"
+            [entities]="entities()"
+            (entityOpenRequested)="openEntitySheet($event)"
+            (info)="onConnectionsInfo($event)"
+            (failed)="onConnectionsFailed($event)"
+          />
+        } @else if (appState.workspaceView() === 'timeline') {
+          <app-timeline-page [universeId]="universe.id" [entities]="entities()" [tagsByOwner]="knowledgeStore.workspacePreviewTags()" (metadataRequested)="openMetadata('timeline', $event.id, $event.title, $event.sourceEvent)" />
+        } @else if (appState.workspaceView() === 'planning') {
+          <app-planning-board
+            [universeId]="universe.id"
+            [items]="planning()"
+            [chapters]="manuscriptChapters()"
+            [stories]="manuscriptStories()"
+            [entities]="entities()"
+            (itemsChange)="planning.set($event)"
+            (chapterOpened)="openPlanningChapter($event)"
+          />
+        } @else if (appState.workspaceView() === 'history') {
+          <app-history-page [universeId]="universe.id" />
+        }
+      </section>
+      <router-outlet />
+    </div>
+  }
+</div>
+
+@if (appState.modalOpen() === 'rename-item' && renamingUniverse()) {
+  <div class="modal-backdrop" (mousedown)="appState.closeModal()">
+    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+      <header><div><span class="eyebrow">EDIÇÃO RÁPIDA</span><h2>Renomear universo</h2></div><button type="button" (click)="renamingUniverse.set(false); appState.closeModal()">×</button></header>
+      <p class="modal-guidance">A alteração será aplicada imediatamente em todas as prévias e referências locais.</p>
+      <label>Novo nome<input name="renameValue" [(ngModel)]="renameValue" autofocus (keydown.enter)="confirmRenameUniverse()" /></label>
+      <footer><button type="button" class="secondary-button" (click)="renamingUniverse.set(false); appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!renameValue.trim()" (click)="confirmRenameUniverse()">Salvar nome</button></footer>
+    </form>
+  </div>
+}
+
+@if (appState.modalOpen() === 'metadata') {
+  <app-tags-modal [activeUniverseId]="appState.activeUniverseId()" (closeRequested)="closeMetadata()" (failed)="onKnowledgeFailed($event)" />
+}
+
+@if (appState.modalOpen() === 'share-content') {
+  <app-share-modal [activeUniverseId]="appState.activeUniverseId()" (closeRequested)="appState.closeModal()" (createRequested)="createOnlineShare($event)" (info)="onSettingsInfo($event)" />
+}

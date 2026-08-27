@@ -1,173 +1,44 @@
-<app-shell [showSidebar]="appState.currentView() === 'workspace' && !!appState.activeUniverse()" [focusMode]="isFocusMode()">
+<app-shell [showSidebar]="false" [focusMode]="shell.focusMode()">
   <app-titlebar
     titlebar
-    [query]="searchQuery()"
-    [workspaceMode]="appState.currentView() === 'workspace'"
-    (queryChange)="searchQuery.set($event)"
+    [query]="shell.searchQuery()"
+    [workspaceMode]="workspaceMode()"
+    (queryChange)="shell.searchQuery.set($event)"
     (homeRequested)="returnToLibrary()"
     (settingsRequested)="openSettings()"
     (minimizeRequested)="minimizeWindow()"
     (maximizeRequested)="toggleMaximizeWindow()"
     (closeRequested)="closeWindow()"
   />
-  @if (appState.currentView() === 'workspace' && appState.activeUniverse(); as universe) {
-    <app-universe-sidebar
-      sidebar
-      [universe]="universe"
-      [items]="navItems"
-      [activeItem]="activeNav()"
-      [collapsed]="appState.sidebarCollapsed()"
-      (itemSelected)="selectNav($event)"
-      (changeUniverse)="returnToLibrary()"
-      (collapseToggled)="appState.toggleSidebar()"
-    />
-  }
 
-  <div class="content-stage" [class.focus-mode]="isFocusMode()">
-      @if (bootstrap.error()) { <div class="alert error-alert" role="alert"><span>Não foi possível inicializar o NarraHub. {{ bootstrap.error() }}</span></div> }
-      @if (errorMessage()) { <div class="alert error-alert" role="alert"><span>{{ errorMessage() }}</span><button type="button" (click)="errorMessage.set('')">×</button></div> }
-      @if (infoMessage()) { <div class="toast" role="status">{{ infoMessage() }}</div> }
-      @if (globalSearchResults().length || (searchQuery().trim().length >= 2 && appState.currentView() === 'workspace')) {
-        <section class="global-search-results" aria-label="Resultados da busca global">
-          <header><span>Busca no universo</span><button type="button" (click)="searchQuery.set('')">Esc Fechar</button></header>
-          @for (result of globalSearchResults(); track result.kind + result.id) {
-            <button type="button" class="global-result" (click)="openGlobalSearchResult(result)"><span>{{ result.icon }}</span><strong>{{ result.label }}</strong><small>{{ result.context }}</small><i>↗</i></button>
-          } @empty { <p>Nenhum resultado em histórias, livros, capítulos, entidades, timeline ou planejamento.</p> }
-        </section>
-      }
-      @if ((updatePhase() === 'available' && !updatePromptDismissed()) || updatePhase() === 'backing-up' || updatePhase() === 'downloading') {
-        <aside class="startup-update" aria-live="polite">
-          <span class="startup-update-icon">⇧</span>
-          <div class="startup-update-copy">
-            @if (updatePhase() === 'backing-up') {
-              <strong>Criando backup de segurança</strong>
-              <span>A atualização só começa depois que o snapshot local for validado.</span>
-            } @else if (updatePhase() === 'downloading') {
-              <strong>Instalando NarraHub {{ updateInfo().availableVersion }}</strong>
-              <span>Download e assinatura em validação. O aplicativo será reiniciado ao concluir.</span>
-              <div class="startup-update-progress" role="progressbar" [attr.aria-valuenow]="updateProgress()" aria-valuemin="0" aria-valuemax="100"><i [style.width.%]="updateProgress()"></i></div>
-            } @else {
-              <strong>NarraHub {{ updateInfo().availableVersion }} está disponível</strong>
-              <span>{{ updateInfo().notes || 'Uma nova versão assinada pode ser instalada agora.' }}</span>
-            }
-          </div>
-          @if (updatePhase() === 'available') {
-            <div class="startup-update-actions"><button type="button" class="text-button" (click)="dismissUpdatePrompt()">Agora não</button><button type="button" class="primary-button" [disabled]="updateBusy()" (click)="installUpdate()">Atualizar e reiniciar</button></div>
-          } @else if (updatePhase() === 'backing-up') { <b class="startup-update-percent">BACKUP</b> }
-          @else { <b class="startup-update-percent">{{ updateProgress() }}%</b> }
-        </aside>
-      }
+  <div class="content-stage" [class.focus-mode]="shell.focusMode()">
+    @if (bootstrap.error()) { <div class="alert error-alert" role="alert"><span>Não foi possível inicializar o NarraHub. {{ bootstrap.error() }}</span></div> }
+    @if (shell.errorMessage()) { <div class="alert error-alert" role="alert"><span>{{ shell.errorMessage() }}</span><button type="button" (click)="shell.errorMessage.set('')">×</button></div> }
+    @if (shell.infoMessage()) { <div class="toast" role="status">{{ shell.infoMessage() }}</div> }
 
-      @if (isLoading()) {
-        <section class="center-state"><div class="loader"></div><p>Abrindo seu workspace local...</p></section>
-      } @else if (activeNav() === 'configuracoes') {
-        <router-outlet />
-      } @else if (appState.currentView() === 'home') {
-        <app-library-page
-          [query]="searchQuery()"
-          [lastOpenedId]="lastOpenedUniverseId()"
-          [tagsByUniverse]="knowledgeStore.libraryPreviewTags()"
-          (opened)="openUniverse($event)"
-          (updated)="onUniverseUpdated()"
-          (deleted)="onUniverseDeleted($event)"
-        />
-      } @else {
-        <section class="workspace-view page-enter">
-          <header class="workspace-header">
-            <div class="breadcrumb"><button type="button" (click)="selectNav(navItems[0])">Universos</button><span>/</span><strong>{{ appState.activeUniverse()?.name }}</strong>@if (activeStory() && activeNav() === 'escrita') { <span>/</span><span>{{ activeStory()?.name }}</span> }</div>
-            <div class="workspace-actions"><span class="save-state" [class.saving]="isSaving()"><i></i>{{ saveMessage() || 'Banco local conectado' }}</span>
-              @if (appState.activeUniverse(); as activeUniverse) { <button type="button" class="secondary-button" title="Renomear universo" (click)="beginRenameUniverse()">✎ Renomear</button><button type="button" class="secondary-button metadata-button" title="Tags do universo" (click)="openMetadata('universe', activeUniverse.id, activeUniverse.name)"># Tags</button> }
-              <button type="button" class="secondary-button" (click)="openShareModal()">↗ Compartilhar</button>
-              @if (appState.workspaceView() === 'editor') { <button type="button" class="secondary-button" [class.active]="inspectorOpen()" [disabled]="!activeChapter()" (click)="toggleInspector()">{{ inspectorOpen() ? 'Ocultar resumo' : 'Resumo do capítulo' }}</button><button type="button" class="secondary-button" (click)="beginCreateChapter()" [disabled]="!activeBook()">＋ Capítulo</button> }
-              @else if (appState.workspaceView() === 'entities' && entityFilter()) { <button type="button" class="primary-button small" (click)="beginCreateEntity()">＋ {{ entityCreateLabel() }}</button> }
-              @else if (appState.workspaceView() === 'graph') { <button type="button" class="primary-button small" (click)="beginCreateConnection()" [disabled]="entities().length < 2">＋ Conexão</button> }
-              @else if (appState.workspaceView() === 'timeline') { <button type="button" class="primary-button small" (click)="beginCreateTimeline()">＋ Evento</button> }
-              @else if (appState.workspaceView() === 'planning') { <button type="button" class="primary-button small" (click)="beginCreatePlanning()">＋ Card</button> }
-            </div>
-          </header>
-
-          @if (appState.workspaceView() === 'editor') {
-            <app-writing-page
-              [universeId]="appState.activeUniverseId() || ''"
-              [universeName]="appState.activeUniverse()?.name || ''"
-              [universeDescription]="appState.activeUniverse()?.description || ''"
-              [entities]="entities()"
-              [mentionOccurrences]="mentionOccurrences()"
-              [tagsByOwner]="knowledgeStore.workspacePreviewTags()"
-              [focusMode]="isFocusMode()"
-              (focusModeChange)="isFocusMode.set($event)"
-              (fullscreenRequested)="toggleFullscreen()"
-              (metadataRequested)="onManuscriptMetadata($event)"
-              (entityOpenRequested)="onManuscriptEntityOpen($event)"
-              (info)="onManuscriptInfo($event)"
-              (failed)="onManuscriptFailed($event)"
-            />
-          } @else if (appState.workspaceView() === 'entities' || appState.workspaceView() === 'entity-sheet') {
-            <app-entities-page
-              [universeId]="appState.activeUniverseId() || ''"
-              [universeName]="appState.activeUniverse()?.name || ''"
-              [universeDescription]="appState.activeUniverse()?.description || ''"
-              [view]="appState.workspaceView() === 'entity-sheet' ? 'entity-sheet' : 'entities'"
-              [query]="searchQuery()"
-              [tagsByOwner]="knowledgeStore.workspacePreviewTags()"
-              (viewChanged)="onEntityViewChanged($event)"
-              (metadataRequested)="openMetadata('entity', $event.id, $event.title)"
-              (mutated)="onEntityMutation($event)"
-              (info)="onEntityInfo($event)"
-              (failed)="onEntityFailure($event)"
-            />
-          } @else if (appState.workspaceView() === 'graph') {
-            <app-connections-page
-              [universeId]="appState.activeUniverseId() || ''"
-              [entities]="entities()"
-              (entityOpenRequested)="openEntitySheet($event)"
-              (info)="onConnectionsInfo($event)"
-              (failed)="onConnectionsFailed($event)"
-            />
-          } @else if (appState.workspaceView() === 'timeline') {
-            <app-timeline-page [universeId]="appState.activeUniverseId() || ''" [entities]="entities()" [tagsByOwner]="knowledgeStore.workspacePreviewTags()" (metadataRequested)="openMetadata('timeline', $event.id, $event.title, $event.sourceEvent)" />
-          } @else if (appState.workspaceView() === 'planning') {
-            <app-planning-board
-              [universeId]="appState.activeUniverseId() || ''"
-              [items]="planning()"
-              [chapters]="manuscriptChapters()"
-              [stories]="manuscriptStories()"
-              [entities]="entities()"
-              (itemsChange)="planning.set($event)"
-              (chapterOpened)="openPlanningChapter($event)"
-            />
-          } @else if (appState.workspaceView() === 'history') {
-            <app-history-page [universeId]="appState.activeUniverseId() || ''" />
+    @if ((updatePhase() === 'available' && !updatePromptDismissed()) || updatePhase() === 'backing-up' || updatePhase() === 'downloading') {
+      <aside class="startup-update" aria-live="polite">
+        <span class="startup-update-icon">⇧</span>
+        <div class="startup-update-copy">
+          @if (updatePhase() === 'backing-up') {
+            <strong>Criando backup de segurança</strong>
+            <span>A atualização só começa depois que o snapshot local for validado.</span>
+          } @else if (updatePhase() === 'downloading') {
+            <strong>Instalando NarraHub {{ updateInfo().availableVersion }}</strong>
+            <span>Download e assinatura em validação. O aplicativo será reiniciado ao concluir.</span>
+            <div class="startup-update-progress" role="progressbar" [attr.aria-valuenow]="updateProgress()" aria-valuemin="0" aria-valuemax="100"><i [style.width.%]="updateProgress()"></i></div>
+          } @else {
+            <strong>NarraHub {{ updateInfo().availableVersion }} está disponível</strong>
+            <span>{{ updateInfo().notes || 'Uma nova versão assinada pode ser instalada agora.' }}</span>
           }
-        </section>
-      }
+        </div>
+        @if (updatePhase() === 'available') {
+          <div class="startup-update-actions"><button type="button" class="text-button" (click)="dismissUpdatePrompt()">Agora não</button><button type="button" class="primary-button" [disabled]="updateBusy()" (click)="installUpdate()">Atualizar e reiniciar</button></div>
+        } @else if (updatePhase() === 'backing-up') { <b class="startup-update-percent">BACKUP</b> }
+        @else { <b class="startup-update-percent">{{ updateProgress() }}%</b> }
+      </aside>
+    }
+
+    <router-outlet />
   </div>
 </app-shell>
-
-@if (appState.modalOpen() === 'rename-item' && renamingUniverse()) {
-  <div class="modal-backdrop" (mousedown)="appState.closeModal()">
-    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
-      <header><div><span class="eyebrow">EDIÇÃO RÁPIDA</span><h2>Renomear universo</h2></div><button type="button" (click)="renamingUniverse.set(false); appState.closeModal()">×</button></header>
-      <p class="modal-guidance">A alteração será aplicada imediatamente em todas as prévias e referências locais.</p>
-      <label>Novo nome<input name="renameValue" [(ngModel)]="renameValue" autofocus (keydown.enter)="confirmRenameUniverse()" /></label>
-      <footer><button type="button" class="secondary-button" (click)="renamingUniverse.set(false); appState.closeModal()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!renameValue.trim()" (click)="confirmRenameUniverse()">Salvar nome</button></footer>
-    </form>
-  </div>
-}
-
-@if (appState.modalOpen() === 'metadata') {
-  <app-tags-modal
-    [activeUniverseId]="appState.activeUniverseId()"
-    (closeRequested)="closeMetadata()"
-    (failed)="onKnowledgeFailed($event)"
-  />
-}
-
-@if (appState.modalOpen() === 'share-content') {
-  <app-share-modal
-    [activeUniverseId]="appState.activeUniverseId()"
-    (closeRequested)="appState.closeModal()"
-    (createRequested)="createOnlineShare($event)"
-    (info)="onSettingsInfo($event)"
-  />
-}

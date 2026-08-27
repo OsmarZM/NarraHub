@@ -536,7 +536,9 @@ Estado do corte atual:
 
 - **3.1.1 concluída:** `AppBootstrapService` assumiu inicialização de IA, SQLite, biblioteca, previews de Knowledge, colaboração e versão/update, além dos timers globais;
 - **3.1.2 concluída:** `provideAppInitializer` aguarda esse serviço antes da navegação inicial; `RootLayout` não implementa mais `ngOnInit` nem inicializa banco/IA;
-- **3.1.3–3.1.5 pendentes:** `WorkspaceLayout`, `UniverseResolver` e consumo efetivo de `route.data` serão implementados nessa ordem, sem criar um resolver que dependa da árvore visual legada.
+- **3.1.3 concluída:** `WorkspaceLayoutComponent` assumiu sidebar, cabeçalho contextual, modais e a única árvore legacy de páginas; Biblioteca ganhou host de rota lazy próprio e `RootLayout` ficou sem imports de páginas de domínio;
+- o outlet do workspace já existe, mas permanece vazio até a migração unitária da primeira feature na Fase 3.2; a árvore legacy não possui uma segunda instância escondida;
+- **3.1.4–3.1.5 pendentes:** `UniverseResolver` e consumo efetivo de `route.data` serão implementados nessa ordem, agora sobre um bootstrap e um layout independentes da árvore visual raiz.
 
 #### Fase 3.2 — rotas das features
 
