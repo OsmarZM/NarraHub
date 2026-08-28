@@ -267,6 +267,44 @@ O gate de publicação continua separado: a versão somente poderá ser classifi
 - migration 1→10 em memória e em arquivo;
 - abertura no Tauri de desenvolvimento.
 
+#### Ordem 2 — universo ✔
+
+Comandos: `universe_create`, `universe_update`, `universe_delete`. O domínio de
+Universo não delega mais nada ao legado.
+
+Duas mudanças de comportamento, ambas para melhor e ambas com teste:
+
+- **Criar virou uma gravação só.** O caminho antigo inseria e depois fazia um
+  `UPDATE` separado quando havia capa — duas idas ao banco e uma janela em que
+  o universo existia sem capa.
+- **Excluir agora limpa em cascata.** Todas as FKs para `universes` são
+  `ON DELETE CASCADE`, mas o `tauri-plugin-sql` não liga `foreign_keys`: o
+  caminho antigo deixava histórias, livros, capítulos e entidades órfãos no
+  arquivo. A conexão do core liga, então a cascata acontece.
+
+O `UPDATE` monta o `SET` só com o que veio, porque `None` significa "não
+mexer" e não "gravar vazio" — sem isso, salvar só o nome apagaria a capa.
+
+#### Ordem 3 — timeline e planejamento ✔
+
+Timeline: `timeline_create`, `timeline_rename`, `timeline_delete`.
+Planejamento: `planning_list`, `planning_create`, `planning_delete`,
+`planning_save_order`, `planning_field_links`, `planning_field_definitions`,
+`planning_field_definition_create/rename/delete`.
+
+`saveCard` continua no `planning_save_card` que já existia antes da Fase 4, em
+`database/planning.rs`. Ele entra no core organizado junto da Ordem 4, porque
+a validação cruzada que ele faz é sobre os campos de relação (`story`,
+`character`, `tags`) — migrar as duas coisas em fatias separadas duplicaria a
+regra.
+
+`saveOrder` deixou de montar um `CASE` gigante com um placeholder por card.
+Agora é um `UPDATE` por card dentro de uma transação, e a conferência que já
+existia continua: se o número de linhas atingidas não bater com o número de
+cards enviados, o quadro mudou entre o arrasto e a gravação — a transação é
+revertida e o erro pede recarregar, em vez de gravar meia reordenação. Há
+teste para o rollback, que é uma das exigências de "testes reais" do plano.
+
 ### Critério de saída
 
 A versão de estabilização abre bancos anteriores, mantém capítulos e permite reabrir o app sem modificar checksums.

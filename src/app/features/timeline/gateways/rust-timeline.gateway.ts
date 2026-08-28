@@ -2,31 +2,32 @@ import { Injectable, inject } from '@angular/core';
 import { TimelineEvent } from '../../../core/models';
 import { RustCoreService } from '../../../core/services/rust-core.service';
 import { CreateTimelineEventInput } from '../models/timeline.models';
-import { LegacyTimelineGateway } from './legacy-timeline.gateway';
 import { TimelineGateway } from './timeline.gateway';
 
 /**
- * Ordem 1 (leitura) — migrado: `list`.
- * Ordem 3 (timeline e planejamento) — migrado: `create`, `rename`, `delete`.
+ * Domínio migrado por inteiro — nada aqui delega mais para o legado.
+ * Ordem 1 — `list`.  Ordem 3 — `create`, `rename`, `delete`.
  */
 @Injectable({ providedIn: 'root' })
 export class RustTimelineGateway implements TimelineGateway {
   private readonly core = inject(RustCoreService);
-  private readonly legacy = inject(LegacyTimelineGateway);
 
   list(universeId: string): Promise<TimelineEvent[]> {
     return this.core.call<TimelineEvent[]>('timeline_list', { universeId });
   }
 
-  create(universeId: string, input: CreateTimelineEventInput): Promise<void> {
-    return this.legacy.create(universeId, input);
+  async create(universeId: string, input: CreateTimelineEventInput): Promise<void> {
+    // O comando devolve o id do evento criado; o contrato do gateway não o
+    // expõe porque a página recarrega a lista em seguida. Quando alguém
+    // precisar dele, é só alargar o contrato — o dado já vem do Rust.
+    await this.core.call<string>('timeline_create', { universeId, event: input });
   }
 
   rename(eventId: string, title: string): Promise<void> {
-    return this.legacy.rename(eventId, title);
+    return this.core.call<void>('timeline_rename', { id: eventId, title });
   }
 
   delete(eventId: string): Promise<void> {
-    return this.legacy.delete(eventId);
+    return this.core.call<void>('timeline_delete', { id: eventId });
   }
 }

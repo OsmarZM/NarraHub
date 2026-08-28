@@ -1,5 +1,5 @@
 use crate::database::error::DatabaseCommandResult;
-use crate::domain::universe::{Universe, UniverseStats, UniverseWithStats};
+use crate::domain::universe::{Universe, UniverseStats, UniverseUpdate, UniverseWithStats};
 use rusqlite::{Connection, Row};
 
 use super::connection::map_sqlite_error;
@@ -112,6 +112,66 @@ pub fn list_with_stats(connection: &Connection) -> DatabaseCommandResult<Vec<Uni
     Ok(result)
 }
 
+pub fn insert(connection: &Connection, universe: &Universe) -> DatabaseCommandResult<()> {
+    connection
+        .execute(
+            "INSERT INTO universes (id, name, description, cover_image, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                universe.id,
+                universe.name,
+                universe.description,
+                universe.cover_image,
+                universe.created_at,
+                universe.updated_at,
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    Ok(())
+}
+
+/// `UPDATE` montado só com o que veio: `None` significa "não mexer", que é
+/// diferente de "gravar vazio". Sem isso, salvar só o nome apagaria a capa.
+pub fn update(
+    connection: &Connection,
+    id: &str,
+    patch: &UniverseUpdate,
+    updated_at: &str,
+) -> DatabaseCommandResult<bool> {
+    let mut assignments = vec!["updated_at = ?1".to_string()];
+    let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(updated_at.to_string())];
+
+    for (column, value) in [
+        ("name", patch.name.as_ref()),
+        ("description", patch.description.as_ref()),
+        ("cover_image", patch.cover_image.as_ref()),
+    ] {
+        if let Some(value) = value {
+            values.push(Box::new(value.clone()));
+            assignments.push(format!("{column} = ?{}", values.len()));
+        }
+    }
+
+    values.push(Box::new(id.to_string()));
+    let sql = format!(
+        "UPDATE universes SET {} WHERE id = ?{}",
+        assignments.join(", "),
+        values.len()
+    );
+    let parameters: Vec<&dyn rusqlite::ToSql> = values.iter().map(|value| value.as_ref()).collect();
+    let affected = connection
+        .execute(&sql, parameters.as_slice())
+        .map_err(map_sqlite_error)?;
+    Ok(affected > 0)
+}
+
+pub fn delete(connection: &Connection, id: &str) -> DatabaseCommandResult<bool> {
+    let affected = connection
+        .execute("DELETE FROM universes WHERE id = ?1", [id])
+        .map_err(map_sqlite_error)?;
+    Ok(affected > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_support::{migrated_memory_database, seed_universe};
@@ -187,5 +247,78 @@ mod tests {
     fn buscar_id_inexistente_devolve_none_em_vez_de_erro() {
         let connection = migrated_memory_database();
         assert!(get(&connection, "nao-existe").expect("consulta").is_none());
+    }
+
+    #[test]
+    fn update_parcial_nao_apaga_o_que_nao_veio() {
+        // Salvar so o nome nao pode zerar a capa. O UPDATE monta o SET com o
+        // que veio justamente por isso.
+        let connection = migrated_memory_database();
+        connection
+            .execute_batch(
+                "INSERT INTO universes (id, name, description, cover_image, created_at, updated_at)
+                   VALUES ('u1', 'Antigo', 'Descricao', 'capa.png', '2026-01-01 00:00:00', '2026-01-01 00:00:00');",
+            )
+            .expect("semear");
+
+        let patch = UniverseUpdate { name: Some("Novo".into()), ..Default::default() };
+        assert!(update(&connection, "u1", &patch, "2026-06-01 00:00:00").expect("atualizar"));
+
+        let universe = get(&connection, "u1").expect("buscar").expect("existe");
+        assert_eq!(universe.name, "Novo");
+        assert_eq!(universe.description, "Descricao");
+        assert_eq!(universe.cover_image, "capa.png");
+        assert_eq!(universe.updated_at, "2026-06-01 00:00:00");
+    }
+
+    #[test]
+    fn update_de_id_inexistente_nao_afeta_linha() {
+        let connection = migrated_memory_database();
+        let patch = UniverseUpdate { name: Some("x".into()), ..Default::default() };
+        assert!(!update(&connection, "fantasma", &patch, "2026-06-01 00:00:00").expect("atualizar"));
+    }
+
+    #[test]
+    fn excluir_universo_leva_junto_o_que_pendura_nele() {
+        // Cascata so funciona com foreign_keys ligada. O tauri-plugin-sql nao
+        // liga, entao o caminho antigo deixava historia, livro, capitulo e
+        // entidade orfaos no arquivo depois de excluir o universo.
+        let connection = migrated_memory_database();
+        seed_content(&connection);
+
+        assert!(delete(&connection, "u1").expect("excluir"));
+
+        for (table, expected) in [("stories", 0i64), ("books", 0), ("chapters", 0)] {
+            let total: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .expect("contar");
+            assert_eq!(total, expected, "{table} deveria ter sido levada na cascata");
+        }
+        let entities: i64 = connection
+            .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
+            .expect("contar entidades");
+        assert_eq!(entities, 1, "so a entidade do outro universo pode sobrar");
+    }
+
+    #[test]
+    fn excluir_id_inexistente_nao_afeta_linha() {
+        let connection = migrated_memory_database();
+        assert!(!delete(&connection, "fantasma").expect("excluir"));
+    }
+
+    #[test]
+    fn insert_recusa_id_duplicado_como_conflito() {
+        let connection = migrated_memory_database();
+        let universe = Universe {
+            id: "u1".into(),
+            name: "Um".into(),
+            description: String::new(),
+            cover_image: String::new(),
+            created_at: "2026-01-01 00:00:00".into(),
+            updated_at: "2026-01-01 00:00:00".into(),
+        };
+        insert(&connection, &universe).expect("primeiro insert");
+        let error = insert(&connection, &universe).expect_err("duplicata deveria falhar");
+        assert_eq!(error.kind, crate::database::error::DatabaseErrorKind::Conflict);
     }
 }

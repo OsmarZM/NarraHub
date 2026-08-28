@@ -3,6 +3,7 @@
 pub mod connection;
 #[cfg(test)]
 pub mod test_support;
+pub mod planning_repository;
 pub mod universe_repository;
 pub mod workspace_repository;
 

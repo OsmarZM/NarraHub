@@ -53,6 +53,18 @@ pub struct HistoryEntry {
     pub display_name: String,
 }
 
+/// Entrada de criação de evento. `camelCase` porque é contrato de comando.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewTimelineEvent {
+    pub title: String,
+    pub date: String,
+    pub description: String,
+    pub entity_id: Option<String>,
+    pub display_date: String,
+    pub sort_key: f64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,24 +1,20 @@
 import { Injectable, inject } from '@angular/core';
 import { Universe, UniverseStats, UniverseWithStats } from '../../../core/models';
 import { RustCoreService } from '../../../core/services/rust-core.service';
-import { LegacyUniverseGateway } from './legacy-universe.gateway';
 import { CreateUniverseInput, UniverseGateway, UpdateUniverseInput } from './universe.gateway';
 
 /**
  * Adaptador do core Rust para Universo.
  *
- * A Fase 4 migra por ordem, não de uma vez: o que já é comando Rust chama o
- * comando; o que ainda não é delega para o adaptador legado. A lista de
- * delegações encolhe a cada fatia e chegar a zero é o sinal de que este
- * arquivo pode virar a implementação inteira e o legado pode sumir.
+ * Domínio migrado por inteiro: nada aqui delega mais para o legado, então
+ * `LegacyUniverseGateway` e `UniverseService` já podem sair quando o resto da
+ * Fase 4 liberar o `DatabaseService`.
  *
- * Ordem 1 (leitura e estatísticas) — migrado: `list`, `get`, `getStats`.
- * Ordem 2 (universo) — migrado: `create`, `update`, `delete`.
+ * Ordem 1 — `list`, `get`, `getStats`.  Ordem 2 — `create`, `update`, `delete`.
  */
 @Injectable({ providedIn: 'root' })
 export class RustUniverseGateway implements UniverseGateway {
   private readonly core = inject(RustCoreService);
-  private readonly legacy = inject(LegacyUniverseGateway);
 
   list(): Promise<UniverseWithStats[]> {
     return this.core.call<UniverseWithStats[]>('universe_list');
@@ -33,14 +29,18 @@ export class RustUniverseGateway implements UniverseGateway {
   }
 
   create(input: CreateUniverseInput): Promise<Universe> {
-    return this.legacy.create(input);
+    return this.core.call<Universe>('universe_create', {
+      name: input.name,
+      description: input.description,
+      coverImage: input.coverImage ?? '',
+    });
   }
 
   update(id: string, patch: UpdateUniverseInput): Promise<void> {
-    return this.legacy.update(id, patch);
+    return this.core.call<void>('universe_update', { id, patch });
   }
 
   delete(id: string): Promise<void> {
-    return this.legacy.delete(id);
+    return this.core.call<void>('universe_delete', { id });
   }
 }

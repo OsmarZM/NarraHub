@@ -20,6 +20,7 @@ import { RustUniverseGateway } from './features/library/gateways/rust-universe.g
 import { LegacyManuscriptGateway } from './features/manuscript/gateways/legacy-manuscript.gateway';
 import { LegacyPlanningGateway } from './features/planning/gateways/legacy-planning.gateway';
 import { PlanningGateway } from './features/planning/gateways/planning.gateway';
+import { RustPlanningGateway } from './features/planning/gateways/rust-planning.gateway';
 import { ManuscriptGateway } from './features/manuscript/gateways/manuscript.gateway';
 import { LegacyTimelineGateway } from './features/timeline/gateways/legacy-timeline.gateway';
 import { TimelineGateway } from './features/timeline/gateways/timeline.gateway';
@@ -44,7 +45,7 @@ export const appConfig: ApplicationConfig = {
     { provide: HistoryGateway, useExisting: RustHistoryGateway },
     { provide: KnowledgeGateway, useExisting: LegacyKnowledgeGateway },
     { provide: ManuscriptGateway, useExisting: LegacyManuscriptGateway },
-    { provide: PlanningGateway, useExisting: LegacyPlanningGateway },
+    { provide: PlanningGateway, useExisting: RustPlanningGateway },
     { provide: TimelineGateway, useExisting: RustTimelineGateway },
     { provide: UniverseGateway, useExisting: RustUniverseGateway },
   ]

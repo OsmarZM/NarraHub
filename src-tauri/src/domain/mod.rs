@@ -11,5 +11,6 @@
 //! como já fazia `planning_save_card`.
 
 pub mod ids;
+pub mod planning;
 pub mod universe;
 pub mod workspace;
