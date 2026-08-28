@@ -42,7 +42,14 @@ export class ManuscriptStore {
    */
   onChapterPersisted: ((chapterId: string, content: string) => void) | null = null;
 
-  async load(universeId: string): Promise<void> {
+  /**
+   * `force` recarrega mesmo com o universo já carregado. Sem essa guarda o
+   * pré-carregamento do layout e o ngOnChanges da página disparavam o mesmo
+   * SQL duas vezes a cada entrada na seção. Refresh após mutação passa
+   * `force: true` — ali repetir é o objetivo.
+   */
+  async load(universeId: string, force = false): Promise<void> {
+    if (!force && this.requestedUniverseId === universeId) return;
     const revision = ++this.loadRevision;
     this.requestedUniverseId = universeId;
     this.error.set('');

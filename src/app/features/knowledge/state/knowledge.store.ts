@@ -26,7 +26,14 @@ export class KnowledgeStore {
   readonly metadataOwnerTags = signal<ContentTag[]>([]);
   readonly error = signal('');
 
-  async load(universeId: string): Promise<void> {
+  /**
+   * `force` recarrega mesmo com o universo já carregado. Sem essa guarda o
+   * pré-carregamento do layout e o ngOnChanges da página disparavam o mesmo
+   * SQL duas vezes a cada entrada na seção. Refresh após mutação passa
+   * `force: true` — ali repetir é o objetivo.
+   */
+  async load(universeId: string, force = false): Promise<void> {
+    if (!force && this.requestedUniverseId === universeId) return;
     const revision = ++this.loadRevision;
     this.requestedUniverseId = universeId;
     try {
@@ -135,7 +142,7 @@ export class KnowledgeStore {
     ]);
     this.metadataTags.set(tags);
     this.metadataOwnerTags.set(ownerTags);
-    if (this.requestedUniverseId === universeId) await this.load(universeId);
+    if (this.requestedUniverseId === universeId) await this.load(universeId, true);
     if (target.type === 'universe') await this.refreshLibraryPreviewTags();
   }
 
@@ -148,7 +155,7 @@ export class KnowledgeStore {
   async setTagOnOwner(type: MetadataOwnerType, id: string, tagId: string, assigned: boolean): Promise<boolean> {
     try {
       await this.gateway.setTag(type, id, tagId, assigned);
-      if (this.requestedUniverseId) await this.load(this.requestedUniverseId);
+      if (this.requestedUniverseId) await this.load(this.requestedUniverseId, true);
       return true;
     } catch (error) {
       this.setError(error, 'Não foi possível atualizar a tag.');
@@ -164,7 +171,7 @@ export class KnowledgeStore {
     try {
       const tag = await this.gateway.createTag(universeId, trimmed, color);
       await this.gateway.setTag(type, id, tag.id, true);
-      await this.load(universeId);
+      await this.load(universeId, true);
       return true;
     } catch (error) {
       this.setError(error, 'Não foi possível criar a tag. Verifique se esse nome já existe.');

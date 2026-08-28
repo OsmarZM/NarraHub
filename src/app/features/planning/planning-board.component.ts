@@ -487,7 +487,7 @@ export class PlanningBoardComponent implements OnChanges {
 
   /** Recarrega tudo que o quadro mostra: cards, campos e tags. */
   private async reload(): Promise<void> {
-    await this.planningStore.load(this.universeId);
+    await this.planningStore.load(this.universeId, true);
     this.syncFromStores();
   }
 

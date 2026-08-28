@@ -24,8 +24,15 @@ export class ConnectionsStore {
 
   readonly hasSavedLayout = computed(() => this.entityPositions().length > 0 || this.canvasNodes().length > 0);
 
-  async load(universeId: string): Promise<void> {
+  /**
+   * `force` recarrega mesmo com o universo já carregado. Sem essa guarda o
+   * pré-carregamento do layout e o ngOnChanges da página disparavam o mesmo
+   * SQL duas vezes a cada entrada na seção. Refresh após mutação passa
+   * `force: true` — ali repetir é o objetivo.
+   */
+  async load(universeId: string, force = false): Promise<void> {
     if (!universeId) { this.reset(); return; }
+    if (!force && this.requestedUniverseId === universeId) return;
     const revision = ++this.loadRevision;
     this.requestedUniverseId = universeId;
     this.error.set('');
@@ -189,7 +196,7 @@ export class ConnectionsStore {
     this.error.set('');
     try {
       await operation();
-      await this.load(universeId);
+      await this.load(universeId, true);
       return true;
     } catch (error) {
       this.setError(error, fallback);

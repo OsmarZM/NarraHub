@@ -700,6 +700,64 @@ Para cada feature convertida em rota, os gates obrigatórios são:
 
 Flag interna permite retornar temporariamente à navegação por Signals durante a fase, sem duplicar persistência.
 
+#### Fase 3.4 — Hardening (fechamento da Fase 3)
+
+Revisão externa do repositório apontou que a Fase 3 tinha sido dada como
+concluída com pontas soltas. Esta fatia fecha o que dependia só de código; o
+que depende do app Tauri empacotado está listado como pendência explícita.
+
+**Deep links `:chapterId` e `:entityId` — estavam nas Entregas e não existiam.**
+Angular não tem parâmetro opcional: `/writing/:chapterId?` é, na prática, duas
+rotas. Cada seção com deep link agora declara o par (`writing` e
+`writing/:chapterId`), ambas com o mesmo `navigationId` e a variante com
+parâmetro marcada com `hiddenFromMenu: true` — sem isso a sidebar mostraria o
+item duas vezes, repetindo a queixa que apareceu em Conexões.
+
+A página lê o parâmetro por `@Input()` (via `withComponentInputBinding()`) e
+reflete a seleção de volta na URL com `replaceUrl: true`: trocar de capítulo é
+seleção dentro da seção, não navegação entre telas, e não deve encher o
+histórico do voltar. Id ausente ou já excluído cai na seleção padrão em vez de
+erro — um link antigo não pode travar a tela.
+
+Isso obrigou a **generalizar o teste de fronteira de `@Input`**: em vez de uma
+lista fixa (`['universeId']`), ele agora deriva de `app.routes.ts` quais params
+cada página realmente recebe e reprova o inverso — `@Input` declarado sem
+parâmetro correspondente, que vira `undefined` em runtime.
+
+**Carga duplicada dos stores.** Só `EntityStore` tinha guarda de deduplicação.
+O layout pré-carrega os cinco domínios e o `ngOnChanges` de cada página chamava
+`load()` de novo logo em seguida — o mesmo SQL duas vezes por entrada de seção.
+Todos os stores passaram a expor `load(universeId, force = false)` com saída
+antecipada; quem quer recarregar de verdade (abrir universo, refresh após
+mutação) passa `force: true`. Em `TimelineStore` a guarda precisa vir **antes**
+de tocar em `loadRevision`: sair depois de incrementá-lo invalidaria a carga em
+voo e deixaria a tela vazia.
+
+O pré-carregamento **não** foi removido, e sim justificado no código: a busca
+global do cabeçalho é cross-domain e precisa achar um capítulo que o usuário
+nunca visitou. Fica um `TODO(Fase 4)` para trocá-lo por um índice próprio.
+
+**Responsabilidades do WorkspaceLayout.** A busca global saiu para
+`application/global-search.service.ts`, junto do `WorkspaceSyncService` — ela
+cruza cinco domínios, então não pertence nem a um domínio nem ao layout. Junto
+com isso caíram os membros que ficaram órfãos quando as páginas viraram rota
+(`onManuscriptEntityOpen`, `onConnectionsInfo/Failed`, `onSettingsFailed`,
+`openPlanningChapter`, `manuscriptStories/Chapters` e os aliases de signal que
+só a busca usava). O layout continua grande; o resto da redução depende da
+Fase 4 e não vale uma refatoração grande agora.
+
+**CI.** O workflow de release passou a rodar `test:architecture`, `test:ai` e
+`test:planning` além do build — antes os testes de fronteira só existiam para
+quem rodasse localmente.
+
+**Validado:** rotas casam sozinhas (a URL do deep link sobrevive ao load e o
+`**` só captura o que sobra), build limpo, 26 testes de fronteira, 29 de
+arquitetura, 5 de IA, 4 de planejamento e 40 no Rust.
+
+**Pendente — exige o app Tauri empacotado, que o `ng serve` não cobre:**
+abrir deep link com o app fechado, migration 13→14 num banco existente,
+navegação back/forward, e autosave interrompido por troca de rota.
+
 ## Fase 4 — Rust Application Core
 
 ### Entregas

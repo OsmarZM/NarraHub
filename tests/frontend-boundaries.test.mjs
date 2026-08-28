@@ -374,19 +374,81 @@ test('página roteada não declara @Input que a rota não alimenta (regressão: 
   // correspondente em params/data da rota — o inicializador da classe não
   // protege. Isso quebrou o template de Conexões com "reading 'length' of
   // undefined" quando a página deixou de receber [entities] do layout.
-  // Só `universeId` vem da rota (via paramsInheritanceStrategy: 'always').
-  const pages = {
-    'manuscript/writing-page': 'writing-page',
-    'entities/entities-page/entities-page': 'entities-page',
-    'connections/connections-page': 'connections-page',
-    'planning/planning-board': 'planning-board',
-    'timeline/timeline-page': 'timeline-page',
-    'history/history-page': 'history-page',
-  };
-  for (const path of Object.keys(pages)) {
-    const source = readFileSync(new URL(`../src/app/features/${path}.component.ts`, import.meta.url), 'utf8');
-    const inputs = [...source.matchAll(/@Input\([^)]*\)\s+(\w+)/gu)].map((m) => m[1]);
-    assert.deepEqual(inputs, ['universeId'],
-      `${path} só pode declarar @Input() universeId — o resto vem de store. Encontrado: ${inputs.join(', ') || '(nenhum)'}`);
+  //
+  // O permitido não é uma lista fixa: é `universeId` (herdado por
+  // paramsInheritanceStrategy: 'always') mais os params que a PRÓPRIA rota da
+  // página declara. Deriva-se de app.routes.ts para o teste não precisar ser
+  // reescrito a cada deep link novo — e para pegar o inverso, que é o erro
+  // caro: input declarado sem param correspondente.
+  const routes = readFileSync(new URL('../src/app/app.routes.ts', import.meta.url), 'utf8');
+  const allowedByPage = new Map();
+  for (const match of routes.matchAll(/path: '([^']+)'[^]*?loadComponent: \(\) => import\('\.\/features\/([^']+)\.component'/gu)) {
+    const [, routePath, page] = match;
+    const params = [...routePath.matchAll(/:(\w+)/gu)].map((param) => param[1]);
+    const allowed = allowedByPage.get(page) ?? new Set(['universeId']);
+    for (const param of params) allowed.add(param);
+    allowedByPage.set(page, allowed);
   }
+
+  const pages = [
+    'manuscript/writing-page',
+    'entities/entities-page/entities-page',
+    'connections/connections-page',
+    'planning/planning-board',
+    'timeline/timeline-page',
+    'history/history-page',
+  ];
+  for (const page of pages) {
+    const allowed = allowedByPage.get(page);
+    assert.ok(allowed, `${page} deveria estar em app.routes.ts via loadComponent`);
+    const source = readFileSync(new URL(`../src/app/features/${page}.component.ts`, import.meta.url), 'utf8');
+    const inputs = [...source.matchAll(/@Input\([^)]*\)\s+(\w+)/gu)].map((m) => m[1]);
+    assert.ok(inputs.includes('universeId'), `${page} precisa declarar @Input() universeId`);
+    const extra = inputs.filter((input) => !allowed.has(input));
+    assert.deepEqual(extra, [],
+      `${page} declara @Input que nenhuma rota alimenta (viram undefined em runtime): ${extra.join(', ')}. Permitidos: ${[...allowed].join(', ')}`);
+  }
+});
+
+test('store de universo deduplica carga (regressão: layout e página carregavam o mesmo SQL duas vezes)', () => {
+  // O layout pré-carrega os cinco domínios para a busca global e, logo em
+  // seguida, o ngOnChanges da página roteada chama load() de novo. Sem guarda
+  // isso é o dobro de SQL em toda entrada de seção. Quem quer recarregar de
+  // verdade (abrir universo, refresh após mutação) passa `force: true`.
+  const stores = [
+    'manuscript/state/manuscript.store',
+    'entities/state/entity.store',
+    'knowledge/state/knowledge.store',
+    'planning/state/planning.store',
+    'connections/state/connections.store',
+    'timeline/state/timeline.store',
+  ];
+  for (const store of stores) {
+    const source = readFileSync(new URL(`../src/app/features/${store}.ts`, import.meta.url), 'utf8');
+    assert.match(source, /async load\(universeId: string, force = false\)/u,
+      `${store}.load precisa aceitar force para diferenciar pré-carga de refresh`);
+    assert.match(source, /if \(!force && this\.\w+ === universeId\) return;/u,
+      `${store}.load precisa sair cedo quando o universo já está carregado`);
+  }
+});
+
+test('rota de deep link não duplica o item da sidebar', () => {
+  // Angular não tem parâmetro opcional: /writing e /writing/:chapterId são
+  // duas entradas. As duas carregam o mesmo navigationId, então sem
+  // hiddenFromMenu a sidebar mostraria "Escrita" duas vezes — que foi
+  // exatamente a queixa que originou esta regra.
+  const routes = readFileSync(new URL('../src/app/app.routes.ts', import.meta.url), 'utf8');
+  const starts = [...routes.matchAll(/path: '([^']+)'/gu)];
+  for (let i = 0; i < starts.length; i++) {
+    const path = starts[i][1];
+    if (!path.includes(':')) continue;
+    const block = routes.slice(starts[i].index, starts[i + 1]?.index ?? routes.length);
+    if (!block.includes('navigationData(')) continue;
+    assert.ok(block.includes('hiddenFromMenu: true'),
+      `a rota '${path}' declara navigationData sem hiddenFromMenu — vai duplicar o item na sidebar`);
+  }
+
+  const service = readFileSync(new URL('../src/app/core/navigation/app-navigation.service.ts', import.meta.url), 'utf8');
+  assert.match(service, /!route\.data\.hiddenFromMenu/u,
+    'collectNavigationItems precisa pular as rotas marcadas como hiddenFromMenu');
 });

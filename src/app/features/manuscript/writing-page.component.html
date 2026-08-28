@@ -31,7 +31,7 @@
               <div class="chapter-list" cdkDropList [cdkDropListData]="chaptersForBook(book.id)" (cdkDropListDropped)="dropTreeChapter($event, book)">
                 @for (chapter of chaptersForBook(book.id); track chapter.id; let first = $first; let last = $last) {
                   <div class="tree-chapter-row" cdkDrag [cdkDragData]="chapter" [class.selected]="store.activeChapter()?.id === chapter.id">
-                    <button type="button" class="tree-chapter" [title]="chapter.title" (click)="store.openChapterOption(chapter)">
+                    <button type="button" class="tree-chapter" [title]="chapter.title" (click)="selectChapter(chapter)">
                       <span class="drag-handle" cdkDragHandle>⠿</span><span class="doc-icon">▤</span>
                       <span class="chapter-copy"><strong>{{ chapter.title }}</strong><small>{{ chapter.word_count }} palavras</small>@if (previewTags('chapter', chapter.id); as tags) { @if (tags.length) { <span class="tree-preview-tags">@for (tag of tags.slice(0, 2); track tag.id) { <i [style.--tag-color]="tag.color">{{ tag.name }}</i> } @if (tags.length > 2) { <i>+{{ tags.length - 2 }}</i> }</span> } }</span>
                       <span class="reorder"><i [class.disabled]="first" (click)="moveTreeChapter(chapter, -1, $event)">↑</i><i [class.disabled]="last" (click)="moveTreeChapter(chapter, 1, $event)">↓</i></span>

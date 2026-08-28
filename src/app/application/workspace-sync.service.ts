@@ -41,7 +41,7 @@ export class WorkspaceSyncService {
 
     const tasks: Promise<unknown>[] = [];
     if (universeId) {
-      tasks.push(this.connectionsStore.load(universeId));
+      tasks.push(this.connectionsStore.load(universeId, true));
       tasks.push(this.knowledgeStore.refreshMentionOccurrences(universeId));
     }
     if (kind === 'deleted') {

@@ -47,6 +47,8 @@ export class WritingPageComponent implements OnChanges {
   readonly Math = Math;
 
   @Input({ required: true }) universeId = '';
+  /** Deep link: .../writing/:chapterId. Vem da rota via withComponentInputBinding(). */
+  @Input() chapterId?: string;
 
   readonly store = inject(ManuscriptStore);
   readonly ai = inject(AiService);
@@ -117,7 +119,29 @@ export class WritingPageComponent implements OnChanges {
   }
 
   ngOnChanges(changes: SimpleChanges): void {
-    if (changes['universeId']) void this.store.load(this.universeId);
+    if (changes['universeId']) void this.store.load(this.universeId).then(() => this.applyDeepLink());
+    else if (changes['chapterId']) this.applyDeepLink();
+  }
+
+  /**
+   * Abre o capítulo pedido pela URL. Id ausente ou já excluído não é erro — o
+   * store mantém a seleção padrão, porque um link antigo não deve travar a tela.
+   */
+  private applyDeepLink(): void {
+    const wanted = this.chapterId;
+    if (!wanted || this.store.activeChapter()?.id === wanted) return;
+    const option = this.store.universeChapters().find((chapter) => chapter.id === wanted);
+    if (option) void this.store.openChapterOption(option);
+  }
+
+  /**
+   * Abre o capítulo e reflete na URL, para o link poder ser copiado e recarregado.
+   * `replaceUrl` evita empilhar uma entrada de histórico por clique na árvore —
+   * trocar de capítulo é seleção, não navegação entre telas.
+   */
+  async selectChapter(chapter: ChapterOption): Promise<void> {
+    if (!await this.store.openChapterOption(chapter)) return;
+    await this.router.navigate(['/workspace', this.universeId, 'writing', chapter.id], { replaceUrl: true });
   }
 
   chaptersForBook(bookId: string): ChapterOption[] { return this.store.chaptersForBook(bookId); }

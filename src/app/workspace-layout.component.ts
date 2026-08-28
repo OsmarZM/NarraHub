@@ -25,16 +25,9 @@ import { UniverseStore } from './features/library/state/universe.store';
 import { ManuscriptStore } from './features/manuscript/state/manuscript.store';
 import { SettingsStore } from './features/settings/state/settings.store';
 import { TimelineStore } from './features/timeline/state/timeline.store';
+import { GlobalSearchResult, GlobalSearchService } from './application/global-search.service';
 import { ShellState } from './shell/state/shell.state';
 import { SidebarNavItem, UniverseSidebarComponent } from './shell/universe-sidebar/universe-sidebar.component';
-
-interface GlobalSearchResult {
-  id: string;
-  kind: 'story' | 'book' | 'chapter' | 'entity' | 'timeline' | 'planning';
-  label: string;
-  context: string;
-  icon: string;
-}
 
 /**
  * Contrato mínimo para uma página roteada (filha de /workspace/:universeId)
@@ -82,15 +75,12 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   private readonly historyStore = inject(HistoryStore);
   private readonly timelineStore = inject(TimelineStore);
   private readonly navigation = inject(AppNavigationService);
+  private readonly globalSearch = inject(GlobalSearchService);
 
   readonly searchQuery = this.shell.searchQuery;
   readonly activeNav = computed(() => this.navigation.activeData().navigationId);
   readonly universes = this.universeStore.universes;
-  readonly entities = this.entityStore.entities;
   readonly entityFilter = this.entityStore.filter;
-  readonly mentionOccurrences = this.knowledgeStore.mentionOccurrences;
-  readonly timeline = this.timelineStore.events;
-  readonly planning = this.planningStore.items;
   readonly activeStory = this.manuscriptStore.activeStory;
   readonly activeBook = this.manuscriptStore.activeBook;
   readonly activeChapter = this.manuscriptStore.activeChapter;
@@ -119,20 +109,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   readonly libraryBreadcrumbLabel = this.navigation.navigationItems
     .find((item) => item.navigationId === 'inicio')?.label ?? 'Universos';
 
-  readonly globalSearchResults = computed<GlobalSearchResult[]>(() => {
-    if (this.appState.currentView() !== 'workspace') return [];
-    const query = this.normalizeSearch(this.searchQuery());
-    if (query.length < 2) return [];
-    const matches = (value: string) => this.normalizeSearch(value).includes(query);
-    const results: GlobalSearchResult[] = [];
-    for (const story of this.manuscriptStore.stories()) if (matches(`${story.name} ${story.description}`)) results.push({ id: story.id, kind: 'story', label: story.name, context: 'História', icon: '⌂' });
-    for (const book of this.manuscriptStore.universeBooks()) if (matches(`${book.name} ${book.description} ${book.story_name}`)) results.push({ id: book.id, kind: 'book', label: book.name, context: `Livro · ${book.story_name}`, icon: '▱' });
-    for (const chapter of this.manuscriptStore.universeChapters()) if (matches(`${chapter.title} ${chapter.content} ${chapter.book_name} ${chapter.story_name}`)) results.push({ id: chapter.id, kind: 'chapter', label: chapter.title, context: `${chapter.story_name} · ${chapter.book_name}`, icon: '▤' });
-    for (const entity of this.entities()) if (matches(`${entity.name} ${entity.summary} ${entity.description} ${entity.type}`)) results.push({ id: entity.id, kind: 'entity', label: entity.name, context: entity.type, icon: entity.name.charAt(0).toUpperCase() });
-    for (const event of this.timeline()) if (matches(`${event.title} ${event.description} ${event.display_date || event.start_date}`)) results.push({ id: event.id, kind: 'timeline', label: event.title, context: 'Linha do tempo', icon: '◷' });
-    for (const item of this.planning()) if (matches(`${item.title} ${item.description} ${item.status}`)) results.push({ id: item.id, kind: 'planning', label: item.title, context: `Planejamento · ${item.status}`, icon: '☑' });
-    return results.slice(0, 24);
-  });
+  readonly globalSearchResults = this.globalSearch.results;
 
 
   private workspaceEpoch = 0;
@@ -246,19 +223,25 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   }
 
   toggleInspector(): void { this.manuscriptStore.toggleInspector(); }
-  manuscriptStories() { return this.manuscriptStore.stories(); }
-  manuscriptChapters() { return this.manuscriptStore.universeChapters(); }
 
   async loadWorkspaceData(): Promise<void> {
     const id = this.appState.activeUniverseId(); if (!id) return;
     const epoch = this.workspaceEpoch;
     try {
+      // Pré-carga deliberada, não preguiça: a busca global do cabeçalho é
+      // cross-domain e precisa dos cinco domínios sem que o usuário tenha
+      // visitado cada seção. `force` porque abrir um universo é o ponto de
+      // atualização — reabrir o mesmo universo tem que trazer dado fresco.
+      // Os stores têm guarda de deduplicação, então o ngOnChanges de cada
+      // página logo em seguida não repete o SQL.
+      // TODO(Fase 4): mover isso para um GlobalSearchStore com índice próprio
+      // e deixar cada seção carregar sob demanda.
       await Promise.all([
         this.entityStore.load(id, true),
-        this.timelineStore.load(id),
-        this.manuscriptStore.load(id),
-        this.planningStore.load(id),
-        this.knowledgeStore.load(id),
+        this.timelineStore.load(id, true),
+        this.manuscriptStore.load(id, true),
+        this.planningStore.load(id, true),
+        this.knowledgeStore.load(id, true),
       ]);
       if (epoch !== this.workspaceEpoch || this.appState.activeUniverseId() !== id) return;
       this.loadedUniverseId = id;
@@ -290,12 +273,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     }
   }
 
-  onManuscriptEntityOpen(entity: Entity): void {
-    this.setWorkspaceNavigation('entidades');
-    this.selectEntityTab(entity.type as EntityHubType);
-    void this.openEntitySheet(entity);
-  }
-
   onKnowledgeFailed(message: string): void { this.reportError(message, message); }
 
   async openGlobalSearchResult(result: GlobalSearchResult): Promise<void> {
@@ -308,16 +285,13 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     } else if (result.kind === 'chapter') {
       const chapter = this.manuscriptStore.universeChapters().find((item) => item.id === result.id); if (chapter) await this.openChapterOption(chapter);
     } else if (result.kind === 'entity') {
-      const entity = this.entities().find((item) => item.id === result.id); if (entity) { this.setWorkspaceNavigation('entidades'); this.selectEntityTab(entity.type as EntityHubType); await this.openEntitySheet(entity); }
+      const entity = this.entityStore.entities().find((item) => item.id === result.id); if (entity) { this.setWorkspaceNavigation('entidades'); this.selectEntityTab(entity.type as EntityHubType); await this.openEntitySheet(entity); }
     } else if (result.kind === 'timeline') {
       this.setWorkspaceNavigation('timeline'); queueMicrotask(() => document.querySelector<HTMLElement>(`[data-timeline-id="${result.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
     } else {
       this.setWorkspaceNavigation('planejamento'); queueMicrotask(() => document.querySelector<HTMLElement>(`[data-planning-id="${result.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
     }
   }
-
-  onConnectionsInfo(message: string): void { this.showInfo(message); }
-  onConnectionsFailed(message: string): void { this.reportError(message, message); }
 
   /**
    * Trata o próprio erro de propósito: selectNav() dá await nisso ANTES de
@@ -335,11 +309,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   onWorkspaceOutletActivate(component: unknown): void { this.activeRoutedPage = component; }
   onWorkspaceOutletDeactivate(): void { this.activeRoutedPage = null; }
 
-  async openPlanningChapter(item: PlanningItem): Promise<void> {
-    const option = this.manuscriptStore.universeChapters().find((chapter) => chapter.id === item.chapter_id);
-    if (option) await this.openChapterOption(option);
-  }
-
   async openMetadata(type: MetadataOwnerType, id: string, name: string, event?: Event): Promise<void> {
     event?.stopPropagation();
     await this.knowledgeStore.openMetadata(type, id, name, this.appState.activeUniverseId());
@@ -352,7 +321,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   }
 
   onSettingsInfo(message: string): void { this.showInfo(message); }
-  onSettingsFailed(message: string): void { this.reportError(message, message); }
 
   async checkForUpdates(silent = false): Promise<void> {
     const result = await this.settingsStore.checkForUpdates(silent);
@@ -437,7 +405,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     if (updated && this.appState.activeUniverseId() === id) this.appState.activeUniverse.set(updated);
   }
 
-  private normalizeSearch(value: string): string { return value.normalize('NFD').replace(/[̀-ͯ]/gu, '').toLocaleLowerCase('pt-BR').trim(); }
 
   setWorkspaceNavigation(navId: Exclude<AppNavigationId, 'inicio' | 'configuracoes'>): void {
     // Todo call site já chama (ou está prestes a chamar) o appState.openXxx()

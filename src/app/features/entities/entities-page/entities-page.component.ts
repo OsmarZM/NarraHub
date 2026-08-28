@@ -1,6 +1,7 @@
 import { Component, Input, OnChanges, SimpleChanges, ViewEncapsulation, computed, effect, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { AiService } from '../../../core/services/ai.service';
+import { Router } from '@angular/router';
 import { AppState } from '../../../core/state/app.state';
 import { WorkspaceSyncService } from '../../../application/workspace-sync.service';
 import { KnowledgeStore } from '../../knowledge/state/knowledge.store';
@@ -42,6 +43,8 @@ type EntityModal = 'create' | 'rename' | 'delete' | null;
 })
 export class EntitiesPageComponent implements OnChanges {
   @Input({ required: true }) universeId = '';
+  /** Deep link: .../entities/:entityId. Vem da rota via withComponentInputBinding(). */
+  @Input() entityId?: string;
 
   readonly store = inject(EntityStore);
   readonly ai = inject(AiService);
@@ -49,6 +52,7 @@ export class EntitiesPageComponent implements OnChanges {
   private readonly shell = inject(ShellState);
   private readonly knowledgeStore = inject(KnowledgeStore);
   private readonly sync = inject(WorkspaceSyncService);
+  private readonly router = inject(Router);
 
   /** Lista x ficha aberta é sub-estado desta página, não navegação. */
   readonly view = signal<'entities' | 'entity-sheet'>('entities');
@@ -83,7 +87,20 @@ export class EntitiesPageComponent implements OnChanges {
   }
 
   ngOnChanges(changes: SimpleChanges): void {
-    if (changes['universeId']) void this.store.load(this.universeId);
+    if (changes['universeId']) void this.store.load(this.universeId).then(() => this.applyDeepLink());
+    else if (changes['entityId']) this.applyDeepLink();
+  }
+
+  /**
+   * Abre a ficha pedida pela URL. Id ausente ou já excluído volta para a lista
+   * em vez de erro — um link antigo não deve travar a tela.
+   */
+  private applyDeepLink(): void {
+    const wanted = this.entityId;
+    if (!wanted) { this.view.set('entities'); return; }
+    if (this.store.activeEntity()?.id === wanted) { this.view.set('entity-sheet'); return; }
+    const entity = this.store.entities().find((item) => item.id === wanted);
+    if (entity) void this.openEntity(entity);
   }
 
   selectType(type: EntityHubType | null): void {
@@ -92,8 +109,14 @@ export class EntitiesPageComponent implements OnChanges {
   }
 
   async openEntity(entity: Entity): Promise<void> {
-    if (await this.store.open(this.universeId, entity)) this.view.set('entity-sheet');
-    else this.reportStoreError('Não foi possível abrir a ficha.');
+    if (!await this.store.open(this.universeId, entity)) {
+      this.reportStoreError('Não foi possível abrir a ficha.');
+      return;
+    }
+    this.view.set('entity-sheet');
+    // URL acompanha a ficha aberta para o link ser copiável; replaceUrl porque
+    // abrir uma ficha é seleção dentro da seção, não uma tela nova.
+    await this.router.navigate(['/workspace', this.universeId, 'entities', entity.id], { replaceUrl: true });
   }
 
   backToList(): void {

@@ -7,17 +7,30 @@ import { CreateTimelineEventInput } from '../models/timeline.models';
 export class TimelineStore {
   private readonly gateway = inject(TimelineGateway);
   private loadRevision = 0;
+  private loadedUniverseId: string | null = null;
 
   readonly events = signal<TimelineEvent[]>([]);
   readonly busy = signal(false);
   readonly error = signal('');
 
-  async load(universeId: string): Promise<void> {
-    const revision = ++this.loadRevision;
+  /**
+   * `force` recarrega mesmo com o universo já carregado. Sem essa guarda o
+   * pré-carregamento do layout e o ngOnChanges da página disparavam o mesmo
+   * SQL duas vezes a cada entrada na seção. Refresh após mutação passa
+   * `force: true` — ali repetir é o objetivo.
+   */
+  async load(universeId: string, force = false): Promise<void> {
     if (!universeId) {
+      this.loadedUniverseId = null;
+      this.loadRevision++;
       this.events.set([]);
       return;
     }
+    // A guarda vem ANTES de mexer em loadRevision: sair por aqui depois de
+    // incrementar invalidaria a carga que já está em voo e a tela ficaria vazia.
+    if (!force && this.loadedUniverseId === universeId) return;
+    this.loadedUniverseId = universeId;
+    const revision = ++this.loadRevision;
     try {
       const events = await this.gateway.list(universeId);
       if (revision === this.loadRevision) this.events.set(events);
@@ -55,7 +68,7 @@ export class TimelineStore {
     this.error.set('');
     try {
       await operation();
-      await this.load(universeId);
+      await this.load(universeId, true);
       return true;
     } catch (error) {
       this.setError(error, 'Não foi possível salvar a alteração na linha do tempo.');

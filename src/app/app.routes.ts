@@ -20,8 +20,23 @@ const workspaceSections: Routes = [
     canDeactivate: [unsavedChapterGuard],
   },
   {
+    // Deep link para um capítulo. O Angular não tem parâmetro opcional, então a
+    // variante com :chapterId é uma rota própria — oculta do menu para não
+    // duplicar "Escrita" na sidebar. Id inexistente cai na seleção padrão em vez
+    // de erro: a URL pode apontar para um capítulo já excluído.
+    path: 'writing/:chapterId',
+    data: { ...navigationData('escrita', 'Escrita', '✎', true, 10), hiddenFromMenu: true },
+    loadComponent: () => import('./features/manuscript/writing-page.component').then((module) => module.WritingPageComponent),
+    canDeactivate: [unsavedChapterGuard],
+  },
+  {
     path: 'entities',
     data: navigationData('entidades', 'Entidades', '♧', true, 20),
+    loadComponent: () => import('./features/entities/entities-page/entities-page.component').then((module) => module.EntitiesPageComponent),
+  },
+  {
+    path: 'entities/:entityId',
+    data: { ...navigationData('entidades', 'Entidades', '♧', true, 20), hiddenFromMenu: true },
     loadComponent: () => import('./features/entities/entities-page/entities-page.component').then((module) => module.EntitiesPageComponent),
   },
   {

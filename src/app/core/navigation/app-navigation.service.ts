@@ -51,7 +51,7 @@ export class AppNavigationService {
   private collectNavigationItems(routes: readonly Route[]): AppNavigationData[] {
     const items: AppNavigationData[] = [];
     const visit = (route: Route): void => {
-      if (this.isNavigationData(route.data)) items.push(route.data);
+      if (this.isNavigationData(route.data) && !route.data.hiddenFromMenu) items.push(route.data);
       route.children?.forEach(visit);
     };
     routes.forEach(visit);

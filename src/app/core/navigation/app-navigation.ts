@@ -20,6 +20,12 @@ export interface AppNavigationData {
   icon: string;
   needsUniverse: boolean;
   order: number;
+  /**
+   * Rota que existe só para carregar um deep link (ex.: .../writing/:chapterId).
+   * Precisa do mesmo navigationId para o breadcrumb e o item ativo funcionarem,
+   * mas não pode virar um segundo item na sidebar.
+   */
+  hiddenFromMenu?: boolean;
 }
 
 const workspacePaths: Record<Exclude<AppNavigationId, 'inicio' | 'configuracoes'>, string> = {

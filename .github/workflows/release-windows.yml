@@ -50,6 +50,9 @@ jobs:
       - name: Validar versão e compartilhamento
         run: |
           npm run build
+          npm run test:architecture
+          npm run test:ai
+          npm run test:planning
           npm run release:validate-ui
           npm run release:validate-version
           npm run release:validate-desktop
