@@ -1311,4 +1311,94 @@ mod tests {
             .expect("check foreign keys");
         assert_eq!(foreign_key_failures, 0);
     }
+
+    /// Executa o SQL real que o CanvasService dispara, contra o schema v14.
+    /// O teste anterior so provava que as tabelas nasciam; o INSERT/UPSERT em si
+    /// nunca era exercitado, e foi exatamente ai que um erro silencioso poderia
+    /// se esconder (nome de coluna, sintaxe do ON CONFLICT, filtro de orfaos).
+    #[test]
+    fn v14_canvas_statements_match_the_shipped_schema() {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(
+                "INSERT INTO universes (id, name) VALUES ('u1', 'Um');
+                 INSERT INTO entities (id, universe_id, type, name) VALUES ('e1', 'u1', 'Personagem', 'Lia');",
+            )
+            .expect("seed");
+
+        // createNode
+        connection
+            .execute(
+                "INSERT INTO canvas_nodes (id, universe_id, kind, text, image, color, position_x, position_y, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                rusqlite::params!["c1", "u1", "note", "rascunho", "", "", 10.0, 20.0, "2026-01-01"],
+            )
+            .expect("createNode");
+
+        // saveEntityPosition: grava e depois atualiza pela mesma chave composta
+        for y in [200.0, 999.0] {
+            connection
+                .execute(
+                    "INSERT INTO canvas_entity_positions (universe_id, entity_id, position_x, position_y, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(universe_id, entity_id) DO UPDATE SET position_x = ?3, position_y = ?4, updated_at = ?5",
+                    rusqlite::params!["u1", "e1", 100.0, y, "2026-01-01"],
+                )
+                .expect("saveEntityPosition upsert");
+        }
+        let (rows, last_y): (i64, f64) = connection
+            .query_row(
+                "SELECT COUNT(*), MAX(position_y) FROM canvas_entity_positions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read position");
+        assert_eq!(rows, 1, "upsert nao pode duplicar a linha da entidade");
+        assert_eq!(last_y, 999.0, "upsert precisa sobrescrever a posicao");
+
+        // createEdge com pontas mistas + uma aresta orfa que a leitura deve ignorar
+        connection
+            .execute_batch(
+                "INSERT INTO canvas_edges (id, universe_id, source_kind, source_id, target_kind, target_id, label, created_at)
+                 VALUES ('ok', 'u1', 'entity', 'e1', 'canvas', 'c1', 'aparece', '2026-01-01'),
+                        ('orfa', 'u1', 'canvas', 'sumiu', 'canvas', 'c1', '', '2026-01-01');",
+            )
+            .expect("createEdge");
+
+        let visible: Vec<String> = connection
+            .prepare(
+                "SELECT id FROM canvas_edges
+                 WHERE universe_id = ?1
+                   AND ((source_kind = 'entity' AND source_id IN (SELECT id FROM entities WHERE universe_id = ?1))
+                     OR (source_kind = 'canvas' AND source_id IN (SELECT id FROM canvas_nodes WHERE universe_id = ?1)))
+                   AND ((target_kind = 'entity' AND target_id IN (SELECT id FROM entities WHERE universe_id = ?1))
+                     OR (target_kind = 'canvas' AND target_id IN (SELECT id FROM canvas_nodes WHERE universe_id = ?1)))
+                 ORDER BY created_at",
+            )
+            .expect("prepare listEdges")
+            .query_map(rusqlite::params!["u1"], |row| row.get(0))
+            .expect("run listEdges")
+            .collect::<Result<_, _>>()
+            .expect("collect");
+        assert_eq!(visible, vec!["ok".to_string()], "aresta orfa nao pode ser retornada");
+
+        // deleteNode apaga as arestas do elemento junto (o que a FK faria)
+        connection
+            .execute(
+                "DELETE FROM canvas_edges WHERE (source_kind = 'canvas' AND source_id = ?1) OR (target_kind = 'canvas' AND target_id = ?1)",
+                rusqlite::params!["c1"],
+            )
+            .expect("delete edges of node");
+        connection
+            .execute("DELETE FROM canvas_nodes WHERE id = ?1", rusqlite::params!["c1"])
+            .expect("deleteNode");
+        let leftover: i64 = connection
+            .query_row("SELECT COUNT(*) FROM canvas_edges", [], |row| row.get(0))
+            .expect("count edges");
+        assert_eq!(leftover, 0, "excluir o elemento precisa levar as ligacoes dele");
+    }
 }

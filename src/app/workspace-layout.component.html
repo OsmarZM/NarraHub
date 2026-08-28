@@ -30,7 +30,6 @@
             <button type="button" class="secondary-button" (click)="openShareModal()">↗ Compartilhar</button>
             @if (activeNav() === 'escrita') { <button type="button" class="secondary-button" [class.active]="inspectorOpen()" [disabled]="!activeChapter()" (click)="toggleInspector()">{{ inspectorOpen() ? 'Ocultar resumo' : 'Resumo do capítulo' }}</button><button type="button" class="secondary-button" (click)="beginCreateChapter()" [disabled]="!activeBook()">＋ Capítulo</button> }
             @else if (activeNav() === 'entidades' && entityFilter()) { <button type="button" class="primary-button small" (click)="beginCreateEntity()">＋ {{ entityCreateLabel() }}</button> }
-            @else if (activeNav() === 'conexoes') { <button type="button" class="primary-button small" (click)="beginCreateConnection()" [disabled]="entities().length < 2">＋ Conexão</button> }
             @else if (activeNav() === 'timeline') { <button type="button" class="primary-button small" (click)="beginCreateTimeline()">＋ Evento</button> }
             @else if (activeNav() === 'planejamento') { <button type="button" class="primary-button small" (click)="beginCreatePlanning()">＋ Card</button> }
           </div>

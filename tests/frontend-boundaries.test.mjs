@@ -330,3 +330,23 @@ test('a feature de Conexões não conhece SQL nem DatabaseService', () => {
   const legacy = readFileSync(new URL('../src/app/features/connections/gateways/legacy-connections.gateway.ts', import.meta.url), 'utf8');
   assert.match(legacy, /CanvasService/u, 'o adapter legado é quem pode conhecer o serviço SQL do canvas');
 });
+
+test('toda migration existente esta registrada no tauri-plugin-sql (regressao: canvas v14 nunca rodava no app)', () => {
+  // Bug real: MIGRATION_V14 existia em migrations.rs e no match de sql_for_version
+  // (usado por recovery e pelos testes Rust), mas nao foi adicionada a lista do
+  // tauri-plugin-sql em lib.rs -- que e o que de fato aplica migrations no app
+  // rodando. Resultado: as tabelas do canvas nunca eram criadas, todo INSERT
+  // falhava e "adicionar elemento" nao fazia nada. Os testes Rust passavam porque
+  // chamam sql_for_version direto, contornando o registro.
+  const migrations = readFileSync(new URL('../src-tauri/src/database/migrations.rs', import.meta.url), 'utf8');
+  const lib = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+
+  const declared = [...migrations.matchAll(/^pub const MIGRATION_V(\d+):/gmu)].map((m) => Number(m[1])).sort((a, b) => a - b);
+  const latest = Number(/LATEST_SCHEMA_VERSION: i64 = (\d+)/u.exec(migrations)[1]);
+  const registered = [...lib.matchAll(/version: (\d+),\s*description:/gu)].map((m) => Number(m[1])).sort((a, b) => a - b);
+
+  assert.deepEqual(registered, declared,
+    `toda MIGRATION_Vn precisa estar em add_migrations() de lib.rs. Declaradas: ${declared}. Registradas: ${registered}.`);
+  assert.equal(latest, Math.max(...declared),
+    'LATEST_SCHEMA_VERSION precisa acompanhar a ultima migration declarada');
+});

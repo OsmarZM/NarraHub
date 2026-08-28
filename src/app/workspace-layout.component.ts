@@ -143,7 +143,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   });
 
   @ViewChild(WritingPageComponent) private writingPage?: WritingPageComponent;
-  @ViewChild(ConnectionsPageComponent) private connectionsPage?: ConnectionsPageComponent;
   @ViewChild(PlanningBoardComponent) private planningBoard?: PlanningBoardComponent;
   @ViewChild(EntitiesPageComponent) readonly entitiesPage?: EntitiesPageComponent;
 
@@ -274,7 +273,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   }
 
   beginCreateChapter(): void { this.writingPage?.openCreateChapter(); }
-  beginCreateConnection(): void { this.connectionsPage?.openCreateRelation(); }
   toggleInspector(): void { this.manuscriptStore.toggleInspector(); }
   manuscriptStories() { return this.manuscriptStore.stories(); }
   manuscriptChapters() { return this.manuscriptStore.universeChapters(); }
