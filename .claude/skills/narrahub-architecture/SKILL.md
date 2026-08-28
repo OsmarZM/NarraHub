@@ -32,10 +32,15 @@ Legacy Adapter (hoje) ──ou── Tauri Adapter (Fase 4+)
 Serviço SQL Angular (hoje) ──ou── Rust Command → Application → Domain → SQLite (Fase 4+)
 ```
 
-Hoje (Fase 2) a maior parte do app ainda usa o serviço SQL Angular por baixo
-do gateway — isso é esperado e não é dívida a "corrigir na mesma tarefa". A
-troca para Rust é uma fase própria (Fase 4), feita depois de cada domínio já
-estar isolado atrás de um gateway.
+Hoje **todo domínio já está atrás de um gateway** e toda seção do workspace é
+uma rota lazy (Fases 2, 2.1 e 3 concluídas). Por baixo do gateway, porém, quase
+tudo ainda é o serviço SQL Angular — isso é esperado e **não** é dívida a
+"corrigir na mesma tarefa". A troca para Rust é a Fase 4, que só pôde começar
+porque o isolamento por gateway ficou pronto.
+
+Se for mexer em algo que ainda chama SQL direto de fora de um
+`legacy-*.gateway.ts`, isso sim é violação da fronteira — veja
+[[narrahub-feature-extraction]].
 
 ## Princípios não negociáveis
 

@@ -140,12 +140,15 @@ Regras do `BackupService`:
 | Manuscript | História, livro, capítulo, revisão e autosave | `stories`, `books`, `chapters`, `chapter_revisions` |
 | Worldbuilding | Personagem, lugar, objeto, organização e demais fichas | `entities`, `entity_attributes`, `entity_templates` |
 | Knowledge | Relações, menções, tags e fatos canônicos | `relations`, `mentions`, `content_tags`, `content_tag_assignments` |
+| Connections | Diagrama do grafo: elementos livres, layout e ligações visuais | `canvas_nodes`, `canvas_edges`, `canvas_entity_positions` |
 | Planning | Timeline e kanban editorial | `timeline_events`, `planning_items` |
 | Revision | Histórico, propostas e conflitos | `change_log`, `collaboration_contributions`, `sync_conflicts` |
 | Assistance | Contexto, memória criativa e provedores de IA | armazenamento atual da IA; tabela local futura |
 | Integrations | Share, colaboração, sync, atualização e plataforma | tabelas de colaboração/sync e módulos Rust existentes |
 
 Uma entidade do tipo `Evento` representa um elemento de worldbuilding. `timeline_events` representa sua posição ou ocorrência na cronologia; os conceitos não devem ser fundidos.
+
+Pela mesma razão, `relations` (Knowledge) e `canvas_edges` (Connections) são domínios distintos: `relations` guarda um FATO do universo ("X é irmão de Y") e aparece na ficha da entidade; `canvas_edges` guarda uma anotação de diagrama, cujas pontas podem ser elementos que não existem no cânone. Uma seta de uma imagem para uma nota não é conhecimento sobre o universo.
 
 ## Estratégia de substituição gradual
 
@@ -418,7 +421,7 @@ Com esta fatia, as sete ordens da Fase 2 estão endereçadas. O que **não** foi
 ### Ordem
 
 1. Universo.
-2. Timeline e planejamento.
+2. Timeline e planejamento. *(Correção: só a Timeline recebeu gateway/store nesta fase. O quadro de Planejamento continuou falando com `PlanningService`/`MetadataService` direto e recebendo dados por `@Input` do layout — dívida só paga na Fase 3, quando ele precisou virar rota.)*
 3. Entidades e Knowledge.
 4. Configurações e IA.
 5. Colaboração.
@@ -470,6 +473,54 @@ Com esta fatia, os dois gaps documentados ao final da Fase 2 estão fechados. N�
 ### Rollback
 
 Os gateways continuam apontando para os serviços SQL existentes (`WorkspaceService`, `MetadataService`, `MentionService`). Nenhuma migration é necessária.
+
+## Canvas livre de Conexões (recurso de produto, fora da sequência de fases)
+
+Pedido do autor durante a Fase 3, não previsto no plano original. Está documentado aqui porque **mexeu no schema** (migration 14) e porque a separação que ele introduz é uma decisão de domínio que precisa sobreviver a quem chegar depois.
+
+### O que é
+
+A tela de Conexões deixou de ser só um grafo automático de entidades e virou um diagrama que o autor monta como quiser: arrastar os nós e a posição fica salva, acrescentar elementos que **não são entidades** (título, imagem, nota) e ligar qualquer coisa a qualquer coisa.
+
+### Decisão de domínio: cânone ≠ diagrama
+
+`relations` continua guardando **fatos do universo** — aparecem na ficha da entidade, com FK exigindo entidade nas duas pontas. As ligações do diagrama foram para `canvas_edges`, com pontas polimórficas (`entity` | `canvas`).
+
+Duas razões, e a primeira é a que importa:
+
+1. **Semântica.** Uma seta de uma imagem para uma nota não é um fato sobre o universo. Se ela entrasse em `relations`, apareceria na ficha do personagem como se fosse cânone.
+2. **Custo técnico.** Aceitar pontas não-entidade em `relations` exigiria remover a FK, e o SQLite só faz isso reconstruindo a tabela — caminho que a ADR-0004 evita.
+
+No grafo as duas convivem: a ligação de diagrama é **tracejada**, para não se confundir com uma relação de verdade.
+
+### Schema (migration 14, aditiva)
+
+| Tabela | Papel | Observação |
+| --- | --- | --- |
+| `canvas_nodes` | Título, imagem ou nota posicionados no diagrama | `CHECK` restringe `kind` |
+| `canvas_entity_positions` | Onde cada entidade foi solta, por universo | Tabela à parte em vez de colunas em `entities`: apagar layout nunca pode arriscar dado canônico |
+| `canvas_edges` | Ligações visuais, pontas polimórficas | Sem FK nas pontas; ver integridade abaixo |
+
+`relations` **não foi tocada** pela migration — um teste de fronteira garante isso.
+
+### Integridade sem FK
+
+Como as pontas de `canvas_edges` são polimórficas, não há FK protegendo `source_id`/`target_id`. Duas defesas substituem:
+
+- **na leitura:** `listEdges` só retorna ligação cujas duas pontas ainda existem, então uma entidade excluída por fora não deixa aresta quebrada na tela;
+- **na exclusão:** apagar um elemento livre apaga as ligações dele na mesma operação — o que a FK faria.
+
+Um teste Rust executa o SQL real do `CanvasService` contra o schema publicado, cobrindo o `ON CONFLICT` da posição, o filtro de órfãos e essa exclusão em cascata manual.
+
+### Lição registrada: migration existir ≠ migration rodar
+
+A `MIGRATION_V14` foi escrita, testada e **publicada na 0.7.6 sem nunca ser executada no app**. Ela estava em `migrations.rs` e no `match` de `sql_for_version` (usado por recovery e pelos testes Rust), mas não na lista do `tauri-plugin-sql` em `lib.rs` — que é o que de fato aplica migrations em runtime. As tabelas nunca eram criadas, todo INSERT falhava e "adicionar elemento" não fazia nada.
+
+Os testes passavam porque chamavam `sql_for_version` direto, contornando o registro: provavam que o SQL era válido, não que o app algum dia o executaria. Existe agora um teste de fronteira comparando as versões declaradas em `migrations.rs` com as registradas em `lib.rs`.
+
+### Pendente
+
+Persistência real do canvas nunca foi confirmada no app Tauri empacotado — o `ng serve` não tem banco. Ao validar, o teste mínimo é: criar um título, fechar e reabrir o app, e conferir que ele voltou na mesma posição.
 
 ## Fase 3 — Router e carregamento por feature
 

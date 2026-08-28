@@ -2,6 +2,22 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## Não publicado
+
+### Canvas livre na tela de Conexões
+
+- **Monte o diagrama do seu jeito**: arraste os nós e a posição fica salva; "Organizar grafo" volta ao arranjo automático e "↺ Layout" descarta o layout guardado.
+- **Elementos que não são fichas**: acrescente **Título**, **Imagem** e **Nota** ao grafo e ligue qualquer coisa a qualquer coisa — entidade a título, imagem a nota.
+- **Cânone continua separado de anotação**: relações entre entidades seguem aparecendo na ficha; ligações do diagrama são tracejadas e não viram fato do universo.
+- **Correção**: as tabelas do canvas não eram criadas no banco (a migration existia mas não estava registrada no runtime), então adicionar elemento não fazia nada. A migration é aditiva e é aplicada ao abrir o app.
+- **Correção**: o botão "＋ Conexão" aparecia duplicado, no cabeçalho e na barra da página.
+
+### Navegação por rotas
+
+- Cada seção do workspace (Escrita, Entidades, Conexões, Timeline, Planejamento, Histórico) agora carrega sob demanda, deixando a abertura do app mais leve.
+- **Correção**: Histórico e Timeline abriam em branco — a página era renderizada fora da área visível.
+- Sair da Escrita salva o capítulo automaticamente, sem substituir o salvamento já feito ao fechar a janela, atualizar ou restaurar backup.
+
 ## 0.7.6 — 2026-08-27
 
 ### Tema Cósmico Glassmorphic, Menus Arredondados e Identidade Visual

@@ -1,156 +1,115 @@
 ---
 name: narrahub-feature-extraction
-description: Procedimento passo a passo para extrair um domínio de dentro do `App` (app.ts/app.html) do NarraHub para sua própria feature (component + store + gateway), sem tocar em banco ou comportamento. Use SEMPRE que o pedido for para modularizar, extrair, isolar ou "tirar do App" um domínio (ex.: entidades, configurações, colaboração, história/livro/capítulo, editor), continuar a Fase 2 do docs/ARCHITECTURE_EVOLUTION_PLAN.md, ou reduzir o tamanho do app.ts. Segue exatamente o padrão já usado em Timeline, Histórico e Biblioteca de universos — leia esses três primeiro como referência viva antes de inventar uma variação.
+description: O padrão de feature do NarraHub — gateway → store → página roteada. Use SEMPRE que for criar uma feature nova, mover código para dentro de uma feature existente, ou revisar um diff que atravessa a fronteira entre feature e persistência. A extração do antigo `App` monolítico TERMINOU (Fases 2, 2.1 e 3); esta skill agora descreve o padrão vigente e as armadilhas que já custaram bugs reais, não um roteiro de migração.
 ---
 
-# Extração de feature (Fase 2)
+# Padrão de feature (gateway → store → página roteada)
 
-Objetivo desta fase: modularizar o Angular **sem mudar persistência**. Nenhuma
-migration, formato salvo ou comportamento observável pode mudar — só a
-organização do código do frontend. Se a tarefa parece exigir mudar o banco,
-pare: isso pertence à Fase 4 (Rust) ou a uma migration própria, não a esta.
+**A extração acabou.** Não existe mais `app.html` nem `app.css`, e `app.ts` é
+só `<router-outlet />`. Todo domínio já vive em `src/app/features/<domínio>/`
+e toda seção do workspace é uma rota lazy. Se um pedido falar em "tirar do
+App", "reduzir o app.ts" ou "extrair do monólito", o pressuposto está velho —
+confirme o que a pessoa quer de fato antes de mexer.
+
+O que esta skill cobre agora: **criar feature nova** e **manter as existentes
+dentro da fronteira**.
 
 ## Referências vivas (leia antes de escrever código)
 
-Os três exemplos já existentes são a fonte da verdade, mais confiável que
-qualquer resumo aqui — a estrutura pode evoluir sutilmente entre eles:
+Mais confiáveis que qualquer resumo aqui:
 
-- `src/app/features/timeline/` — o exemplo mais completo (gateway com múltiplos métodos, store com mutate genérico, page component com modal próprio).
-- `src/app/features/history/` — o mais simples (só leitura, sem mutação).
-- `src/app/features/library/` — hospeda um component de apresentação pura (`universe-picker`) por dentro; mostra como separar "burro" de "com estado".
-- `src/app/features/entities/` — o maior até agora; mostra como decompor uma página grande em vários components filhos (toolbar → type-filter, card, sheet) em vez de um único template enorme.
-- `src/app/features/settings/` — domínio sem gateway. `BackupService`/`SyncService`/`UpdateService` já são comandos Tauri nativos, sem SQL por trás; não existe fronteira SQL-vs-Rust para abstrair, então o `SettingsStore` injeta esses serviços direto. Veja "Gateway é opcional" abaixo antes de criar um gateway por hábito.
+- `features/history/` — o mais simples: só leitura, gateway com um método.
+- `features/timeline/` — página roteada que injeta stores de outros domínios em vez de receber `@Input`.
+- `features/connections/` — gateway cobrindo dois serviços legados (relações + canvas) e um componente de apresentação puro por dentro (`connections-graph`).
+- `features/settings/` — domínio **sem** gateway. Ver "Gateway é opcional".
+- `application/workspace-sync.service.ts` — onde mora coordenação entre domínios.
 
-## Gateway é opcional
-
-Nem todo domínio precisa de `XGateway`/`LegacyXGateway`. O gateway existe para
-abstrair a fronteira SQL-vs-Rust (hoje um serviço Angular sobre `DatabaseService`,
-amanhã um command Rust) — se o domínio já fala só com comandos Tauri nativos
-(sem `DatabaseService`/`WorkspaceService` por trás), não há fronteira para
-abstrair. Nesse caso o store injeta os serviços existentes diretamente, como
-`SettingsStore` faz. A única exceção sancionada a "features não conhecem
-`DatabaseService`" é injetá-lo por ciclo de vida do pool (fechar/reabrir a
-conexão, ex.: restaurar um backup), nunca para rodar SQL de domínio — se isso
-acontecer, documente e teste a exceção explicitamente (veja o teste de
-`SettingsStore` em `tests/frontend-boundaries.test.mjs`).
-
-## Passo a passo
-
-### 1. Mapeie o domínio antes de mexer
-
-No `app.ts`, ache todos os signals, campos de formulário e métodos que só
-dizem respeito a esse domínio (ex.: `newEntityName`, `createEntity`,
-`beginCreateEntity`...). Note também os pontos onde esse domínio **cruza**
-com outro ainda não extraído (ex.: abrir uma entidade dispara recarregar
-tags, que é Knowledge; salvar um capítulo atualiza estatísticas do universo).
-Esses pontos de cruzamento **ficam no `App`** por enquanto — não tente
-extrair dois domínios de uma vez só porque eles se tocam.
-
-### 2. Crie a estrutura de arquivos
+## As três camadas
 
 ```text
-src/app/features/<dominio>/
+src/app/features/<domínio>/
 ├── gateways/
-│   ├── <dominio>.gateway.ts          (abstract class — o contrato)
-│   └── legacy-<dominio>.gateway.ts   (@Injectable, chama o serviço Angular existente)
+│   ├── <domínio>.gateway.ts          (abstract class — o contrato)
+│   └── legacy-<domínio>.gateway.ts   (@Injectable, chama o serviço Angular existente)
 ├── state/
-│   └── <dominio>.store.ts            (@Injectable providedIn:'root', Signals)
-├── <dominio>-page.component.ts
-├── <dominio>-page.component.html
-└── <dominio>-page.component.css
+│   └── <domínio>.store.ts            (@Injectable providedIn:'root', Signals)
+└── <domínio>-page.component.{ts,html,css}
 ```
 
 **Gateway**: métodos nomeados pelo que o domínio faz (`list`, `create`,
-`rename`, `delete`...), tipos de entrada em `camelCase` mesmo que a tabela
-SQL use `snake_case` (ex.: `coverImage` no input, `cover_image` no modelo
-lido do banco) — o contrato do gateway não deveria vazar nome de coluna.
+`rename`). Entrada em `camelCase` mesmo que a coluna seja `snake_case` — o
+contrato não vaza nome de coluna. O adapter legado só traduz; não reescreve
+SQL. Ele é temporário por definição: some quando a Fase 4 trocar por Rust.
 
-**Legacy adapter**: só chama o serviço Angular que já existia
-(`WorkspaceService`, `EntityService`, etc.). Não reescreve a lógica SQL, só
-traduz entre o contrato novo e o método antigo. É temporário por definição —
-será trocado por um `TauriAdapter` na Fase 4, sem o resto do app perceber.
+**Store**: Signals (`items`, `busy`, `error`), um `loadRevision` para descartar
+resposta atrasada depois de trocar de universo, e o `universeId` guardado
+internamente — métodos de mutação **não** recebem `universeId` por parâmetro.
 
-**Store**: Signals (`list`, `busy`, `error`), um contador `loadRevision` para
-descartar respostas de `load()` que chegam atrasadas depois de trocar de
-universo (veja o padrão em `timeline.store.ts`), e um `mutate()` privado que
-roda a operação, recarrega a lista e trata erro de forma consistente.
+**Página**: injeta o store e lê o que precisa de outros domínios pelos stores
+deles. Modais são próprios.
 
-**Page component**: injeta o store, expõe `@Input()`/`@Output()` para o que
-ainda precisa vir de fora (ex.: `universeId`, tags carregadas por outro
-domínio), e possui seus próprios modais/CSS — não reaproveite o modal
-compartilhado do `app.html`, ele está sendo desmontado aos poucos.
-
-### 3. Registre o gateway em `app.config.ts`
+### Registre o gateway em `app.config.ts`
 
 ```ts
 { provide: <Dominio>Gateway, useExisting: Legacy<Dominio>Gateway }
 ```
 
-Se esquecer este passo, `npm run build` compila normalmente — o erro só
-aparece em runtime (`NG0201: No provider found for <Dominio>Gateway`), e só
-quando algo que injeta o gateway é de fato instanciado (pode nem ser na
-primeira tela). Isso já aconteceu na fatia de Colaboração: build limpo, e o
-app quebrava ao abrir a página que usava o store novo. Por isso o passo 7
-(validar) não é opcional mesmo quando o build passa — é o único jeito de
-pegar esse tipo de erro.
+Esquecer isso compila normalmente: o erro só aparece em runtime
+(`NG0201`), e só quando algo que injeta o gateway é instanciado. Já aconteceu
+na fatia de Colaboração. Por isso [[narrahub-validate]] não é opcional mesmo
+com build verde.
 
-### 4. Enxugue o `App`
+## Gateway é opcional
 
-Remova do `app.ts`/`app.html` tudo que migrou para a feature. O que **fica**
-no `App`:
+Nem todo domínio precisa. O gateway abstrai a fronteira SQL-vs-Rust — se o
+domínio já fala só com comandos Tauri nativos (`BackupService`, `SyncService`,
+`UpdateService`), não há fronteira para abstrair e o store injeta os serviços
+direto, como `SettingsStore` faz. A única exceção sancionada a "feature não
+conhece `DatabaseService`" é ciclo de vida do pool (fechar/reabrir na
+restauração de backup) — documente e teste a exceção.
 
-- Orquestração entre domínios (ex.: abrir um universo ainda dispara carregar
-  histórias/capítulos/entidades, porque esses domínios não foram extraídos ainda).
-- Reação a `@Output()` da feature nova para esse tipo de orquestração
-  (ex.: `(deleted)="onXDeleted($event)"` fazendo limpeza de `localStorage` ou navegação).
-- Um alias de leitura quando fizer sentido, no mesmo padrão de
-  `readonly timeline = this.timelineStore.events;` — evita reescrever toda
-  leitura no template, mas as **escritas** (criar/editar/excluir) devem ir
-  pelo store, não por `.set()`/`.update()` direto no signal do `App`.
+## Armadilhas que já custaram bug real
 
-Se o serviço Angular legado (ex.: `EntityService`) não é mais injetado
-diretamente em nenhum lugar do `app.ts`, remova o import — é o sinal mais
-simples de que a extração está completa.
+**1. `@Input()` numa página roteada.** `withComponentInputBinding()`
+**sobrescreve com `undefined`** todo input sem correspondente em params/data
+da rota — o inicializador da classe não protege. Quebrou o template de
+Conexões com `reading 'length' of undefined`. Página roteada declara **apenas**
+`@Input() universeId`; o resto vem de store, por getter. Há teste de fronteira.
 
-### 5. Preserve o comportamento de `ng serve` sem Tauri
+**2. `@Output()` numa página roteada.** Ninguém escuta — o pai é o Router. Se
+a página precisa avisar alguém: mensagem vai para `ShellState`
+(`showInfo`/`showError`), navegação vai para o `Router`, efeito em outro
+domínio vai para `WorkspaceSyncService`.
 
-Qualquer `ngOnInit`/efeito que chama o gateway pela primeira vez precisa
-verificar `isTauri()` antes (importado de `@tauri-apps/api/core`), do
-contrário `ng serve` (usado para iteração rápida de UI, sem Tauri) mostra um
-erro de "banco indisponível" em vez do estado vazio esperado. Veja
-`library-page.component.ts` para o padrão exato.
+**3. `@ViewChild` de página, a partir do layout.** Não alcança o que vem pelo
+outlet. O cabeçalho persistente pega a instância ativa pelo `(activate)` do
+`<router-outlet>` e chama `openCreate()` (contrato `supportsCreate`).
 
-### 6. Atualize o teste de fronteira
+**4. Coordenação entre domínios dentro de um componente.** Salvar capítulo
+reindexa menções e atualiza estatísticas; excluir entidade recarrega conexões.
+Isso vive em `application/workspace-sync.service.ts`, nunca num layout ou
+página — desmontar um monólito não pode empurrar a coordenação para outro.
+
+**5. Duas fontes de verdade para "qual tela mostrar".** `AppState` não
+representa mais a rota. Se precisar da seção ativa, leia
+`AppNavigationService.activeData()`, derivado de `route.data`. Manter cópia
+disso em signal já causou tela em branco quando os dois discordaram.
+
+## Atualize o teste de fronteira
 
 Em `tests/frontend-boundaries.test.mjs`:
-- adicione os três arquivos novos (`*.gateway.ts`, `*.store.ts`,
-  `*-page.component.ts`) à lista que não pode conter `DatabaseService`,
-  `WorkspaceService`, SQL cru, nem o serviço legado específico do domínio;
-- confirme que o `legacy-<dominio>.gateway.ts` referencia o serviço legado
-  (prova de que ele ainda existe, só que isolado);
-- adicione uma asserção de que `app.ts` não referencia mais o serviço legado
-  diretamente, se ele deixou de ser usado lá.
 
-### 7. Valide
+- adicione os arquivos novos à lista que não pode conter `DatabaseService`,
+  SQL cru, nem serviço legado do domínio;
+- confirme que o `legacy-<domínio>.gateway.ts` referencia o serviço legado;
+- se a página é roteada, ela cai automaticamente no teste que exige só
+  `@Input() universeId`.
 
-Rode [[narrahub-validate]] antes de considerar a fatia pronta.
+## Regras sem exceção
 
-### 8. Documente a fatia
-
-Adicione um parágrafo objetivo (o que foi feito, o que ficou pendente) na
-seção "Estado de implementação" da Fase 2 em
-`docs/ARCHITECTURE_EVOLUTION_PLAN.md` — no mesmo formato factual das fatias
-anteriores (Planejamento, Timeline/Histórico, Biblioteca). Não marque a fase
-inteira como concluída; liste o que ainda falta na "Ordem" do plano.
-
-## Regras que não têm exceção nesta fase
-
-- Não altere nenhuma migration nem o formato salvo no banco.
+- Não altere migration publicada nem formato salvo — isso é
+  [[narrahub-database-safety]].
 - Não escreva no mesmo dado por dois caminhos (gateway novo + serviço antigo
-  chamado direto em outro lugar) — se algo mais no app ainda chama o serviço
-  legado direto, é sinal de que a extração está incompleta, não de que dá pra
-  ter os dois convivendo por muito tempo.
-- Não comece a migrar esse domínio para Rust nesta tarefa — isso é
-  [[narrahub-database-safety]] e a Fase 4, feitas depois que **todos** os
-  domínios estiverem atrás de gateway.
-- Um domínio por vez. Cruzamentos com domínios não extraídos ficam no `App`.
+  chamado direto em outro lugar).
+- Valide com [[narrahub-validate]] antes de dar por pronto, e registre a fatia
+  em `docs/ARCHITECTURE_EVOLUTION_PLAN.md`.
