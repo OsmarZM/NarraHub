@@ -4,22 +4,46 @@
       <div class="toolbar-heading">
         <span class="board-badge">⌘</span>
         <h2>Grafo de Conexões</h2>
-        <span class="total-badge">{{ entities.length }} entidades · {{ store.relations().length }} conexões</span>
+        <span class="total-badge">{{ entities.length }} entidades · {{ store.relations().length }} conexões · {{ store.canvasNodes().length }} elementos</span>
       </div>
     </div>
     <div class="toolbar-right">
+      <div class="canvas-add-group" role="group" aria-label="Adicionar ao canvas">
+        <button type="button" class="secondary-button" (click)="addTitle()">＋ Título</button>
+        <label class="secondary-button canvas-image-button">
+          ＋ Imagem
+          <input type="file" accept="image/*" hidden (change)="onImageSelected($event)" />
+        </label>
+        <button type="button" class="secondary-button" (click)="addNote()">＋ Nota</button>
+      </div>
+      @if (store.entityPositions().length) {
+        <button type="button" class="secondary-button" title="Descarta as posições salvas e volta ao arranjo automático" (click)="resetLayout()">↺ Layout</button>
+      }
       <button type="button" class="primary-button" [disabled]="entities.length < 2" (click)="openCreateRelation()">
         <span>＋</span> Nova conexão
       </button>
     </div>
   </header>
-  @if (entities.length > 0) {
+
+  @if (entities.length > 0 || store.canvasNodes().length > 0) {
     <div class="graph-canvas-container">
-      <app-connections-graph [entities]="entities" [relations]="store.relations()" (entityOpened)="openEntity($event)" />
+      <app-connections-graph
+        [entities]="entities"
+        [relations]="store.relations()"
+        [canvasNodes]="store.canvasNodes()"
+        [canvasEdges]="store.canvasEdges()"
+        [entityPositions]="store.positionByEntityId()"
+        (entityOpened)="openEntity($event)"
+        (positionChanged)="onPositionChanged($event)"
+        (connectRequested)="onConnectRequested($event)"
+        (canvasNodeActivated)="openNodeEditor($event)"
+        (canvasNodeDeleted)="requestNodeDelete($event)"
+        (canvasEdgeDeleted)="deleteCanvasEdge($event)"
+      />
     </div>
-    @if (store.relations().length) {
+    @if (store.relations().length || store.canvasEdges().length) {
       <section class="relation-manager-drawer" aria-label="Ligações cadastradas">
-        <header><strong>Ligações cadastradas ({{ store.relations().length }})</strong></header>
+        <header><strong>Ligações ({{ store.relations().length + store.canvasEdges().length }})</strong></header>
         <div class="relation-pills-list">
           @for (relation of store.relations(); track relation.id) {
             <span class="relation-badge-pill">
@@ -29,11 +53,19 @@
               <button type="button" aria-label="Excluir ligação" (click)="requestDelete(relation.id, relation.source_name + ' — ' + relation.label + ' — ' + relation.target_name)">×</button>
             </span>
           }
+          @for (edge of store.canvasEdges(); track edge.id) {
+            <span class="relation-badge-pill canvas-edge-pill" title="Ligação do diagrama (não é uma relação do universo)">
+              <b>{{ endpointLabel(edge.source_kind, edge.source_id) }}</b>
+              <small>{{ edge.label || 'ligação' }}</small>
+              <b>{{ endpointLabel(edge.target_kind, edge.target_id) }}</b>
+              <button type="button" aria-label="Excluir ligação do diagrama" (click)="deleteCanvasEdge(edge.id)">×</button>
+            </span>
+          }
         </div>
       </section>
     }
   } @else {
-    <section class="empty-feature"><span>⌘</span><h2>Conecte seu universo</h2><p>Cadastre ao menos duas entidades e descreva a relação entre elas.</p><button type="button" class="primary-button" [disabled]="entities.length < 2" (click)="openCreateRelation()">Criar conexão</button></section>
+    <section class="empty-feature"><span>⌘</span><h2>Conecte seu universo</h2><p>Cadastre entidades e ligue-as, ou monte o diagrama do seu jeito com títulos, imagens e notas.</p><button type="button" class="primary-button" (click)="addTitle()">Começar com um título</button></section>
   }
 </div>
 
@@ -41,6 +73,7 @@
   <div class="modal-backdrop" (mousedown)="closeCreateRelation()">
     <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       <header><div><span class="eyebrow">CONEXÕES</span><h2>Nova conexão</h2></div><button type="button" (click)="closeCreateRelation()">×</button></header>
+      <p class="modal-guidance">Relação entre duas entidades — aparece também na ficha delas.</p>
       <label>Origem<select name="relationSource" [(ngModel)]="newRelationSource"><option value="">Selecione</option>@for (entity of entities; track entity.id) { <option [value]="entity.id">{{ entity.name }} · {{ entity.type }}</option> }</select></label>
       <label>Relação<input name="relationLabel" [(ngModel)]="newRelationLabel" placeholder="Ex.: é irmão de" /></label>
       <label>Destino<select name="relationTarget" [(ngModel)]="newRelationTarget"><option value="">Selecione</option>@for (entity of entities; track entity.id) { <option [value]="entity.id">{{ entity.name }} · {{ entity.type }}</option> }</select></label>
@@ -48,6 +81,43 @@
     </form>
   </div>
 }
+
+@if (pendingConnection(); as pending) {
+  <div class="modal-backdrop" (mousedown)="pendingConnection.set(null)">
+    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+      <header><div><span class="eyebrow">CANVAS</span><h2>Ligar elementos</h2></div><button type="button" (click)="pendingConnection.set(null)">×</button></header>
+      <p class="modal-guidance"><strong>{{ pending.source.label }}</strong> → <strong>{{ pending.target.label }}</strong><br />Esta é uma ligação do diagrama. Ela não vira uma relação na ficha da entidade.</p>
+      <label>Rótulo (opcional)<input name="connectionLabel" [(ngModel)]="connectionLabel" placeholder="Ex.: inspira, acontece em" autofocus (keydown.enter)="confirmConnection()" /></label>
+      <footer><button type="button" class="secondary-button" (click)="pendingConnection.set(null)">Cancelar</button><button type="submit" class="primary-button" (click)="confirmConnection()">Ligar</button></footer>
+    </form>
+  </div>
+}
+
+@if (editingNode(); as node) {
+  <div class="modal-backdrop" (mousedown)="editingNode.set(null)">
+    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+      <header><div><span class="eyebrow">CANVAS</span><h2>Editar elemento</h2></div><button type="button" (click)="editingNode.set(null)">×</button></header>
+      @if (node.image) { <div class="canvas-node-preview" [style.background-image]="'url(' + node.image + ')'"></div> }
+      <label>Texto<input name="nodeText" [(ngModel)]="nodeText" autofocus (keydown.enter)="confirmNodeRename()" /></label>
+      <footer>
+        <button type="button" class="secondary-button danger-outline" (click)="requestNodeDelete(node)">Excluir</button>
+        <button type="button" class="secondary-button" (click)="editingNode.set(null)">Cancelar</button>
+        <button type="submit" class="primary-button" (click)="confirmNodeRename()">Salvar</button>
+      </footer>
+    </form>
+  </div>
+}
+
+@if (pendingNodeDelete(); as node) {
+  <div class="modal-backdrop" (mousedown)="pendingNodeDelete.set(null)">
+    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+      <header><div><span class="eyebrow danger-copy">EXCLUSÃO LOCAL</span><h2>Excluir elemento?</h2></div><button type="button" (click)="pendingNodeDelete.set(null)">×</button></header>
+      <p class="delete-warning"><strong>{{ node.text || 'Elemento sem texto' }}</strong><br />O elemento e as ligações dele no diagrama serão removidos. Entidades e relações do universo não são afetadas.</p>
+      <footer><button type="button" class="secondary-button" (click)="pendingNodeDelete.set(null)">Cancelar</button><button type="submit" class="primary-button destructive" (click)="confirmNodeDelete()">Excluir elemento</button></footer>
+    </form>
+  </div>
+}
+
 @if (pendingDelete(); as item) {
   <div class="modal-backdrop" (mousedown)="pendingDelete.set(null)">
     <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">

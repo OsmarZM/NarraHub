@@ -299,3 +299,34 @@ test('restoreRoute() não usa activeNav() pra detectar navegação já processad
   assert.match(source, /this\.lastSyncedRouteKey = this\.routeKey\('configuracoes', null\)/u);
   assert.match(source, /this\.lastSyncedRouteKey = this\.routeKey\(navId, this\.appState\.activeUniverseId\(\)\)/u);
 });
+
+test('canvas de Conexões não vira uma segunda fonte de relações canônicas', () => {
+  // As duas coisas convivem de propósito: `relations` guarda FATOS do universo
+  // (aparecem na ficha da entidade, FK obrigando entidade nas duas pontas) e
+  // `canvas_edges` guarda anotação de diagrama (pontas polimórficas). Trocar uma
+  // pela outra corromperia o significado do cânone, então a migration v14 não
+  // pode ter tocado em `relations`.
+  const migrations = readFileSync(new URL('../src-tauri/src/database/migrations.rs', import.meta.url), 'utf8');
+  const v14 = migrations.slice(migrations.indexOf('pub const MIGRATION_V14'), migrations.indexOf('#[cfg(test)]'));
+  assert.doesNotMatch(v14, /ALTER TABLE relations|DROP TABLE relations|CREATE TABLE IF NOT EXISTS relations/u,
+    'a migration do canvas não pode alterar nem reconstruir a tabela de relações canônicas');
+  for (const table of ['canvas_nodes', 'canvas_entity_positions', 'canvas_edges']) {
+    assert.match(v14, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`, 'u'));
+  }
+});
+
+test('a feature de Conexões não conhece SQL nem DatabaseService', () => {
+  // CanvasService é o adapter legado (fala SQL); a feature só pode vê-lo através
+  // do gateway, igual aos outros domínios extraídos.
+  for (const path of [
+    '../src/app/features/connections/connections-page.component.ts',
+    '../src/app/features/connections/connections-graph.component.ts',
+    '../src/app/features/connections/state/connections.store.ts',
+    '../src/app/features/connections/gateways/connections.gateway.ts',
+  ]) {
+    const source = readFileSync(new URL(path, import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /DatabaseService|CanvasService|WorkspaceService|\bSELECT\b|\bINSERT\b|\bDELETE FROM\b/u, path);
+  }
+  const legacy = readFileSync(new URL('../src/app/features/connections/gateways/legacy-connections.gateway.ts', import.meta.url), 'utf8');
+  assert.match(legacy, /CanvasService/u, 'o adapter legado é quem pode conhecer o serviço SQL do canvas');
+});
