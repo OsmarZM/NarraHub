@@ -5,8 +5,7 @@ import { CanvasEndpointRef, CanvasNodePatchInput, ConnectionsGateway } from './c
 import { LegacyConnectionsGateway } from './legacy-connections.gateway';
 
 /**
- * Ordem 1 (leitura) — migrado: `listRelations`.
- * Ordem 5 (relações e menções) — migrado: `createRelation`, `deleteRelation`.
+ * Ordem 1 — `listRelations`.  Ordem 5 — `createRelation`, `deleteRelation`.
  *
  * O canvas continua no legado de propósito: ele não está na ordem de migração
  * do plano, é anotação de diagrama e não fato do universo, e migrá-lo junto
@@ -21,12 +20,12 @@ export class RustConnectionsGateway implements ConnectionsGateway {
     return this.core.call<RelationCard[]>('relations_list', { universeId });
   }
 
-  createRelation(universeId: string, sourceId: string, targetId: string, label: string): Promise<void> {
-    return this.legacy.createRelation(universeId, sourceId, targetId, label);
+  async createRelation(universeId: string, sourceId: string, targetId: string, label: string): Promise<void> {
+    await this.core.call<string>('relation_create', { universeId, sourceId, targetId, label });
   }
 
   deleteRelation(id: string): Promise<void> {
-    return this.legacy.deleteRelation(id);
+    return this.core.call<void>('relation_delete', { id });
   }
 
   listCanvasNodes(universeId: string): Promise<CanvasNode[]> {

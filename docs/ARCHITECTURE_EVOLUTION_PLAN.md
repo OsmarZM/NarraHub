@@ -305,6 +305,47 @@ cards enviados, o quadro mudou entre o arrasto e a gravação — a transação 
 revertida e o erro pede recarregar, em vez de gravar meia reordenação. Há
 teste para o rollback, que é uma das exigências de "testes reais" do plano.
 
+#### Ordens 4 e 5 — entidades, atributos, tags, relações e menções ✔
+
+Entidades: `entity_list`, `entity_details`, `entity_create`, `entity_update`,
+`entity_delete`, `entity_attribute_save`, `entity_attribute_delete`.
+Tags e menções: `tags_list`, `tags_for_owner`, `tag_assignments`,
+`tag_create`, `tag_set`, `tag_delete`, `mentions_list`, `mentions_sync`.
+Relações: `relation_create`, `relation_delete`.
+
+**Criar entidade virou uma transação.** Antes eram N gravações soltas — a
+entidade, um `INSERT` por atributo padrão do tipo, um por template do universo
+e mais um `UPDATE` para a imagem. Qualquer falha no meio deixava uma entidade
+pela metade no arquivo do usuário, sem como desfazer. A ordem dos atributos é a
+mesma de antes: padrões do tipo, depois os templates que o padrão não cobre,
+depois o que veio do formulário.
+
+**A lista de atributos padrão existe nos dois lados**, porque o Rust precisa
+dela para montar a ficha e a tela precisa dela para desenhar o formulário. A
+alternativa — o frontend mandar a lista no comando — deixaria o cliente decidir
+o formato do dado gravado. `tests/rust-core-contract.test.mjs` compara as duas
+listas; divergir quebra o teste.
+
+**Menções: `INSERT OR IGNORE` não servia.** A tabela `mentions` não tem
+`UNIQUE(chapter_id, entity_id)` — era o `SELECT` prévio do caminho antigo que
+evitava a duplicata. A inserção agora é condicionada a um `NOT EXISTS`, e a
+lista é deduplicada antes do banco (o texto salvo repete a mesma entidade
+várias vezes). Manter a linha existente preserva o `created_at`, que é o que
+ordena "onde apareceu pela primeira vez". O teste que pegou isso é o mesmo que
+protege contra a regressão.
+
+**Salvar atributo carimba a ficha na mesma transação.** Sem isso, uma falha
+depois do atributo deixaria a entidade alterada com `updated_at` antigo, e a
+sincronização decidiria que nada mudou.
+
+`entity_details` traz as relações das duas pontas num `UNION ALL` com uma
+coluna `is_source`, em vez de dois `SELECT` juntados em memória. A coluna não é
+decoração: sem ela, uma relação de uma entidade com ela mesma apareceria
+invertida na ficha, e "pai de" viraria "filho de".
+
+A galeria de imagens continua no legado: anexo é `AttachmentService`,
+compartilhado com capítulo e universo, e sai junto do último domínio que o usa.
+
 ### Critério de saída
 
 A versão de estabilização abre bancos anteriores, mantém capítulos e permite reabrir o app sem modificar checksums.

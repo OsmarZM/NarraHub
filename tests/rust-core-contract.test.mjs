@@ -106,3 +106,31 @@ test('o core Rust não é chamado por fora do adaptador de gateway', () => {
   walk(featuresDir);
   assert.deepEqual(offenders, [], `RustCoreService só pode ser usado por adaptador Rust: ${offenders.join(', ')}`);
 });
+
+test('a lista de atributos padrão é a mesma nos dois lados', () => {
+  // A lista vive em dois lugares por necessidade: o Rust a usa para montar a
+  // ficha ao criar a entidade, e a tela a usa para desenhar o formulário. A
+  // alternativa — o frontend mandar a lista no comando — deixaria o cliente
+  // decidir o formato do dado gravado. Este teste é o que impede a duplicação
+  // de virar divergência silenciosa.
+  const ts = readFileSync(new URL('../src/app/core/models/index.ts', import.meta.url), 'utf8');
+  const rs = readFileSync(new URL('../src-tauri/src/domain/entity.rs', import.meta.url), 'utf8');
+
+  const tsBlock = ts.slice(ts.indexOf('export const DEFAULT_ATTRIBUTES'));
+  const tsLists = new Map();
+  for (const match of tsBlock.slice(0, tsBlock.indexOf('\n};')).matchAll(/'([^']+)':\s*\[([^\]]*)\]/gu)) {
+    tsLists.set(match[1], [...match[2].matchAll(/'([^']+)'/gu)].map((item) => item[1]));
+  }
+
+  const rsBlock = rs.slice(rs.indexOf('pub const DEFAULT_ATTRIBUTES'));
+  const rsLists = new Map();
+  for (const match of rsBlock.slice(0, rsBlock.indexOf('\n];')).matchAll(/\(\s*"([^"]+)",\s*&\[([^\]]*)\]/gu)) {
+    rsLists.set(match[1], [...match[2].matchAll(/"([^"]+)"/gu)].map((item) => item[1]));
+  }
+
+  assert.ok(tsLists.size > 0 && rsLists.size > 0, 'nenhuma das duas listas foi encontrada');
+  assert.deepEqual([...rsLists.keys()].sort(), [...tsLists.keys()].sort(), 'os tipos precisam ser os mesmos');
+  for (const [kind, keys] of tsLists) {
+    assert.deepEqual(rsLists.get(kind), keys, `os atributos de ${kind} divergiram entre Rust e TypeScript`);
+  }
+});

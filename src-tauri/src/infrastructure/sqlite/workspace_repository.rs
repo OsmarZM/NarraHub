@@ -179,6 +179,36 @@ pub fn delete_timeline_event(connection: &Connection, id: &str) -> DatabaseComma
     Ok(affected > 0)
 }
 
+/// `type` fixo em `custom` e `importance` em `normal`: é o que o caminho
+/// antigo gravava. As colunas existem para uma tipagem de relação que a
+/// interface ainda não oferece.
+pub fn insert_relation(
+    connection: &Connection,
+    id: &str,
+    universe_id: &str,
+    source_id: &str,
+    target_id: &str,
+    label: &str,
+    timestamp: &str,
+) -> DatabaseCommandResult<()> {
+    connection
+        .execute(
+            "INSERT INTO relations (id, universe_id, source_id, target_id, type, label,
+                                    bidirectional, importance, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'custom', ?5, 0, 'normal', ?6)",
+            rusqlite::params![id, universe_id, source_id, target_id, label, timestamp],
+        )
+        .map_err(map_sqlite_error)?;
+    Ok(())
+}
+
+pub fn delete_relation(connection: &Connection, id: &str) -> DatabaseCommandResult<bool> {
+    let affected = connection
+        .execute("DELETE FROM relations WHERE id = ?1", [id])
+        .map_err(map_sqlite_error)?;
+    Ok(affected > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_support::{migrated_memory_database, seed_universe};
@@ -361,5 +391,50 @@ mod tests {
         assert_eq!(events[0].title, "Depois");
         assert_eq!(events[0].updated_at, "2026-06-01 00:00:00");
         assert_eq!(events[0].created_at, "2026-01-01 00:00:00", "created_at nao pode mudar");
+    }
+
+    #[test]
+    fn relacao_com_entidade_inexistente_e_recusada_pela_foreign_key() {
+        // Sem foreign_keys ligada, o caminho antigo gravava uma relacao
+        // apontando para o nada; ela sumia da listagem por causa do JOIN, mas
+        // continuava no arquivo do usuario para sempre.
+        let connection = migrated_memory_database();
+        seed_universe(&connection, "u1");
+        connection
+            .execute_batch(
+                "INSERT INTO entities (id, universe_id, type, name, created_at, updated_at)
+                   VALUES ('e1', 'u1', 'Personagem', 'Frodo', '2026-01-01 00:00:00', '2026-01-01 00:00:00');",
+            )
+            .expect("semear entidade");
+
+        let error = insert_relation(
+            &connection, "r1", "u1", "e1", "nao-existe", "amigo de", "2026-01-01 00:00:00",
+        )
+        .expect_err("FK deveria recusar");
+        assert_eq!(error.kind, crate::database::error::DatabaseErrorKind::Conflict);
+    }
+
+    #[test]
+    fn relacao_criada_volta_na_listagem_com_os_padroes_do_caminho_antigo() {
+        let connection = migrated_memory_database();
+        seed_universe(&connection, "u1");
+        connection
+            .execute_batch(
+                "INSERT INTO entities (id, universe_id, type, name, created_at, updated_at)
+                   VALUES ('e1', 'u1', 'Personagem', 'Frodo', '2026-01-01 00:00:00', '2026-01-01 00:00:00'),
+                          ('e2', 'u1', 'Personagem', 'Sam', '2026-01-01 00:00:00', '2026-01-01 00:00:00');",
+            )
+            .expect("semear");
+
+        insert_relation(&connection, "r1", "u1", "e1", "e2", "amigo de", "2026-01-01 00:00:00")
+            .expect("criar relacao");
+
+        let relations = list_relations(&connection, "u1").expect("listar");
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].relation_type, "custom");
+        assert_eq!(relations[0].importance, "normal");
+        assert!(!relations[0].bidirectional);
+        assert!(delete_relation(&connection, "r1").expect("excluir"));
+        assert!(!delete_relation(&connection, "r1").expect("excluir de novo"));
     }
 }

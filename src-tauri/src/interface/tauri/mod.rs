@@ -4,6 +4,8 @@
 //! chama o caso de uso e devolve o erro no contrato que o frontend já
 //! entende. Regra que aparecer neste arquivo está no lugar errado.
 
+pub mod entity_commands;
+pub mod knowledge_commands;
 pub mod planning_commands;
 pub mod universe_commands;
 pub mod workspace_commands;

@@ -45,3 +45,25 @@ pub fn timeline_rename(app: AppHandle, id: String, title: String) -> DatabaseCom
 pub fn timeline_delete(app: AppHandle, id: String) -> DatabaseCommandResult<()> {
     workspace_service::delete_timeline_event(&super::database(&app)?, &id)
 }
+
+#[tauri::command]
+pub fn relation_create(
+    app: AppHandle,
+    universe_id: String,
+    source_id: String,
+    target_id: String,
+    label: String,
+) -> DatabaseCommandResult<String> {
+    workspace_service::create_relation(
+        &super::database(&app)?,
+        &universe_id,
+        &source_id,
+        &target_id,
+        &label,
+    )
+}
+
+#[tauri::command]
+pub fn relation_delete(app: AppHandle, id: String) -> DatabaseCommandResult<()> {
+    workspace_service::delete_relation(&super::database(&app)?, &id)
+}

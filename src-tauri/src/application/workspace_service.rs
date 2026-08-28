@@ -70,3 +70,37 @@ pub fn delete_timeline_event(database: &SqliteDatabase, id: &str) -> DatabaseCom
     }
     Ok(())
 }
+
+pub fn create_relation(
+    database: &SqliteDatabase,
+    universe_id: &str,
+    source_id: &str,
+    target_id: &str,
+    label: &str,
+) -> DatabaseCommandResult<String> {
+    if source_id == target_id {
+        return Err(DatabaseCommandError::validation(
+            "Uma entidade não se relaciona com ela mesma.",
+        ));
+    }
+    let id = new_id();
+    let connection = database.write()?;
+    workspace_repository::insert_relation(
+        &connection,
+        &id,
+        universe_id,
+        source_id,
+        target_id,
+        label.trim(),
+        &now_timestamp(),
+    )?;
+    Ok(id)
+}
+
+pub fn delete_relation(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<()> {
+    let connection = database.write()?;
+    if !workspace_repository::delete_relation(&connection, id)? {
+        return Err(DatabaseCommandError::not_found("Relação não encontrada."));
+    }
+    Ok(())
+}

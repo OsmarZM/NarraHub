@@ -8,11 +8,13 @@ import { ConnectionsGateway } from './features/connections/gateways/connections.
 import { RustConnectionsGateway } from './features/connections/gateways/rust-connections.gateway';
 import { LegacyConnectionsGateway } from './features/connections/gateways/legacy-connections.gateway';
 import { EntityGateway } from './features/entities/gateways/entity.gateway';
+import { RustEntityGateway } from './features/entities/gateways/rust-entity.gateway';
 import { LegacyEntityGateway } from './features/entities/gateways/legacy-entity.gateway';
 import { HistoryGateway } from './features/history/gateways/history.gateway';
 import { RustHistoryGateway } from './features/history/gateways/rust-history.gateway';
 import { LegacyHistoryGateway } from './features/history/gateways/legacy-history.gateway';
 import { KnowledgeGateway } from './features/knowledge/gateways/knowledge.gateway';
+import { RustKnowledgeGateway } from './features/knowledge/gateways/rust-knowledge.gateway';
 import { LegacyKnowledgeGateway } from './features/knowledge/gateways/legacy-knowledge.gateway';
 import { LegacyUniverseGateway } from './features/library/gateways/legacy-universe.gateway';
 import { UniverseGateway } from './features/library/gateways/universe.gateway';
@@ -41,9 +43,9 @@ export const appConfig: ApplicationConfig = {
     // por dentro — a lista de delegações está documentada em cada adaptador.
     { provide: CollaborationGateway, useExisting: LegacyCollaborationGateway },
     { provide: ConnectionsGateway, useExisting: RustConnectionsGateway },
-    { provide: EntityGateway, useExisting: LegacyEntityGateway },
+    { provide: EntityGateway, useExisting: RustEntityGateway },
     { provide: HistoryGateway, useExisting: RustHistoryGateway },
-    { provide: KnowledgeGateway, useExisting: LegacyKnowledgeGateway },
+    { provide: KnowledgeGateway, useExisting: RustKnowledgeGateway },
     { provide: ManuscriptGateway, useExisting: LegacyManuscriptGateway },
     { provide: PlanningGateway, useExisting: RustPlanningGateway },
     { provide: TimelineGateway, useExisting: RustTimelineGateway },
