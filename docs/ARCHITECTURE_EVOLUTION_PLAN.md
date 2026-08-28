@@ -788,6 +788,62 @@ navegação back/forward, e autosave interrompido por troca de rota.
 - exclusão mantendo foreign keys e limpeza de metadados;
 - execução dentro do Tauri, não apenas Angular.
 
+### Progresso
+
+Fatia por fatia, na ordem de migração acima. O que está aqui já roda no app.
+
+#### Estrutura (feita junto com a Ordem 1)
+
+```text
+src-tauri/src/
+├── domain/                  tipos e regras; não conhece rusqlite nem tauri
+├── application/             casos de uso; abre a conexão que a operação exige
+├── infrastructure/sqlite/   único lugar que fala rusqlite
+└── interface/tauri/         #[tauri::command]; só traduz argumento e erro
+```
+
+Decisões que precisam sobreviver:
+
+- **Sem pool próprio.** SQLite abre conexão em microssegundos e o plano pede
+  transações curtas. Um pool nosso conviveria mal com o pool que o
+  `tauri-plugin-sql` ainda mantém aberto durante a migração gradual — o banco
+  está em WAL desde a migration 1, e é isso que permite os dois convivendo.
+- **`read()` abre somente-leitura de propósito.** Comando de consulta que
+  grave por engano falha na hora, em vez de gravar em silêncio.
+- **Serialização em `snake_case`.** Os modelos TypeScript já espelham as
+  colunas; renomear para `camelCase` só na fronteira Rust obrigaria a
+  reescrever templates sem ganho. Entrada de comando é a exceção, em
+  `camelCase`, como `planning_save_card` já fazia.
+- **Teste usa o schema real**, aplicando as migrations num banco em memória.
+  Schema desenhado à mão no teste esconde justamente o defeito que este core
+  precisa pegar — e pegou: `sort_key` é `REAL`, não inteiro, porque a
+  ordenação da timeline é fracionária para permitir inserir um evento entre
+  dois outros sem renumerar tudo.
+
+No frontend, o adaptador `rust-<domínio>.gateway.ts` implementa o mesmo
+contrato do legado e **delega ao legado o que ainda não migrou**. A lista de
+delegações está documentada no topo de cada adaptador e encolhe a cada fatia;
+chegar a zero é o sinal de que o `legacy-*` pode sumir. `RustCoreService` é a
+única porta para `invoke()` — ela existe porque `invoke()` rejeita com o objeto
+serializado do Rust, não com um `Error`, e sem normalizar isso todo `catch` do
+frontend mostraria `undefined` na tela.
+
+`tests/rust-core-contract.test.mjs` cobre os três riscos da convivência:
+adaptador que perde um método na troca, comando chamado que não existe no
+Rust, e — o que já custou caro com a migration v14 — comando que existe mas
+não foi registrado no `invoke_handler`, que compila dos dois lados e só falha
+no clique do usuário.
+
+#### Ordem 1 — queries somente leitura e estatísticas ✔
+
+Comandos: `universe_list`, `universe_get`, `universe_stats`, `timeline_list`,
+`relations_list`, `history_list`.
+
+As estatísticas deixaram de ser N+1: o frontend fazia seis `SELECT` por
+universo e repetia os seis para cada linha da biblioteca. Agora as contagens
+escalares saem de uma query só, e apenas a quebra por tipo de entidade
+continua separada, porque só ela é agrupada.
+
 ### Critério de saída
 
 Depois que nenhum componente depender do SQL do frontend, remover `sql:allow-execute` da capability.

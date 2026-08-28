@@ -1,5 +1,9 @@
+pub mod application;
 pub mod commands;
 pub mod database;
+pub mod domain;
+pub mod infrastructure;
+pub mod interface;
 mod local_ai;
 mod online_share;
 mod sync;
@@ -153,6 +157,13 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             commands::universe_commands::get_app_info,
+            // Core Rust (Fase 4) — leituras e estatísticas
+            interface::tauri::universe_commands::universe_list,
+            interface::tauri::universe_commands::universe_get,
+            interface::tauri::universe_commands::universe_stats,
+            interface::tauri::workspace_commands::timeline_list,
+            interface::tauri::workspace_commands::relations_list,
+            interface::tauri::workspace_commands::history_list,
             updater_configured,
             database::health::database_health,
             database::backup::backup_create,
