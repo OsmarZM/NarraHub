@@ -997,9 +997,48 @@ universo e repetia os seis para cada linha da biblioteca. Agora as contagens
 escalares saem de uma query só, e apenas a quebra por tipo de entidade
 continua separada, porque só ela é agrupada.
 
-### Critério de saída
+#### Ordem 10 — canvas, anexos e o fim da camada legada ✔
 
-Depois que nenhum componente depender do SQL do frontend, remover `sql:allow-execute` da capability.
+O canvas e os anexos não estavam na ordem de migração original — o canvas
+nasceu depois do plano, e anexo é compartilhado entre entidade, capítulo e
+universo. Mas eram os dois últimos pontos de SQL no frontend, então sem eles o
+critério de saída da fase não fechava.
+
+Comandos: `canvas_nodes`, `canvas_node_create/update/delete/position`,
+`canvas_entity_positions`, `canvas_entity_position_save`,
+`canvas_layout_clear`, `canvas_edges`, `canvas_edge_create/delete`,
+`attachments_list`, `attachment_create`, `attachment_delete`.
+
+**A integridade do canvas passou a valer também na gravação.** As pontas das
+ligações são polimórficas, então não há FK; antes a defesa era só na leitura,
+que descarta ligação órfã. Isso escondia o problema em vez de evitá-lo: a
+ligação inválida entrava no arquivo, sumia da tela pelo filtro e ficava lá para
+sempre. Agora as duas pontas são conferidas antes de gravar, e excluir um
+elemento apaga as ligações dele na mesma transação.
+
+**O anexo devolve a posição calculada pelo banco.** Ela sai de uma subquery no
+`INSERT`; devolver o zero montado na memória faria a imagem nova aparecer no
+começo da galeria até a próxima recarga.
+
+**A camada de serviços SQL foi removida.** Doze `*.service.ts` e os dez
+`legacy-*.gateway.ts` deixaram de existir. Os tipos que os contratos importavam
+de dentro deles (`CollaborationSession` e vizinhos, `PlanningCardUpdate`)
+viraram modelos de domínio. `RelationService` já estava morto antes disso —
+nada o importava.
+
+`DatabaseService` sobreviveu **sem executar SQL**, reduzido ao ciclo de vida do
+pool: o `tauri-plugin-sql` ainda aplica as migrations na abertura, e restaurar
+backup precisa fechar o pool antes de trocar o arquivo no disco.
+
+### Critério de saída ✔
+
+`sql:allow-execute` **foi removido** de `src-tauri/capabilities/default.json`.
+`sql:default` fica, pelos dois motivos acima.
+
+Três testes de fronteira seguram a decisão: nenhum arquivo do frontend contém
+SQL, a camada de serviços legada não pode voltar, e a capability não pode
+reganhar a permissão sem que o SQL volte junto.
+
 
 ## Fase 5 — Context Engine e IA confiável
 

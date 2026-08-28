@@ -1,9 +1,20 @@
 import {
   PlanningFieldDefinition, PlanningFieldType, PlanningFieldValues, PlanningItem,
 } from '../../../core/models';
-import { PlanningCardUpdate } from '../../../core/services/planning.service';
+import { PlanningStatus } from '../../../core/models';
 
-export type { PlanningCardUpdate };
+/**
+ * O card inteiro como a tela o edita. Morava em `PlanningService`, junto do
+ * SQL que a Fase 4 levou para o Rust.
+ */
+export interface PlanningCardUpdate {
+  title: string;
+  description: string;
+  image: string;
+  status: PlanningStatus;
+  chapterId: string | null;
+  fieldValues: PlanningFieldValues;
+}
 
 export abstract class PlanningGateway {
   abstract list(universeId: string): Promise<PlanningItem[]>;

@@ -1,4 +1,4 @@
-import { CollaborationContribution, CollaborationSession, IncomingContribution, SharePermission } from '../../../core/services/collaboration.service';
+import { CollaborationContribution, CollaborationSession, IncomingContribution, SharePermission } from '../models/collaboration.models';
 
 export interface SaveCollaborationSessionInput {
   id: string;

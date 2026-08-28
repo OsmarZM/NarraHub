@@ -4,6 +4,7 @@
 //! chama o caso de uso e devolve o erro no contrato que o frontend já
 //! entende. Regra que aparecer neste arquivo está no lugar errado.
 
+pub mod canvas_commands;
 pub mod collaboration_commands;
 pub mod entity_commands;
 pub mod knowledge_commands;

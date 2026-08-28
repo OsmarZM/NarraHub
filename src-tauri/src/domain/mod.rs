@@ -10,6 +10,7 @@
 //! Entrada de comando é a exceção documentada: ali o contrato é `camelCase`,
 //! como já fazia `planning_save_card`.
 
+pub mod canvas;
 pub mod collaboration;
 pub mod entity;
 pub mod ids;

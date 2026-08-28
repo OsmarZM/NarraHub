@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import {
   CollaborationContribution, CollaborationSession, IncomingContribution,
-} from '../../../core/services/collaboration.service';
+} from '../models/collaboration.models';
 import { RustCoreService } from '../../../core/services/rust-core.service';
 import { CollaborationGateway, SaveCollaborationSessionInput } from './collaboration.gateway';
 

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const featureFiles = [
@@ -55,29 +57,71 @@ test('SettingsStore não usa SQL nem serviços legados de outro domínio, só Da
   assert.match(source, /DatabaseService/u, 'a exceção sancionada deve continuar explícita e comentada no arquivo');
 });
 
-test('dependência SQL temporária fica restrita aos adapters legados', () => {
-  for (const feature of ['timeline', 'history']) {
-    const source = readFileSync(new URL(`../src/app/features/${feature}/gateways/legacy-${feature}.gateway.ts`, import.meta.url), 'utf8');
-    assert.match(source, /WorkspaceService/u);
+test('nenhum arquivo do frontend executa SQL (critério de saída da Fase 4)', () => {
+  // O inverso do teste que existia aqui: ele conferia que o SQL do frontend
+  // ficava confinado aos adaptadores legados. A Fase 4 terminou, esses
+  // adaptadores não existem mais, e o critério agora é que ninguém no
+  // frontend escreva SQL — é isso que justifica ter tirado `sql:allow-execute`
+  // da capability. Se este teste falhar, a permissão precisa voltar antes.
+  const offenders = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(path); continue; }
+      if (!entry.name.endsWith('.ts')) continue;
+      const source = readFileSync(path, 'utf8');
+      if (/\bFROM\s+\w+|\bINSERT\s+(OR\s+\w+\s+)?INTO\b|\bUPDATE\s+\w+\s+SET\b|\bDELETE\s+FROM\b/u.test(source)) {
+        offenders.push(path);
+      }
+    }
+  };
+  walk(fileURLToPath(new URL('../src/app/', import.meta.url)));
+  assert.deepEqual(offenders, [], `SQL no frontend: ${offenders.join(', ')}`);
+});
+
+test('a camada de serviços SQL legada foi removida', () => {
+  const gone = [
+    'core/services/universe.service.ts',
+    'core/services/story.service.ts',
+    'core/services/book.service.ts',
+    'core/services/chapter.service.ts',
+    'core/services/entity.service.ts',
+    'core/services/mention.service.ts',
+    'core/services/metadata.service.ts',
+    'core/services/workspace.service.ts',
+    'core/services/canvas.service.ts',
+    'core/services/attachment.service.ts',
+    'core/services/collaboration.service.ts',
+    'core/services/planning.service.ts',
+  ];
+  for (const relative of gone) {
+    assert.ok(
+      !existsSync(fileURLToPath(new URL(`../src/app/${relative}`, import.meta.url))),
+      `${relative} voltou — o core Rust é quem fala com o banco agora`,
+    );
   }
-  const universeSource = readFileSync(new URL('../src/app/features/library/gateways/legacy-universe.gateway.ts', import.meta.url), 'utf8');
-  assert.match(universeSource, /UniverseService/u);
-  const entitySource = readFileSync(new URL('../src/app/features/entities/gateways/legacy-entity.gateway.ts', import.meta.url), 'utf8');
-  assert.match(entitySource, /EntityService/u);
-  assert.match(entitySource, /AttachmentService/u);
-  const collaborationSource = readFileSync(new URL('../src/app/features/collaboration/gateways/legacy-collaboration.gateway.ts', import.meta.url), 'utf8');
-  assert.match(collaborationSource, /CollaborationService/u);
-  const manuscriptSource = readFileSync(new URL('../src/app/features/manuscript/gateways/legacy-manuscript.gateway.ts', import.meta.url), 'utf8');
-  assert.match(manuscriptSource, /StoryService/u);
-  assert.match(manuscriptSource, /BookService/u);
-  assert.match(manuscriptSource, /ChapterService/u);
-  const connectionsSource = readFileSync(new URL('../src/app/features/connections/gateways/legacy-connections.gateway.ts', import.meta.url), 'utf8');
-  assert.match(connectionsSource, /WorkspaceService/u);
-  const planningSource = readFileSync(new URL('../src/app/features/planning/gateways/legacy-planning.gateway.ts', import.meta.url), 'utf8');
-  assert.match(planningSource, /PlanningService/u);
-  const knowledgeSource = readFileSync(new URL('../src/app/features/knowledge/gateways/legacy-knowledge.gateway.ts', import.meta.url), 'utf8');
-  assert.match(knowledgeSource, /MetadataService/u);
-  assert.match(knowledgeSource, /MentionService/u);
+
+  const legacy = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.name.startsWith('legacy-') && entry.name.endsWith('.gateway.ts')) legacy.push(path);
+    }
+  };
+  walk(fileURLToPath(new URL('../src/app/features/', import.meta.url)));
+  assert.deepEqual(legacy, [], `adaptador legado remanescente: ${legacy.join(', ')}`);
+});
+
+test('DatabaseService sobrou apenas para o ciclo de vida do pool', () => {
+  // A exceção sancionada: fechar e reabrir o pool na restauração de backup, e
+  // abri-lo no bootstrap para o tauri-plugin-sql aplicar as migrations. Nenhum
+  // desses caminhos executa SQL — se `execute`/`select` reaparecerem, a
+  // dependência voltou a ser de dados.
+  const source = readFileSync(new URL('../src/app/core/services/database.service.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /\bexecute\s*\(|\bselect\s*</u,
+    'DatabaseService não pode mais expor execução de SQL');
+  assert.match(source, /close\s*\(/u, 'o fechamento do pool continua sendo necessário para restaurar backup');
 });
 
 test('App raiz é somente o outlet do Router', () => {
@@ -270,8 +314,8 @@ test('canvas de Conexões não vira uma segunda fonte de relações canônicas',
 });
 
 test('a feature de Conexões não conhece SQL nem DatabaseService', () => {
-  // CanvasService é o adapter legado (fala SQL); a feature só pode vê-lo através
-  // do gateway, igual aos outros domínios extraídos.
+  // O canvas fala com o core Rust; a feature só o alcança pelo gateway, igual
+  // aos outros domínios. `CanvasService` não existe mais.
   for (const path of [
     '../src/app/features/connections/connections-page.component.ts',
     '../src/app/features/connections/connections-graph.component.ts',
@@ -281,8 +325,8 @@ test('a feature de Conexões não conhece SQL nem DatabaseService', () => {
     const source = readFileSync(new URL(path, import.meta.url), 'utf8');
     assert.doesNotMatch(source, /DatabaseService|CanvasService|WorkspaceService|\bSELECT\b|\bINSERT\b|\bDELETE FROM\b/u, path);
   }
-  const legacy = readFileSync(new URL('../src/app/features/connections/gateways/legacy-connections.gateway.ts', import.meta.url), 'utf8');
-  assert.match(legacy, /CanvasService/u, 'o adapter legado é quem pode conhecer o serviço SQL do canvas');
+  const rust = readFileSync(new URL('../src/app/features/connections/gateways/rust-connections.gateway.ts', import.meta.url), 'utf8');
+  assert.match(rust, /RustCoreService/u, 'o adaptador Rust é a única porta da feature para o banco');
 });
 
 test('toda migration existente esta registrada no tauri-plugin-sql (regressao: canvas v14 nunca rodava no app)', () => {
@@ -451,4 +495,21 @@ test('rota de deep link não duplica o item da sidebar', () => {
   const service = readFileSync(new URL('../src/app/core/navigation/app-navigation.service.ts', import.meta.url), 'utf8');
   assert.match(service, /!route\.data\.hiddenFromMenu/u,
     'collectNavigationItems precisa pular as rotas marcadas como hiddenFromMenu');
+});
+
+test('a capability não concede mais execução de SQL ao frontend', () => {
+  // Critério de saída da Fase 4: nenhum componente depende do SQL do
+  // frontend, então `sql:allow-execute` saiu. `sql:default` fica, porque o
+  // plugin ainda aplica as migrations e o pool precisa ser fechado para
+  // restaurar backup.
+  const capability = readFileSync(
+    new URL('../src-tauri/capabilities/default.json', import.meta.url), 'utf8',
+  );
+  const permissions = JSON.parse(capability).permissions.map((item) =>
+    (typeof item === 'string' ? item : item.identifier));
+
+  assert.ok(!permissions.includes('sql:allow-execute'),
+    'sql:allow-execute só pode voltar se o frontend voltar a executar SQL');
+  assert.ok(permissions.includes('sql:default'),
+    'o plugin ainda aplica as migrations e fecha o pool na restauração de backup');
 });

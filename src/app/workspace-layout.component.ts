@@ -8,7 +8,6 @@ import {
   BookOption, ChapterOption, Entity, EntityWithDetails, MetadataOwnerType, PlanningItem, UniverseWithStats,
 } from './core/models';
 import { BackupManifest } from './core/services/backup.service';
-import { DatabaseService } from './core/services/database.service';
 import { AppNavigationId, AppRouteState } from './core/navigation/app-navigation';
 import { AppNavigationService } from './core/navigation/app-navigation.service';
 import { OnlineShareDocument, SharedUniverse } from './core/services/online-share.service';
@@ -64,7 +63,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   readonly appState = inject(AppState);
   readonly shell = inject(ShellState);
   readonly knowledgeStore = inject(KnowledgeStore);
-  private readonly db = inject(DatabaseService);
   private readonly universeStore = inject(UniverseStore);
   private readonly collaborationStore = inject(CollaborationStore);
   private readonly connectionsStore = inject(ConnectionsStore);
@@ -191,7 +189,10 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     if (!universe || !name) return;
     try {
       await this.saveChapterNow();
-      this.appState.activeUniverse.update((item) => item?.id === universe.id ? { ...item, name, updated_at: this.db.now() } : item);
+      // Só o nome entra na atualização otimista. O `updated_at` quem decide é
+      // o core, e carimbar um valor local aqui exibiria uma data que não é a
+      // que ficou gravada.
+      this.appState.activeUniverse.update((item) => item?.id === universe.id ? { ...item, name } : item);
       await this.universeStore.update(universe.id, { name });
       this.renamingUniverse.set(false); this.renameValue = ''; this.appState.closeModal();
       this.showInfo('Universo renomeado.');

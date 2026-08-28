@@ -2,19 +2,14 @@ import { Injectable, inject } from '@angular/core';
 import { Attachment, Entity, EntityAttribute, EntityWithDetails } from '../../../core/models';
 import { RustCoreService } from '../../../core/services/rust-core.service';
 import { CreateEntityInput, EntityGateway, UpdateEntityInput } from './entity.gateway';
-import { LegacyEntityGateway } from './legacy-entity.gateway';
 
 /**
- * Ordem 4 — entidades e atributos.
- *
- * A galeria continua no legado: anexo é `AttachmentService`, compartilhado com
- * capítulo e universo, e não está na ordem de migração do plano. Ele sai do
- * legado junto do último domínio que o usa, para não ficar meio migrado.
+ * Domínio migrado por inteiro. Ordem 4 — entidades e atributos.
+ * Ordem 10 — a galeria, junto do resto dos anexos.
  */
 @Injectable({ providedIn: 'root' })
 export class RustEntityGateway implements EntityGateway {
   private readonly core = inject(RustCoreService);
-  private readonly legacy = inject(LegacyEntityGateway);
 
   list(universeId: string): Promise<Entity[]> {
     return this.core.call<Entity[]>('entity_list', { universeId });
@@ -58,14 +53,18 @@ export class RustEntityGateway implements EntityGateway {
   }
 
   listGallery(universeId: string, entityId: string): Promise<Attachment[]> {
-    return this.legacy.listGallery(universeId, entityId);
+    return this.core.call<Attachment[]>('attachments_list', {
+      universeId, ownerType: 'entity', ownerId: entityId,
+    });
   }
 
   createGalleryImage(universeId: string, entityId: string, dataUrl: string, caption: string): Promise<Attachment> {
-    return this.legacy.createGalleryImage(universeId, entityId, dataUrl, caption);
+    return this.core.call<Attachment>('attachment_create', {
+      universeId, ownerType: 'entity', ownerId: entityId, dataUrl, caption,
+    });
   }
 
   deleteGalleryImage(attachmentId: string): Promise<void> {
-    return this.legacy.deleteGalleryImage(attachmentId);
+    return this.core.call<void>('attachment_delete', { id: attachmentId });
   }
 }

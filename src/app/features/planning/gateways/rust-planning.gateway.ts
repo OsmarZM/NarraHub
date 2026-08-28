@@ -3,22 +3,21 @@ import {
   PlanningFieldDefinition, PlanningFieldType, PlanningFieldValues, PlanningItem,
 } from '../../../core/models';
 import { RustCoreService } from '../../../core/services/rust-core.service';
-import { LegacyPlanningGateway } from './legacy-planning.gateway';
 import { PlanningCardUpdate, PlanningGateway } from './planning.gateway';
 
 /**
- * Ordem 3 (timeline e planejamento) — migrado tudo, menos `saveCard`.
+ * Domínio migrado por inteiro (Ordem 3).
  *
- * `saveCard` já era comando Rust antes da Fase 4 (`planning_save_card`, em
- * `database/planning.rs`) e continua sendo chamado pelo adaptador legado. Ele
- * entra no core organizado junto da Ordem 4, quando os campos de relação
- * (`story`, `character`, `tags`) forem migrados — é lá que mora a validação
- * cruzada que ele faz, e mover as duas coisas separadas duplicaria a regra.
+ * `saveCard` chama `planning_save_card`, que já era comando Rust antes da Fase
+ * 4 e mora em `database/planning.rs` em vez de `application/planning_service`.
+ * Ele ficou onde está de propósito: é o único ponto do core que valida os
+ * campos de relação do card contra as definições do universo, e mover essa
+ * validação sem reescrevê-la seria trocar um lugar testado por outro igual.
+ * A reorganização dele para a camada de aplicação está anotada no plano.
  */
 @Injectable({ providedIn: 'root' })
 export class RustPlanningGateway implements PlanningGateway {
   private readonly core = inject(RustCoreService);
-  private readonly legacy = inject(LegacyPlanningGateway);
 
   list(universeId: string): Promise<PlanningItem[]> {
     return this.core.call<PlanningItem[]>('planning_list', { universeId });
@@ -31,7 +30,18 @@ export class RustPlanningGateway implements PlanningGateway {
   }
 
   saveCard(id: string, universeId: string, update: PlanningCardUpdate): Promise<void> {
-    return this.legacy.saveCard(id, universeId, update);
+    return this.core.call<void>('planning_save_card', {
+      request: {
+        id,
+        universeId,
+        title: update.title.trim(),
+        description: update.description.trim(),
+        image: update.image,
+        status: update.status,
+        chapterId: update.chapterId,
+        fieldValues: update.fieldValues,
+      },
+    });
   }
 
   saveOrder(universeId: string, items: PlanningItem[]): Promise<void> {

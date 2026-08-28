@@ -1,5 +1,6 @@
 //! Acesso SQLite do core Rust.
 
+pub mod canvas_repository;
 pub mod collaboration_repository;
 pub mod connection;
 pub mod entity_repository;

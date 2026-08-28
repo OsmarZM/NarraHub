@@ -20,7 +20,6 @@
       ]
     },
     "updater:default",
-    "sql:default",
-    "sql:allow-execute"
+    "sql:default"
   ]
 }

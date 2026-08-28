@@ -1,79 +1,59 @@
-// ============================================
-// NarraHub — Database Service
-// Wraps tauri-plugin-sql for Angular
-// ============================================
-
 import { Injectable } from '@angular/core';
 
-// Types will be available at runtime via Tauri
-declare const __TAURI__: any;
-
-interface Database {
-  execute(query: string, bindValues?: unknown[]): Promise<{ rowsAffected: number; lastInsertId: number }>;
-  select<T = unknown>(query: string, bindValues?: unknown[]): Promise<T[]>;
+interface SqlPool {
   close(db?: string): Promise<boolean>;
 }
 
+/**
+ * Ciclo de vida do pool do `tauri-plugin-sql` — e **só** isso.
+ *
+ * Depois da Fase 4 este serviço não executa mais SQL: quem fala com o banco é
+ * o core Rust, por comando. O plugin continua carregado por dois motivos, e
+ * nenhum deles envolve consulta:
+ *
+ * 1. é ele que aplica as migrations na abertura do app;
+ * 2. restaurar um backup precisa **fechar** o pool antes de trocar o arquivo
+ *    do banco no disco, e reabri-lo depois.
+ *
+ * Por isso a capability perdeu `sql:allow-execute` e manteve `sql:default`.
+ * Se algum dia voltar um `execute`/`select` aqui, a permissão precisa voltar
+ * junto — há teste de fronteira cobrindo os dois lados dessa decisão.
+ */
 @Injectable({ providedIn: 'root' })
 export class DatabaseService {
-  private db: Database | null = null;
-  private dbPath = 'sqlite:narrahub.db';
-  private initPromise: Promise<void> | null = null;
+  private pool: SqlPool | null = null;
+  private readonly path = 'sqlite:narrahub.db';
+  private opening: Promise<void> | null = null;
 
   async init(): Promise<void> {
-    if (this.db) return;
-    if (this.initPromise) return this.initPromise;
-
-    this.initPromise = this._init();
-    return this.initPromise;
+    if (this.pool) return;
+    if (this.opening) return this.opening;
+    this.opening = this.open();
+    return this.opening;
   }
 
-  private async _init(): Promise<void> {
+  private async open(): Promise<void> {
     try {
       const { default: Database } = await import('@tauri-apps/plugin-sql');
-      this.db = await (Database as any).load(this.dbPath);
+      this.pool = await (Database as unknown as { load(path: string): Promise<SqlPool> }).load(this.path);
       console.log('[NarraHub] Database connected');
-    } catch (err) {
-      console.error('[NarraHub] Database init failed:', err);
-      throw err;
+    } catch (error) {
+      console.error('[NarraHub] Database init failed:', error);
+      this.opening = null;
+      throw error;
     }
-  }
-
-  async execute(query: string, params: unknown[] = []): Promise<{ rowsAffected: number; lastInsertId: number }> {
-    await this.init();
-    return this.db!.execute(query, params);
-  }
-
-  async select<T = unknown>(query: string, params: unknown[] = []): Promise<T[]> {
-    await this.init();
-    return this.db!.select<T>(query, params);
-  }
-
-  async selectOne<T = unknown>(query: string, params: unknown[] = []): Promise<T | null> {
-    const results = await this.select<T>(query, params);
-    return results.length > 0 ? results[0] : null;
   }
 
   async close(): Promise<void> {
-    if (this.initPromise) await this.initPromise;
-    if (!this.db) {
-      this.initPromise = null;
+    if (this.opening) await this.opening.catch(() => undefined);
+    if (!this.pool) {
+      this.opening = null;
       return;
     }
-    const closed = await this.db.close();
+    const closed = await this.pool.close();
     if (!closed) throw new Error('O pool SQLite recusou o encerramento necessário para restaurar o backup.');
-    this.db = null;
-    this.initPromise = null;
+    this.pool = null;
+    this.opening = null;
     console.log('[NarraHub] Database connection pool closed');
-  }
-
-  // Utility: generate UUID v4
-  generateId(): string {
-    return crypto.randomUUID();
-  }
-
-  // Utility: current ISO datetime
-  now(): string {
-    return new Date().toISOString().replace('T', ' ').substring(0, 19);
   }
 }

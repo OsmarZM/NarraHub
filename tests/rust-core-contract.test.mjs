@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const featuresDir = fileURLToPath(new URL('../src/app/features/', import.meta.url));
-const interfaceDir = fileURLToPath(new URL('../src-tauri/src/interface/tauri/', import.meta.url));
+const rustSrcDir = fileURLToPath(new URL('../src-tauri/src/', import.meta.url));
 const libSource = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
 
 /** Todos os `rust-<dominio>.gateway.ts` e o contrato abstrato correspondente. */
@@ -60,17 +60,21 @@ test('todo comando chamado pelo frontend existe no Rust e está registrado no in
   // compila normalmente nos dois lados: o erro só aparece em runtime, no
   // clique do usuário. Foi exatamente assim que a migration v14 do canvas
   // passou meses sem nunca rodar.
-  const commandSources = readdirSync(interfaceDir)
-    .filter((name) => name.endsWith('.rs') && name !== 'mod.rs')
-    .map((name) => ({ name, source: readFileSync(join(interfaceDir, name), 'utf8') }));
-
-  const declared = new Map();
-  for (const { name, source } of commandSources) {
-    for (const match of source.matchAll(/#\[tauri::command\]\s*pub fn (\w+)/gu)) {
-      declared.set(match[1], name.replace(/\.rs$/u, ''));
+  // Varre o core inteiro, e não só `interface/tauri`: `planning_save_card`
+  // existe desde antes da Fase 4 e mora em `database/planning.rs`. Restringir
+  // a busca faria o teste reprovar um comando que funciona.
+  const declared = new Set();
+  const walkRust = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) { walkRust(path); continue; }
+      if (!entry.name.endsWith('.rs')) continue;
+      const source = readFileSync(path, 'utf8');
+      for (const match of source.matchAll(/#\[tauri::command\]\s*pub fn (\w+)/gu)) declared.add(match[1]);
     }
-  }
-  assert.ok(declared.size > 0, 'nenhum comando encontrado em interface/tauri');
+  };
+  walkRust(rustSrcDir);
+  assert.ok(declared.size > 0, 'nenhum comando #[tauri::command] encontrado no core');
 
   const called = new Set();
   for (const path of rustGateways()) {
@@ -79,11 +83,16 @@ test('todo comando chamado pelo frontend existe no Rust e está registrado no in
   }
   assert.ok(called.size > 0, 'nenhuma chamada ao core encontrada — o teste ficaria vazio');
 
+  // O invoke_handler lista caminhos completos; basta o comando aparecer como
+  // último segmento de uma das entradas.
+  const registered = new Set(
+    [...libSource.matchAll(/^\s+(?:[\w:]+::)?(\w+),$/gmu)].map((match) => match[1]),
+  );
+
   for (const command of called) {
-    const module = declared.get(command);
-    assert.ok(module, `o frontend chama '${command}', que não existe em interface/tauri`);
+    assert.ok(declared.has(command), `o frontend chama '${command}', que não existe no core Rust`);
     assert.ok(
-      libSource.includes(`interface::tauri::${module}::${command},`),
+      registered.has(command),
       `'${command}' existe mas não está no invoke_handler de lib.rs — falharia só no clique do usuário`,
     );
   }
