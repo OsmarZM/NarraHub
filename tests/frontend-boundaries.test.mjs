@@ -29,6 +29,9 @@ const featureFiles = [
   '../src/app/features/connections/connections-page.component.ts',
   '../src/app/features/connections/state/connections.store.ts',
   '../src/app/features/connections/gateways/connections.gateway.ts',
+  '../src/app/features/planning/planning-board.component.ts',
+  '../src/app/features/planning/state/planning.store.ts',
+  '../src/app/features/planning/gateways/planning.gateway.ts',
   '../src/app/features/knowledge/state/knowledge.store.ts',
   '../src/app/features/knowledge/gateways/knowledge.gateway.ts',
   '../src/app/features/knowledge/tags-modal/tags-modal.component.ts',
@@ -70,6 +73,8 @@ test('dependência SQL temporária fica restrita aos adapters legados', () => {
   assert.match(manuscriptSource, /ChapterService/u);
   const connectionsSource = readFileSync(new URL('../src/app/features/connections/gateways/legacy-connections.gateway.ts', import.meta.url), 'utf8');
   assert.match(connectionsSource, /WorkspaceService/u);
+  const planningSource = readFileSync(new URL('../src/app/features/planning/gateways/legacy-planning.gateway.ts', import.meta.url), 'utf8');
+  assert.match(planningSource, /PlanningService/u);
   const knowledgeSource = readFileSync(new URL('../src/app/features/knowledge/gateways/legacy-knowledge.gateway.ts', import.meta.url), 'utf8');
   assert.match(knowledgeSource, /MetadataService/u);
   assert.match(knowledgeSource, /MentionService/u);
@@ -124,14 +129,6 @@ test('RootLayout não importa páginas de domínio nem serviços legados', () =>
   assert.doesNotMatch(source, /LibraryPageComponent|WritingPageComponent|EntitiesPageComponent|ConnectionsPageComponent|TimelinePageComponent|PlanningBoardComponent|HistoryPageComponent/u);
 });
 
-test('WorkspaceLayout mantém uma única árvore legacy e delega entidades para a feature', () => {
-  const source = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
-  const template = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
-  assert.doesNotMatch(source, /EntityService|AttachmentService|newEntityName|entityGallery|entityAiBusy/u);
-  assert.doesNotMatch(template, /activeEntity\(|newEntityName|entityGallery\(|patchActiveEntity|updateActiveEntity/u);
-  assert.match(template, /<app-entities-page/u);
-  assert.equal((template.match(/<app-entities-page/gu) || []).length, 1);
-});
 
 test('Histórico é a primeira seção do workspace migrada para rota lazy própria (Fase 3.2)', () => {
   const config = readFileSync(new URL('../src/app/app.config.ts', import.meta.url), 'utf8');
@@ -190,21 +187,7 @@ test('WorkspaceLayout delega colaboração e compartilhamento para a feature', (
   assert.match(template, /<app-share-modal/u);
 });
 
-test('WorkspaceLayout delega história/livro/capítulo e o editor para a feature de Manuscrito', () => {
-  const source = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
-  const template = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
-  assert.doesNotMatch(source, /StoryService|BookService|ChapterService|newStoryName|newChapterTitle|editorContent\(|applyFormat/u);
-  assert.doesNotMatch(template, /selectTreeChapter\(|chapter-editor|activeEntityId/u);
-  assert.match(template, /<app-writing-page/u);
-});
 
-test('WorkspaceLayout delega conexões (relações) para a feature', () => {
-  const source = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
-  const template = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
-  assert.doesNotMatch(source, /WorkspaceService|newRelationSource|newRelationTarget|newRelationLabel|loadRelations|createRelation\b/u);
-  assert.doesNotMatch(template, /app-connections-graph|relation-pills-list|new-relation/u);
-  assert.match(template, /<app-connections-page/u);
-});
 
 test('WorkspaceLayout delega tags e menções (Knowledge) para a feature', () => {
   const source = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
@@ -242,36 +225,7 @@ test('o <router-outlet> do workspace fica DENTRO de .workspace-view (regressão:
     'o <router-outlet> precisa estar dentro de <section class="workspace-view">, não depois dela — fora, a página roteada renderiza abaixo da área visível e some atrás do overflow:hidden');
 });
 
-test('a árvore legacy e o router-outlet leem a MESMA fonte de navegação (regressão: tela em branco por dessincronia)', () => {
-  // Segundo bug encontrado durante a validação: havia duas fontes de verdade para "qual seção
-  // mostrar" — a URL (que alimenta o outlet) e appState.workspaceView() (que alimentava o @if
-  // legacy). Capturado no navegador um estado real com URL em /planning e workspaceView em
-  // 'history': nenhum dos dois renderizava nada e a área de conteúdo ficava vazia. Com o @if
-  // lendo activeNav() (derivado de route.data, mesma fonte do outlet) a dessincronia deixa de
-  // ser representável.
-  const template = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
-  assert.doesNotMatch(template, /@if \(appState\.workspaceView\(\)/u,
-    'workspaceView() não pode decidir qual seção renderizar — use activeNav(), derivado da rota');
-  assert.doesNotMatch(template, /@else if \(appState\.workspaceView\(\)/u,
-    'workspaceView() não pode decidir qual seção renderizar — use activeNav(), derivado da rota');
-  for (const nav of ['escrita', 'entidades', 'conexoes', 'planejamento']) {
-    assert.match(template, new RegExp(`activeNav\\(\\) === '${nav}'`, 'u'),
-      `a seção legacy ${nav} deve ser selecionada por activeNav()`);
-  }
-  // workspaceView continua legítimo como SUB-estado dentro da seção de entidades (lista vs. ficha).
-  assert.match(template, /\[view\]="appState\.workspaceView\(\) === 'entity-sheet'/u);
-});
 
-test('carregar dados de um domínio não pode abortar a navegação', () => {
-  // Terceiro defeito encontrado na validação: selectNav() dá await em loadPlanning() ANTES de
-  // chamar navigation.navigate(). Uma rejeição ali abortava a troca de seção inteira — a URL
-  // ficava na seção anterior enquanto workspaceView já havia mudado, produzindo justamente a
-  // dessincronia do teste acima.
-  const source = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
-  const body = source.slice(source.indexOf('async loadPlanning('));
-  assert.match(body.slice(0, 600), /try \{[\s\S]*catch \(error\)/u,
-    'loadPlanning() precisa tratar o próprio erro, senão uma falha de banco impede a navegação');
-});
 
 test('restoreRoute() não usa activeNav() pra detectar navegação já processada (regressão do bug de deep link em Histórico/Timeline)', () => {
   // Bug real: activeNav() é computed(() => navigation.activeData().navigationId), ou seja, é derivado
@@ -349,4 +303,90 @@ test('toda migration existente esta registrada no tauri-plugin-sql (regressao: c
     `toda MIGRATION_Vn precisa estar em add_migrations() de lib.rs. Declaradas: ${declared}. Registradas: ${registered}.`);
   assert.equal(latest, Math.max(...declared),
     'LATEST_SCHEMA_VERSION precisa acompanhar a ultima migration declarada');
+});
+
+test('Fase 3 concluída: toda seção do workspace é rota lazy e o layout não hospeda página', () => {
+  const routes = readFileSync(new URL('../src/app/app.routes.ts', import.meta.url), 'utf8');
+  const layout = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
+  const template = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
+
+  // toda seção carrega por loadComponent, nenhuma sobrou como children: []
+  for (const section of ['writing', 'entities', 'connections', 'timeline', 'planning', 'history']) {
+    const at = routes.indexOf(`path: '${section}'`);
+    assert.ok(at >= 0, `a rota ${section} precisa existir`);
+    assert.ok(routes.slice(at, at + 320).includes('loadComponent'),
+      `a seção ${section} precisa ser uma rota lazy (loadComponent)`);
+  }
+  assert.ok(!routes.includes('children: []'), 'nenhuma seção pode continuar sem componente roteado');
+
+  // o layout virou moldura: nenhuma página no template nem nos imports
+  for (const tag of ['app-writing-page', 'app-entities-page', 'app-connections-page', 'app-planning-board', 'app-timeline-page', 'app-history-page']) {
+    assert.doesNotMatch(template, new RegExp(`<${tag}`, 'u'), `${tag} não pode ser montada pelo layout`);
+  }
+  assert.doesNotMatch(layout, /WritingPageComponent|EntitiesPageComponent|ConnectionsPageComponent|PlanningBoardComponent|TimelinePageComponent|HistoryPageComponent/u);
+  assert.match(template, /<router-outlet/u);
+
+  // o gatilho de criação do cabeçalho chega pelo outlet, não por @ViewChild de página
+  for (const page of ['Writing', 'Entities', 'Connections', 'Planning', 'Timeline', 'History']) {
+    assert.ok(!layout.includes(`@ViewChild(${page}`), `@ViewChild(${page}...) não alcança página vinda do outlet`);
+  }
+  assert.match(layout, /beginCreateOnActivePage/u);
+});
+
+test('Fase 3 concluída: AppState não representa mais a rota ativa', () => {
+  const appState = readFileSync(new URL('../src/app/core/state/app.state.ts', import.meta.url), 'utf8');
+  // Só o código conta: o comentário que explica a remoção pode citar o nome.
+  const code = appState.split(String.fromCharCode(10)).filter((line) => !line.trim().startsWith('*') && !line.trim().startsWith('//')).join(' ');
+  assert.ok(!code.includes('workspaceView') && !code.includes('WorkspaceView'),
+    'workspaceView duplicava a URL e já causou tela em branco quando os dois discordaram');
+  for (const method of ['openEditor', 'openEntityList', 'openEntitySheet', 'openGraph', 'openTimeline', 'openPlanning', 'openHistory', 'openSettings']) {
+    assert.ok(!appState.includes(`${method}(`), `${method}() só existia para escolher a tela — isso é papel do Router`);
+  }
+  // varredura geral: nada no app pode voltar a decidir tela por workspaceView
+  const layout = readFileSync(new URL('../src/app/workspace-layout.component.html', import.meta.url), 'utf8');
+  assert.ok(!layout.includes('appState.workspaceView'));
+});
+
+test('coordenação cross-domain vive acima das features, não num layout', () => {
+  // Regra da Fase 3: desmontar o layout não pode transferir coordenação de
+  // domínio para outro componente monolítico.
+  const sync = readFileSync(new URL('../src/app/application/workspace-sync.service.ts', import.meta.url), 'utf8');
+  assert.match(sync, /onEntityMutated/u);
+  assert.match(sync, /onChapterPersisted/u);
+  const layout = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(layout, /onEntityMutation|onChapterPersisted/u,
+    'o layout não pode voltar a orquestrar efeitos entre domínios');
+});
+
+test('sair de Escrita salva o capítulo, sem substituir o saveNow() explícito', () => {
+  const routes = readFileSync(new URL('../src/app/app.routes.ts', import.meta.url), 'utf8');
+  const guard = readFileSync(new URL('../src/app/routing/unsaved-chapter.guard.ts', import.meta.url), 'utf8');
+  assert.ok(routes.includes('canDeactivate: [unsavedChapterGuard]'));
+  assert.ok(guard.includes('saveNow()'));
+  assert.match(guard, /return true/u, 'o guard nunca bloqueia: prender o usuário na tela não recupera o texto');
+  // fechar janela / atualizar / restaurar backup acontecem fora do Router
+  const root = readFileSync(new URL('../src/app/root-layout.component.ts', import.meta.url), 'utf8');
+  assert.ok(root.includes('manuscript.saveNow()'), 'fechar a janela continua salvando por conta própria');
+});
+
+test('página roteada não declara @Input que a rota não alimenta (regressão: input zerado por withComponentInputBinding)', () => {
+  // withComponentInputBinding() SOBRESCREVE com undefined todo @Input sem
+  // correspondente em params/data da rota — o inicializador da classe não
+  // protege. Isso quebrou o template de Conexões com "reading 'length' of
+  // undefined" quando a página deixou de receber [entities] do layout.
+  // Só `universeId` vem da rota (via paramsInheritanceStrategy: 'always').
+  const pages = {
+    'manuscript/writing-page': 'writing-page',
+    'entities/entities-page/entities-page': 'entities-page',
+    'connections/connections-page': 'connections-page',
+    'planning/planning-board': 'planning-board',
+    'timeline/timeline-page': 'timeline-page',
+    'history/history-page': 'history-page',
+  };
+  for (const path of Object.keys(pages)) {
+    const source = readFileSync(new URL(`../src/app/features/${path}.component.ts`, import.meta.url), 'utf8');
+    const inputs = [...source.matchAll(/@Input\([^)]*\)\s+(\w+)/gu)].map((m) => m[1]);
+    assert.deepEqual(inputs, ['universeId'],
+      `${path} só pode declarar @Input() universeId — o resto vem de store. Encontrado: ${inputs.join(', ') || '(nenhum)'}`);
+  }
 });

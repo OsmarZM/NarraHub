@@ -12,20 +12,16 @@ import { DatabaseService } from './core/services/database.service';
 import { AppNavigationId, AppRouteState } from './core/navigation/app-navigation';
 import { AppNavigationService } from './core/navigation/app-navigation.service';
 import { OnlineShareDocument, SharedUniverse } from './core/services/online-share.service';
-import { PlanningService } from './core/services/planning.service';
 import { AppState } from './core/state/app.state';
 import { ShareCreateRequest, ShareModalComponent } from './features/collaboration/share-modal/share-modal.component';
 import { CollaborationStore } from './features/collaboration/state/collaboration.store';
-import { ConnectionsPageComponent } from './features/connections/connections-page.component';
 import { ConnectionsStore } from './features/connections/state/connections.store';
-import { EntitiesPageComponent, EntityMutationKind } from './features/entities/entities-page/entities-page.component';
 import { EntityHubType, EntityStore } from './features/entities/state/entity.store';
-import { PlanningBoardComponent } from './features/planning/planning-board.component';
+import { PlanningStore } from './features/planning/state/planning.store';
 import { HistoryStore } from './features/history/state/history.store';
 import { KnowledgeStore } from './features/knowledge/state/knowledge.store';
 import { TagsModalComponent } from './features/knowledge/tags-modal/tags-modal.component';
 import { UniverseStore } from './features/library/state/universe.store';
-import { ManuscriptMetadataRequest, WritingPageComponent } from './features/manuscript/writing-page.component';
 import { ManuscriptStore } from './features/manuscript/state/manuscript.store';
 import { SettingsStore } from './features/settings/state/settings.store';
 import { TimelineStore } from './features/timeline/state/timeline.store';
@@ -64,12 +60,8 @@ function supportsCreate(page: unknown): page is CreatableRoutedPage {
     FormsModule,
     RouterOutlet,
     UniverseSidebarComponent,
-    EntitiesPageComponent,
-    ConnectionsPageComponent,
-    PlanningBoardComponent,
     ShareModalComponent,
     TagsModalComponent,
-    WritingPageComponent,
   ],
   templateUrl: './workspace-layout.component.html',
   styleUrl: './workspace-layout.component.css',
@@ -85,7 +77,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   private readonly connectionsStore = inject(ConnectionsStore);
   private readonly entityStore = inject(EntityStore);
   private readonly manuscriptStore = inject(ManuscriptStore);
-  private readonly planningService = inject(PlanningService);
+  private readonly planningStore = inject(PlanningStore);
   private readonly settingsStore = inject(SettingsStore);
   private readonly historyStore = inject(HistoryStore);
   private readonly timelineStore = inject(TimelineStore);
@@ -98,7 +90,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   readonly entityFilter = this.entityStore.filter;
   readonly mentionOccurrences = this.knowledgeStore.mentionOccurrences;
   readonly timeline = this.timelineStore.events;
-  readonly planning = signal<PlanningItem[]>([]);
+  readonly planning = this.planningStore.items;
   readonly activeStory = this.manuscriptStore.activeStory;
   readonly activeBook = this.manuscriptStore.activeBook;
   readonly activeChapter = this.manuscriptStore.activeChapter;
@@ -142,9 +134,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     return results.slice(0, 24);
   });
 
-  @ViewChild(WritingPageComponent) private writingPage?: WritingPageComponent;
-  @ViewChild(PlanningBoardComponent) private planningBoard?: PlanningBoardComponent;
-  @ViewChild(EntitiesPageComponent) readonly entitiesPage?: EntitiesPageComponent;
 
   private workspaceEpoch = 0;
   private restoringRoute = false;
@@ -164,13 +153,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   private activeRoutedPage: unknown = null;
 
   constructor() {
-    // Hook cross-domain: o ManuscriptStore não pode conhecer o KnowledgeStore
-    // (menções são um domínio à parte). Ver o comentário do campo no próprio
-    // ManuscriptStore.
-    this.manuscriptStore.onChapterPersisted = (chapterId, content) => {
-      void this.knowledgeStore.syncChapterMentions(chapterId, content, this.entities());
-      void this.refreshUniverseStats();
-    };
     effect(() => {
       const route = this.navigation.route();
       void this.restoreRoute(route);
@@ -196,17 +178,9 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     if (item.id === 'inicio') { await this.returnToLibrary(updateRoute); return; }
     if (item.id === 'ajuda') { this.showInfo('Ajuda e feedback serão conectados ao fluxo nativo em uma próxima fase.'); return; }
     if (item.id === 'configuracoes') { this.openSettings(updateRoute); return; }
-    if (item.id === 'escrita') this.appState.openEditor();
-    else if (item.id === 'entidades') {
-      this.entityStore.setFilter(null);
-      this.appState.openEntityList();
-    }
-    // A própria ConnectionsPageComponent carrega as relações do universo ao
-    // montar (ngOnChanges em [universeId]); não é preciso pré-carregar aqui.
-    else if (item.id === 'conexoes') this.appState.openGraph();
-    else if (item.id === 'timeline') this.appState.openTimeline();
-    else if (item.id === 'planejamento') { this.appState.openPlanning(); await this.loadPlanning(); }
-    else if (item.id === 'historico') this.appState.openHistory();
+    // Entrar em Entidades pelo menu sempre mostra o hub inteiro, não o último filtro.
+    if (item.id === 'entidades') this.entityStore.setFilter(null);
+    // Cada página roteada carrega o próprio domínio ao montar; o layout só navega.
     if (updateRoute) await this.navigation.navigate(item.id as AppNavigationId, this.appState.activeUniverseId());
   }
 
@@ -257,7 +231,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     this.lastSyncedRouteKey = this.routeKey('configuracoes', null);
     await this.saveChapterNow();
     this.searchQuery.set('');
-    this.appState.openSettings();
     if (updateRoute) await this.navigation.navigate('configuracoes', null);
   }
 
@@ -272,7 +245,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     this.appState.openModal('share-content');
   }
 
-  beginCreateChapter(): void { this.writingPage?.openCreateChapter(); }
   toggleInspector(): void { this.manuscriptStore.toggleInspector(); }
   manuscriptStories() { return this.manuscriptStore.stories(); }
   manuscriptChapters() { return this.manuscriptStore.universeChapters(); }
@@ -281,35 +253,32 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     const id = this.appState.activeUniverseId(); if (!id) return;
     const epoch = this.workspaceEpoch;
     try {
-      const [, , , planning] = await Promise.all([
+      await Promise.all([
         this.entityStore.load(id, true),
         this.timelineStore.load(id),
         this.manuscriptStore.load(id),
-        this.planningService.list(id),
+        this.planningStore.load(id),
         this.knowledgeStore.load(id),
       ]);
       if (epoch !== this.workspaceEpoch || this.appState.activeUniverseId() !== id) return;
-      this.planning.set(planning);
       this.loadedUniverseId = id;
       void this.knowledgeStore.rebuildMentionIndex(id, this.manuscriptStore.universeChapters(), this.entityStore.entities());
     } catch (error) { this.reportError('Não foi possível carregar os dados do universo.', error); }
   }
 
   async openBookOption(book: BookOption): Promise<void> {
-    if (await this.manuscriptStore.openBookOption(book)) { this.setWorkspaceNavigation('escrita'); this.appState.openEditor(); }
+    if (await this.manuscriptStore.openBookOption(book)) this.setWorkspaceNavigation('escrita');
   }
 
   async openChapterOption(option: ChapterOption): Promise<void> {
-    if (await this.manuscriptStore.openChapterOption(option)) { this.setWorkspaceNavigation('escrita'); this.appState.openEditor(); }
+    if (await this.manuscriptStore.openChapterOption(option)) this.setWorkspaceNavigation('escrita');
   }
 
   private async saveChapterNow(): Promise<void> { await this.manuscriptStore.saveNow(); }
 
-  beginCreateEntity(): void { this.entitiesPage?.openCreate(); }
 
   selectEntityTab(type: EntityHubType | null): void {
     this.entityStore.setFilter(type);
-    this.appState.openEntityList();
   }
 
   entityCreateLabel(): string { return this.entityStore.createLabel(); }
@@ -318,9 +287,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     const universeId = this.appState.activeUniverseId();
     if (!universeId || !await this.entityStore.open(universeId, entity)) {
       this.reportError('Não foi possível abrir a ficha.', this.entityStore.error());
-      return;
     }
-    this.appState.openEntitySheet();
   }
 
   onManuscriptEntityOpen(entity: Entity): void {
@@ -329,47 +296,13 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     void this.openEntitySheet(entity);
   }
 
-  onEntityViewChanged(view: 'entities' | 'entity-sheet'): void {
-    if (view === 'entities') this.appState.openEntityList();
-    else if (this.entityStore.activeEntity()) this.appState.openEntitySheet();
-  }
-
-  async onEntityMutation(kind: EntityMutationKind): Promise<void> {
-    const universeId = this.appState.activeUniverseId();
-    if (kind === 'created') await this.refreshUniverseStats();
-    else if (kind === 'renamed') await Promise.all([
-      universeId ? this.connectionsStore.load(universeId) : Promise.resolve(),
-      universeId ? this.knowledgeStore.refreshMentionOccurrences(universeId) : Promise.resolve(),
-    ]);
-    else if (kind === 'deleted') {
-      await Promise.all([
-        this.refreshUniverseStats(),
-        this.manuscriptStore.refreshUniverseLists(),
-        universeId ? this.connectionsStore.load(universeId) : Promise.resolve(),
-        universeId ? this.knowledgeStore.refreshMentionOccurrences(universeId) : Promise.resolve(),
-      ]);
-    }
-  }
-
-  onEntityInfo(message: string): void { this.showInfo(message); }
-
-  onEntityFailure(message: string): void { this.reportError(message, message); }
-
-  onManuscriptInfo(message: string): void { this.showInfo(message); }
-
-  onManuscriptFailed(message: string): void { this.reportError(message, message); }
-
-  onManuscriptMetadata(request: ManuscriptMetadataRequest): void {
-    void this.openMetadata(request.type, request.id, request.name);
-  }
-
   onKnowledgeFailed(message: string): void { this.reportError(message, message); }
 
   async openGlobalSearchResult(result: GlobalSearchResult): Promise<void> {
     this.searchQuery.set('');
     if (result.kind === 'story') {
       const opened = await this.manuscriptStore.openStoryById(result.id);
-      if (opened) { this.setWorkspaceNavigation('escrita'); this.appState.openEditor(); }
+      if (opened) this.setWorkspaceNavigation('escrita');
     } else if (result.kind === 'book') {
       const book = this.manuscriptStore.universeBooks().find((item) => item.id === result.id); if (book) await this.openBookOption(book);
     } else if (result.kind === 'chapter') {
@@ -377,9 +310,9 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     } else if (result.kind === 'entity') {
       const entity = this.entities().find((item) => item.id === result.id); if (entity) { this.setWorkspaceNavigation('entidades'); this.selectEntityTab(entity.type as EntityHubType); await this.openEntitySheet(entity); }
     } else if (result.kind === 'timeline') {
-      this.setWorkspaceNavigation('timeline'); this.appState.openTimeline(); queueMicrotask(() => document.querySelector<HTMLElement>(`[data-timeline-id="${result.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+      this.setWorkspaceNavigation('timeline'); queueMicrotask(() => document.querySelector<HTMLElement>(`[data-timeline-id="${result.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
     } else {
-      this.setWorkspaceNavigation('planejamento'); this.appState.openPlanning(); queueMicrotask(() => document.querySelector<HTMLElement>(`[data-planning-id="${result.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+      this.setWorkspaceNavigation('planejamento'); queueMicrotask(() => document.querySelector<HTMLElement>(`[data-planning-id="${result.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
     }
   }
 
@@ -394,18 +327,10 @@ export class WorkspaceLayoutComponent implements OnDestroy {
    * renderizadas ao mesmo tempo. Carregar dados de um domínio nunca deve
    * impedir a navegação.
    */
-  async loadPlanning(): Promise<void> {
-    const id = this.appState.activeUniverseId();
-    if (!id) return;
-    try {
-      const data = await this.planningService.list(id);
-      if (this.appState.activeUniverseId() === id) this.planning.set(data);
-    } catch (error) {
-      this.reportError('Não foi possível carregar o planejamento.', error);
-    }
+  /** Gatilho único: a página ativa chega pelo (activate) do outlet, não por @ViewChild. */
+  beginCreateOnActivePage(): void {
+    if (supportsCreate(this.activeRoutedPage)) this.activeRoutedPage.openCreate();
   }
-  beginCreatePlanning(): void { this.planningBoard?.openCreate(); }
-  beginCreateTimeline(): void { if (supportsCreate(this.activeRoutedPage)) this.activeRoutedPage.openCreate(); }
 
   onWorkspaceOutletActivate(component: unknown): void { this.activeRoutedPage = component; }
   onWorkspaceOutletDeactivate(): void { this.activeRoutedPage = null; }
@@ -561,7 +486,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     this.connectionsStore.reset();
     this.timelineStore.reset();
     this.historyStore.reset();
-    this.planning.set([]);
+    this.planningStore.reset();
   }
 
   private async buildSharedUniverse(universe: UniverseWithStats, includeChapters: boolean, includeEntities: boolean): Promise<SharedUniverse> {

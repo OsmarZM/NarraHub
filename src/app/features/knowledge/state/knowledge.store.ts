@@ -19,6 +19,8 @@ export class KnowledgeStore {
   readonly libraryPreviewTags = signal<Record<string, ContentTag[]>>({});
   readonly workspacePreviewTags = signal<Record<string, ContentTag[]>>({});
   readonly mentionOccurrences = signal<MentionOccurrence[]>([]);
+  /** Todas as tags do universo — quem monta seletor de tag (ex.: card de planejamento) lê daqui. */
+  readonly universeTags = signal<ContentTag[]>([]);
   readonly metadataTarget = signal<MetadataTarget | null>(null);
   readonly metadataTags = signal<ContentTag[]>([]);
   readonly metadataOwnerTags = signal<ContentTag[]>([]);
@@ -28,9 +30,13 @@ export class KnowledgeStore {
     const revision = ++this.loadRevision;
     this.requestedUniverseId = universeId;
     try {
-      const assignments = await this.gateway.listTagAssignments([universeId]);
+      const [assignments, tags] = await Promise.all([
+        this.gateway.listTagAssignments([universeId]),
+        this.gateway.listTags(universeId),
+      ]);
       if (revision !== this.loadRevision || this.requestedUniverseId !== universeId) return;
       this.workspacePreviewTags.set(this.groupTagAssignments(assignments));
+      this.universeTags.set(tags);
     } catch (error) {
       if (revision === this.loadRevision) this.setError(error, 'Não foi possível carregar as tags do universo.');
     }
@@ -40,6 +46,7 @@ export class KnowledgeStore {
     this.loadRevision += 1;
     this.requestedUniverseId = '';
     this.workspacePreviewTags.set({});
+    this.universeTags.set([]);
     this.mentionOccurrences.set([]);
     this.metadataTarget.set(null);
     this.metadataTags.set([]);
@@ -130,6 +137,39 @@ export class KnowledgeStore {
     this.metadataOwnerTags.set(ownerTags);
     if (this.requestedUniverseId === universeId) await this.load(universeId);
     if (target.type === 'universe') await this.refreshLibraryPreviewTags();
+  }
+
+  /** Tags aplicadas a um dono qualquer, na forma que os previews já carregam. */
+  tagsForOwner(type: MetadataOwnerType, id: string): ContentTag[] {
+    return this.workspacePreviewTags()[`${type}:${id}`] ?? [];
+  }
+
+  /** Aplica/remove uma tag num dono fora do modal (ex.: card de planejamento). */
+  async setTagOnOwner(type: MetadataOwnerType, id: string, tagId: string, assigned: boolean): Promise<boolean> {
+    try {
+      await this.gateway.setTag(type, id, tagId, assigned);
+      if (this.requestedUniverseId) await this.load(this.requestedUniverseId);
+      return true;
+    } catch (error) {
+      this.setError(error, 'Não foi possível atualizar a tag.');
+      return false;
+    }
+  }
+
+  /** Cria uma tag no universo e já aplica ao dono informado. */
+  async createTagForOwner(type: MetadataOwnerType, id: string, name: string, color: string): Promise<boolean> {
+    const universeId = this.requestedUniverseId;
+    const trimmed = name.trim();
+    if (!universeId || !trimmed) return false;
+    try {
+      const tag = await this.gateway.createTag(universeId, trimmed, color);
+      await this.gateway.setTag(type, id, tag.id, true);
+      await this.load(universeId);
+      return true;
+    } catch (error) {
+      this.setError(error, 'Não foi possível criar a tag. Verifique se esse nome já existe.');
+      return false;
+    }
   }
 
   // ── Menções ──

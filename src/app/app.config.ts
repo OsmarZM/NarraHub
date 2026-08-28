@@ -15,6 +15,8 @@ import { LegacyKnowledgeGateway } from './features/knowledge/gateways/legacy-kno
 import { LegacyUniverseGateway } from './features/library/gateways/legacy-universe.gateway';
 import { UniverseGateway } from './features/library/gateways/universe.gateway';
 import { LegacyManuscriptGateway } from './features/manuscript/gateways/legacy-manuscript.gateway';
+import { LegacyPlanningGateway } from './features/planning/gateways/legacy-planning.gateway';
+import { PlanningGateway } from './features/planning/gateways/planning.gateway';
 import { ManuscriptGateway } from './features/manuscript/gateways/manuscript.gateway';
 import { LegacyTimelineGateway } from './features/timeline/gateways/legacy-timeline.gateway';
 import { TimelineGateway } from './features/timeline/gateways/timeline.gateway';
@@ -34,6 +36,7 @@ export const appConfig: ApplicationConfig = {
     { provide: HistoryGateway, useExisting: LegacyHistoryGateway },
     { provide: KnowledgeGateway, useExisting: LegacyKnowledgeGateway },
     { provide: ManuscriptGateway, useExisting: LegacyManuscriptGateway },
+    { provide: PlanningGateway, useExisting: LegacyPlanningGateway },
     { provide: TimelineGateway, useExisting: LegacyTimelineGateway },
     { provide: UniverseGateway, useExisting: LegacyUniverseGateway },
   ]

@@ -28,69 +28,12 @@
           <div class="workspace-actions"><span class="save-state" [class.saving]="isSaving()"><i></i>{{ saveMessage() || 'Banco local conectado' }}</span>
             <button type="button" class="secondary-button" title="Renomear universo" (click)="beginRenameUniverse()">✎ Renomear</button><button type="button" class="secondary-button metadata-button" title="Tags do universo" (click)="openMetadata('universe', universe.id, universe.name)"># Tags</button>
             <button type="button" class="secondary-button" (click)="openShareModal()">↗ Compartilhar</button>
-            @if (activeNav() === 'escrita') { <button type="button" class="secondary-button" [class.active]="inspectorOpen()" [disabled]="!activeChapter()" (click)="toggleInspector()">{{ inspectorOpen() ? 'Ocultar resumo' : 'Resumo do capítulo' }}</button><button type="button" class="secondary-button" (click)="beginCreateChapter()" [disabled]="!activeBook()">＋ Capítulo</button> }
-            @else if (activeNav() === 'entidades' && entityFilter()) { <button type="button" class="primary-button small" (click)="beginCreateEntity()">＋ {{ entityCreateLabel() }}</button> }
-            @else if (activeNav() === 'timeline') { <button type="button" class="primary-button small" (click)="beginCreateTimeline()">＋ Evento</button> }
-            @else if (activeNav() === 'planejamento') { <button type="button" class="primary-button small" (click)="beginCreatePlanning()">＋ Card</button> }
+            @if (activeNav() === 'escrita') { <button type="button" class="secondary-button" [class.active]="inspectorOpen()" [disabled]="!activeChapter()" (click)="toggleInspector()">{{ inspectorOpen() ? 'Ocultar resumo' : 'Resumo do capítulo' }}</button><button type="button" class="secondary-button" (click)="beginCreateOnActivePage()" [disabled]="!activeBook()">＋ Capítulo</button> }
+            @else if (activeNav() === 'entidades' && entityFilter()) { <button type="button" class="primary-button small" (click)="beginCreateOnActivePage()">＋ {{ entityCreateLabel() }}</button> }
+            @else if (activeNav() === 'timeline') { <button type="button" class="primary-button small" (click)="beginCreateOnActivePage()">＋ Evento</button> }
+            @else if (activeNav() === 'planejamento') { <button type="button" class="primary-button small" (click)="beginCreateOnActivePage()">＋ Card</button> }
           </div>
         </header>
-
-        <!-- Qual seção renderizar vem de activeNav() (derivado de route.data), a MESMA
-             fonte que alimenta o <router-outlet> abaixo. Usar appState.workspaceView()
-             aqui criava uma segunda fonte de verdade: bastava a URL e o workspaceView
-             discordarem (ex.: URL em /planning com workspaceView 'history') para nenhum
-             dos dois renderizar nada e a área de conteúdo ficar em branco.
-             workspaceView() continua válido só como sub-estado DENTRO de uma seção
-             (lista de entidades vs. ficha aberta). -->
-        @if (activeNav() === 'escrita') {
-          <app-writing-page
-            [universeId]="universe.id"
-            [universeName]="universe.name"
-            [universeDescription]="universe.description"
-            [entities]="entities()"
-            [mentionOccurrences]="mentionOccurrences()"
-            [tagsByOwner]="knowledgeStore.workspacePreviewTags()"
-            [focusMode]="isFocusMode()"
-            (focusModeChange)="isFocusMode.set($event)"
-            (fullscreenRequested)="toggleFullscreen()"
-            (metadataRequested)="onManuscriptMetadata($event)"
-            (entityOpenRequested)="onManuscriptEntityOpen($event)"
-            (info)="onManuscriptInfo($event)"
-            (failed)="onManuscriptFailed($event)"
-          />
-        } @else if (activeNav() === 'entidades') {
-          <app-entities-page
-            [universeId]="universe.id"
-            [universeName]="universe.name"
-            [universeDescription]="universe.description"
-            [view]="appState.workspaceView() === 'entity-sheet' ? 'entity-sheet' : 'entities'"
-            [query]="searchQuery()"
-            [tagsByOwner]="knowledgeStore.workspacePreviewTags()"
-            (viewChanged)="onEntityViewChanged($event)"
-            (metadataRequested)="openMetadata('entity', $event.id, $event.title)"
-            (mutated)="onEntityMutation($event)"
-            (info)="onEntityInfo($event)"
-            (failed)="onEntityFailure($event)"
-          />
-        } @else if (activeNav() === 'conexoes') {
-          <app-connections-page
-            [universeId]="universe.id"
-            [entities]="entities()"
-            (entityOpenRequested)="openEntitySheet($event)"
-            (info)="onConnectionsInfo($event)"
-            (failed)="onConnectionsFailed($event)"
-          />
-        } @else if (activeNav() === 'planejamento') {
-          <app-planning-board
-            [universeId]="universe.id"
-            [items]="planning()"
-            [chapters]="manuscriptChapters()"
-            [stories]="manuscriptStories()"
-            [entities]="entities()"
-            (itemsChange)="planning.set($event)"
-            (chapterOpened)="openPlanningChapter($event)"
-          />
-        }
 
         <!-- As páginas já migradas para rota (Histórico, Timeline) entram AQUI, no
              mesmo slot de conteúdo que as páginas legacy acima ocupam. O outlet

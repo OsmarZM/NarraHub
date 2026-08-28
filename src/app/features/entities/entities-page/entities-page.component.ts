@@ -1,6 +1,10 @@
-import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges, ViewEncapsulation, computed, inject, signal } from '@angular/core';
+import { Component, Input, OnChanges, SimpleChanges, ViewEncapsulation, computed, effect, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { AiService } from '../../../core/services/ai.service';
+import { AppState } from '../../../core/state/app.state';
+import { WorkspaceSyncService } from '../../../application/workspace-sync.service';
+import { KnowledgeStore } from '../../knowledge/state/knowledge.store';
+import { ShellState } from '../../../shell/state/shell.state';
 import { ContentTag, DEFAULT_ATTRIBUTES, Entity, EntityAttribute, EntityType } from '../../../core/models';
 import { fileToDataUrl } from '../../../shared/utils/file-to-data-url';
 import { EntityCardComponent } from '../components/entity-card/entity-card.component';
@@ -38,19 +42,19 @@ type EntityModal = 'create' | 'rename' | 'delete' | null;
 })
 export class EntitiesPageComponent implements OnChanges {
   @Input({ required: true }) universeId = '';
-  @Input() universeName = '';
-  @Input() universeDescription = '';
-  @Input() view: 'entities' | 'entity-sheet' = 'entities';
-  @Input() query = '';
-  @Input() tagsByOwner: Record<string, ContentTag[]> = {};
-  @Output() readonly viewChanged = new EventEmitter<'entities' | 'entity-sheet'>();
-  @Output() readonly metadataRequested = new EventEmitter<EntityMetadataRequest>();
-  @Output() readonly mutated = new EventEmitter<EntityMutationKind>();
-  @Output() readonly info = new EventEmitter<string>();
-  @Output() readonly failed = new EventEmitter<string>();
 
   readonly store = inject(EntityStore);
   readonly ai = inject(AiService);
+  private readonly appState = inject(AppState);
+  private readonly shell = inject(ShellState);
+  private readonly knowledgeStore = inject(KnowledgeStore);
+  private readonly sync = inject(WorkspaceSyncService);
+
+  /** Lista x ficha aberta é sub-estado desta página, não navegação. */
+  readonly view = signal<'entities' | 'entity-sheet'>('entities');
+  get universeName(): string { return this.appState.activeUniverse()?.name ?? ''; }
+  get universeDescription(): string { return this.appState.activeUniverse()?.description ?? ''; }
+  get query(): string { return this.shell.searchQuery(); }
   readonly modal = signal<EntityModal>(null);
   readonly pendingEntity = signal<Entity | null>(null);
   readonly entityAiBusy = signal(false);
@@ -72,24 +76,29 @@ export class EntitiesPageComponent implements OnChanges {
   newEntityType: EntityType = 'Personagem';
   renameValue = '';
 
+  constructor() {
+    // A busca global vive no shell; refletir aqui mantém o filtro do hub em dia
+    // sem a página precisar de um @Input vindo do layout.
+    effect(() => this.store.setQuery(this.shell.searchQuery()));
+  }
+
   ngOnChanges(changes: SimpleChanges): void {
-    if (changes['query']) this.store.setQuery(this.query);
     if (changes['universeId']) void this.store.load(this.universeId);
   }
 
   selectType(type: EntityHubType | null): void {
     this.store.setFilter(type);
-    this.viewChanged.emit('entities');
+    this.view.set('entities');
   }
 
   async openEntity(entity: Entity): Promise<void> {
-    if (await this.store.open(this.universeId, entity)) this.viewChanged.emit('entity-sheet');
+    if (await this.store.open(this.universeId, entity)) this.view.set('entity-sheet');
     else this.reportStoreError('Não foi possível abrir a ficha.');
   }
 
   backToList(): void {
     this.store.clearSelection();
-    this.viewChanged.emit('entities');
+    this.view.set('entities');
   }
 
   openCreate(): void {
@@ -141,7 +150,7 @@ export class EntitiesPageComponent implements OnChanges {
       this.ai.remember(this.universeId, 'entity', `Criou ${this.newEntityType.toLocaleLowerCase('pt-BR')} ${name} com os campos ${this.newEntityAiAttributes.map((item) => item.key).join(', ')}.`);
     }
     this.modal.set(null);
-    this.mutated.emit('created');
+    void this.sync.onEntityMutated('created');
     await this.openEntity(created);
   }
 
@@ -152,8 +161,8 @@ export class EntitiesPageComponent implements OnChanges {
     if (!await this.store.rename(this.universeId, entity.id, name)) { this.reportStoreError(`Não foi possível renomear ${entity.name}.`); return; }
     this.pendingEntity.set(null);
     this.modal.set(null);
-    this.mutated.emit('renamed');
-    this.info.emit('Entidade renomeada.');
+    void this.sync.onEntityMutated('renamed');
+    this.shell.showInfo('Entidade renomeada.');
   }
 
   async confirmDelete(): Promise<void> {
@@ -162,29 +171,31 @@ export class EntitiesPageComponent implements OnChanges {
     if (!await this.store.delete(this.universeId, entity.id)) { this.reportStoreError(`Não foi possível excluir ${entity.name}.`); return; }
     this.pendingEntity.set(null);
     this.modal.set(null);
-    this.viewChanged.emit('entities');
-    this.mutated.emit('deleted');
-    this.info.emit('Entidade excluída do banco local.');
+    this.view.set('entities');
+    void this.sync.onEntityMutated('deleted');
+    this.shell.showInfo('Entidade excluída do banco local.');
   }
 
   async saveActive(): Promise<void> {
     if (!await this.store.saveActive()) { this.reportStoreError('Não foi possível salvar a ficha.'); return; }
-    this.mutated.emit('updated');
-    this.info.emit('Ficha salva.');
+    void this.sync.onEntityMutated('updated');
+    this.shell.showInfo('Ficha salva.');
   }
 
   requestMetadata(): void {
     const entity = this.store.activeEntity();
-    if (entity) this.metadataRequested.emit({ id: entity.id, title: entity.name });
+    if (!entity) return;
+    void this.knowledgeStore.openMetadata('entity', entity.id, entity.name, this.appState.activeUniverseId());
+    this.appState.openModal('metadata');
   }
 
   activeTags(): ContentTag[] {
     const entityId = this.store.activeEntity()?.id;
-    return entityId ? this.tagsByOwner[`entity:${entityId}`] ?? [] : [];
+    return entityId ? this.knowledgeStore.tagsForOwner('entity', entityId) : [];
   }
 
   tags(entityId: string): ContentTag[] {
-    return this.tagsByOwner[`entity:${entityId}`] ?? [];
+    return this.knowledgeStore.tagsForOwner('entity', entityId);
   }
 
   defaultFieldsForNewEntity(): string[] {
@@ -196,16 +207,16 @@ export class EntitiesPageComponent implements OnChanges {
     const file = input.files?.[0];
     input.value = '';
     if (!file) return;
-    if (!file.type.startsWith('image/')) { this.info.emit('Escolha um arquivo de imagem.'); return; }
-    if (file.size > 8 * 1024 * 1024) { this.info.emit('A imagem deve ter no máximo 8 MB.'); return; }
+    if (!file.type.startsWith('image/')) { this.shell.showInfo('Escolha um arquivo de imagem.'); return; }
+    if (file.size > 8 * 1024 * 1024) { this.shell.showInfo('A imagem deve ter no máximo 8 MB.'); return; }
     const dataUrl = await fileToDataUrl(file);
     if (target === 'new') { this.newEntityImageData = dataUrl; return; }
-    if (await this.store.updateImage(dataUrl)) this.info.emit('Imagem principal atualizada.');
+    if (await this.store.updateImage(dataUrl)) this.shell.showInfo('Imagem principal atualizada.');
     else this.reportStoreError('Não foi possível atualizar a imagem principal.');
   }
 
   async removeEntityImage(): Promise<void> {
-    if (await this.store.updateImage('')) this.info.emit('Imagem removida.');
+    if (await this.store.updateImage('')) this.shell.showInfo('Imagem removida.');
     else this.reportStoreError('Não foi possível remover a imagem.');
   }
 
@@ -218,7 +229,7 @@ export class EntitiesPageComponent implements OnChanges {
     const files = [...(input.files ?? [])];
     input.value = '';
     const accepted = files.filter((file) => file.type.startsWith('image/') && file.size <= 8 * 1024 * 1024).slice(0, 12);
-    if (accepted.length !== files.length) this.info.emit('Algumas imagens foram ignoradas: use até 12 arquivos de imagem com no máximo 8 MB cada.');
+    if (accepted.length !== files.length) this.shell.showInfo('Algumas imagens foram ignoradas: use até 12 arquivos de imagem com no máximo 8 MB cada.');
     const images = await Promise.all(accepted.map(async (file) => ({ dataUrl: await fileToDataUrl(file), caption: file.name })));
     if (images.length && !await this.store.addGalleryImages(this.universeId, images)) this.reportStoreError('Não foi possível adicionar as imagens.');
   }
@@ -229,7 +240,7 @@ export class EntitiesPageComponent implements OnChanges {
 
   async suggestNewEntityWithAi(): Promise<void> {
     if (!this.universeId || this.entityAiBusy()) return;
-    if (!this.ai.enabled()) { this.info.emit('Ative a IA nas configurações para montar a ficha.'); return; }
+    if (!this.ai.enabled()) { this.shell.showInfo('Ative a IA nas configurações para montar a ficha.'); return; }
     this.entityAiBusy.set(true);
     this.entityAiError.set('');
     try {
@@ -251,7 +262,7 @@ export class EntitiesPageComponent implements OnChanges {
   async suggestActiveEntityFieldsWithAi(): Promise<void> {
     const entity = this.store.activeEntity();
     if (!entity || this.entityAiBusy()) return;
-    if (!this.ai.enabled()) { this.info.emit('Ative a IA nas configurações para sugerir campos.'); return; }
+    if (!this.ai.enabled()) { this.shell.showInfo('Ative a IA nas configurações para sugerir campos.'); return; }
     this.entityAiBusy.set(true);
     this.entityAiError.set('');
     try {
@@ -270,7 +281,7 @@ export class EntitiesPageComponent implements OnChanges {
       }));
       this.store.activeEntity.set({ ...entity, attributes: [...entity.attributes, ...additions] });
       if (additions.length) this.ai.remember(entity.universe_id, 'entity', `Aceitou campos sugeridos para ${entity.name}: ${additions.map((item) => item.key).join(', ')}.`);
-      else this.info.emit('A IA não encontrou novos campos úteis para esta ficha.');
+      else this.shell.showInfo('A IA não encontrou novos campos úteis para esta ficha.');
     } catch (error) {
       this.entityAiError.set(error instanceof Error ? error.message : String(error));
     } finally {
@@ -281,7 +292,7 @@ export class EntitiesPageComponent implements OnChanges {
   async summarizeActiveEntityWithAi(): Promise<void> {
     const entity = this.store.activeEntity();
     if (!entity || this.entityAiBusy()) return;
-    if (!this.ai.enabled()) { this.info.emit('Ative a IA nas configurações para resumir a ficha.'); return; }
+    if (!this.ai.enabled()) { this.shell.showInfo('Ative a IA nas configurações para resumir a ficha.'); return; }
     this.entityAiBusy.set(true);
     this.entityAiError.set('');
     try {
@@ -358,6 +369,6 @@ export class EntitiesPageComponent implements OnChanges {
   }
 
   private reportStoreError(fallback: string): void {
-    this.failed.emit(this.store.error() || fallback);
+    this.shell.showError(this.store.error() || fallback);
   }
 }

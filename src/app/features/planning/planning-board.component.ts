@@ -1,7 +1,10 @@
 import { CommonModule } from '@angular/common';
 import { CdkDragDrop, DragDropModule } from '@angular/cdk/drag-drop';
-import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges, signal } from '@angular/core';
+import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
+import { ManuscriptStore } from '../manuscript/state/manuscript.store';
+import { EntityStore } from '../entities/state/entity.store';
 import {
   ChapterOption,
   ContentTag,
@@ -15,8 +18,8 @@ import {
   PlanningStatus,
   Story,
 } from '../../core/models';
-import { MetadataService } from '../../core/services/metadata.service';
-import { PlanningService } from '../../core/services/planning.service';
+import { KnowledgeStore } from '../knowledge/state/knowledge.store';
+import { PlanningStore } from './state/planning.store';
 import {
   PLANNING_STATUSES,
   parsePlanningFieldValues,
@@ -39,12 +42,14 @@ interface FieldTypeOption {
 export class PlanningBoardComponent implements OnChanges {
   readonly Math = Math;
   @Input({ required: true }) universeId = '';
-  @Input() items: PlanningItem[] = [];
-  @Input() chapters: ChapterOption[] = [];
-  @Input() stories: Story[] = [];
-  @Input() entities: Entity[] = [];
-  @Output() readonly itemsChange = new EventEmitter<PlanningItem[]>();
-  @Output() readonly chapterOpened = new EventEmitter<PlanningItem>();
+  /**
+   * NÃO declarar como @Input: withComponentInputBinding() zera todo input que a
+   * rota não alimenta, ignorando o inicializador da classe. Página roteada lê
+   * direto dos stores dos domínios que precisa referenciar.
+   */
+  get chapters(): ChapterOption[] { return this.manuscriptStore.universeChapters(); }
+  get stories(): Story[] { return this.manuscriptStore.stories(); }
+  get entities(): Entity[] { return this.entityStore.entities(); }
 
   readonly statuses = PLANNING_STATUSES;
   readonly boardItems = signal<PlanningItem[]>([]);
@@ -90,14 +95,14 @@ export class PlanningBoardComponent implements OnChanges {
     { value: 'character', label: 'Personagens relacionados', hint: 'Uma ou mais fichas de personagem' },
   ];
 
-  constructor(
-    private readonly planningService: PlanningService,
-    private readonly metadataService: MetadataService,
-  ) {}
+  private readonly planningStore = inject(PlanningStore);
+  private readonly knowledgeStore = inject(KnowledgeStore);
+  private readonly manuscriptStore = inject(ManuscriptStore);
+  private readonly entityStore = inject(EntityStore);
+  private readonly router = inject(Router);
 
   ngOnChanges(changes: SimpleChanges): void {
-    if (changes['items']) this.boardItems.set(this.normalizeItems(this.items));
-    if (changes['universeId'] && this.universeId) void this.loadMetadata();
+    if (changes['universeId'] && this.universeId) void this.reload();
   }
 
   openCreate(defaultStatus: PlanningStatus = 'IDEIAS'): void {
@@ -130,15 +135,15 @@ export class PlanningBoardComponent implements OnChanges {
     this.busy.set(true);
     this.error.set('');
     try {
-      const id = await this.planningService.create(
-        this.universeId,
+      const id = await this.planningStore.create(
         title,
         this.newDescription,
         chapter?.id ?? null,
         this.newImage,
       );
+      if (!id) { this.showError(this.planningStore.error(), 'Não foi possível criar o card.'); return; }
       if (this.newStatus && this.newStatus !== 'IDEIAS') {
-        await this.planningService.saveCard(id, this.universeId, {
+        await this.planningStore.saveCard(id, {
           title,
           description: this.newDescription,
           image: this.newImage,
@@ -169,11 +174,9 @@ export class PlanningBoardComponent implements OnChanges {
     this.cardFieldValues = scalarValues;
     this.modal.set('card');
     try {
-      const [relationValues] = await Promise.all([
-        this.planningService.listFieldLinks(item.id),
-        this.loadMetadata(item.id),
-      ]);
+      const relationValues = await this.planningStore.listFieldLinks(item.id);
       this.cardFieldValues = { ...scalarValues, ...relationValues };
+      this.syncTagsFromKnowledge(item.id);
     } catch (error) {
       this.showError(error);
     }
@@ -211,14 +214,14 @@ export class PlanningBoardComponent implements OnChanges {
     const previous = this.boardItems();
     const reordered = reorderPlanningItems(previous, item.id, targetStatus, event.currentIndex);
     this.boardItems.set(reordered);
-    this.itemsChange.emit(reordered);
+    this.planningStore.setItems(reordered);
     this.busy.set(true);
     try {
-      await this.planningService.saveOrder(this.universeId, reordered);
+      await this.planningStore.saveOrder(reordered);
       await this.refresh(false);
     } catch (error) {
       this.boardItems.set(previous);
-      this.itemsChange.emit(previous);
+      this.planningStore.setItems(previous);
       this.showError(error);
     } finally {
       this.busy.set(false);
@@ -232,9 +235,9 @@ export class PlanningBoardComponent implements OnChanges {
     const targetStatus = this.statuses[nextIndex];
     const reordered = reorderPlanningItems(this.boardItems(), item.id, targetStatus, this.itemsByStatus(targetStatus).length);
     this.boardItems.set(reordered);
-    this.itemsChange.emit(reordered);
+    this.planningStore.setItems(reordered);
     try {
-      await this.planningService.saveOrder(this.universeId, reordered);
+      await this.planningStore.saveOrder(reordered);
       await this.refresh(false);
     } catch (error) {
       await this.refresh(false);
@@ -255,7 +258,7 @@ export class PlanningBoardComponent implements OnChanges {
     this.busy.set(true);
     this.error.set('');
     try {
-      await this.planningService.saveCard(this.editingCard.id, this.universeId, {
+      await this.planningStore.saveCard(this.editingCard.id, {
         title: this.editingCard.title,
         description: this.editingCard.description,
         image: this.editingCard.image,
@@ -280,7 +283,7 @@ export class PlanningBoardComponent implements OnChanges {
     }
     this.busy.set(true);
     try {
-      await this.planningService.delete(this.editingCard.id, this.universeId);
+      await this.planningStore.delete(this.editingCard.id);
       await this.refresh();
       this.closeModalAfterBusy();
     } catch (error) {
@@ -292,7 +295,13 @@ export class PlanningBoardComponent implements OnChanges {
 
   openLinkedChapter(item: PlanningItem, event?: MouseEvent): void {
     event?.stopPropagation();
-    if (item.chapter_id) this.chapterOpened.emit(item);
+    if (!item.chapter_id) return;
+    // Abrir o capítulo do card é navegação: sai do quadro e vai para Escrita.
+    const option = this.manuscriptStore.universeChapters().find((chapter) => chapter.id === item.chapter_id);
+    if (!option) return;
+    void this.manuscriptStore.openChapterOption(option).then((opened) => {
+      if (opened) void this.router.navigate(['/workspace', this.universeId, 'writing']);
+    });
   }
 
   fieldText(fieldId: string): string {
@@ -338,13 +347,13 @@ export class PlanningBoardComponent implements OnChanges {
     this.busy.set(true);
     this.error.set('');
     try {
-      const definition = await this.planningService.createFieldDefinition(
-        this.universeId,
+      const definition = await this.planningStore.createFieldDefinition(
         this.newFieldName,
         this.newFieldType,
         options,
       );
-      this.definitions.update((items) => [...items, definition]);
+      if (!definition) { this.showError(this.planningStore.error(), 'Não foi possível criar o campo.'); return; }
+      this.definitions.set(this.planningStore.fieldDefinitions());
       this.newFieldName = '';
       this.newFieldOptions = '';
       this.newFieldType = 'text';
@@ -365,7 +374,7 @@ export class PlanningBoardComponent implements OnChanges {
     if (!this.editingFieldName.trim() || this.busy()) return;
     this.busy.set(true);
     try {
-      await this.planningService.renameFieldDefinition(field.id, this.universeId, this.editingFieldName);
+      await this.planningStore.renameFieldDefinition(field.id, this.editingFieldName);
       this.definitions.update((items) => items.map((item) => item.id === field.id ? { ...item, name: this.editingFieldName.trim() } : item));
       this.editingFieldId = null;
     } catch (error) {
@@ -382,7 +391,7 @@ export class PlanningBoardComponent implements OnChanges {
     }
     this.busy.set(true);
     try {
-      await this.planningService.deleteFieldDefinition(field.id, this.universeId);
+      await this.planningStore.deleteFieldDefinition(field.id);
       this.definitions.update((items) => items.filter((item) => item.id !== field.id));
       const { [field.id]: _removed, ...remaining } = this.cardFieldValues;
       this.cardFieldValues = remaining;
@@ -397,11 +406,11 @@ export class PlanningBoardComponent implements OnChanges {
   async toggleCardTag(tag: ContentTag, assigned: boolean): Promise<void> {
     if (!this.editingCard) return;
     try {
-      await this.metadataService.setTag('planning', this.editingCard.id, tag.id, assigned);
+      await this.knowledgeStore.setTagOnOwner('planning', this.editingCard.id, tag.id, assigned);
       const next = new Set(this.cardTagIds());
       if (assigned) next.add(tag.id); else next.delete(tag.id);
       this.cardTagIds.set(next);
-      await this.loadTagAssignments();
+      this.syncTagsFromKnowledge();
     } catch (error) {
       this.showError(error);
     }
@@ -410,12 +419,12 @@ export class PlanningBoardComponent implements OnChanges {
   async createAndAssignTag(): Promise<void> {
     if (!this.editingCard || !this.newTagName.trim()) return;
     try {
-      const tag = await this.metadataService.createTag(this.universeId, this.newTagName, this.newTagColor);
-      await this.metadataService.setTag('planning', this.editingCard.id, tag.id, true);
-      this.tags.update((items) => [...items, tag]);
-      this.cardTagIds.update((ids) => new Set([...ids, tag.id]));
+      if (!await this.knowledgeStore.createTagForOwner('planning', this.editingCard.id, this.newTagName, this.newTagColor)) {
+        this.showError(this.knowledgeStore.error(), 'Não foi possível criar a tag. Verifique se o nome já está em uso.');
+        return;
+      }
       this.newTagName = '';
-      await this.loadTagAssignments();
+      this.syncTagsFromKnowledge();
     } catch (error) {
       this.showError(error, 'Não foi possível criar a tag. Verifique se o nome já está em uso.');
     }
@@ -476,39 +485,42 @@ export class PlanningBoardComponent implements OnChanges {
     reader.readAsDataURL(file);
   }
 
-  private async refresh(includeMetadata = true): Promise<void> {
-    const items = this.normalizeItems(await this.planningService.list(this.universeId));
-    this.boardItems.set(items);
-    this.itemsChange.emit(items);
-    if (includeMetadata) await this.loadMetadata(this.editingCard?.id);
+  /** Recarrega tudo que o quadro mostra: cards, campos e tags. */
+  private async reload(): Promise<void> {
+    await this.planningStore.load(this.universeId);
+    this.syncFromStores();
   }
 
-  private async loadMetadata(activeCardId?: string): Promise<void> {
-    if (!this.universeId) return;
-    try {
-      const [definitions, tags] = await Promise.all([
-        this.planningService.listFieldDefinitions(this.universeId),
-        this.metadataService.listTags(this.universeId),
-      ]);
-      this.definitions.set(definitions);
-      this.tags.set(tags);
-      await this.loadTagAssignments(activeCardId);
-    } catch (error) {
-      this.showError(error);
+  private async refresh(includeMetadata = true): Promise<void> {
+    await this.planningStore.refreshItems();
+    this.boardItems.set(this.normalizeItems(this.planningStore.items()));
+    if (includeMetadata) {
+      await this.planningStore.refreshFieldDefinitions();
+      this.definitions.set(this.planningStore.fieldDefinitions());
+      this.syncTagsFromKnowledge();
     }
   }
 
-  private async loadTagAssignments(activeCardId = this.editingCard?.id): Promise<void> {
-    const assignments = await this.metadataService.listAssignments([this.universeId], ['planning']);
-    this.tagsByCard.set(this.groupAssignments(assignments));
-    this.cardTagIds.set(new Set(activeCardId ? (this.tagsByCard()[activeCardId] ?? []).map((tag) => tag.id) : []));
+  private syncFromStores(): void {
+    this.boardItems.set(this.normalizeItems(this.planningStore.items()));
+    this.definitions.set(this.planningStore.fieldDefinitions());
+    this.syncTagsFromKnowledge();
   }
 
-  private groupAssignments(assignments: ContentTagAssignment[]): Record<string, ContentTag[]> {
-    return assignments.reduce<Record<string, ContentTag[]>>((grouped, assignment) => {
-      (grouped[assignment.owner_id] ??= []).push(assignment);
-      return grouped;
-    }, {});
+  /**
+   * As tags vêm do KnowledgeStore, que já mantém as atribuições do universo
+   * agrupadas por dono. O quadro só recorta a fatia 'planning' — não fala com
+   * o serviço de metadados.
+   */
+  private syncTagsFromKnowledge(activeCardId = this.editingCard?.id): void {
+    this.tags.set(this.knowledgeStore.universeTags());
+    const byCard: Record<string, ContentTag[]> = {};
+    for (const item of this.boardItems()) {
+      const applied = this.knowledgeStore.tagsForOwner('planning', item.id);
+      if (applied.length) byCard[item.id] = applied;
+    }
+    this.tagsByCard.set(byCard);
+    this.cardTagIds.set(new Set(activeCardId ? (byCard[activeCardId] ?? []).map((tag) => tag.id) : []));
   }
 
   private normalizeItems(items: PlanningItem[]): PlanningItem[] {

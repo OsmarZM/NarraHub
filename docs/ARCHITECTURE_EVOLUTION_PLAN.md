@@ -556,7 +556,17 @@ Migrar, uma por vez, History, Timeline, Planning, Entities e Connections para fi
 
 **Timeline concluído:** mais complexo que o piloto de Histórico porque a página recebia `entities`/`tagsByOwner` por `@Input()` do `WorkspaceLayout` e emitia `metadataRequested` por `@Output()` — nenhum dos dois sobrevive quando o pai de template deixa de existir (o Router é quem instancia a página agora). `TimelinePageComponent` passou a injetar `EntityStore`/`KnowledgeStore` diretamente (mesmo padrão que `ManuscriptStore`/`ConnectionsStore` já usavam em páginas com store próprio) e a chamar `KnowledgeStore.openMetadata(...)` + `AppState.openModal('metadata')` direto, no lugar de emitir um evento para o layout. O botão "+ Evento" do cabeçalho persistente também não alcança mais a página por `@ViewChild` (ela não é mais filha de view do `WorkspaceLayout`); o `<router-outlet>` ganhou `(activate)`/`(deactivate)` para capturar a instância ativa, com um type guard `supportsCreate()` evitando `any` espalhado — mecanismo que Planning/Entities/Connections reaproveitam quando migrarem. `npm run build` confirma `timeline-page-component` como chunk lazy próprio (23kB); `npm run test:architecture` (21/21); checado via `ng serve`: deep link para universo inexistente em `/timeline` cai no mesmo ramo recuperável do resolver.
 
-Pendente: Planning, Entities e Connections — mesmo padrão (piloto simples de Histórico ou o mais elaborado de Timeline, dependendo de quanto cada página depende de Inputs/Outputs cross-domain), uma fatia por vez.
+**Planning, Entities, Connections e Writing concluídos — Fase 3.2 e 3.3 fechadas.**
+
+- **Dívida da Fase 2 paga primeiro:** Planning nunca tinha sido extraído. O quadro falava com `PlanningService` e `MetadataService` diretamente e recebia tudo por `@Input` do layout. Ganhou `PlanningGateway`/`LegacyPlanningGateway` + `PlanningStore`, e passou a ler tags do `KnowledgeStore` (que ganhou `universeTags`, `tagsForOwner`, `setTagOnOwner` e `createTagForOwner` para donos fora do modal).
+- **Coordenação cross-domain saiu dos layouts** para `application/workspace-sync.service.ts`, como a regra da fase exige: excluir entidade recarrega conexões/menções/estatísticas; salvar capítulo reindexa menções. Nenhuma feature conhece as outras — cada página chama o que precisa do service.
+- **Writing (3.3)** ganhou `canDeactivate: [unsavedChapterGuard]`. O guard **não** substitui o `saveNow()` explícito: fechar janela, instalar atualização e restaurar backup acontecem fora do Router e continuam salvando por conta própria. O guard nunca bloqueia a saída — prender o usuário na tela não recupera texto.
+- **Gatilho de criação do cabeçalho** deixou de usar `@ViewChild` (que não alcança página vinda do outlet) e passou a usar a instância entregue pelo `(activate)` do `<router-outlet>`, com o type guard `supportsCreate()`.
+- **Armadilha encontrada e corrigida:** `withComponentInputBinding()` **sobrescreve com `undefined`** todo `@Input()` sem correspondente em params/data da rota — o inicializador da classe não protege. Isso quebrou o template de Conexões (`reading 'length' of undefined`) assim que a página deixou de receber `[entities]` do layout. Conexões e Planning passaram a ler esses dados dos stores por getter, e um teste de fronteira agora exige que toda página roteada declare **apenas** `@Input() universeId`.
+
+Resultado no bundle: cada seção virou chunk lazy próprio e o `workspace-layout-component` caiu de ~790kB para **58kB** — ele não empacota mais nenhuma página.
+
+Validação: `npm run build` sem avisos, `npm run test:architecture` (28/28, incluindo três testes novos de critério de saída), `test:ai` (5/5), `test:planning` (4/4), e as **30 transições** entre seções por clique real medindo geometria + URL + vazamento → 30/30, sem nenhum erro de console que não seja a ausência de banco no navegador. **Não coberto:** app Tauri empacotado.
 
 **Bug real encontrado e corrigido depois do piloto de Histórico/Timeline:** usuário reportou que Histórico (e depois confirmou que Timeline também) "parou de funcionar" — tela em branco, sem cabeçalho, sem erro visível. Reproduzido manualmente via `ng serve` seedando um universo fake direto no `UniverseStore` pelas devtools do Angular (`window.ng`) e navegando por URL (não pela sidebar): o conteúdo de Escrita (a view padrão) e o de Histórico apareciam **ao mesmo tempo** na tela.
 
@@ -586,7 +596,7 @@ Layouts não assumem regras de domínio nem coordenação permanente entre featu
 
 ### Critério de saída da navegação híbrida
 
-Ao final da Fase 3:
+**Atendido.** `workspaceView` e os métodos `openEditor()`/`openEntityList()`/`openGraph()`/etc. foram removidos do `AppState` — ele guarda o universo ativo e estado de UI, não a rota. `currentView` sobreviveu apenas como 'home' vs 'workspace' para busca global e shell, sem escolher página. Testes de fronteira travam cada item abaixo:
 
 - `RootLayout` não decide qual feature renderizar;
 - `RootLayout` não importa páginas de domínio;

@@ -6,31 +6,31 @@ import { Injectable, signal, computed } from '@angular/core';
 import { UniverseWithStats } from '../models';
 
 export type AppView = 'home' | 'workspace';
-export type WorkspaceView = 'editor' | 'entities' | 'entity-sheet' | 'graph' | 'timeline' | 'planning' | 'history' | 'settings';
 
+/**
+ * Estado que sobrevive à navegação, NÃO a navegação em si.
+ *
+ * `workspaceView` foi removido na Fase 3: qual seção está aberta é a URL, e
+ * manter uma cópia disso aqui criava uma segunda fonte de verdade que já
+ * causou tela em branco quando as duas discordavam. Se precisar saber a seção
+ * ativa, leia `AppNavigationService.activeData()`, derivado de `route.data`.
+ */
 @Injectable({ providedIn: 'root' })
 export class AppState {
-  // ── Navigation ──────────────────────────────
-  readonly currentView = signal<AppView>('home');
-  readonly workspaceView = signal<WorkspaceView>('editor');
-
-  // ── Active Universe ─────────────────────────
+  // ── Universo ativo ──────────────────────────
   readonly activeUniverse = signal<UniverseWithStats | null>(null);
   readonly activeUniverseId = computed(() => this.activeUniverse()?.id ?? null);
+  /** Biblioteca vs. workspace — usado por busca global e pelo shell, não para escolher página. */
+  readonly currentView = signal<AppView>('home');
 
-  // ── Sidebar ─────────────────────────────────
+  // ── UI ──────────────────────────────────────
   readonly sidebarCollapsed = signal(false);
-
-  // ── UI State ────────────────────────────────
   readonly isLoading = signal(false);
-  readonly modalOpen = signal<string | null>(null); // modal identifier
-
-  // ── Methods ─────────────────────────────────
+  readonly modalOpen = signal<string | null>(null);
 
   openUniverse(universe: UniverseWithStats): void {
     this.activeUniverse.set(universe);
     this.currentView.set('workspace');
-    this.workspaceView.set('editor');
   }
 
   goHome(): void {
@@ -38,40 +38,8 @@ export class AppState {
     this.activeUniverse.set(null);
   }
 
-  openEntityList(): void {
-    this.workspaceView.set('entities');
-  }
-
-  openEntitySheet(): void {
-    this.workspaceView.set('entity-sheet');
-  }
-
-  openEditor(): void {
-    this.workspaceView.set('editor');
-  }
-
-  openGraph(): void {
-    this.workspaceView.set('graph');
-  }
-
-  openTimeline(): void {
-    this.workspaceView.set('timeline');
-  }
-
-  openPlanning(): void {
-    this.workspaceView.set('planning');
-  }
-
-  openHistory(): void {
-    this.workspaceView.set('history');
-  }
-
-  openSettings(): void {
-    this.workspaceView.set('settings');
-  }
-
   toggleSidebar(): void {
-    this.sidebarCollapsed.update(v => !v);
+    this.sidebarCollapsed.update((collapsed) => !collapsed);
   }
 
   openModal(modalId: string): void {

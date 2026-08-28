@@ -1,9 +1,17 @@
 import { CommonModule } from '@angular/common';
-import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges, ViewChild, computed, inject, signal } from '@angular/core';
+import { isTauri } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { Component, Input, OnChanges, SimpleChanges, ViewChild, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CdkDragDrop, DragDropModule, moveItemInArray } from '@angular/cdk/drag-drop';
 import { Book, BookOption, ChapterOption, ContentTag, Entity, MentionOccurrence, Story } from '../../core/models';
 import { AiService } from '../../core/services/ai.service';
+import { Router } from '@angular/router';
+import { AppState } from '../../core/state/app.state';
+import { WorkspaceSyncService } from '../../application/workspace-sync.service';
+import { EntityStore } from '../entities/state/entity.store';
+import { KnowledgeStore } from '../knowledge/state/knowledge.store';
+import { ShellState } from '../../shell/state/shell.state';
 import { fileToDataUrl } from '../../shared/utils/file-to-data-url';
 import { ContextualInspectorComponent } from '../../shell/contextual-inspector/contextual-inspector.component';
 import { AiWritingRequest, WritingEditorComponent } from '../writing/writing-editor.component';
@@ -39,22 +47,29 @@ export class WritingPageComponent implements OnChanges {
   readonly Math = Math;
 
   @Input({ required: true }) universeId = '';
-  @Input() universeName = '';
-  @Input() universeDescription = '';
-  @Input() entities: Entity[] = [];
-  @Input() mentionOccurrences: MentionOccurrence[] = [];
-  @Input() tagsByOwner: Record<string, ContentTag[]> = {};
-  @Input() focusMode = false;
-
-  @Output() readonly focusModeChange = new EventEmitter<boolean>();
-  @Output() readonly fullscreenRequested = new EventEmitter<void>();
-  @Output() readonly metadataRequested = new EventEmitter<ManuscriptMetadataRequest>();
-  @Output() readonly entityOpenRequested = new EventEmitter<Entity>();
-  @Output() readonly info = new EventEmitter<string>();
-  @Output() readonly failed = new EventEmitter<string>();
 
   readonly store = inject(ManuscriptStore);
   readonly ai = inject(AiService);
+  private readonly appState = inject(AppState);
+  private readonly shell = inject(ShellState);
+  private readonly entityStore = inject(EntityStore);
+  private readonly knowledgeStore = inject(KnowledgeStore);
+  private readonly sync = inject(WorkspaceSyncService);
+  private readonly router = inject(Router);
+
+  get universeName(): string { return this.appState.activeUniverse()?.name ?? ''; }
+  get universeDescription(): string { return this.appState.activeUniverse()?.description ?? ''; }
+  get entities(): Entity[] { return this.entityStore.entities(); }
+  get mentionOccurrences(): MentionOccurrence[] { return this.knowledgeStore.mentionOccurrences(); }
+  get focusMode(): boolean { return this.shell.focusMode(); }
+  /** O editor escreve direto no shell ao entrar/sair do modo foco. */
+  readonly shellFocusMode = this.shell.focusMode;
+
+  async toggleFullscreen(): Promise<void> {
+    if (!isTauri()) return;
+    const win = getCurrentWindow();
+    await win.setFullscreen(!(await win.isFullscreen()));
+  }
 
   readonly pendingDelete = signal<PendingDelete | null>(null);
   readonly pendingRename = signal<PendingRename | null>(null);
@@ -94,6 +109,13 @@ export class WritingPageComponent implements OnChanges {
 
   @ViewChild(WritingEditorComponent) private writingEditor?: WritingEditorComponent;
 
+  constructor() {
+    // Salvar um capítulo mexe em menções e estatísticas — domínios de fora.
+    // O application service centraliza isso; o store não conhece nenhum deles.
+    this.store.onChapterPersisted = (chapterId, content) =>
+      this.sync.onChapterPersisted(chapterId, content, this.entities);
+  }
+
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['universeId']) void this.store.load(this.universeId);
   }
@@ -126,9 +148,9 @@ export class WritingPageComponent implements OnChanges {
     const file = input.files?.[0];
     input.value = '';
     if (!file) return;
-    if (!file.type.startsWith('image/') || file.size > 8 * 1024 * 1024) { this.info.emit('Escolha uma imagem de até 8 MB.'); return; }
+    if (!file.type.startsWith('image/') || file.size > 8 * 1024 * 1024) { this.shell.showInfo('Escolha uma imagem de até 8 MB.'); return; }
     const coverImage = await fileToDataUrl(file);
-    if (await this.store.updateBookCover(book.id, coverImage)) this.info.emit('Capa do livro atualizada.');
+    if (await this.store.updateBookCover(book.id, coverImage)) this.shell.showInfo('Capa do livro atualizada.');
     else this.reportStoreError('Não foi possível atualizar a capa do livro.');
   }
 
@@ -152,24 +174,33 @@ export class WritingPageComponent implements OnChanges {
   }
 
   previewTags(type: 'story' | 'book' | 'chapter', id: string): ContentTag[] {
-    return this.tagsByOwner[`${type}:${id}`] ?? [];
+    return this.knowledgeStore.tagsForOwner(type, id);
   }
 
   chapterTags(chapterId: string): ContentTag[] {
-    return this.tagsByOwner[`chapter:${chapterId}`] ?? [];
+    return this.knowledgeStore.tagsForOwner('chapter', chapterId);
   }
 
   requestMetadata(type: 'story' | 'book' | 'chapter', id: string, name: string, event?: Event): void {
     event?.stopPropagation();
-    this.metadataRequested.emit({ type, id, name });
+    void this.knowledgeStore.openMetadata(type, id, name, this.appState.activeUniverseId());
+    this.appState.openModal('metadata');
   }
 
-  openEntity(entity: Entity): void { this.entityOpenRequested.emit(entity); }
+  /** Abrir a ficha a partir do inspetor é navegação: sai de Escrita para Entidades. */
+  openEntity(entity: Entity): void {
+    void this.entityStore.open(this.universeId, entity).then((ok) => {
+      if (ok) void this.router.navigate(['/workspace', this.universeId, 'entities']);
+    });
+  }
 
   // ── Criação (histórias/livros são autocontidos; capítulo também pode ser aberto pelo cabeçalho do App via ViewChild) ──
 
   openCreateStory(): void { this.newStoryName = ''; this.showNewStory.set(true); }
   openCreateBook(): void { this.newBookName = ''; this.showNewBook.set(true); }
+  /** Contrato usado pelo cabeçalho persistente via (activate) do router-outlet. */
+  openCreate(): void { this.openCreateChapter(); }
+
   openCreateChapter(): void { this.newChapterTitle = ''; this.showNewChapter.set(true); }
 
   closeCreateModals(): void {
@@ -226,7 +257,7 @@ export class WritingPageComponent implements OnChanges {
     if (!ok) { this.reportStoreError(`Não foi possível renomear ${pending.name}.`); return; }
     this.pendingRename.set(null);
     this.renameValue = '';
-    this.info.emit(`${this.renameKindLabel(pending.kind)} renomeado(a).`);
+    this.shell.showInfo(`${this.renameKindLabel(pending.kind)} renomeado(a).`);
   }
 
   requestDelete(kind: DeleteKind, id: string, name: string, event?: Event): void {
@@ -251,7 +282,7 @@ export class WritingPageComponent implements OnChanges {
       : await this.store.deleteChapter(pending.id);
     if (!ok) { this.reportStoreError(`Não foi possível excluir ${pending.name}.`); return; }
     this.pendingDelete.set(null);
-    this.info.emit(`${this.deleteKindLabel(pending.kind)} excluído(a) do banco local.`);
+    this.shell.showInfo(`${this.deleteKindLabel(pending.kind)} excluído(a) do banco local.`);
   }
 
   // ── IA: resumo de capítulo e assistente de escrita ──
@@ -259,7 +290,7 @@ export class WritingPageComponent implements OnChanges {
   async summarizeChapterWithAi(): Promise<void> {
     const chapter = this.store.activeChapter();
     if (!chapter || this.summaryAiBusy()) return;
-    if (!this.ai.enabled()) { this.info.emit('Ative a IA nas preferências para gerar o resumo.'); return; }
+    if (!this.ai.enabled()) { this.shell.showInfo('Ative a IA nas preferências para gerar o resumo.'); return; }
     this.summaryAiBusy.set(true);
     try {
       const text = this.contentParagraphs(this.store.editorContent()).join('\n').slice(-16_000);
@@ -270,14 +301,14 @@ export class WritingPageComponent implements OnChanges {
       this.store.setChapterSummary(summary);
       await this.store.saveNow();
     } catch (error) {
-      this.failed.emit(error instanceof Error ? error.message : String(error));
+      this.shell.showError(error instanceof Error ? error.message : String(error));
     } finally {
       this.summaryAiBusy.set(false);
     }
   }
 
   openAiAssistant(request: AiWritingRequest | null = null): void {
-    if (!this.ai.enabled()) { this.info.emit('Configure a IA nas preferências antes de usar o assistente.'); return; }
+    if (!this.ai.enabled()) { this.shell.showInfo('Configure a IA nas preferências antes de usar o assistente.'); return; }
     if (!request?.instruction.trim()) return;
     this.aiWritingRequest.set(request);
     this.aiPrompt = request.instruction;
@@ -383,6 +414,6 @@ export class WritingPageComponent implements OnChanges {
   }
 
   private reportStoreError(fallback: string): void {
-    this.failed.emit(this.store.error() || fallback);
+    this.shell.showError(this.store.error() || fallback);
   }
 }

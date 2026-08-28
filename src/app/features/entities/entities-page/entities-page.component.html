@@ -1,5 +1,5 @@
 <div class="feature-page entity-view">
-  @if (view === 'entities') {
+  @if (view() === 'entities') {
     <app-entity-toolbar
       [visibleCount]="store.visibleEntities().length"
       [createLabel]="store.createLabel()"
@@ -12,7 +12,7 @@
 
   @if (store.error()) { <div class="entity-error" role="alert"><span>{{ store.error() }}</span><button type="button" (click)="store.clearError()">×</button></div> }
 
-  @if (view === 'entity-sheet' && store.activeEntity(); as entity) {
+  @if (view() === 'entity-sheet' && store.activeEntity(); as entity) {
     <app-entity-sheet
       [entity]="entity"
       [gallery]="store.gallery()"
@@ -63,7 +63,7 @@
         <app-entity-card [entity]="entity" [tags]="tags(entity.id)" [delay]="index * 35" (opened)="openEntity($event)" (renameRequested)="openRename($event.entity, $event.sourceEvent)" (deleteRequested)="openDelete($event.entity, $event.sourceEvent)" />
       }
     </div>
-  } @else if (view === 'entities') {
+  } @else if (view() === 'entities') {
     <section class="empty-feature"><span>♧</span><h2>Nenhum registro nesta seção</h2><p>{{ store.filter() ? 'Crie o primeiro registro deste tipo.' : 'Escolha uma aba e comece a construir seu universo.' }}</p>@if (store.filter()) { <button type="button" class="primary-button" (click)="openCreate()">{{ store.createLabel() }}</button> }</section>
   }
 </div>

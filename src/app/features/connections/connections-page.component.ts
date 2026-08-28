@@ -1,6 +1,10 @@
 import { CommonModule } from '@angular/common';
-import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges, inject, signal } from '@angular/core';
+import { Component, Input, OnChanges, SimpleChanges, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
+import { AppState } from '../../core/state/app.state';
+import { EntityStore } from '../entities/state/entity.store';
+import { ShellState } from '../../shell/state/shell.state';
 import { CanvasNode, CanvasNodeKind, Entity } from '../../core/models';
 import { fileToDataUrl } from '../../shared/utils/file-to-data-url';
 import { CanvasConnectRequest, CanvasPositionChange, ConnectionsGraphComponent } from './connections-graph.component';
@@ -15,13 +19,19 @@ import { ConnectionsStore } from './state/connections.store';
 })
 export class ConnectionsPageComponent implements OnChanges {
   @Input({ required: true }) universeId = '';
-  @Input() entities: Entity[] = [];
 
-  @Output() readonly entityOpenRequested = new EventEmitter<Entity>();
-  @Output() readonly info = new EventEmitter<string>();
-  @Output() readonly failed = new EventEmitter<string>();
+  /**
+   * NÃO declarar como @Input: withComponentInputBinding() zera todo input que a
+   * rota não alimenta, ignorando o inicializador da classe — o template quebrava
+   * com "reading 'length' of undefined". Página roteada lê do store.
+   */
+  get entities(): Entity[] { return this.entityStore.entities(); }
 
   readonly store = inject(ConnectionsStore);
+  private readonly appState = inject(AppState);
+  private readonly shell = inject(ShellState);
+  private readonly entityStore = inject(EntityStore);
+  private readonly router = inject(Router);
 
   readonly showNewRelation = signal(false);
   readonly pendingDelete = signal<{ id: string; label: string } | null>(null);
@@ -40,9 +50,17 @@ export class ConnectionsPageComponent implements OnChanges {
     if (changes['universeId']) void this.store.load(this.universeId);
   }
 
-  openEntity(entity: Entity): void { this.entityOpenRequested.emit(entity); }
+  /** Duplo clique num nó de entidade leva para a ficha — isso é navegação. */
+  openEntity(entity: Entity): void {
+    void this.entityStore.open(this.universeId, entity).then((ok) => {
+      if (ok) void this.router.navigate(['/workspace', this.universeId, 'entities']);
+    });
+  }
 
   // ── Relações canônicas ──────────────────────────
+
+  /** Contrato usado pelo cabeçalho persistente via (activate) do router-outlet. */
+  openCreate(): void { this.openCreateRelation(); }
 
   openCreateRelation(): void {
     this.newRelationSource = '';
@@ -54,7 +72,7 @@ export class ConnectionsPageComponent implements OnChanges {
   closeCreateRelation(): void { this.showNewRelation.set(false); }
 
   async createRelation(): Promise<void> {
-    if (this.newRelationSource === this.newRelationTarget) { this.info.emit('Escolha duas entidades diferentes.'); return; }
+    if (this.newRelationSource === this.newRelationTarget) { this.shell.showInfo('Escolha duas entidades diferentes.'); return; }
     if (!await this.store.create(this.universeId, this.newRelationSource, this.newRelationTarget, this.newRelationLabel)) {
       this.reportStoreError('Não foi possível criar a conexão.');
       return;
@@ -69,7 +87,7 @@ export class ConnectionsPageComponent implements OnChanges {
     if (!pending) return;
     if (!await this.store.delete(pending.id)) { this.reportStoreError(`Não foi possível excluir ${pending.label}.`); return; }
     this.pendingDelete.set(null);
-    this.info.emit('Ligação excluída do banco local.');
+    this.shell.showInfo('Ligação excluída do banco local.');
   }
 
   // ── Elementos livres do canvas ──────────────────
@@ -82,8 +100,8 @@ export class ConnectionsPageComponent implements OnChanges {
     const file = input.files?.[0];
     input.value = '';
     if (!file) return;
-    if (!file.type.startsWith('image/')) { this.info.emit('Escolha um arquivo de imagem.'); return; }
-    if (file.size > 8 * 1024 * 1024) { this.info.emit('A imagem deve ter no máximo 8 MB.'); return; }
+    if (!file.type.startsWith('image/')) { this.shell.showInfo('Escolha um arquivo de imagem.'); return; }
+    if (file.size > 8 * 1024 * 1024) { this.shell.showInfo('A imagem deve ter no máximo 8 MB.'); return; }
     await this.addNode('image', file.name.replace(/\.[^.]+$/u, ''), await fileToDataUrl(file));
   }
 
@@ -95,7 +113,7 @@ export class ConnectionsPageComponent implements OnChanges {
     const count = this.store.canvasNodes().length;
     const created = await this.store.addNode(kind, text, image, 40 + (count % 5) * 60, 40 + Math.floor(count / 5) * 80);
     if (!created) { this.reportStoreError('Não foi possível adicionar o elemento.'); return; }
-    this.info.emit(kind === 'title' ? 'Título adicionado ao canvas.' : kind === 'image' ? 'Imagem adicionada ao canvas.' : 'Nota adicionada ao canvas.');
+    this.shell.showInfo(kind === 'title' ? 'Título adicionado ao canvas.' : kind === 'image' ? 'Imagem adicionada ao canvas.' : 'Nota adicionada ao canvas.');
   }
 
   openNodeEditor(node: CanvasNode): void {
@@ -118,7 +136,7 @@ export class ConnectionsPageComponent implements OnChanges {
     if (!await this.store.deleteNode(node.id)) { this.reportStoreError('Não foi possível excluir o elemento.'); return; }
     this.pendingNodeDelete.set(null);
     this.editingNode.set(null);
-    this.info.emit('Elemento removido do canvas.');
+    this.shell.showInfo('Elemento removido do canvas.');
   }
 
   // ── Layout e ligações do canvas ─────────────────
@@ -140,12 +158,12 @@ export class ConnectionsPageComponent implements OnChanges {
       return;
     }
     this.pendingConnection.set(null);
-    this.info.emit('Ligação criada no canvas.');
+    this.shell.showInfo('Ligação criada no canvas.');
   }
 
   async resetLayout(): Promise<void> {
     if (!await this.store.resetLayout()) { this.reportStoreError('Não foi possível recomeçar o layout.'); return; }
-    this.info.emit('Layout salvo descartado — use "Organizar grafo" para um novo arranjo.');
+    this.shell.showInfo('Layout salvo descartado — use "Organizar grafo" para um novo arranjo.');
   }
 
   async deleteCanvasEdge(id: string): Promise<void> {
@@ -160,6 +178,6 @@ export class ConnectionsPageComponent implements OnChanges {
   }
 
   private reportStoreError(fallback: string): void {
-    this.failed.emit(this.store.error() || fallback);
+    this.shell.showError(this.store.error() || fallback);
   }
 }
