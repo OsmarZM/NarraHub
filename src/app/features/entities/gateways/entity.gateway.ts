@@ -1,4 +1,4 @@
-import { Attachment, Entity, EntityAttribute, EntityType, EntityWithDetails } from '../../../core/models';
+import { Attachment, CanonStatus, Entity, EntityAttribute, EntityType, EntityWithDetails } from '../../../core/models';
 
 export interface CreateEntityInput {
   universeId: string;
@@ -9,7 +9,25 @@ export interface CreateEntityInput {
   attributes?: Array<{ key: string; value: string }>;
 }
 
-export type UpdateEntityInput = Partial<Pick<Entity, 'name' | 'description' | 'summary' | 'image' | 'canon_status'>>;
+/**
+ * `camelCase`, como `UpdateUniverseInput` e `UpdateBookInput` — e **não** um
+ * `Pick<Entity>`, que traria `canon_status` do modelo.
+ *
+ * O comando Rust desserializa este objeto num struct `rename_all =
+ * "camelCase"`: uma chave em `snake_case` não casa com campo nenhum, o serde a
+ * ignora em silêncio e o comando devolve sucesso sem ter gravado. Foi
+ * exatamente o que aconteceu com `canon_status` — a tela mostrava o novo
+ * estado, o banco guardava o antigo, e nada acusava. Declarar o contrato aqui
+ * faz o compilador apontar o chamador, em vez de o erro aparecer só quando o
+ * usuário reabre a ficha.
+ */
+export interface UpdateEntityInput {
+  name?: string;
+  description?: string;
+  summary?: string;
+  image?: string;
+  canonStatus?: CanonStatus;
+}
 
 export abstract class EntityGateway {
   abstract list(universeId: string): Promise<Entity[]>;

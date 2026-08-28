@@ -1,5 +1,5 @@
-/// NarraHub — Database Migrations
-/// Creates all tables on first run
+//! NarraHub — Database Migrations
+//! Cria todas as tabelas na primeira execução.
 
 pub const LATEST_SCHEMA_VERSION: i64 = 14;
 
@@ -1287,7 +1287,9 @@ mod tests {
             .execute_batch("DELETE FROM entities WHERE id = 'e1';")
             .expect("delete entity");
         let positions: i64 = connection
-            .query_row("SELECT COUNT(*) FROM canvas_entity_positions", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM canvas_entity_positions", [], |row| {
+                row.get(0)
+            })
             .expect("count positions");
         let free_nodes: i64 = connection
             .query_row("SELECT COUNT(*) FROM canvas_nodes", [], |row| row.get(0))
@@ -1301,13 +1303,17 @@ mod tests {
             .expect("delete universe");
         for table in ["canvas_nodes", "canvas_edges", "canvas_entity_positions"] {
             let remaining: i64 = connection
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
                 .expect("count after universe delete");
             assert_eq!(remaining, 0, "{table} deve cascatear com o universo");
         }
 
         let foreign_key_failures: i64 = connection
-            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
             .expect("check foreign keys");
         assert_eq!(foreign_key_failures, 0);
     }
@@ -1384,7 +1390,11 @@ mod tests {
             .expect("run listEdges")
             .collect::<Result<_, _>>()
             .expect("collect");
-        assert_eq!(visible, vec!["ok".to_string()], "aresta orfa nao pode ser retornada");
+        assert_eq!(
+            visible,
+            vec!["ok".to_string()],
+            "aresta orfa nao pode ser retornada"
+        );
 
         // deleteNode apaga as arestas do elemento junto (o que a FK faria)
         connection
@@ -1394,11 +1404,17 @@ mod tests {
             )
             .expect("delete edges of node");
         connection
-            .execute("DELETE FROM canvas_nodes WHERE id = ?1", rusqlite::params!["c1"])
+            .execute(
+                "DELETE FROM canvas_nodes WHERE id = ?1",
+                rusqlite::params!["c1"],
+            )
             .expect("deleteNode");
         let leftover: i64 = connection
             .query_row("SELECT COUNT(*) FROM canvas_edges", [], |row| row.get(0))
             .expect("count edges");
-        assert_eq!(leftover, 0, "excluir o elemento precisa levar as ligacoes dele");
+        assert_eq!(
+            leftover, 0,
+            "excluir o elemento precisa levar as ligacoes dele"
+        );
     }
 }

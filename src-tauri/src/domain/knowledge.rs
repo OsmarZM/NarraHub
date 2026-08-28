@@ -4,13 +4,7 @@ use serde::{Deserialize, Serialize};
 /// incluir `timeline` e `planning`; a lista está aqui para o erro de dono
 /// inválido chegar como `validation` e não como texto cru do `CHECK`.
 pub const TAG_OWNER_TYPES: &[&str] = &[
-    "universe",
-    "story",
-    "book",
-    "chapter",
-    "entity",
-    "timeline",
-    "planning",
+    "universe", "story", "book", "chapter", "entity", "timeline", "planning",
 ];
 
 pub fn is_known_owner_type(owner_type: &str) -> bool {

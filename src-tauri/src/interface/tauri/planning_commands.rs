@@ -32,7 +32,11 @@ pub fn planning_create(
 }
 
 #[tauri::command]
-pub fn planning_delete(app: AppHandle, id: String, universe_id: String) -> DatabaseCommandResult<()> {
+pub fn planning_delete(
+    app: AppHandle,
+    id: String,
+    universe_id: String,
+) -> DatabaseCommandResult<()> {
     planning_service::delete(&super::database(&app)?, &id, &universe_id)
 }
 

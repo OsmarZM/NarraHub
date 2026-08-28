@@ -9,8 +9,10 @@
 //! 4 pede exatamente isso, e ter as duas coisas separadas é o que permite
 //! testar a regra contra um banco em memória.
 
+pub mod collaboration_service;
 pub mod entity_service;
 pub mod knowledge_service;
+pub mod manuscript_service;
 pub mod planning_service;
 pub mod universe_service;
 pub mod workspace_service;

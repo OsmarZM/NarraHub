@@ -28,7 +28,14 @@ export class LegacyEntityGateway implements EntityGateway {
   }
 
   update(entityId: string, patch: UpdateEntityInput): Promise<void> {
-    return this.entityService.update(entityId, patch);
+    // O contrato é camelCase; o serviço legado fala em nome de coluna.
+    return this.entityService.update(entityId, {
+      name: patch.name,
+      description: patch.description,
+      summary: patch.summary,
+      image: patch.image,
+      canon_status: patch.canonStatus,
+    });
   }
 
   delete(entityId: string): Promise<void> {

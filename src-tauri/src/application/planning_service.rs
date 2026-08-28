@@ -22,7 +22,10 @@ const FIELD_TYPES: &[&str] = &[
     "character",
 ];
 
-pub fn list(database: &SqliteDatabase, universe_id: &str) -> DatabaseCommandResult<Vec<PlanningItem>> {
+pub fn list(
+    database: &SqliteDatabase,
+    universe_id: &str,
+) -> DatabaseCommandResult<Vec<PlanningItem>> {
     let connection = database.read()?;
     planning_repository::list(&connection, universe_id)
 }
@@ -37,19 +40,23 @@ pub fn create(
 ) -> DatabaseCommandResult<String> {
     let title = title.trim();
     if title.is_empty() {
-        return Err(DatabaseCommandError::validation("O card precisa de um título."));
+        return Err(DatabaseCommandError::validation(
+            "O card precisa de um título.",
+        ));
     }
     let id = new_id();
     let connection = database.write()?;
     planning_repository::insert_card(
         &connection,
-        &id,
-        universe_id,
-        title,
-        description.trim(),
-        chapter_id,
-        image,
-        &now_timestamp(),
+        &planning_repository::NewPlanningCard {
+            id: &id,
+            universe_id,
+            title,
+            description: description.trim(),
+            chapter_id,
+            image,
+            timestamp: &now_timestamp(),
+        },
     )?;
     Ok(id)
 }
@@ -135,7 +142,9 @@ pub fn create_field_definition(
 ) -> DatabaseCommandResult<PlanningFieldDefinition> {
     let name = name.trim();
     if name.is_empty() {
-        return Err(DatabaseCommandError::validation("O campo precisa de um nome."));
+        return Err(DatabaseCommandError::validation(
+            "O campo precisa de um nome.",
+        ));
     }
     if !FIELD_TYPES.contains(&field_type) {
         return Err(DatabaseCommandError::validation(format!(
@@ -171,7 +180,9 @@ pub fn rename_field_definition(
 ) -> DatabaseCommandResult<()> {
     let name = name.trim();
     if name.is_empty() {
-        return Err(DatabaseCommandError::validation("O campo precisa de um nome."));
+        return Err(DatabaseCommandError::validation(
+            "O campo precisa de um nome.",
+        ));
     }
     let connection = database.write()?;
     if !planning_repository::rename_field_definition(

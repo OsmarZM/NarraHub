@@ -197,7 +197,10 @@ mod tests {
 
         assert_eq!(value["id"], "e1");
         assert_eq!(value["type"], "Personagem");
-        assert!(value.get("entity").is_none(), "não pode aninhar em `entity`");
+        assert!(
+            value.get("entity").is_none(),
+            "não pode aninhar em `entity`"
+        );
         assert!(value["attributes"].is_array());
     }
 }

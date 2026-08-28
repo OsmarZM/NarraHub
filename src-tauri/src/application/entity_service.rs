@@ -129,7 +129,11 @@ pub fn update(
     if patch.is_empty() {
         return Ok(());
     }
-    if patch.name.as_deref().is_some_and(|name| name.trim().is_empty()) {
+    if patch
+        .name
+        .as_deref()
+        .is_some_and(|name| name.trim().is_empty())
+    {
         return Err(DatabaseCommandError::validation(
             "A entidade precisa de um nome.",
         ));
@@ -230,13 +234,17 @@ mod tests {
         let fixture = TemporaryDatabase::new();
         seed_universe(&fixture.connection(), "u1");
 
-        let entity = create(&fixture.database, new_entity("Personagem", "Frodo"))
-            .expect("criar entidade");
+        let entity =
+            create(&fixture.database, new_entity("Personagem", "Frodo")).expect("criar entidade");
         let details = get_with_details(&fixture.database, &entity.id)
             .expect("buscar ficha")
             .expect("ficha existe");
 
-        assert_eq!(details.attributes.len(), 14, "os atributos padrao de Personagem");
+        assert_eq!(
+            details.attributes.len(),
+            14,
+            "os atributos padrao de Personagem"
+        );
         assert_eq!(details.attributes[0].key, "Idade");
         assert!(details.attributes.iter().all(|a| a.value.is_empty()));
     }
@@ -254,7 +262,9 @@ mod tests {
 
         let connection = fixture.connection();
         let total: i64 = connection
-            .query_row("SELECT COUNT(*) FROM entity_attributes", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM entity_attributes", [], |row| {
+                row.get(0)
+            })
             .expect("contar atributos");
         assert_eq!(total, 0, "nenhum atributo pode ter sobrado");
     }
@@ -278,11 +288,25 @@ mod tests {
             .expect("existe");
 
         let keys: Vec<&str> = details.attributes.iter().map(|a| a.key.as_str()).collect();
-        assert_eq!(keys.iter().filter(|key| **key == "Clima").count(), 1,
-            "template que repete um padrao nao pode duplicar a linha");
-        assert_eq!(keys.last(), Some(&"Moeda"), "o template entra depois do padrao");
-        let moeda = details.attributes.iter().find(|a| a.key == "Moeda").expect("Moeda");
-        assert_eq!(moeda.value, "ouro", "o valor padrao do template precisa ser gravado");
+        assert_eq!(
+            keys.iter().filter(|key| **key == "Clima").count(),
+            1,
+            "template que repete um padrao nao pode duplicar a linha"
+        );
+        assert_eq!(
+            keys.last(),
+            Some(&"Moeda"),
+            "o template entra depois do padrao"
+        );
+        let moeda = details
+            .attributes
+            .iter()
+            .find(|a| a.key == "Moeda")
+            .expect("Moeda");
+        assert_eq!(
+            moeda.value, "ouro",
+            "o valor padrao do template precisa ser gravado"
+        );
     }
 
     #[test]
@@ -291,16 +315,27 @@ mod tests {
         seed_universe(&fixture.connection(), "u1");
 
         let mut input = new_entity("Personagem", "Frodo");
-        input.attributes = vec![NewEntityAttribute { key: " Idade ".into(), value: " 50 ".into() }];
+        input.attributes = vec![NewEntityAttribute {
+            key: " Idade ".into(),
+            value: " 50 ".into(),
+        }];
         let entity = create(&fixture.database, input).expect("criar");
 
         let details = get_with_details(&fixture.database, &entity.id)
             .expect("buscar")
             .expect("existe");
-        let idade = details.attributes.iter().find(|a| a.key == "Idade").expect("Idade");
+        let idade = details
+            .attributes
+            .iter()
+            .find(|a| a.key == "Idade")
+            .expect("Idade");
         assert_eq!(idade.value, "50", "o valor precisa vir sem espaco em volta");
         assert_eq!(
-            details.attributes.iter().filter(|a| a.key == "Idade").count(),
+            details
+                .attributes
+                .iter()
+                .filter(|a| a.key == "Idade")
+                .count(),
             1,
             "nao pode criar uma segunda linha para a mesma chave"
         );

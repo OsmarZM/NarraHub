@@ -121,7 +121,9 @@ mod tests {
         connection
             .execute_batch("CREATE TABLE t (id TEXT PRIMARY KEY);")
             .expect("criar tabela");
-        connection.execute("INSERT INTO t VALUES ('a')", []).expect("inserir");
+        connection
+            .execute("INSERT INTO t VALUES ('a')", [])
+            .expect("inserir");
         let error = connection
             .execute("INSERT INTO t VALUES ('a')", [])
             .expect_err("duplicata deveria falhar");

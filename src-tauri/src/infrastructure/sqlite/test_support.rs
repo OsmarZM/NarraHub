@@ -45,6 +45,12 @@ pub struct TemporaryDatabase {
     path: PathBuf,
 }
 
+impl Default for TemporaryDatabase {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TemporaryDatabase {
     pub fn new() -> Self {
         let path = std::env::temp_dir().join(format!("narrahub-core-{}.db", uuid::Uuid::new_v4()));

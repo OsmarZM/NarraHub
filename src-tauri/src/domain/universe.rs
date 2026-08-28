@@ -69,13 +69,20 @@ mod tests {
 
         assert_eq!(value["id"], "u1");
         assert_eq!(value["name"], "Terra Média");
-        assert!(value.get("universe").is_none(), "não pode aninhar em `universe`");
+        assert!(
+            value.get("universe").is_none(),
+            "não pode aninhar em `universe`"
+        );
         assert_eq!(value["stats"]["total_words"], 0);
     }
 
     #[test]
     fn update_vazio_e_reconhecido_como_vazio() {
         assert!(UniverseUpdate::default().is_empty());
-        assert!(!UniverseUpdate { name: Some("x".into()), ..Default::default() }.is_empty());
+        assert!(!UniverseUpdate {
+            name: Some("x".into()),
+            ..Default::default()
+        }
+        .is_empty());
     }
 }

@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 
 use super::connection::map_sqlite_error;
 
-pub fn list(connection: &Connection, universe_id: &str) -> DatabaseCommandResult<Vec<PlanningItem>> {
+pub fn list(
+    connection: &Connection,
+    universe_id: &str,
+) -> DatabaseCommandResult<Vec<PlanningItem>> {
     let mut statement = connection
         .prepare(
             "SELECT p.id, p.universe_id, p.chapter_id, p.title, p.description, p.image,
@@ -55,16 +58,32 @@ pub fn list(connection: &Connection, universe_id: &str) -> DatabaseCommandResult
 /// O card nasce no fim da coluna IDEIAS. O `sort_order` sai de uma subquery em
 /// vez de um `SELECT MAX` separado para que dois cards criados ao mesmo tempo
 /// não recebam a mesma posição.
+/// Dados de um card recém-criado. Agrupados num struct porque a lista solta
+/// de parâmetros já passava de oito — e sete strings em sequência é convite
+/// para trocar duas de lugar sem o compilador reclamar.
+pub struct NewPlanningCard<'a> {
+    pub id: &'a str,
+    pub universe_id: &'a str,
+    pub title: &'a str,
+    pub description: &'a str,
+    pub chapter_id: Option<&'a str>,
+    pub image: &'a str,
+    pub timestamp: &'a str,
+}
+
 pub fn insert_card(
     connection: &Connection,
-    id: &str,
-    universe_id: &str,
-    title: &str,
-    description: &str,
-    chapter_id: Option<&str>,
-    image: &str,
-    timestamp: &str,
+    card: &NewPlanningCard<'_>,
 ) -> DatabaseCommandResult<()> {
+    let NewPlanningCard {
+        id,
+        universe_id,
+        title,
+        description,
+        chapter_id,
+        image,
+        timestamp,
+    } = card;
     connection
         .execute(
             "INSERT INTO planning_items
@@ -75,7 +94,15 @@ pub fn insert_card(
                         FROM planning_items
                        WHERE universe_id = ?2 AND status = 'IDEIAS'),
                      ?7, ?7)",
-            rusqlite::params![id, universe_id, chapter_id, title, description, image, timestamp],
+            rusqlite::params![
+                id,
+                universe_id,
+                chapter_id,
+                title,
+                description,
+                image,
+                timestamp
+            ],
         )
         .map_err(map_sqlite_error)?;
     Ok(())
@@ -265,6 +292,19 @@ mod tests {
     use super::*;
     use crate::database::error::DatabaseErrorKind;
 
+    /// Card minimo: so o que os testes deste arquivo variam.
+    fn card<'a>(id: &'a str, title: &'a str) -> NewPlanningCard<'a> {
+        NewPlanningCard {
+            id,
+            universe_id: "u1",
+            title,
+            description: "",
+            chapter_id: None,
+            image: "",
+            timestamp: "2026-01-01 00:00:00",
+        }
+    }
+
     fn definition(id: &str, universe_id: &str, name: &str) -> PlanningFieldDefinition {
         PlanningFieldDefinition {
             id: id.into(),
@@ -293,7 +333,10 @@ mod tests {
 
         let items = list(&connection, "u1").expect("listar");
         assert_eq!(
-            items.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["c1", "c2", "c3"]
         );
     }
@@ -303,8 +346,7 @@ mod tests {
         let connection = migrated_memory_database();
         seed_universe(&connection, "u1");
         for id in ["c1", "c2"] {
-            insert_card(&connection, id, "u1", id, "", None, "", "2026-01-01 00:00:00")
-                .expect("inserir");
+            insert_card(&connection, &card(id, id)).expect("inserir");
         }
 
         let items = list(&connection, "u1").expect("listar");
@@ -317,8 +359,7 @@ mod tests {
     fn card_sem_capitulo_nao_inventa_nome_de_capitulo() {
         let connection = migrated_memory_database();
         seed_universe(&connection, "u1");
-        insert_card(&connection, "c1", "u1", "Solto", "", None, "", "2026-01-01 00:00:00")
-            .expect("inserir");
+        insert_card(&connection, &card("c1", "Solto")).expect("inserir");
 
         let items = list(&connection, "u1").expect("listar");
         assert_eq!(items[0].chapter_title, None);
@@ -344,11 +385,19 @@ mod tests {
         let mut connection = connection;
         let transaction = connection.transaction().expect("abrir transacao");
         let placements = vec![
-            PlanningCardPlacement { id: "meu".into(), status: "ESCREVENDO".into(), sort_order: 3 },
-            PlanningCardPlacement { id: "alheio".into(), status: "ESCREVENDO".into(), sort_order: 4 },
+            PlanningCardPlacement {
+                id: "meu".into(),
+                status: "ESCREVENDO".into(),
+                sort_order: 3,
+            },
+            PlanningCardPlacement {
+                id: "alheio".into(),
+                status: "ESCREVENDO".into(),
+                sort_order: 4,
+            },
         ];
-        let affected = save_order(&transaction, "u1", &placements, "2026-06-01 00:00:00")
-            .expect("reordenar");
+        let affected =
+            save_order(&transaction, "u1", &placements, "2026-06-01 00:00:00").expect("reordenar");
         transaction.commit().expect("commit");
 
         assert_eq!(affected, 1, "so o card de u1 pode ter sido movido");
@@ -375,8 +424,16 @@ mod tests {
         {
             let transaction = connection.transaction().expect("abrir transacao");
             let placements = vec![
-                PlanningCardPlacement { id: "c1".into(), status: "REVISAO".into(), sort_order: 9 },
-                PlanningCardPlacement { id: "c2".into(), status: "REVISAO".into(), sort_order: 8 },
+                PlanningCardPlacement {
+                    id: "c1".into(),
+                    status: "REVISAO".into(),
+                    sort_order: 9,
+                },
+                PlanningCardPlacement {
+                    id: "c2".into(),
+                    status: "REVISAO".into(),
+                    sort_order: 8,
+                },
             ];
             save_order(&transaction, "u1", &placements, "2026-06-01 00:00:00").expect("reordenar");
             transaction.rollback().expect("reverter");
@@ -393,8 +450,7 @@ mod tests {
     fn status_invalido_e_recusado_pelo_check_do_schema() {
         let connection = migrated_memory_database();
         seed_universe(&connection, "u1");
-        insert_card(&connection, "c1", "u1", "Um", "", None, "", "2026-01-01 00:00:00")
-            .expect("inserir");
+        insert_card(&connection, &card("c1", "Um")).expect("inserir");
 
         let mut connection = connection;
         let transaction = connection.transaction().expect("abrir transacao");
@@ -440,9 +496,16 @@ mod tests {
         seed_universe(&connection, "u2");
         insert_field_definition(&connection, &definition("f1", "u1", "Arco")).expect("inserir");
 
-        assert!(!rename_field_definition(&connection, "f1", "u2", "Outro", "2026-06-01 00:00:00")
-            .expect("renomear"));
+        assert!(
+            !rename_field_definition(&connection, "f1", "u2", "Outro", "2026-06-01 00:00:00")
+                .expect("renomear")
+        );
         assert!(!delete_field_definition(&connection, "f1", "u2").expect("excluir"));
-        assert_eq!(list_field_definitions(&connection, "u1").expect("listar").len(), 1);
+        assert_eq!(
+            list_field_definitions(&connection, "u1")
+                .expect("listar")
+                .len(),
+            1
+        );
     }
 }

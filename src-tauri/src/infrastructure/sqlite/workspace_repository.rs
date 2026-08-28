@@ -327,8 +327,14 @@ mod tests {
     fn evento_criado_volta_na_listagem_com_o_padrao_do_caminho_antigo() {
         let connection = migrated_memory_database();
         seed_universe(&connection, "u1");
-        insert_timeline_event(&connection, "t1", "u1", &new_event("Batalha", 2.0), "2026-01-01 00:00:00")
-            .expect("inserir evento");
+        insert_timeline_event(
+            &connection,
+            "t1",
+            "u1",
+            &new_event("Batalha", 2.0),
+            "2026-01-01 00:00:00",
+        )
+        .expect("inserir evento");
 
         let events = list_timeline(&connection, "u1").expect("listar");
         assert_eq!(events.len(), 1);
@@ -345,11 +351,23 @@ mod tests {
         let connection = migrated_memory_database();
         seed_universe(&connection, "u1");
         for (id, key) in [("t1", 1.0), ("t3", 2.0)] {
-            insert_timeline_event(&connection, id, "u1", &new_event(id, key), "2026-01-01 00:00:00")
-                .expect("inserir");
+            insert_timeline_event(
+                &connection,
+                id,
+                "u1",
+                &new_event(id, key),
+                "2026-01-01 00:00:00",
+            )
+            .expect("inserir");
         }
-        insert_timeline_event(&connection, "t2", "u1", &new_event("t2", 1.5), "2026-01-01 00:00:00")
-            .expect("inserir no meio");
+        insert_timeline_event(
+            &connection,
+            "t2",
+            "u1",
+            &new_event("t2", 1.5),
+            "2026-01-01 00:00:00",
+        )
+        .expect("inserir no meio");
 
         let events = list_timeline(&connection, "u1").expect("listar");
         assert_eq!(
@@ -369,13 +387,19 @@ mod tests {
 
         let error = insert_timeline_event(&connection, "t1", "u1", &event, "2026-01-01 00:00:00")
             .expect_err("FK deveria recusar");
-        assert_eq!(error.kind, crate::database::error::DatabaseErrorKind::Conflict);
+        assert_eq!(
+            error.kind,
+            crate::database::error::DatabaseErrorKind::Conflict
+        );
     }
 
     #[test]
     fn renomear_e_excluir_avisam_quando_o_evento_nao_existe() {
         let connection = migrated_memory_database();
-        assert!(!rename_timeline_event(&connection, "fantasma", "x", "2026-01-01 00:00:00").expect("renomear"));
+        assert!(
+            !rename_timeline_event(&connection, "fantasma", "x", "2026-01-01 00:00:00")
+                .expect("renomear")
+        );
         assert!(!delete_timeline_event(&connection, "fantasma").expect("excluir"));
     }
 
@@ -383,14 +407,26 @@ mod tests {
     fn renomear_atualiza_o_carimbo() {
         let connection = migrated_memory_database();
         seed_universe(&connection, "u1");
-        insert_timeline_event(&connection, "t1", "u1", &new_event("Antes", 1.0), "2026-01-01 00:00:00")
-            .expect("inserir");
+        insert_timeline_event(
+            &connection,
+            "t1",
+            "u1",
+            &new_event("Antes", 1.0),
+            "2026-01-01 00:00:00",
+        )
+        .expect("inserir");
 
-        assert!(rename_timeline_event(&connection, "t1", "Depois", "2026-06-01 00:00:00").expect("renomear"));
+        assert!(
+            rename_timeline_event(&connection, "t1", "Depois", "2026-06-01 00:00:00")
+                .expect("renomear")
+        );
         let events = list_timeline(&connection, "u1").expect("listar");
         assert_eq!(events[0].title, "Depois");
         assert_eq!(events[0].updated_at, "2026-06-01 00:00:00");
-        assert_eq!(events[0].created_at, "2026-01-01 00:00:00", "created_at nao pode mudar");
+        assert_eq!(
+            events[0].created_at, "2026-01-01 00:00:00",
+            "created_at nao pode mudar"
+        );
     }
 
     #[test]
@@ -408,10 +444,19 @@ mod tests {
             .expect("semear entidade");
 
         let error = insert_relation(
-            &connection, "r1", "u1", "e1", "nao-existe", "amigo de", "2026-01-01 00:00:00",
+            &connection,
+            "r1",
+            "u1",
+            "e1",
+            "nao-existe",
+            "amigo de",
+            "2026-01-01 00:00:00",
         )
         .expect_err("FK deveria recusar");
-        assert_eq!(error.kind, crate::database::error::DatabaseErrorKind::Conflict);
+        assert_eq!(
+            error.kind,
+            crate::database::error::DatabaseErrorKind::Conflict
+        );
     }
 
     #[test]
@@ -426,8 +471,16 @@ mod tests {
             )
             .expect("semear");
 
-        insert_relation(&connection, "r1", "u1", "e1", "e2", "amigo de", "2026-01-01 00:00:00")
-            .expect("criar relacao");
+        insert_relation(
+            &connection,
+            "r1",
+            "u1",
+            "e1",
+            "e2",
+            "amigo de",
+            "2026-01-01 00:00:00",
+        )
+        .expect("criar relacao");
 
         let relations = list_relations(&connection, "u1").expect("listar");
         assert_eq!(relations.len(), 1);

@@ -134,3 +134,45 @@ test('a lista de atributos padrão é a mesma nos dois lados', () => {
     assert.deepEqual(rsLists.get(kind), keys, `os atributos de ${kind} divergiram entre Rust e TypeScript`);
   }
 });
+
+test('o patch que o gateway envia casa campo a campo com o struct do Rust', () => {
+  // Bug real encontrado em revisão: `UpdateEntityInput` era um
+  // `Partial<Pick<Entity, ...>>`, então mandava `canon_status`. O struct
+  // `EntityUpdate` tem `rename_all = "camelCase"` e espera `canonStatus` —
+  // serde ignora a chave desconhecida **em silêncio**, o comando devolve
+  // sucesso e o dado não é gravado. A tela mostrava o estado novo, o banco
+  // guardava o antigo, e nada acusava até o usuário reabrir a ficha.
+  //
+  // Nomes de uma palavra só não têm como divergir; o risco mora nos compostos.
+  const pairs = [
+    { rust: 'EntityUpdate', file: 'domain/entity.rs', ts: 'UpdateEntityInput', tsFile: 'features/entities/gateways/entity.gateway.ts' },
+    { rust: 'UniverseUpdate', file: 'domain/universe.rs', ts: 'UpdateUniverseInput', tsFile: 'features/library/gateways/universe.gateway.ts' },
+    { rust: 'StoryUpdate', file: 'domain/manuscript.rs', ts: 'UpdateStoryInput', tsFile: 'features/manuscript/gateways/manuscript.gateway.ts' },
+    { rust: 'BookUpdate', file: 'domain/manuscript.rs', ts: 'UpdateBookInput', tsFile: 'features/manuscript/gateways/manuscript.gateway.ts' },
+  ];
+
+  const camel = (name) => name.replace(/_(\w)/gu, (_, letter) => letter.toUpperCase());
+
+  for (const pair of pairs) {
+    const rs = readFileSync(new URL(`../src-tauri/src/${pair.file}`, import.meta.url), 'utf8');
+    const structStart = rs.indexOf(`pub struct ${pair.rust} {`);
+    assert.ok(structStart > 0, `${pair.rust} não encontrado em ${pair.file}`);
+    const renamed = rs.slice(Math.max(0, structStart - 200), structStart).includes('rename_all = "camelCase"');
+    const structBody = rs.slice(structStart, rs.indexOf('\n}', structStart));
+    const rustFields = [...structBody.matchAll(/pub (\w+):/gu)]
+      .map((match) => (renamed ? camel(match[1]) : match[1]))
+      .sort();
+
+    const ts = readFileSync(new URL(`../src/app/${pair.tsFile}`, import.meta.url), 'utf8');
+    const interfaceStart = ts.indexOf(`interface ${pair.ts} {`);
+    assert.ok(interfaceStart > 0, `${pair.ts} precisa ser uma interface — um Pick<> traz nome de coluna junto`);
+    const interfaceBody = ts.slice(interfaceStart, ts.indexOf('\n}', interfaceStart));
+    const tsFields = [...interfaceBody.matchAll(/^\s{2}(\w+)\??:/gmu)].map((match) => match[1]).sort();
+
+    assert.deepEqual(
+      tsFields,
+      rustFields,
+      `${pair.ts} e ${pair.rust} divergiram: o serde descartaria a chave desconhecida sem erro`,
+    );
+  }
+});

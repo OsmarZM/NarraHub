@@ -56,7 +56,11 @@ pub fn update(
     if patch.is_empty() {
         return Ok(());
     }
-    if patch.name.as_deref().is_some_and(|name| name.trim().is_empty()) {
+    if patch
+        .name
+        .as_deref()
+        .is_some_and(|name| name.trim().is_empty())
+    {
         return Err(DatabaseCommandError::validation(
             "O universo precisa de um nome.",
         ));

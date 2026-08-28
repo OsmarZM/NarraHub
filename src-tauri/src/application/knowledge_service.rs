@@ -46,7 +46,9 @@ pub fn create_tag(
 ) -> DatabaseCommandResult<ContentTag> {
     let name = name.trim();
     if name.is_empty() {
-        return Err(DatabaseCommandError::validation("A tag precisa de um nome."));
+        return Err(DatabaseCommandError::validation(
+            "A tag precisa de um nome.",
+        ));
     }
     let tag = ContentTag {
         id: new_id(),

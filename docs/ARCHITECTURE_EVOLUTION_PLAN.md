@@ -346,6 +346,80 @@ invertida na ficha, e "pai de" viraria "filho de".
 A galeria de imagens continua no legado: anexo é `AttachmentService`,
 compartilhado com capítulo e universo, e sai junto do último domínio que o usa.
 
+#### Ordens 6 e 7 — história, livro, capítulo e autosave ✔
+
+`story_*`, `book_*` e `chapter_*`. Os quatro `updateChapter*` do contrato viram
+um comando só com patch parcial: `null` significa "esta tela não mexeu nisso".
+Sem isso, o inspetor salvando o resumo sobrescreveria o texto que o editor
+acabou de gravar.
+
+`content` sem `word_count` é recusado. A estatística do universo soma
+`word_count`, então gravar um sem o outro faz o total mentir até o próximo
+salvamento — e o método antigo (`updateContent(id, content, wordCount)`) não
+tinha como obrigar quem chamava a recontar.
+
+**Revisões de capítulo não foram implementadas.** A tabela `chapter_revisions`
+existe desde a migration 1 e **nunca teve escrita nenhuma**, nem no frontend
+nem no Rust. Não havia o que migrar. Criar a revisão antes de sobrescrever o
+capítulo é um recurso novo, com decisão de produto por trás (quando criar,
+quanto guardar, como mostrar), e ficou fora desta fase de propósito.
+
+#### Ordem 8 — colaboração e aplicação de propostas ✔
+
+`collaboration_*`. É o domínio em que o valor vem de fora, de um convidado com
+link, então é onde a fronteira importa mais:
+
+- **A lista de campos graváveis virou código de domínio.** A tabela e a coluna
+  saem de `domain::collaboration::writable_column`, **nunca** do texto
+  recebido. O caminho antigo montava ``SET ${item.field} = ?`` interpolando o
+  campo direto no SQL — era só a checagem da lista que separava isso de uma
+  injeção.
+- **Revisar virou uma transação.** Aplicar a mudança, registrar no histórico e
+  marcar a proposta como decidida eram três comandos soltos: se a marcação
+  falhasse depois de aplicar, a proposta continuava pendente e podia ser
+  aplicada de novo, sobrescrevendo o que o autor tivesse escrito no meio.
+- **Aprovar tudo dá uma transação por proposta**, para uma proposta que aponta
+  para um capítulo já excluído não derrubar a aprovação das outras.
+
+#### Ordem 9 — hardening pós-revisão de PR ✔
+
+Revisão externa do PR #1 encontrou um bug funcional que os testes existentes
+não pegavam. Esta fatia fecha os três pontos apontados.
+
+**`canon_status` salvava em silêncio sem salvar.** `UpdateEntityInput` era um
+`Partial<Pick<Entity, ...>>`, então mandava `canon_status`; o struct
+`EntityUpdate` tem `rename_all = "camelCase"` e espera `canonStatus`. O serde
+descarta chave desconhecida **sem erro**: o comando devolvia sucesso, a tela
+mostrava o estado novo e o banco guardava o antigo, até o usuário reabrir a
+ficha. O contrato virou uma `interface` camelCase explícita — assim o
+compilador aponta o chamador, em vez de o erro aparecer só em runtime.
+
+Auditei a fronteira inteira atrás do mesmo padrão: dos nove structs de entrada
+com `rename_all`, só este divergia. O teste novo compara campo a campo cada
+patch do gateway com o struct do Rust, e foi verificado reintroduzindo o bug
+para confirmar que ele reprova.
+
+**O N+1 de estatísticas não tinha morrido, só encolhido.** A revisão pegou o
+comentário otimista: de seis consultas por universo para duas, ainda em laço.
+Agora a biblioteca inteira sai em três consultas, independente de quantos
+universos existam, e há teste garantindo que o resultado agrupado bate com o
+cálculo universo a universo.
+
+**O GitHub não validava nada.** O único workflow rodava por
+`workflow_dispatch`, voltado a release. `.github/workflows/ci.yml` roda em todo
+Pull Request: build Angular, os quatro conjuntos de teste do frontend, e
+`cargo fmt --check`, `cargo clippy -D warnings` e `cargo test` no core. Os
+cinco avisos de clippy que existiam — três meus, dois anteriores à Fase 4 —
+foram corrigidos para o portão entrar já verde.
+
+**Fica para a próxima fatia de hardening:** integridade entre universos. Hoje
+as FKs garantem que a entidade existe, mas não que as duas pontas de uma
+relação pertencem ao mesmo universo — vale igual para `timeline → entity`,
+`mention → entity/chapter`, `planning → chapter` e as tags polimórficas. Já era
+assim no legado, então não é regressão; mas agora que existe um core de
+domínio, é ele que deve ser o guardião dessa regra, e isso precisa estar
+resolvido **antes** de o sync trazer ids de outras máquinas.
+
 ### Critério de saída
 
 A versão de estabilização abre bancos anteriores, mantém capítulos e permite reabrir o app sem modificar checksums.

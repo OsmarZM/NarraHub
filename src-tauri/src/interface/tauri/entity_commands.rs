@@ -1,8 +1,6 @@
 use crate::application::entity_service;
 use crate::database::error::DatabaseCommandResult;
-use crate::domain::entity::{
-    Entity, EntityAttribute, EntityUpdate, EntityWithDetails, NewEntity,
-};
+use crate::domain::entity::{Entity, EntityAttribute, EntityUpdate, EntityWithDetails, NewEntity};
 use tauri::AppHandle;
 
 #[tauri::command]
@@ -24,11 +22,7 @@ pub fn entity_create(app: AppHandle, input: NewEntity) -> DatabaseCommandResult<
 }
 
 #[tauri::command]
-pub fn entity_update(
-    app: AppHandle,
-    id: String,
-    patch: EntityUpdate,
-) -> DatabaseCommandResult<()> {
+pub fn entity_update(app: AppHandle, id: String, patch: EntityUpdate) -> DatabaseCommandResult<()> {
     entity_service::update(&super::database(&app)?, &id, patch)
 }
 

@@ -26,7 +26,15 @@ mod tests {
     #[test]
     fn timestamps_keep_the_format_already_gravado_no_banco() {
         let stamp = now_timestamp();
-        assert_eq!(stamp.len(), 19, "esperado YYYY-MM-DD HH:MM:SS, veio {stamp}");
-        assert_eq!(stamp.as_bytes()[10], b' ', "o separador precisa ser espaço, não T");
+        assert_eq!(
+            stamp.len(),
+            19,
+            "esperado YYYY-MM-DD HH:MM:SS, veio {stamp}"
+        );
+        assert_eq!(
+            stamp.as_bytes()[10],
+            b' ',
+            "o separador precisa ser espaço, não T"
+        );
     }
 }

@@ -94,22 +94,12 @@ struct ModelDownload {
     sha256: &'static str,
 }
 
+#[derive(Default)]
 pub struct LocalAiRuntimeState {
     child: Option<Child>,
     installing: bool,
     last_error: Option<String>,
     hardware: Option<HardwareProfile>,
-}
-
-impl Default for LocalAiRuntimeState {
-    fn default() -> Self {
-        Self {
-            child: None,
-            installing: false,
-            last_error: None,
-            hardware: None,
-        }
-    }
 }
 
 fn profiles() -> Vec<ModelProfile> {

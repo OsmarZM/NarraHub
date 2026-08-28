@@ -319,7 +319,11 @@ pub fn list_relations_for_entity(
                 bidirectional: row.get::<_, i64>("bidirectional")? != 0,
                 importance: row.get("importance")?,
                 created_at: row.get("created_at")?,
-                source: if is_source { self_ref.clone() } else { other.clone() },
+                source: if is_source {
+                    self_ref.clone()
+                } else {
+                    other.clone()
+                },
                 target: if is_source { other } else { self_ref },
             })
         })
@@ -419,7 +423,9 @@ mod tests {
         set_attribute_value(&connection, "a1", "e1", "Idade", "50").expect("gravar");
 
         assert!(delete(&connection, "e1").expect("excluir"));
-        assert!(list_attributes(&connection, "e1").expect("listar").is_empty());
+        assert!(list_attributes(&connection, "e1")
+            .expect("listar")
+            .is_empty());
     }
 
     #[test]
@@ -439,7 +445,10 @@ mod tests {
         frodo.image = "frodo.png".into();
         insert(&connection, &frodo).expect("inserir");
 
-        let patch = EntityUpdate { name: Some("Frodo Bolseiro".into()), ..Default::default() };
+        let patch = EntityUpdate {
+            name: Some("Frodo Bolseiro".into()),
+            ..Default::default()
+        };
         assert!(update(&connection, "e1", &patch, "2026-06-01 00:00:00").expect("atualizar"));
 
         let saved = get(&connection, "e1").expect("buscar").expect("existe");

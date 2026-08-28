@@ -33,7 +33,9 @@ pub fn create_timeline_event(
     event: NewTimelineEvent,
 ) -> DatabaseCommandResult<String> {
     if event.title.trim().is_empty() {
-        return Err(DatabaseCommandError::validation("O evento precisa de um título."));
+        return Err(DatabaseCommandError::validation(
+            "O evento precisa de um título.",
+        ));
     }
     let id = new_id();
     let connection = database.write()?;
@@ -54,7 +56,9 @@ pub fn rename_timeline_event(
 ) -> DatabaseCommandResult<()> {
     let title = title.trim();
     if title.is_empty() {
-        return Err(DatabaseCommandError::validation("O evento precisa de um título."));
+        return Err(DatabaseCommandError::validation(
+            "O evento precisa de um título.",
+        ));
     }
     let connection = database.write()?;
     if !workspace_repository::rename_timeline_event(&connection, id, title, &now_timestamp())? {

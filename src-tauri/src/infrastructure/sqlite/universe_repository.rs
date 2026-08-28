@@ -1,6 +1,7 @@
 use crate::database::error::DatabaseCommandResult;
 use crate::domain::universe::{Universe, UniverseStats, UniverseUpdate, UniverseWithStats};
 use rusqlite::{Connection, Row};
+use std::collections::BTreeMap;
 
 use super::connection::map_sqlite_error;
 
@@ -45,44 +46,53 @@ pub fn get(connection: &Connection, id: &str) -> DatabaseCommandResult<Option<Un
     }
 }
 
-/// Todas as estatísticas de um universo numa passada só.
-///
-/// O frontend fazia seis `SELECT` separados e, na listagem, repetia os seis
-/// por universo — N+1 puro. Aqui as contagens escalares saem de uma query e a
-/// quebra por tipo de entidade de outra, porque só ela é agrupada.
+/// As cinco contagens escalares de um universo. Um `?1` só, repetido — quem
+/// chama para vários universos troca o `WHERE` por um `GROUP BY` na coluna.
+const SCALAR_STATS: &str = "SELECT
+       u.id AS universe_id,
+       (SELECT COALESCE(SUM(c.word_count), 0)
+          FROM chapters c
+          JOIN books b ON c.book_id = b.id
+          JOIN stories s ON b.story_id = s.id
+         WHERE s.universe_id = u.id) AS total_words,
+       (SELECT COUNT(*)
+          FROM chapters c
+          JOIN books b ON c.book_id = b.id
+          JOIN stories s ON b.story_id = s.id
+         WHERE s.universe_id = u.id) AS total_chapters,
+       (SELECT COUNT(*) FROM stories WHERE universe_id = u.id) AS total_stories,
+       (SELECT COUNT(*)
+          FROM books b
+          JOIN stories s ON b.story_id = s.id
+         WHERE s.universe_id = u.id) AS total_books,
+       (SELECT COUNT(*) FROM entities WHERE universe_id = u.id) AS total_entities
+     FROM universes u";
+
+fn scalar_stats_from_row(row: &Row<'_>) -> rusqlite::Result<(String, UniverseStats)> {
+    Ok((
+        row.get("universe_id")?,
+        UniverseStats {
+            total_words: row.get("total_words")?,
+            total_chapters: row.get("total_chapters")?,
+            total_stories: row.get("total_stories")?,
+            total_books: row.get("total_books")?,
+            total_entities: row.get("total_entities")?,
+            entity_counts: Default::default(),
+        },
+    ))
+}
+
+/// Estatísticas de um universo: duas consultas, uma para os escalares e outra
+/// para a quebra por tipo de entidade, que é a única agrupada.
 pub fn stats(connection: &Connection, universe_id: &str) -> DatabaseCommandResult<UniverseStats> {
-    let mut stats: UniverseStats = connection
+    let mut stats = connection
         .query_row(
-            "SELECT
-               (SELECT COALESCE(SUM(c.word_count), 0)
-                  FROM chapters c
-                  JOIN books b ON c.book_id = b.id
-                  JOIN stories s ON b.story_id = s.id
-                 WHERE s.universe_id = ?1) AS total_words,
-               (SELECT COUNT(*)
-                  FROM chapters c
-                  JOIN books b ON c.book_id = b.id
-                  JOIN stories s ON b.story_id = s.id
-                 WHERE s.universe_id = ?1) AS total_chapters,
-               (SELECT COUNT(*) FROM stories WHERE universe_id = ?1) AS total_stories,
-               (SELECT COUNT(*)
-                  FROM books b
-                  JOIN stories s ON b.story_id = s.id
-                 WHERE s.universe_id = ?1) AS total_books,
-               (SELECT COUNT(*) FROM entities WHERE universe_id = ?1) AS total_entities",
+            &format!("{SCALAR_STATS} WHERE u.id = ?1"),
             [universe_id],
-            |row| {
-                Ok(UniverseStats {
-                    total_words: row.get("total_words")?,
-                    total_chapters: row.get("total_chapters")?,
-                    total_stories: row.get("total_stories")?,
-                    total_books: row.get("total_books")?,
-                    total_entities: row.get("total_entities")?,
-                    entity_counts: Default::default(),
-                })
-            },
+            scalar_stats_from_row,
         )
-        .map_err(map_sqlite_error)?;
+        .map_err(map_sqlite_error)?
+        .1;
 
     let mut statement = connection
         .prepare(
@@ -102,14 +112,58 @@ pub fn stats(connection: &Connection, universe_id: &str) -> DatabaseCommandResul
     Ok(stats)
 }
 
+/// A biblioteca inteira em **três** consultas, independente de quantos
+/// universos existam: uma lista os universos, uma traz os escalares de todos e
+/// uma traz a quebra por tipo de entidade de todos.
+///
+/// O caminho antigo fazia seis `SELECT` por universo. A primeira versão desta
+/// função continuava chamando `stats()` em laço — duas por universo em vez de
+/// seis, melhor mas ainda N+1. Uma revisão apontou que o comentário dizia que
+/// o problema tinha morrido quando ele só tinha encolhido; aqui ele morre.
 pub fn list_with_stats(connection: &Connection) -> DatabaseCommandResult<Vec<UniverseWithStats>> {
     let universes = list(connection)?;
-    let mut result = Vec::with_capacity(universes.len());
-    for universe in universes {
-        let stats = stats(connection, &universe.id)?;
-        result.push(UniverseWithStats { universe, stats });
+    if universes.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(result)
+
+    let mut statement = connection.prepare(SCALAR_STATS).map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map([], scalar_stats_from_row)
+        .map_err(map_sqlite_error)?;
+    let mut by_universe: BTreeMap<String, UniverseStats> = BTreeMap::new();
+    for row in rows {
+        let (universe_id, stats) = row.map_err(map_sqlite_error)?;
+        by_universe.insert(universe_id, stats);
+    }
+
+    let mut statement = connection
+        .prepare(
+            "SELECT universe_id, type, COUNT(*) AS total FROM entities GROUP BY universe_id, type",
+        )
+        .map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>("universe_id")?,
+                row.get::<_, String>("type")?,
+                row.get::<_, i64>("total")?,
+            ))
+        })
+        .map_err(map_sqlite_error)?;
+    for row in rows {
+        let (universe_id, kind, total) = row.map_err(map_sqlite_error)?;
+        if let Some(stats) = by_universe.get_mut(&universe_id) {
+            stats.entity_counts.insert(kind, total);
+        }
+    }
+
+    Ok(universes
+        .into_iter()
+        .map(|universe| {
+            let stats = by_universe.remove(&universe.id).unwrap_or_default();
+            UniverseWithStats { universe, stats }
+        })
+        .collect())
 }
 
 pub fn insert(connection: &Connection, universe: &Universe) -> DatabaseCommandResult<()> {
@@ -261,7 +315,10 @@ mod tests {
             )
             .expect("semear");
 
-        let patch = UniverseUpdate { name: Some("Novo".into()), ..Default::default() };
+        let patch = UniverseUpdate {
+            name: Some("Novo".into()),
+            ..Default::default()
+        };
         assert!(update(&connection, "u1", &patch, "2026-06-01 00:00:00").expect("atualizar"));
 
         let universe = get(&connection, "u1").expect("buscar").expect("existe");
@@ -274,8 +331,13 @@ mod tests {
     #[test]
     fn update_de_id_inexistente_nao_afeta_linha() {
         let connection = migrated_memory_database();
-        let patch = UniverseUpdate { name: Some("x".into()), ..Default::default() };
-        assert!(!update(&connection, "fantasma", &patch, "2026-06-01 00:00:00").expect("atualizar"));
+        let patch = UniverseUpdate {
+            name: Some("x".into()),
+            ..Default::default()
+        };
+        assert!(
+            !update(&connection, "fantasma", &patch, "2026-06-01 00:00:00").expect("atualizar")
+        );
     }
 
     #[test]
@@ -290,9 +352,14 @@ mod tests {
 
         for (table, expected) in [("stories", 0i64), ("books", 0), ("chapters", 0)] {
             let total: i64 = connection
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
                 .expect("contar");
-            assert_eq!(total, expected, "{table} deveria ter sido levada na cascata");
+            assert_eq!(
+                total, expected,
+                "{table} deveria ter sido levada na cascata"
+            );
         }
         let entities: i64 = connection
             .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
@@ -319,6 +386,58 @@ mod tests {
         };
         insert(&connection, &universe).expect("primeiro insert");
         let error = insert(&connection, &universe).expect_err("duplicata deveria falhar");
-        assert_eq!(error.kind, crate::database::error::DatabaseErrorKind::Conflict);
+        assert_eq!(
+            error.kind,
+            crate::database::error::DatabaseErrorKind::Conflict
+        );
+    }
+
+    #[test]
+    fn listagem_com_estatisticas_bate_com_o_calculo_por_universo() {
+        // As duas consultas agrupadas de list_with_stats precisam dar
+        // exatamente o mesmo que stats() dá universo a universo. Divergir aqui
+        // faria a biblioteca mostrar um numero e a ficha do universo outro.
+        let connection = migrated_memory_database();
+        seed_content(&connection);
+
+        let listed = list_with_stats(&connection).expect("listar com estatisticas");
+        assert_eq!(listed.len(), 2);
+        for item in &listed {
+            let individual = stats(&connection, &item.universe.id).expect("estatisticas");
+            assert_eq!(item.stats, individual, "divergiu em {}", item.universe.id);
+        }
+    }
+
+    #[test]
+    fn universo_sem_entidade_aparece_na_listagem_com_contagem_zerada() {
+        // O GROUP BY de entidades nao devolve linha para universo sem
+        // entidade. Se a listagem dependesse dele para existir, o universo
+        // recem-criado sumiria da biblioteca.
+        let connection = migrated_memory_database();
+        seed_universe(&connection, "vazio");
+
+        let listed = list_with_stats(&connection).expect("listar");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].stats.total_words, 0);
+        assert!(listed[0].stats.entity_counts.is_empty());
+    }
+
+    #[test]
+    fn contagem_por_tipo_nao_vaza_entre_universos_na_listagem() {
+        let connection = migrated_memory_database();
+        seed_content(&connection);
+
+        let listed = list_with_stats(&connection).expect("listar");
+        let u1 = listed
+            .iter()
+            .find(|item| item.universe.id == "u1")
+            .expect("u1");
+        let u2 = listed
+            .iter()
+            .find(|item| item.universe.id == "u2")
+            .expect("u2");
+        assert_eq!(u1.stats.entity_counts.get("Personagem"), Some(&2));
+        assert_eq!(u2.stats.entity_counts.get("Personagem"), Some(&1));
+        assert_eq!(u2.stats.entity_counts.get("Lugar"), None);
     }
 }

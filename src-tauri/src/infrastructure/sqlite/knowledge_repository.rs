@@ -330,8 +330,24 @@ mod tests {
         seed_universe(&connection, "u1");
         insert_tag(&connection, &tag("t1", "u1", "Reescrever")).expect("criar tag");
         insert_tag(&connection, &tag("t2", "u1", "Pronto")).expect("criar tag");
-        assign_tag(&connection, "a1", "t1", "chapter", "c1", "2026-01-01 00:00:00").expect("marcar");
-        assign_tag(&connection, "a2", "t1", "entity", "e1", "2026-01-01 00:00:00").expect("marcar");
+        assign_tag(
+            &connection,
+            "a1",
+            "t1",
+            "chapter",
+            "c1",
+            "2026-01-01 00:00:00",
+        )
+        .expect("marcar");
+        assign_tag(
+            &connection,
+            "a2",
+            "t1",
+            "entity",
+            "e1",
+            "2026-01-01 00:00:00",
+        )
+        .expect("marcar");
 
         let tags = list_tags(&connection, "u1").expect("listar");
         let reescrever = tags.iter().find(|t| t.id == "t1").expect("t1");
@@ -346,8 +362,24 @@ mod tests {
         seed_universe(&connection, "u1");
         insert_tag(&connection, &tag("t1", "u1", "Reescrever")).expect("criar tag");
 
-        assign_tag(&connection, "a1", "t1", "chapter", "c1", "2026-01-01 00:00:00").expect("marcar");
-        assign_tag(&connection, "a2", "t1", "chapter", "c1", "2026-06-01 00:00:00").expect("remarcar");
+        assign_tag(
+            &connection,
+            "a1",
+            "t1",
+            "chapter",
+            "c1",
+            "2026-01-01 00:00:00",
+        )
+        .expect("marcar");
+        assign_tag(
+            &connection,
+            "a2",
+            "t1",
+            "chapter",
+            "c1",
+            "2026-06-01 00:00:00",
+        )
+        .expect("remarcar");
 
         let tags = list_owner_tags(&connection, "chapter", "c1").expect("listar");
         assert_eq!(tags.len(), 1);
@@ -369,10 +401,20 @@ mod tests {
         let connection = migrated_memory_database();
         seed_universe(&connection, "u1");
         insert_tag(&connection, &tag("t1", "u1", "Reescrever")).expect("criar tag");
-        assign_tag(&connection, "a1", "t1", "chapter", "c1", "2026-01-01 00:00:00").expect("marcar");
+        assign_tag(
+            &connection,
+            "a1",
+            "t1",
+            "chapter",
+            "c1",
+            "2026-01-01 00:00:00",
+        )
+        .expect("marcar");
 
         assert!(delete_tag(&connection, "t1").expect("excluir"));
-        assert!(list_owner_tags(&connection, "chapter", "c1").expect("listar").is_empty());
+        assert!(list_owner_tags(&connection, "chapter", "c1")
+            .expect("listar")
+            .is_empty());
     }
 
     #[test]
@@ -380,8 +422,24 @@ mod tests {
         let connection = migrated_memory_database();
         seed_universe(&connection, "u1");
         insert_tag(&connection, &tag("t1", "u1", "Reescrever")).expect("criar tag");
-        assign_tag(&connection, "a1", "t1", "chapter", "c1", "2026-01-01 00:00:00").expect("marcar");
-        assign_tag(&connection, "a2", "t1", "entity", "e1", "2026-01-01 00:00:00").expect("marcar");
+        assign_tag(
+            &connection,
+            "a1",
+            "t1",
+            "chapter",
+            "c1",
+            "2026-01-01 00:00:00",
+        )
+        .expect("marcar");
+        assign_tag(
+            &connection,
+            "a2",
+            "t1",
+            "entity",
+            "e1",
+            "2026-01-01 00:00:00",
+        )
+        .expect("marcar");
 
         let todas = list_assignments(&connection, &["u1".into()], &[]).expect("listar");
         assert_eq!(todas.len(), 2);
@@ -395,7 +453,9 @@ mod tests {
     #[test]
     fn atribuicoes_sem_universo_devolvem_vazio_sem_tocar_no_banco() {
         let connection = migrated_memory_database();
-        assert!(list_assignments(&connection, &[], &[]).expect("listar").is_empty());
+        assert!(list_assignments(&connection, &[], &[])
+            .expect("listar")
+            .is_empty());
     }
 
     #[test]
@@ -409,7 +469,11 @@ mod tests {
         {
             let transaction = connection.transaction().expect("transacao");
             sync_chapter_mentions(
-                &transaction, "c1", &["e1".into()], &["m1".into()], "2026-01-01 00:00:00",
+                &transaction,
+                "c1",
+                &["e1".into()],
+                &["m1".into()],
+                "2026-01-01 00:00:00",
             )
             .expect("primeira sincronizacao");
             transaction.commit().expect("commit");
@@ -430,7 +494,10 @@ mod tests {
         let mentions = list_mentions_by_universe(&connection, "u1").expect("listar");
         assert_eq!(mentions.len(), 2);
         let frodo = mentions.iter().find(|m| m.entity_id == "e1").expect("e1");
-        assert_eq!(frodo.created_at, "2026-01-01 00:00:00", "a mencao antiga nao pode ser recriada");
+        assert_eq!(
+            frodo.created_at, "2026-01-01 00:00:00",
+            "a mencao antiga nao pode ser recriada"
+        );
         assert_eq!(frodo.id, "m1");
     }
 
@@ -443,7 +510,11 @@ mod tests {
         {
             let transaction = connection.transaction().expect("transacao");
             sync_chapter_mentions(
-                &transaction, "c1", &["e1".into()], &["m1".into()], "2026-01-01 00:00:00",
+                &transaction,
+                "c1",
+                &["e1".into()],
+                &["m1".into()],
+                "2026-01-01 00:00:00",
             )
             .expect("sincronizar");
             transaction.commit().expect("commit");
@@ -455,7 +526,9 @@ mod tests {
             transaction.commit().expect("commit");
         }
 
-        assert!(list_mentions_by_universe(&connection, "u1").expect("listar").is_empty());
+        assert!(list_mentions_by_universe(&connection, "u1")
+            .expect("listar")
+            .is_empty());
     }
 
     #[test]
@@ -473,7 +546,11 @@ mod tests {
         for (chapter, mention) in [("c1", "m1"), ("c0", "m2")] {
             let transaction = connection.transaction().expect("transacao");
             sync_chapter_mentions(
-                &transaction, chapter, &["e1".into()], &[mention.into()], "2026-01-01 00:00:00",
+                &transaction,
+                chapter,
+                &["e1".into()],
+                &[mention.into()],
+                "2026-01-01 00:00:00",
             )
             .expect("sincronizar");
             transaction.commit().expect("commit");
@@ -481,7 +558,10 @@ mod tests {
 
         let mentions = list_mentions_by_universe(&connection, "u1").expect("listar");
         assert_eq!(
-            mentions.iter().map(|m| m.chapter_id.as_str()).collect::<Vec<_>>(),
+            mentions
+                .iter()
+                .map(|m| m.chapter_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["c0", "c1"],
             "a ordem e a de leitura, nao a de criacao da mencao"
         );
