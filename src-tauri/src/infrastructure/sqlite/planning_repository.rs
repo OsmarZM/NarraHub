@@ -610,7 +610,11 @@ mod tests {
             .expect("inserir");
 
         let catalogo = list_field_definitions(&connection, "u1", None).expect("listar");
-        assert_eq!(catalogo.len(), 2, "sem card, a lista e o catalogo do universo");
+        assert_eq!(
+            catalogo.len(),
+            2,
+            "sem card, a lista e o catalogo do universo"
+        );
 
         let do_dono = list_field_definitions(&connection, "u1", Some("p1")).expect("listar");
         assert_eq!(do_dono.len(), 2);
@@ -649,8 +653,11 @@ mod tests {
         seed_universe(&connection, "u1");
         insert_card(&connection, &card("p1", "Card um")).expect("inserir card");
         insert_card(&connection, &card("p2", "Card dois")).expect("inserir card");
-        insert_field_definition(&connection, &card_definition("f1", "u1", "Prioridade", "p1"))
-            .expect("inserir");
+        insert_field_definition(
+            &connection,
+            &card_definition("f1", "u1", "Prioridade", "p1"),
+        )
+        .expect("inserir");
 
         assert!(set_field_definition_scope(
             &connection,
