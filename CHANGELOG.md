@@ -2,7 +2,7 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
-## Não publicado
+## 0.9.0 — 2026-08-29
 
 ### Correções da interface após a 0.8.0
 
@@ -19,6 +19,8 @@ As alterações relevantes do NarraHub são registradas neste arquivo. O projeto
 ### Fichas de entidade
 
 - **Correção**: abrir uma entidade que estava no fim da lista mostrava a ficha já rolada até o rodapé. A ficha agora abre no começo, e voltar devolve a lista ao ponto em que você estava.
+
+## 0.8.0 — 2026-08-28
 
 ### Canvas livre na tela de Conexões
 
