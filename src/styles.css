@@ -6,7 +6,10 @@
   --nh-surface: #fffaf2;
   --nh-surface-muted: #f1e9df;
   --nh-ink: #10213a;
-  --nh-ink-muted: #657080;
+  /* Escurecido em relacao ao #657080 antigo: sobre o painel de vidro translucido
+     aquele tom caia para 4.47:1, abaixo do minimo AA, e boa parte do texto deste
+     app tem 8-10px. Agora da 6.24:1. */
+  --nh-ink-muted: #4f5a68;
   --nh-wine: #4c102f;
   --nh-wine-hover: #641840;
   --nh-coral: #c9683d;
@@ -25,10 +28,11 @@
   --nh-shadow-soft: 0 8px 24px rgba(64, 43, 32, .08);
   /* Fundo do shell — no tema claro a nebulosa dá lugar a um pergaminho luminoso. */
   --nh-bg-nebula-color: #f7f2e9;
+  /* A mesma arte da nebulosa, clareada por um véu de pergaminho por cima: a foto
+     continua legível como fundo sem roubar contraste do texto escuro. */
   --nh-bg-nebula-img:
-    radial-gradient(ellipse at 78% 22%, rgba(201, 104, 61, .16) 0%, transparent 58%),
-    radial-gradient(circle at 18% 74%, rgba(184, 137, 56, .14) 0%, transparent 52%),
-    linear-gradient(160deg, #fdf8f0 0%, #f7f2e9 52%, #efe5d8 100%);
+    linear-gradient(160deg, rgba(253, 248, 240, .80) 0%, rgba(247, 242, 233, .76) 52%, rgba(239, 229, 216, .82) 100%),
+    url('/backgrounds/cosmic-nebula.jpg');
   --nh-star-display: none;
   --nh-star-opacity: 0;
   --nh-vignette: radial-gradient(circle at 50% 45%, transparent 42%, rgba(120, 95, 70, .09) 82%, rgba(100, 78, 58, .16) 100%);
@@ -53,6 +57,12 @@
   --nh-shadow: 0 24px 70px rgba(0, 0, 0, .55);
   --nh-shadow-soft: 0 10px 30px rgba(0, 0, 0, .35);
   --nh-glass-filter: blur(20px);
+  /* Vidro: só os tokens que têm uso sem valor de reserva. Os demais continuam
+     resolvendo pelo fallback de cada lugar, para o tema escuro não mudar. */
+  --nh-glass-panel: rgba(18, 13, 30, 0.72);
+  --nh-glass-card-hover: rgba(34, 25, 50, 0.72);
+  --nh-glass-border: rgba(255, 255, 255, 0.09);
+  --nh-glass-border-glow: rgba(226, 140, 180, 0.4);
   /* Fundo do shell — a arte cósmica só existe no tema escuro. */
   --nh-bg-nebula-color: #0b0813;
   --nh-bg-nebula-img: url('/backgrounds/cosmic-nebula.jpg');
@@ -80,12 +90,46 @@
     --nh-shadow: 0 24px 70px rgba(0, 0, 0, .55);
     --nh-shadow-soft: 0 10px 30px rgba(0, 0, 0, .35);
     --nh-glass-filter: blur(20px);
+  /* Vidro: só os tokens que têm uso sem valor de reserva. Os demais continuam
+     resolvendo pelo fallback de cada lugar, para o tema escuro não mudar. */
+  --nh-glass-panel: rgba(18, 13, 30, 0.72);
+  --nh-glass-card-hover: rgba(34, 25, 50, 0.72);
+  --nh-glass-border: rgba(255, 255, 255, 0.09);
+  --nh-glass-border-glow: rgba(226, 140, 180, 0.4);
     /* Fundo do shell — a arte cósmica só existe no tema escuro. */
     --nh-bg-nebula-color: #0b0813;
     --nh-bg-nebula-img: url('/backgrounds/cosmic-nebula.jpg');
     --nh-star-display: block;
     --nh-star-opacity: 0.9;
     --nh-vignette: radial-gradient(circle at 50% 45%, transparent 35%, rgba(10, 8, 16, .45) 80%, rgba(8, 6, 14, .8) 100%);
+  }
+}
+
+/* ── Vidro do tema claro ──
+   Estes tokens nasceram na 0.7.6 usados em 44 lugares, mas nunca foram definidos:
+   cada uso caía no valor de reserva, sempre escuro. No tema claro isso pintava
+   painel escuro atrás de texto azul-escuro — daí a falta de contraste.
+   Ficam num bloco só do tema claro de propósito: `:root` nu venceria também no
+   escuro, já que o bloco escuro não redefine nenhum deles. */
+:root[data-theme='light'] {
+  --nh-glass-panel: rgba(255, 250, 242, 0.86);
+  --nh-glass-panel-subtle: rgba(255, 250, 242, 0.74);
+  --nh-glass-card: rgba(255, 252, 246, 0.82);
+  --nh-glass-card-hover: rgba(255, 255, 255, 0.95);
+  --nh-glass-border: rgba(94, 72, 54, 0.18);
+  --nh-glass-border-glow: rgba(76, 16, 47, 0.42);
+  --nh-glass-filter: blur(18px);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --nh-glass-panel: rgba(255, 250, 242, 0.86);
+    --nh-glass-panel-subtle: rgba(255, 250, 242, 0.74);
+    --nh-glass-card: rgba(255, 252, 246, 0.82);
+    --nh-glass-card-hover: rgba(255, 255, 255, 0.95);
+    --nh-glass-border: rgba(94, 72, 54, 0.18);
+    --nh-glass-border-glow: rgba(76, 16, 47, 0.42);
+    --nh-glass-filter: blur(18px);
   }
 }
 
