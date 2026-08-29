@@ -1,7 +1,7 @@
-/// NarraHub — Database Migrations
-/// Creates all tables on first run
+//! NarraHub — Database Migrations
+//! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 14;
+pub const LATEST_SCHEMA_VERSION: i64 = 15;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -19,6 +19,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         12 => Some(MIGRATION_V12),
         13 => Some(MIGRATION_V13),
         14 => Some(MIGRATION_V14),
+        15 => Some(MIGRATION_V15),
         _ => None,
     }
 }
@@ -759,6 +760,59 @@ CREATE TABLE IF NOT EXISTS canvas_edges (
 CREATE INDEX IF NOT EXISTS idx_canvas_edges_universe ON canvas_edges(universe_id);
 "#;
 
+pub const MIGRATION_V15: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v15
+-- Alcance dos campos do planejamento
+-- ============================================
+--
+-- Até aqui toda propriedade criada no quadro valia para todos os cards do
+-- universo, e não havia como dizer isso na tela: o escritor criava um campo
+-- dentro de um card e ele aparecia em todos, sem aviso. A partir desta
+-- migration o campo declara seu alcance.
+--
+-- `universal` reproduz exatamente o comportamento anterior, por isso é o
+-- DEFAULT: nenhuma linha existente muda de significado ao migrar.
+-- `card` limita o campo ao card que o criou, guardado em `owner_item_id`.
+--
+-- A UNIQUE(universe_id, name) da v11 continua valendo de propósito. Um nome de
+-- propriedade significa uma coisa só dentro do universo, e é isso que permite
+-- promover um campo de card para universal mexendo só no alcance — sem risco
+-- de colidir com um homônimo criado em outro card.
+ALTER TABLE planning_field_definitions ADD COLUMN scope TEXT NOT NULL DEFAULT 'universal'
+    CHECK(scope IN ('universal', 'card'));
+
+-- Sem DEFAULT não-nulo por exigência do SQLite: uma coluna adicionada com
+-- REFERENCES precisa aceitar NULL. NULL aqui significa "campo universal".
+ALTER TABLE planning_field_definitions ADD COLUMN owner_item_id TEXT
+    REFERENCES planning_items(id) ON DELETE CASCADE;
+
+CREATE INDEX idx_planning_fields_owner
+    ON planning_field_definitions(owner_item_id)
+    WHERE owner_item_id IS NOT NULL;
+
+-- Alcance e dono são um par: um campo de card sem dono sumiria de todas as
+-- fichas, e um universal com dono confundiria a leitura. O banco recusa a
+-- gravação inconsistente em vez de deixá-la chegar à tela.
+CREATE TRIGGER trg_planning_field_scope_insert
+BEFORE INSERT ON planning_field_definitions
+BEGIN
+    SELECT RAISE(ABORT, 'Um campo restrito a um card precisa de owner_item_id.')
+     WHERE NEW.scope = 'card' AND NEW.owner_item_id IS NULL;
+    SELECT RAISE(ABORT, 'Um campo universal nao pode ter owner_item_id.')
+     WHERE NEW.scope = 'universal' AND NEW.owner_item_id IS NOT NULL;
+END;
+
+CREATE TRIGGER trg_planning_field_scope_update
+BEFORE UPDATE OF scope, owner_item_id ON planning_field_definitions
+BEGIN
+    SELECT RAISE(ABORT, 'Um campo restrito a um card precisa de owner_item_id.')
+     WHERE NEW.scope = 'card' AND NEW.owner_item_id IS NULL;
+    SELECT RAISE(ABORT, 'Um campo universal nao pode ter owner_item_id.')
+     WHERE NEW.scope = 'universal' AND NEW.owner_item_id IS NOT NULL;
+END;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -799,6 +853,68 @@ mod tests {
             .expect("check integrity");
         assert_eq!(version, LATEST_SCHEMA_VERSION);
         assert_eq!(integrity, "ok");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn upgrade_para_v15_mantem_campos_existentes_universais() {
+        // Toda propriedade criada antes da v15 valia para o universo inteiro.
+        // O upgrade nao pode mudar isso em silencio: quem ja usava o quadro
+        // precisa reabrir e ver as mesmas propriedades nas mesmas fichas.
+        let path = std::env::temp_dir().join(format!("narrahub-v15-upgrade-{}.db", Uuid::new_v4()));
+        {
+            let connection = Connection::open(&path).expect("create schema 14 database");
+            connection
+                .execute_batch("PRAGMA foreign_keys = ON;")
+                .expect("enable foreign keys");
+            apply_migrations(&connection, 1, 14);
+            connection
+                .execute_batch(
+                    r#"
+                INSERT INTO universes (id, name) VALUES ('u1', 'Um');
+                INSERT INTO planning_items (id, universe_id, title, created_at, updated_at)
+                    VALUES ('p1', 'u1', 'Card', datetime('now'), datetime('now'));
+                INSERT INTO planning_field_definitions
+                    (id, universe_id, name, field_type, options_json, created_at, updated_at)
+                    VALUES ('f1', 'u1', 'Prioridade', 'text', '[]', datetime('now'), datetime('now'));
+                "#,
+                )
+                .expect("seed schema 14 fixture");
+            apply_migrations(&connection, 15, LATEST_SCHEMA_VERSION);
+        }
+
+        let reopened = Connection::open(&path).expect("reopen upgraded fixture");
+        reopened
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys after reopen");
+        let (scope, owner): (String, Option<String>) = reopened
+            .query_row(
+                "SELECT scope, owner_item_id FROM planning_field_definitions WHERE id = 'f1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("load migrated definition");
+        assert_eq!(scope, "universal");
+        assert_eq!(owner, None);
+
+        // O par (alcance, dono) continua sendo verificado depois do upgrade.
+        assert!(reopened
+            .execute(
+                "UPDATE planning_field_definitions SET scope = 'card' WHERE id = 'f1'",
+                [],
+            )
+            .is_err());
+
+        let integrity: String = reopened
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("integrity check");
+        assert_eq!(integrity, "ok");
+        let foreign_keys: i64 = reopened
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("foreign key check");
+        assert_eq!(foreign_keys, 0);
         std::fs::remove_file(path).ok();
     }
 
@@ -1287,7 +1403,9 @@ mod tests {
             .execute_batch("DELETE FROM entities WHERE id = 'e1';")
             .expect("delete entity");
         let positions: i64 = connection
-            .query_row("SELECT COUNT(*) FROM canvas_entity_positions", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM canvas_entity_positions", [], |row| {
+                row.get(0)
+            })
             .expect("count positions");
         let free_nodes: i64 = connection
             .query_row("SELECT COUNT(*) FROM canvas_nodes", [], |row| row.get(0))
@@ -1301,13 +1419,17 @@ mod tests {
             .expect("delete universe");
         for table in ["canvas_nodes", "canvas_edges", "canvas_entity_positions"] {
             let remaining: i64 = connection
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
                 .expect("count after universe delete");
             assert_eq!(remaining, 0, "{table} deve cascatear com o universo");
         }
 
         let foreign_key_failures: i64 = connection
-            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
             .expect("check foreign keys");
         assert_eq!(foreign_key_failures, 0);
     }
@@ -1384,7 +1506,11 @@ mod tests {
             .expect("run listEdges")
             .collect::<Result<_, _>>()
             .expect("collect");
-        assert_eq!(visible, vec!["ok".to_string()], "aresta orfa nao pode ser retornada");
+        assert_eq!(
+            visible,
+            vec!["ok".to_string()],
+            "aresta orfa nao pode ser retornada"
+        );
 
         // deleteNode apaga as arestas do elemento junto (o que a FK faria)
         connection
@@ -1394,11 +1520,17 @@ mod tests {
             )
             .expect("delete edges of node");
         connection
-            .execute("DELETE FROM canvas_nodes WHERE id = ?1", rusqlite::params!["c1"])
+            .execute(
+                "DELETE FROM canvas_nodes WHERE id = ?1",
+                rusqlite::params!["c1"],
+            )
             .expect("deleteNode");
         let leftover: i64 = connection
             .query_row("SELECT COUNT(*) FROM canvas_edges", [], |row| row.get(0))
             .expect("count edges");
-        assert_eq!(leftover, 0, "excluir o elemento precisa levar as ligacoes dele");
+        assert_eq!(
+            leftover, 0,
+            "excluir o elemento precisa levar as ligacoes dele"
+        );
     }
 }

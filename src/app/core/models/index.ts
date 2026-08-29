@@ -245,6 +245,13 @@ export type PlanningFieldType =
 export type PlanningFieldValue = string | boolean | string[] | null;
 export type PlanningFieldValues = Record<string, PlanningFieldValue>;
 
+/**
+ * `universal` aparece em todos os cards do universo; `card`, só naquele que o
+ * criou (`owner_item_id`). Campos criados antes da migration 15 são universais,
+ * que era o único comportamento possível até então.
+ */
+export type PlanningFieldScope = 'universal' | 'card';
+
 export interface PlanningFieldDefinition {
   id: string;
   universe_id: string;
@@ -252,6 +259,8 @@ export interface PlanningFieldDefinition {
   field_type: PlanningFieldType;
   options_json: string;
   sort_order: number;
+  scope: PlanningFieldScope;
+  owner_item_id: string | null;
   created_at: string;
   updated_at: string;
 }

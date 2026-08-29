@@ -1,4 +1,4 @@
-import { Component, Input, OnChanges, SimpleChanges, ViewEncapsulation, computed, effect, inject, signal } from '@angular/core';
+import { Component, ElementRef, Input, OnChanges, SimpleChanges, ViewEncapsulation, computed, effect, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { AiService } from '../../../core/services/ai.service';
 import { Router } from '@angular/router';
@@ -54,8 +54,18 @@ export class EntitiesPageComponent implements OnChanges {
   private readonly sync = inject(WorkspaceSyncService);
   private readonly router = inject(Router);
 
+  private readonly host = inject(ElementRef<HTMLElement>);
+
   /** Lista x ficha aberta é sub-estado desta página, não navegação. */
   readonly view = signal<'entities' | 'entity-sheet'>('entities');
+
+  /**
+   * Lista e ficha compartilham o mesmo contêiner rolável (`.entity-view`), então
+   * trocar de view não zera o scroll sozinho: abrir uma entidade do fim da lista
+   * mostrava a ficha já rolada até o rodapé. Guardamos onde a lista estava para
+   * devolver o leitor ao mesmo ponto quando ele voltar.
+   */
+  private listScrollTop = 0;
   get universeName(): string { return this.appState.activeUniverse()?.name ?? ''; }
   get universeDescription(): string { return this.appState.activeUniverse()?.description ?? ''; }
   get query(): string { return this.shell.searchQuery(); }
@@ -98,7 +108,7 @@ export class EntitiesPageComponent implements OnChanges {
   private applyDeepLink(): void {
     const wanted = this.entityId;
     if (!wanted) { this.view.set('entities'); return; }
-    if (this.store.activeEntity()?.id === wanted) { this.view.set('entity-sheet'); return; }
+    if (this.store.activeEntity()?.id === wanted) { this.view.set('entity-sheet'); this.scrollViewTo(0); return; }
     const entity = this.store.entities().find((item) => item.id === wanted);
     if (entity) void this.openEntity(entity);
   }
@@ -106,14 +116,19 @@ export class EntitiesPageComponent implements OnChanges {
   selectType(type: EntityHubType | null): void {
     this.store.setFilter(type);
     this.view.set('entities');
+    this.listScrollTop = 0;
+    this.scrollViewTo(0);
   }
 
   async openEntity(entity: Entity): Promise<void> {
+    const listScrollTop = this.scrollContainer?.scrollTop ?? 0;
     if (!await this.store.open(this.universeId, entity)) {
       this.reportStoreError('Não foi possível abrir a ficha.');
       return;
     }
+    this.listScrollTop = listScrollTop;
     this.view.set('entity-sheet');
+    this.scrollViewTo(0);
     // URL acompanha a ficha aberta para o link ser copiável; replaceUrl porque
     // abrir uma ficha é seleção dentro da seção, não uma tela nova.
     await this.router.navigate(['/workspace', this.universeId, 'entities', entity.id], { replaceUrl: true });
@@ -122,6 +137,23 @@ export class EntitiesPageComponent implements OnChanges {
   backToList(): void {
     this.store.clearSelection();
     this.view.set('entities');
+    this.scrollViewTo(this.listScrollTop);
+  }
+
+  private get scrollContainer(): HTMLElement | null {
+    return (this.host.nativeElement as HTMLElement).querySelector('.entity-view');
+  }
+
+  /**
+   * O contêiner só existe com o conteúdo novo já renderizado, por isso o
+   * reposicionamento espera o próximo quadro em vez de acontecer aqui.
+   */
+  private scrollViewTo(top: number): void {
+    if (typeof requestAnimationFrame !== 'function') return;
+    requestAnimationFrame(() => {
+      const container = this.scrollContainer;
+      if (container) container.scrollTop = top;
+    });
   }
 
   openCreate(): void {

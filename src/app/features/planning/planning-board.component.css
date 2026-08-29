@@ -1122,6 +1122,18 @@ input:focus, select:focus, textarea:focus {
   color: var(--muted);
 }
 
+/* O alcance fica ao lado do tipo: é a informação que faltava quando criar um
+   campo aqui dentro o espalhava por todas as fichas sem aviso. */
+.custom-field > header small .field-scope {
+  font-weight: 700;
+  font-style: normal;
+  color: color-mix(in srgb, var(--brand) 82%, var(--text));
+}
+
+.custom-field > header small .field-scope.card-only {
+  color: var(--muted);
+}
+
 .field-actions {
   display: flex;
   gap: 4px;
@@ -1417,4 +1429,49 @@ input:focus, select:focus, textarea:focus {
     margin-right: 14px;
     margin-left: 14px;
   }
+}
+
+/* ── Alcance do campo no criador de propriedades ── */
+.field-builder .field-scope-picker {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-2) 45%, transparent);
+}
+
+.field-builder .field-scope-picker legend {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.field-builder .field-scope-picker label {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.field-builder .field-scope-picker input {
+  width: auto;
+  margin-top: 2px;
+}
+
+.field-builder .field-scope-picker strong {
+  display: block;
+  font-size: 10px;
+}
+
+.field-builder .field-scope-picker small {
+  display: block;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.4;
 }

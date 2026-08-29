@@ -4,6 +4,22 @@ As alterações relevantes do NarraHub são registradas neste arquivo. O projeto
 
 ## Não publicado
 
+### Correções da interface após a 0.8.0
+
+- **Correção**: o fundo cósmico e a logo do topo esquerdo tinham sumido. Os arquivos continuam sendo `cosmic-nebula.jpg` e `narrahub-logo-full.png`, mas o código passou a pedir `.webp` — extensão que nunca existiu no projeto.
+- **Correção**: alternar entre tema claro e escuro não mudava quase nada. O fundo do aplicativo é desenhado por variáveis de tema (`--nh-bg-nebula-*`, `--nh-vignette`) que nunca chegaram a ser definidas, então a nebulosa escura ficava por cima nos dois temas. No tema claro o fundo agora é um pergaminho luminoso, sem estrelas.
+
+### Planejamento: campos em todos os cards ou só em um
+
+- **Escolha o alcance ao criar**: ao adicionar uma propriedade no quadro, você decide se ela vale **em todos os cards** do universo ou **só neste card**. Antes toda propriedade valia para todos, sem a tela dizer isso.
+- **Promova ou restrinja depois**: cada propriedade tem um botão que a torna universal ou a devolve ao card de origem. Os valores já preenchidos não são perdidos nas duas direções.
+- A ficha passa a listar só o que vale para ela: as universais mais as do próprio card.
+- Excluir um card leva junto, na mesma operação, as propriedades que existiam só nele.
+
+### Fichas de entidade
+
+- **Correção**: abrir uma entidade que estava no fim da lista mostrava a ficha já rolada até o rodapé. A ficha agora abre no começo, e voltar devolve a lista ao ponto em que você estava.
+
 ### Canvas livre na tela de Conexões
 
 - **Monte o diagrama do seu jeito**: arraste os nós e a posição fica salva; "Organizar grafo" volta ao arranjo automático e "↺ Layout" descarta o layout guardado.

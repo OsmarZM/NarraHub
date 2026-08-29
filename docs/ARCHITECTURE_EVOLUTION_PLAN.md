@@ -267,6 +267,159 @@ O gate de publicação continua separado: a versão somente poderá ser classifi
 - migration 1→10 em memória e em arquivo;
 - abertura no Tauri de desenvolvimento.
 
+#### Ordem 2 — universo ✔
+
+Comandos: `universe_create`, `universe_update`, `universe_delete`. O domínio de
+Universo não delega mais nada ao legado.
+
+Duas mudanças de comportamento, ambas para melhor e ambas com teste:
+
+- **Criar virou uma gravação só.** O caminho antigo inseria e depois fazia um
+  `UPDATE` separado quando havia capa — duas idas ao banco e uma janela em que
+  o universo existia sem capa.
+- **Excluir agora limpa em cascata.** Todas as FKs para `universes` são
+  `ON DELETE CASCADE`, mas o `tauri-plugin-sql` não liga `foreign_keys`: o
+  caminho antigo deixava histórias, livros, capítulos e entidades órfãos no
+  arquivo. A conexão do core liga, então a cascata acontece.
+
+O `UPDATE` monta o `SET` só com o que veio, porque `None` significa "não
+mexer" e não "gravar vazio" — sem isso, salvar só o nome apagaria a capa.
+
+#### Ordem 3 — timeline e planejamento ✔
+
+Timeline: `timeline_create`, `timeline_rename`, `timeline_delete`.
+Planejamento: `planning_list`, `planning_create`, `planning_delete`,
+`planning_save_order`, `planning_field_links`, `planning_field_definitions`,
+`planning_field_definition_create/rename/delete`.
+
+`saveCard` continua no `planning_save_card` que já existia antes da Fase 4, em
+`database/planning.rs`. Ele entra no core organizado junto da Ordem 4, porque
+a validação cruzada que ele faz é sobre os campos de relação (`story`,
+`character`, `tags`) — migrar as duas coisas em fatias separadas duplicaria a
+regra.
+
+`saveOrder` deixou de montar um `CASE` gigante com um placeholder por card.
+Agora é um `UPDATE` por card dentro de uma transação, e a conferência que já
+existia continua: se o número de linhas atingidas não bater com o número de
+cards enviados, o quadro mudou entre o arrasto e a gravação — a transação é
+revertida e o erro pede recarregar, em vez de gravar meia reordenação. Há
+teste para o rollback, que é uma das exigências de "testes reais" do plano.
+
+#### Ordens 4 e 5 — entidades, atributos, tags, relações e menções ✔
+
+Entidades: `entity_list`, `entity_details`, `entity_create`, `entity_update`,
+`entity_delete`, `entity_attribute_save`, `entity_attribute_delete`.
+Tags e menções: `tags_list`, `tags_for_owner`, `tag_assignments`,
+`tag_create`, `tag_set`, `tag_delete`, `mentions_list`, `mentions_sync`.
+Relações: `relation_create`, `relation_delete`.
+
+**Criar entidade virou uma transação.** Antes eram N gravações soltas — a
+entidade, um `INSERT` por atributo padrão do tipo, um por template do universo
+e mais um `UPDATE` para a imagem. Qualquer falha no meio deixava uma entidade
+pela metade no arquivo do usuário, sem como desfazer. A ordem dos atributos é a
+mesma de antes: padrões do tipo, depois os templates que o padrão não cobre,
+depois o que veio do formulário.
+
+**A lista de atributos padrão existe nos dois lados**, porque o Rust precisa
+dela para montar a ficha e a tela precisa dela para desenhar o formulário. A
+alternativa — o frontend mandar a lista no comando — deixaria o cliente decidir
+o formato do dado gravado. `tests/rust-core-contract.test.mjs` compara as duas
+listas; divergir quebra o teste.
+
+**Menções: `INSERT OR IGNORE` não servia.** A tabela `mentions` não tem
+`UNIQUE(chapter_id, entity_id)` — era o `SELECT` prévio do caminho antigo que
+evitava a duplicata. A inserção agora é condicionada a um `NOT EXISTS`, e a
+lista é deduplicada antes do banco (o texto salvo repete a mesma entidade
+várias vezes). Manter a linha existente preserva o `created_at`, que é o que
+ordena "onde apareceu pela primeira vez". O teste que pegou isso é o mesmo que
+protege contra a regressão.
+
+**Salvar atributo carimba a ficha na mesma transação.** Sem isso, uma falha
+depois do atributo deixaria a entidade alterada com `updated_at` antigo, e a
+sincronização decidiria que nada mudou.
+
+`entity_details` traz as relações das duas pontas num `UNION ALL` com uma
+coluna `is_source`, em vez de dois `SELECT` juntados em memória. A coluna não é
+decoração: sem ela, uma relação de uma entidade com ela mesma apareceria
+invertida na ficha, e "pai de" viraria "filho de".
+
+A galeria de imagens continua no legado: anexo é `AttachmentService`,
+compartilhado com capítulo e universo, e sai junto do último domínio que o usa.
+
+#### Ordens 6 e 7 — história, livro, capítulo e autosave ✔
+
+`story_*`, `book_*` e `chapter_*`. Os quatro `updateChapter*` do contrato viram
+um comando só com patch parcial: `null` significa "esta tela não mexeu nisso".
+Sem isso, o inspetor salvando o resumo sobrescreveria o texto que o editor
+acabou de gravar.
+
+`content` sem `word_count` é recusado. A estatística do universo soma
+`word_count`, então gravar um sem o outro faz o total mentir até o próximo
+salvamento — e o método antigo (`updateContent(id, content, wordCount)`) não
+tinha como obrigar quem chamava a recontar.
+
+**Revisões de capítulo não foram implementadas.** A tabela `chapter_revisions`
+existe desde a migration 1 e **nunca teve escrita nenhuma**, nem no frontend
+nem no Rust. Não havia o que migrar. Criar a revisão antes de sobrescrever o
+capítulo é um recurso novo, com decisão de produto por trás (quando criar,
+quanto guardar, como mostrar), e ficou fora desta fase de propósito.
+
+#### Ordem 8 — colaboração e aplicação de propostas ✔
+
+`collaboration_*`. É o domínio em que o valor vem de fora, de um convidado com
+link, então é onde a fronteira importa mais:
+
+- **A lista de campos graváveis virou código de domínio.** A tabela e a coluna
+  saem de `domain::collaboration::writable_column`, **nunca** do texto
+  recebido. O caminho antigo montava ``SET ${item.field} = ?`` interpolando o
+  campo direto no SQL — era só a checagem da lista que separava isso de uma
+  injeção.
+- **Revisar virou uma transação.** Aplicar a mudança, registrar no histórico e
+  marcar a proposta como decidida eram três comandos soltos: se a marcação
+  falhasse depois de aplicar, a proposta continuava pendente e podia ser
+  aplicada de novo, sobrescrevendo o que o autor tivesse escrito no meio.
+- **Aprovar tudo dá uma transação por proposta**, para uma proposta que aponta
+  para um capítulo já excluído não derrubar a aprovação das outras.
+
+#### Ordem 9 — hardening pós-revisão de PR ✔
+
+Revisão externa do PR #1 encontrou um bug funcional que os testes existentes
+não pegavam. Esta fatia fecha os três pontos apontados.
+
+**`canon_status` salvava em silêncio sem salvar.** `UpdateEntityInput` era um
+`Partial<Pick<Entity, ...>>`, então mandava `canon_status`; o struct
+`EntityUpdate` tem `rename_all = "camelCase"` e espera `canonStatus`. O serde
+descarta chave desconhecida **sem erro**: o comando devolvia sucesso, a tela
+mostrava o estado novo e o banco guardava o antigo, até o usuário reabrir a
+ficha. O contrato virou uma `interface` camelCase explícita — assim o
+compilador aponta o chamador, em vez de o erro aparecer só em runtime.
+
+Auditei a fronteira inteira atrás do mesmo padrão: dos nove structs de entrada
+com `rename_all`, só este divergia. O teste novo compara campo a campo cada
+patch do gateway com o struct do Rust, e foi verificado reintroduzindo o bug
+para confirmar que ele reprova.
+
+**O N+1 de estatísticas não tinha morrido, só encolhido.** A revisão pegou o
+comentário otimista: de seis consultas por universo para duas, ainda em laço.
+Agora a biblioteca inteira sai em três consultas, independente de quantos
+universos existam, e há teste garantindo que o resultado agrupado bate com o
+cálculo universo a universo.
+
+**O GitHub não validava nada.** O único workflow rodava por
+`workflow_dispatch`, voltado a release. `.github/workflows/ci.yml` roda em todo
+Pull Request: build Angular, os quatro conjuntos de teste do frontend, e
+`cargo fmt --check`, `cargo clippy -D warnings` e `cargo test` no core. Os
+cinco avisos de clippy que existiam — três meus, dois anteriores à Fase 4 —
+foram corrigidos para o portão entrar já verde.
+
+**Fica para a próxima fatia de hardening:** integridade entre universos. Hoje
+as FKs garantem que a entidade existe, mas não que as duas pontas de uma
+relação pertencem ao mesmo universo — vale igual para `timeline → entity`,
+`mention → entity/chapter`, `planning → chapter` e as tags polimórficas. Já era
+assim no legado, então não é regressão; mas agora que existe um core de
+domínio, é ele que deve ser o guardião dessa regra, e isso precisa estar
+resolvido **antes** de o sync trazer ids de outras máquinas.
+
 ### Critério de saída
 
 A versão de estabilização abre bancos anteriores, mantém capítulos e permite reabrir o app sem modificar checksums.
@@ -521,6 +674,47 @@ Os testes passavam porque chamavam `sql_for_version` direto, contornando o regis
 ### Pendente
 
 Persistência real do canvas nunca foi confirmada no app Tauri empacotado — o `ng serve` não tem banco. Ao validar, o teste mínimo é: criar um título, fechar e reabrir o app, e conferir que ele voltou na mesma posição.
+
+## Alcance dos campos do planejamento (recurso de produto, fora da sequência de fases)
+
+Pedido do autor depois da Fase 4. Está documentado aqui porque **mexeu no schema** (migration 15) e porque a regra de visibilidade que ele introduz precisa valer no core, não só na tela.
+
+### O que é
+
+Toda propriedade criada no quadro valia para todos os cards do universo, e a tela não dizia isso: o autor criava um campo dentro de uma ficha e ele aparecia em todas. Agora o campo declara seu **alcance**:
+
+- `universal` — aparece em todas as fichas do universo (o comportamento anterior, e o padrão);
+- `card` — aparece só na ficha que o criou, guardada em `owner_item_id`.
+
+A troca entre os dois é reversível pela própria ficha, sem tocar nos valores já preenchidos: promover expõe o campo vazio nas outras fichas, restringir devolve a propriedade ao card que a estava usando.
+
+### Schema (migration 15, aditiva)
+
+| Coluna | Papel | Observação |
+| --- | --- | --- |
+| `scope` | `universal` \| `card` | `DEFAULT 'universal'` — nenhuma linha existente muda de significado no upgrade |
+| `owner_item_id` | O card dono, quando `scope = 'card'` | `NULL` obrigatório como default: o SQLite exige isso para adicionar coluna com `REFERENCES` |
+
+Dois gatilhos (`BEFORE INSERT` e `BEFORE UPDATE OF`) recusam os dois estados inconsistentes: campo de card sem dono (sumiria de todas as fichas) e campo universal com dono (confundiria a leitura).
+
+### A UNIQUE(universe_id, name) da v11 ficou como estava
+
+Deliberadamente. Um nome de propriedade significa uma coisa só dentro do universo, e é isso que permite promover um campo de card para universal mexendo **só no alcance** — não existe homônimo em outro card para colidir. Relaxar a UNIQUE exigiria reconstruir a tabela, caminho que a ADR-0004 evita e que aqui não compraria nada.
+
+### A regra de visibilidade vive no core
+
+Filtrar na tela não bastaria: um card poderia gravar valor num campo privado de outro. Duas defesas no Rust:
+
+- `planning_save_card` carrega apenas as definições universais mais as do próprio card, então um valor endereçado a campo de terceiro é recusado com erro, não ignorado em silêncio;
+- `planning_field_definitions` aceita um `cardId` opcional e devolve a mesma fatia; sem ele devolve o catálogo do universo, que é o que a lista de propriedades gerencia.
+
+### Exclusão do card
+
+`planning_delete` roda numa transação: apaga as definições que pertenciam só àquele card e depois o card. As conexões do core ligam `foreign_keys`, então o `ON DELETE CASCADE` já cobriria isso; a limpeza explícita existe porque o pool do `tauri-plugin-sql` não liga a pragma.
+
+### Pendente
+
+Não foi validado no app Tauri empacotado nem num upgrade real a partir de um banco 0.8.0 com dados. O teste mínimo: abrir um universo que já tenha propriedades, conferir que todas continuam aparecendo em todas as fichas, criar uma "só neste card", reabrir o app e confirmar que ela não vazou para os outros cards.
 
 ## Fase 3 — Router e carregamento por feature
 
@@ -788,9 +982,104 @@ navegação back/forward, e autosave interrompido por troca de rota.
 - exclusão mantendo foreign keys e limpeza de metadados;
 - execução dentro do Tauri, não apenas Angular.
 
-### Critério de saída
+### Progresso
 
-Depois que nenhum componente depender do SQL do frontend, remover `sql:allow-execute` da capability.
+Fatia por fatia, na ordem de migração acima. O que está aqui já roda no app.
+
+#### Estrutura (feita junto com a Ordem 1)
+
+```text
+src-tauri/src/
+├── domain/                  tipos e regras; não conhece rusqlite nem tauri
+├── application/             casos de uso; abre a conexão que a operação exige
+├── infrastructure/sqlite/   único lugar que fala rusqlite
+└── interface/tauri/         #[tauri::command]; só traduz argumento e erro
+```
+
+Decisões que precisam sobreviver:
+
+- **Sem pool próprio.** SQLite abre conexão em microssegundos e o plano pede
+  transações curtas. Um pool nosso conviveria mal com o pool que o
+  `tauri-plugin-sql` ainda mantém aberto durante a migração gradual — o banco
+  está em WAL desde a migration 1, e é isso que permite os dois convivendo.
+- **`read()` abre somente-leitura de propósito.** Comando de consulta que
+  grave por engano falha na hora, em vez de gravar em silêncio.
+- **Serialização em `snake_case`.** Os modelos TypeScript já espelham as
+  colunas; renomear para `camelCase` só na fronteira Rust obrigaria a
+  reescrever templates sem ganho. Entrada de comando é a exceção, em
+  `camelCase`, como `planning_save_card` já fazia.
+- **Teste usa o schema real**, aplicando as migrations num banco em memória.
+  Schema desenhado à mão no teste esconde justamente o defeito que este core
+  precisa pegar — e pegou: `sort_key` é `REAL`, não inteiro, porque a
+  ordenação da timeline é fracionária para permitir inserir um evento entre
+  dois outros sem renumerar tudo.
+
+No frontend, o adaptador `rust-<domínio>.gateway.ts` implementa o mesmo
+contrato do legado e **delega ao legado o que ainda não migrou**. A lista de
+delegações está documentada no topo de cada adaptador e encolhe a cada fatia;
+chegar a zero é o sinal de que o `legacy-*` pode sumir. `RustCoreService` é a
+única porta para `invoke()` — ela existe porque `invoke()` rejeita com o objeto
+serializado do Rust, não com um `Error`, e sem normalizar isso todo `catch` do
+frontend mostraria `undefined` na tela.
+
+`tests/rust-core-contract.test.mjs` cobre os três riscos da convivência:
+adaptador que perde um método na troca, comando chamado que não existe no
+Rust, e — o que já custou caro com a migration v14 — comando que existe mas
+não foi registrado no `invoke_handler`, que compila dos dois lados e só falha
+no clique do usuário.
+
+#### Ordem 1 — queries somente leitura e estatísticas ✔
+
+Comandos: `universe_list`, `universe_get`, `universe_stats`, `timeline_list`,
+`relations_list`, `history_list`.
+
+As estatísticas deixaram de ser N+1: o frontend fazia seis `SELECT` por
+universo e repetia os seis para cada linha da biblioteca. Agora as contagens
+escalares saem de uma query só, e apenas a quebra por tipo de entidade
+continua separada, porque só ela é agrupada.
+
+#### Ordem 10 — canvas, anexos e o fim da camada legada ✔
+
+O canvas e os anexos não estavam na ordem de migração original — o canvas
+nasceu depois do plano, e anexo é compartilhado entre entidade, capítulo e
+universo. Mas eram os dois últimos pontos de SQL no frontend, então sem eles o
+critério de saída da fase não fechava.
+
+Comandos: `canvas_nodes`, `canvas_node_create/update/delete/position`,
+`canvas_entity_positions`, `canvas_entity_position_save`,
+`canvas_layout_clear`, `canvas_edges`, `canvas_edge_create/delete`,
+`attachments_list`, `attachment_create`, `attachment_delete`.
+
+**A integridade do canvas passou a valer também na gravação.** As pontas das
+ligações são polimórficas, então não há FK; antes a defesa era só na leitura,
+que descarta ligação órfã. Isso escondia o problema em vez de evitá-lo: a
+ligação inválida entrava no arquivo, sumia da tela pelo filtro e ficava lá para
+sempre. Agora as duas pontas são conferidas antes de gravar, e excluir um
+elemento apaga as ligações dele na mesma transação.
+
+**O anexo devolve a posição calculada pelo banco.** Ela sai de uma subquery no
+`INSERT`; devolver o zero montado na memória faria a imagem nova aparecer no
+começo da galeria até a próxima recarga.
+
+**A camada de serviços SQL foi removida.** Doze `*.service.ts` e os dez
+`legacy-*.gateway.ts` deixaram de existir. Os tipos que os contratos importavam
+de dentro deles (`CollaborationSession` e vizinhos, `PlanningCardUpdate`)
+viraram modelos de domínio. `RelationService` já estava morto antes disso —
+nada o importava.
+
+`DatabaseService` sobreviveu **sem executar SQL**, reduzido ao ciclo de vida do
+pool: o `tauri-plugin-sql` ainda aplica as migrations na abertura, e restaurar
+backup precisa fechar o pool antes de trocar o arquivo no disco.
+
+### Critério de saída ✔
+
+`sql:allow-execute` **foi removido** de `src-tauri/capabilities/default.json`.
+`sql:default` fica, pelos dois motivos acima.
+
+Três testes de fronteira seguram a decisão: nenhum arquivo do frontend contém
+SQL, a camada de serviços legada não pode voltar, e a capability não pode
+reganhar a permissão sem que o SQL volte junto.
+
 
 ## Fase 5 — Context Engine e IA confiável
 

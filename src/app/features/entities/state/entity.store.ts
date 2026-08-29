@@ -168,7 +168,7 @@ export class EntityStore {
         name,
         description: entity.description,
         summary: entity.summary,
-        canon_status: entity.canon_status,
+        canonStatus: entity.canon_status,
       });
       for (const attribute of entity.attributes) {
         const key = attribute.key.trim();

@@ -15,18 +15,19 @@
   z-index: 0;
   pointer-events: none;
   overflow: hidden;
-  background-color: #0b0813;
+  background-color: var(--nh-bg-nebula-color, #0b0813);
+  transition: background-color .28s ease;
 }
 
 .cosmic-nebula-art {
   position: absolute;
   inset: 0;
-  background:
-    url('/backgrounds/cosmic-nebula.jpg') center center / cover no-repeat,
-    radial-gradient(ellipse at 80% 30%, rgba(142, 68, 173, 0.35) 0%, transparent 60%),
-    radial-gradient(circle at 20% 70%, rgba(192, 57, 120, 0.28) 0%, transparent 50%),
-    #0c0914;
+  background-image: var(--nh-bg-nebula-img, url('/backgrounds/cosmic-nebula.jpg'));
+  background-position: center center;
+  background-size: cover;
+  background-repeat: no-repeat;
   opacity: 0.95;
+  transition: background-image .3s ease, opacity .3s ease;
   will-change: opacity;
 }
 
@@ -34,6 +35,11 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
+  /* As animações de cintilação sobrescrevem `opacity`, então o tema claro
+     precisa remover a camada do fluxo em vez de só zerar a opacidade. */
+  display: var(--nh-star-display, block);
+  opacity: var(--nh-star-opacity, 0.9);
+  transition: opacity .3s ease;
   will-change: opacity, transform;
 }
 
@@ -94,7 +100,8 @@
 .cosmic-glow-vignette {
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at 50% 45%, transparent 35%, rgba(10, 8, 16, 0.45) 80%, rgba(8, 6, 14, 0.8) 100%);
+  background: var(--nh-vignette, radial-gradient(circle at 50% 45%, transparent 35%, rgba(10, 8, 16, 0.45) 80%, rgba(8, 6, 14, 0.8) 100%));
+  transition: background .3s ease;
 }
 
 @keyframes stars-twinkle-1 {
@@ -121,6 +128,7 @@
     opacity: 0.85;
   }
 }
+
 
 /* ── Conteúdo à frente do fundo (Glassmorphic Frame) ── */
 .nh-app-frame {

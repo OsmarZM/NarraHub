@@ -1,6 +1,6 @@
 import { Injectable, inject, signal } from '@angular/core';
 import {
-  PlanningFieldDefinition, PlanningFieldType, PlanningFieldValues, PlanningItem,
+  PlanningFieldDefinition, PlanningFieldScope, PlanningFieldType, PlanningFieldValues, PlanningItem,
 } from '../../../core/models';
 import { PlanningCardUpdate, PlanningGateway } from '../gateways/planning.gateway';
 
@@ -96,17 +96,37 @@ export class PlanningStore {
     }
   }
 
-  async createFieldDefinition(name: string, fieldType: PlanningFieldType, options: string[]): Promise<PlanningFieldDefinition | null> {
+  /**
+   * `cardId` só é usado no alcance `card`; um campo universal não tem dono.
+   */
+  async createFieldDefinition(
+    name: string,
+    fieldType: PlanningFieldType,
+    options: string[],
+    scope: PlanningFieldScope,
+    cardId: string | null,
+  ): Promise<PlanningFieldDefinition | null> {
     const universeId = this.requestedUniverseId;
     if (!universeId) return null;
     try {
-      const definition = await this.gateway.createFieldDefinition(universeId, name, fieldType, options);
+      const definition = await this.gateway.createFieldDefinition(
+        universeId, name, fieldType, options, scope, scope === 'card' ? cardId : null,
+      );
       await this.refreshFieldDefinitions();
       return definition;
     } catch (error) {
       this.setError(error, 'Não foi possível criar o campo.');
       return null;
     }
+  }
+
+  async setFieldDefinitionScope(id: string, scope: PlanningFieldScope, cardId: string | null): Promise<boolean> {
+    const changed = await this.run(
+      () => this.gateway.setFieldDefinitionScope(id, this.requestedUniverseId, scope, scope === 'card' ? cardId : null),
+      'Não foi possível mudar o alcance do campo.',
+    );
+    if (changed) await this.refreshFieldDefinitions();
+    return changed;
   }
 
   async renameFieldDefinition(id: string, name: string): Promise<boolean> {
