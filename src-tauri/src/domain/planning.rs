@@ -34,8 +34,20 @@ pub struct PlanningFieldDefinition {
     pub field_type: String,
     pub options_json: String,
     pub sort_order: i64,
+    /// `universal` aparece em todos os cards do universo; `card`, só naquele
+    /// que o criou. Ver `SCOPE_UNIVERSAL`/`SCOPE_CARD`.
+    pub scope: String,
+    /// O card dono, obrigatório em `card` e sempre `None` em `universal`.
+    pub owner_item_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+pub const SCOPE_UNIVERSAL: &str = "universal";
+pub const SCOPE_CARD: &str = "card";
+
+pub fn is_known_field_scope(scope: &str) -> bool {
+    scope == SCOPE_UNIVERSAL || scope == SCOPE_CARD
 }
 
 /// Uma posição do card no quadro: em que coluna e em que altura dela.

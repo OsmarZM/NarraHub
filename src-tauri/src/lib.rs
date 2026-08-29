@@ -10,7 +10,7 @@ mod sync;
 
 use database::migrations::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V14,
-    MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7,
+    MIGRATION_V15, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7,
     MIGRATION_V8, MIGRATION_V9,
 };
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -148,6 +148,12 @@ pub fn run() {
                             sql: MIGRATION_V14,
                             kind: MigrationKind::Up,
                         },
+                        Migration {
+                            version: 15,
+                            description: "Add scope to planning field definitions",
+                            sql: MIGRATION_V15,
+                            kind: MigrationKind::Up,
+                        },
                     ],
                 )
                 .build(),
@@ -233,6 +239,7 @@ pub fn run() {
             interface::tauri::planning_commands::planning_field_definitions,
             interface::tauri::planning_commands::planning_field_definition_create,
             interface::tauri::planning_commands::planning_field_definition_rename,
+            interface::tauri::planning_commands::planning_field_definition_set_scope,
             interface::tauri::planning_commands::planning_field_definition_delete,
             updater_configured,
             database::health::database_health,

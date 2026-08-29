@@ -675,6 +675,47 @@ Os testes passavam porque chamavam `sql_for_version` direto, contornando o regis
 
 Persistência real do canvas nunca foi confirmada no app Tauri empacotado — o `ng serve` não tem banco. Ao validar, o teste mínimo é: criar um título, fechar e reabrir o app, e conferir que ele voltou na mesma posição.
 
+## Alcance dos campos do planejamento (recurso de produto, fora da sequência de fases)
+
+Pedido do autor depois da Fase 4. Está documentado aqui porque **mexeu no schema** (migration 15) e porque a regra de visibilidade que ele introduz precisa valer no core, não só na tela.
+
+### O que é
+
+Toda propriedade criada no quadro valia para todos os cards do universo, e a tela não dizia isso: o autor criava um campo dentro de uma ficha e ele aparecia em todas. Agora o campo declara seu **alcance**:
+
+- `universal` — aparece em todas as fichas do universo (o comportamento anterior, e o padrão);
+- `card` — aparece só na ficha que o criou, guardada em `owner_item_id`.
+
+A troca entre os dois é reversível pela própria ficha, sem tocar nos valores já preenchidos: promover expõe o campo vazio nas outras fichas, restringir devolve a propriedade ao card que a estava usando.
+
+### Schema (migration 15, aditiva)
+
+| Coluna | Papel | Observação |
+| --- | --- | --- |
+| `scope` | `universal` \| `card` | `DEFAULT 'universal'` — nenhuma linha existente muda de significado no upgrade |
+| `owner_item_id` | O card dono, quando `scope = 'card'` | `NULL` obrigatório como default: o SQLite exige isso para adicionar coluna com `REFERENCES` |
+
+Dois gatilhos (`BEFORE INSERT` e `BEFORE UPDATE OF`) recusam os dois estados inconsistentes: campo de card sem dono (sumiria de todas as fichas) e campo universal com dono (confundiria a leitura).
+
+### A UNIQUE(universe_id, name) da v11 ficou como estava
+
+Deliberadamente. Um nome de propriedade significa uma coisa só dentro do universo, e é isso que permite promover um campo de card para universal mexendo **só no alcance** — não existe homônimo em outro card para colidir. Relaxar a UNIQUE exigiria reconstruir a tabela, caminho que a ADR-0004 evita e que aqui não compraria nada.
+
+### A regra de visibilidade vive no core
+
+Filtrar na tela não bastaria: um card poderia gravar valor num campo privado de outro. Duas defesas no Rust:
+
+- `planning_save_card` carrega apenas as definições universais mais as do próprio card, então um valor endereçado a campo de terceiro é recusado com erro, não ignorado em silêncio;
+- `planning_field_definitions` aceita um `cardId` opcional e devolve a mesma fatia; sem ele devolve o catálogo do universo, que é o que a lista de propriedades gerencia.
+
+### Exclusão do card
+
+`planning_delete` roda numa transação: apaga as definições que pertenciam só àquele card e depois o card. As conexões do core ligam `foreign_keys`, então o `ON DELETE CASCADE` já cobriria isso; a limpeza explícita existe porque o pool do `tauri-plugin-sql` não liga a pragma.
+
+### Pendente
+
+Não foi validado no app Tauri empacotado nem num upgrade real a partir de um banco 0.8.0 com dados. O teste mínimo: abrir um universo que já tenha propriedades, conferir que todas continuam aparecendo em todas as fichas, criar uma "só neste card", reabrir o app e confirmar que ela não vazou para os outros cards.
+
 ## Fase 3 — Router e carregamento por feature
 
 ### Estado de implementação

@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import {
-  PlanningFieldDefinition, PlanningFieldType, PlanningFieldValues, PlanningItem,
+  PlanningFieldDefinition, PlanningFieldScope, PlanningFieldType, PlanningFieldValues, PlanningItem,
 } from '../../../core/models';
 import { RustCoreService } from '../../../core/services/rust-core.service';
 import { PlanningCardUpdate, PlanningGateway } from './planning.gateway';
@@ -66,18 +66,33 @@ export class RustPlanningGateway implements PlanningGateway {
     return this.core.call<PlanningFieldValues>('planning_field_links', { cardId });
   }
 
+  /**
+   * Sem `cardId` o core devolve o catálogo inteiro do universo, que é o que a
+   * store guarda: a ficha aberta filtra o que mostra a partir dele.
+   */
   listFieldDefinitions(universeId: string): Promise<PlanningFieldDefinition[]> {
-    return this.core.call<PlanningFieldDefinition[]>('planning_field_definitions', { universeId });
+    return this.core.call<PlanningFieldDefinition[]>('planning_field_definitions', { universeId, cardId: null });
   }
 
-  createFieldDefinition(universeId: string, name: string, fieldType: PlanningFieldType, options: string[]): Promise<PlanningFieldDefinition> {
+  createFieldDefinition(
+    universeId: string,
+    name: string,
+    fieldType: PlanningFieldType,
+    options: string[],
+    scope: PlanningFieldScope,
+    cardId: string | null,
+  ): Promise<PlanningFieldDefinition> {
     return this.core.call<PlanningFieldDefinition>('planning_field_definition_create', {
-      universeId, name, fieldType, options,
+      universeId, name, fieldType, options, scope, cardId,
     });
   }
 
   renameFieldDefinition(id: string, universeId: string, name: string): Promise<void> {
     return this.core.call<void>('planning_field_definition_rename', { id, universeId, name });
+  }
+
+  setFieldDefinitionScope(id: string, universeId: string, scope: PlanningFieldScope, cardId: string | null): Promise<void> {
+    return this.core.call<void>('planning_field_definition_set_scope', { id, universeId, scope, cardId });
   }
 
   deleteFieldDefinition(id: string, universeId: string): Promise<void> {
