@@ -1,6 +1,6 @@
 import { CommonModule } from '@angular/common';
 import { CdkDragDrop, DragDropModule } from '@angular/cdk/drag-drop';
-import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges, inject, signal } from '@angular/core';
+import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { ManuscriptStore } from '../manuscript/state/manuscript.store';
@@ -11,6 +11,7 @@ import {
   ContentTagAssignment,
   Entity,
   PlanningFieldDefinition,
+  PlanningFieldScope,
   PlanningFieldType,
   PlanningFieldValue,
   PlanningFieldValues,
@@ -64,6 +65,21 @@ export class PlanningBoardComponent implements OnChanges {
   readonly deleteConfirmation = signal(false);
   readonly pendingFieldDeleteId = signal<string | null>(null);
   readonly fieldBuilderOpen = signal(false);
+  /**
+   * Espelha `editingCard.id` como signal porque `visibleDefinitions` depende
+   * dele; a propriedade simples não dispararia o recálculo.
+   */
+  readonly editingCardId = signal<string | null>(null);
+
+  /**
+   * `definitions` guarda o catálogo do universo inteiro — é o que a lista de
+   * propriedades gerencia. A ficha aberta só mostra o que vale para ela: as
+   * universais mais as que pertencem a este card.
+   */
+  readonly visibleDefinitions = computed(() => {
+    const cardId = this.editingCardId();
+    return this.definitions().filter((field) => field.scope !== 'card' || field.owner_item_id === cardId);
+  });
   readonly searchQuery = signal('');
   readonly filterStatus = signal<PlanningStatus | null>(null);
 
@@ -77,6 +93,12 @@ export class PlanningBoardComponent implements OnChanges {
   newFieldName = '';
   newFieldType: PlanningFieldType = 'text';
   newFieldOptions = '';
+  /**
+   * Antes da migration 15 toda propriedade nascia valendo para todos os cards,
+   * sem a tela dizer isso. `universal` continua sendo o padrão — o que mudou é
+   * que agora a escolha é explícita e reversível.
+   */
+  newFieldScope: PlanningFieldScope = 'universal';
   newTagName = '';
   newTagColor = '#7d3650';
   editingFieldId: string | null = null;
@@ -170,6 +192,7 @@ export class PlanningBoardComponent implements OnChanges {
     this.pendingFieldDeleteId.set(null);
     this.fieldBuilderOpen.set(false);
     this.editingCard = { ...item };
+    this.editingCardId.set(item.id);
     const scalarValues = parsePlanningFieldValues(item.custom_field_values);
     this.cardFieldValues = scalarValues;
     this.modal.set('card');
@@ -186,6 +209,7 @@ export class PlanningBoardComponent implements OnChanges {
     if (this.busy()) return;
     this.modal.set(null);
     this.editingCard = null;
+    this.editingCardId.set(null);
     this.deleteConfirmation.set(false);
     this.pendingFieldDeleteId.set(null);
   }
@@ -351,15 +375,47 @@ export class PlanningBoardComponent implements OnChanges {
         this.newFieldName,
         this.newFieldType,
         options,
+        this.newFieldScope,
+        this.editingCardId(),
       );
       if (!definition) { this.showError(this.planningStore.error(), 'Não foi possível criar o campo.'); return; }
       this.definitions.set(this.planningStore.fieldDefinitions());
       this.newFieldName = '';
       this.newFieldOptions = '';
       this.newFieldType = 'text';
+      this.newFieldScope = 'universal';
       this.fieldBuilderOpen.set(false);
     } catch (error) {
       this.showError(error, 'Já existe um campo com esse nome neste universo.');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  fieldScopeLabel(field: PlanningFieldDefinition): string {
+    return field.scope === 'card' ? 'Só neste card' : 'Todos os cards';
+  }
+
+  /**
+   * Alterna entre "todos os cards" e "só neste card". Os valores já gravados
+   * ficam onde estão: promover só faz o campo aparecer vazio nas outras fichas,
+   * e restringir devolve a propriedade ao card que a estava usando.
+   */
+  async toggleFieldScope(field: PlanningFieldDefinition): Promise<void> {
+    if (this.busy()) return;
+    const cardId = this.editingCardId();
+    const next: PlanningFieldScope = field.scope === 'card' ? 'universal' : 'card';
+    if (next === 'card' && !cardId) return;
+    this.busy.set(true);
+    this.error.set('');
+    try {
+      if (!await this.planningStore.setFieldDefinitionScope(field.id, next, cardId)) {
+        this.showError(this.planningStore.error(), 'Não foi possível mudar o alcance do campo.');
+        return;
+      }
+      this.definitions.set(this.planningStore.fieldDefinitions());
+    } catch (error) {
+      this.showError(error, 'Não foi possível mudar o alcance do campo.');
     } finally {
       this.busy.set(false);
     }

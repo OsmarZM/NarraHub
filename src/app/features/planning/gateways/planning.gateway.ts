@@ -1,5 +1,5 @@
 import {
-  PlanningFieldDefinition, PlanningFieldType, PlanningFieldValues, PlanningItem,
+  PlanningFieldDefinition, PlanningFieldScope, PlanningFieldType, PlanningFieldValues, PlanningItem,
 } from '../../../core/models';
 import { PlanningStatus } from '../../../core/models';
 
@@ -25,7 +25,16 @@ export abstract class PlanningGateway {
 
   abstract listFieldLinks(cardId: string): Promise<PlanningFieldValues>;
   abstract listFieldDefinitions(universeId: string): Promise<PlanningFieldDefinition[]>;
-  abstract createFieldDefinition(universeId: string, name: string, fieldType: PlanningFieldType, options: string[]): Promise<PlanningFieldDefinition>;
+  abstract createFieldDefinition(
+    universeId: string,
+    name: string,
+    fieldType: PlanningFieldType,
+    options: string[],
+    scope: PlanningFieldScope,
+    cardId: string | null,
+  ): Promise<PlanningFieldDefinition>;
   abstract renameFieldDefinition(id: string, universeId: string, name: string): Promise<void>;
+  /** Promove um campo de card para universal, ou o restringe de volta ao card. */
+  abstract setFieldDefinitionScope(id: string, universeId: string, scope: PlanningFieldScope, cardId: string | null): Promise<void>;
   abstract deleteFieldDefinition(id: string, universeId: string): Promise<void>;
 }

@@ -22,7 +22,7 @@
 .cosmic-nebula-art {
   position: absolute;
   inset: 0;
-  background-image: var(--nh-bg-nebula-img, url('/backgrounds/cosmic-nebula.webp'));
+  background-image: var(--nh-bg-nebula-img, url('/backgrounds/cosmic-nebula.jpg'));
   background-position: center center;
   background-size: cover;
   background-repeat: no-repeat;
@@ -35,6 +35,9 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
+  /* As animações de cintilação sobrescrevem `opacity`, então o tema claro
+     precisa remover a camada do fluxo em vez de só zerar a opacidade. */
+  display: var(--nh-star-display, block);
   opacity: var(--nh-star-opacity, 0.9);
   transition: opacity .3s ease;
   will-change: opacity, transform;
@@ -97,7 +100,7 @@
 .cosmic-glow-vignette {
   position: absolute;
   inset: 0;
-  background: var(--nh-vignette);
+  background: var(--nh-vignette, radial-gradient(circle at 50% 45%, transparent 35%, rgba(10, 8, 16, 0.45) 80%, rgba(8, 6, 14, 0.8) 100%));
   transition: background .3s ease;
 }
 

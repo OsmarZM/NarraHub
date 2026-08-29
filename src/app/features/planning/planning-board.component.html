@@ -322,7 +322,7 @@
             <header class="custom-fields-heading">
               <div>
                 <strong>Propriedades</strong>
-                <small>{{ definitions().length }} {{ definitions().length === 1 ? 'campo' : 'campos' }}</small>
+                <small>{{ visibleDefinitions().length }} {{ visibleDefinitions().length === 1 ? 'campo' : 'campos' }} nesta ficha</small>
               </div>
               <button type="button" class="add-field-button" (click)="fieldBuilderOpen.set(!fieldBuilderOpen())">
                 {{ fieldBuilderOpen() ? 'Fechar' : '＋ Novo campo' }}
@@ -330,7 +330,7 @@
             </header>
 
             <div class="custom-field-list">
-              @for (field of definitions(); track field.id) {
+              @for (field of visibleDefinitions(); track field.id) {
                 <section class="custom-field">
                   <header>
                     @if (editingFieldId === field.id) {
@@ -338,13 +338,21 @@
                     } @else {
                       <div>
                         <strong>{{ field.name }}</strong>
-                        <small>{{ fieldTypeLabel(field.field_type) }}</small>
+                        <small>{{ fieldTypeLabel(field.field_type) }} · <b class="field-scope" [class.card-only]="field.scope === 'card'">{{ fieldScopeLabel(field) }}</b></small>
                       </div>
                     }
                     <span class="field-actions">
                       @if (editingFieldId === field.id) {
                         <button type="button" (click)="saveFieldName(field)">Salvar</button>
                       } @else {
+                        <button
+                          type="button"
+                          class="scope-toggle"
+                          [disabled]="busy()"
+                          [title]="field.scope === 'card' ? 'Passar a valer para todos os cards' : 'Restringir a este card'"
+                          [attr.aria-label]="field.scope === 'card' ? 'Passar a valer para todos os cards' : 'Restringir a este card'"
+                          (click)="toggleFieldScope(field)"
+                        >{{ field.scope === 'card' ? '⤢' : '⤡' }}</button>
                         <button type="button" (click)="startRenameField(field)" title="Renomear campo">✎</button>
                       }
                       <button type="button" [class.confirm-delete]="pendingFieldDeleteId() === field.id" (click)="deleteField(field)" title="Excluir campo">
@@ -439,7 +447,7 @@
                 <button type="button" class="fields-empty" (click)="fieldBuilderOpen.set(true)">
                   <span>＋</span>
                   <strong>Personalizar propriedades</strong>
-                  <p>Adicione campos customizados como prioridade, pontos de vista, etc.</p>
+                  <p>Adicione campos como prioridade ou ponto de vista — em todos os cards ou só neste.</p>
                 </button>
               }
             </div>
@@ -462,6 +470,17 @@
                   </select>
                 </label>
                 <small class="field-type-hint">{{ fieldTypes.find(item => item.value === newFieldType)?.hint }}</small>
+                <fieldset class="field-scope-picker">
+                  <legend>Onde este campo aparece</legend>
+                  <label>
+                    <input type="radio" name="newCustomFieldScope" value="universal" [(ngModel)]="newFieldScope" />
+                    <span><strong>Em todos os cards</strong><small>A propriedade passa a existir em todas as fichas deste universo.</small></span>
+                  </label>
+                  <label>
+                    <input type="radio" name="newCustomFieldScope" value="card" [(ngModel)]="newFieldScope" />
+                    <span><strong>Só neste card</strong><small>Fica apenas nesta ficha. Você pode torná-la universal depois.</small></span>
+                  </label>
+                </fieldset>
                 @if (requiresOptions()) {
                   <label>
                     Opções

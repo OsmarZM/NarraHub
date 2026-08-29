@@ -60,7 +60,7 @@ fn save_card(connection: &mut Connection, request: PlanningCardSaveRequest) -> R
         .transaction()
         .map_err(|error| error.to_string())?;
     ensure_card_and_chapter_scope(&transaction, &request)?;
-    let definitions = load_definitions(&transaction, &request.universe_id)?;
+    let definitions = load_definitions(&transaction, &request.universe_id, &request.id)?;
     let values = request
         .field_values
         .as_object()
@@ -73,7 +73,9 @@ fn save_card(connection: &mut Connection, request: PlanningCardSaveRequest) -> R
             continue;
         }
         let definition = definitions.get(field_id).ok_or_else(|| {
-            format!("O campo {field_id} foi removido ou não pertence a este universo.")
+            format!(
+                "O campo {field_id} foi removido, é de outro universo ou é exclusivo de outro card."
+            )
         })?;
         if RELATION_FIELD_TYPES.contains(&definition.field_type.as_str()) {
             for target_id in validated_relation_ids(value, &definition.field_type)? {
@@ -196,17 +198,24 @@ fn ensure_card_and_chapter_scope(
     Ok(())
 }
 
+/// Só as definições que este card pode preencher: as universais e as que
+/// pertencem a ele. Filtrar aqui, e não só na tela, é o que impede um card de
+/// gravar valor num campo privado de outro card.
 fn load_definitions(
     transaction: &Transaction<'_>,
     universe_id: &str,
+    card_id: &str,
 ) -> Result<HashMap<String, FieldDefinition>, String> {
     let mut statement = transaction
         .prepare(
-            "SELECT id, field_type, options_json FROM planning_field_definitions WHERE universe_id = ?1",
+            "SELECT id, field_type, options_json
+               FROM planning_field_definitions
+              WHERE universe_id = ?1
+                AND (owner_item_id IS NULL OR owner_item_id = ?2)",
         )
         .map_err(|error| error.to_string())?;
     let rows = statement
-        .query_map([universe_id], |row| {
+        .query_map(params![universe_id, card_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -347,8 +356,8 @@ fn insert_link(
 mod tests {
     use super::*;
     use crate::database::migrations::{
-        MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V2, MIGRATION_V3,
-        MIGRATION_V6,
+        MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V15, MIGRATION_V2,
+        MIGRATION_V3, MIGRATION_V6,
     };
 
     fn seeded_connection() -> Connection {
@@ -364,6 +373,7 @@ mod tests {
             MIGRATION_V10,
             MIGRATION_V11,
             MIGRATION_V12,
+            MIGRATION_V15,
         ] {
             connection
                 .execute_batch(migration)

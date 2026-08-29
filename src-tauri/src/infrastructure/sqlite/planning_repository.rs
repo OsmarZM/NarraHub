@@ -189,21 +189,28 @@ pub fn list_field_links(
     Ok(values)
 }
 
+/// Lista as definições do universo.
+///
+/// `card_id` filtra o que uma ficha pode mostrar: os campos universais mais os
+/// que pertencem àquele card. Sem ele a lista é o catálogo inteiro do universo,
+/// que é o que a tela usa para gerenciar as propriedades.
 pub fn list_field_definitions(
     connection: &Connection,
     universe_id: &str,
+    card_id: Option<&str>,
 ) -> DatabaseCommandResult<Vec<PlanningFieldDefinition>> {
     let mut statement = connection
         .prepare(
             "SELECT id, universe_id, name, field_type, options_json, sort_order,
-                    created_at, updated_at
+                    scope, owner_item_id, created_at, updated_at
                FROM planning_field_definitions
               WHERE universe_id = ?1
+                AND (?2 IS NULL OR owner_item_id IS NULL OR owner_item_id = ?2)
               ORDER BY sort_order, created_at",
         )
         .map_err(map_sqlite_error)?;
     let rows = statement
-        .query_map([universe_id], |row| {
+        .query_map(rusqlite::params![universe_id, card_id], |row| {
             Ok(PlanningFieldDefinition {
                 id: row.get("id")?,
                 universe_id: row.get("universe_id")?,
@@ -211,6 +218,8 @@ pub fn list_field_definitions(
                 field_type: row.get("field_type")?,
                 options_json: row.get("options_json")?,
                 sort_order: row.get("sort_order")?,
+                scope: row.get("scope")?,
+                owner_item_id: row.get("owner_item_id")?,
                 created_at: row.get("created_at")?,
                 updated_at: row.get("updated_at")?,
             })
@@ -227,17 +236,20 @@ pub fn insert_field_definition(
     connection
         .execute(
             "INSERT INTO planning_field_definitions
-               (id, universe_id, name, field_type, options_json, sort_order, created_at, updated_at)
+               (id, universe_id, name, field_type, options_json, sort_order,
+                scope, owner_item_id, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5,
                      (SELECT COALESCE(MAX(sort_order), -1) + 1
                         FROM planning_field_definitions WHERE universe_id = ?2),
-                     ?6, ?6)",
+                     ?6, ?7, ?8, ?8)",
             rusqlite::params![
                 definition.id,
                 definition.universe_id,
                 definition.name,
                 definition.field_type,
                 definition.options_json,
+                definition.scope,
+                definition.owner_item_id,
                 definition.created_at,
             ],
         )
@@ -245,13 +257,74 @@ pub fn insert_field_definition(
     Ok(())
 }
 
+/// O card existe e é deste universo?
+///
+/// Usado antes de amarrar um campo a um card: sem essa checagem um id de outro
+/// universo criaria uma propriedade invisível, presa a um card que a ficha
+/// deste universo nunca abre.
+pub fn card_belongs_to_universe(
+    connection: &Connection,
+    card_id: &str,
+    universe_id: &str,
+) -> DatabaseCommandResult<bool> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM planning_items WHERE id = ?1 AND universe_id = ?2)",
+            [card_id, universe_id],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)
+}
+
 pub fn get_field_definition(
     connection: &Connection,
     id: &str,
     universe_id: &str,
 ) -> DatabaseCommandResult<Option<PlanningFieldDefinition>> {
-    let definitions = list_field_definitions(connection, universe_id)?;
+    let definitions = list_field_definitions(connection, universe_id, None)?;
     Ok(definitions.into_iter().find(|item| item.id == id))
+}
+
+/// Troca o alcance de um campo já existente.
+///
+/// É a promoção de "só neste card" para "todos os cards" e a volta. Os valores
+/// já gravados não são tocados: promover expõe o campo nas outras fichas vazio,
+/// e restringir mantém o que o card dono já tinha preenchido.
+pub fn set_field_definition_scope(
+    connection: &Connection,
+    id: &str,
+    universe_id: &str,
+    scope: &str,
+    owner_item_id: Option<&str>,
+    timestamp: &str,
+) -> DatabaseCommandResult<bool> {
+    let affected = connection
+        .execute(
+            "UPDATE planning_field_definitions
+                SET scope = ?1, owner_item_id = ?2, updated_at = ?3
+              WHERE id = ?4 AND universe_id = ?5",
+            rusqlite::params![scope, owner_item_id, timestamp, id, universe_id],
+        )
+        .map_err(map_sqlite_error)?;
+    Ok(affected > 0)
+}
+
+/// Apaga as definições que só existiam dentro de um card.
+///
+/// O `ON DELETE CASCADE` da v15 já cobre isso nas conexões do core, que ligam
+/// `foreign_keys`. A limpeza explícita existe porque o pool do
+/// `tauri-plugin-sql` não liga a pragma: sem ela, um caminho que ainda passe
+/// por lá deixaria um campo órfão preso a um card que não existe mais.
+pub fn delete_field_definitions_owned_by(
+    connection: &Connection,
+    card_id: &str,
+) -> DatabaseCommandResult<usize> {
+    connection
+        .execute(
+            "DELETE FROM planning_field_definitions WHERE owner_item_id = ?1",
+            [card_id],
+        )
+        .map_err(map_sqlite_error)
 }
 
 pub fn rename_field_definition(
@@ -313,8 +386,24 @@ mod tests {
             field_type: "text".into(),
             options_json: "[]".into(),
             sort_order: 0,
+            scope: "universal".into(),
+            owner_item_id: None,
             created_at: "2026-01-01 00:00:00".into(),
             updated_at: "2026-01-01 00:00:00".into(),
+        }
+    }
+
+    /// Mesma definicao, mas restrita ao card informado.
+    fn card_definition(
+        id: &str,
+        universe_id: &str,
+        name: &str,
+        owner: &str,
+    ) -> PlanningFieldDefinition {
+        PlanningFieldDefinition {
+            scope: "card".into(),
+            owner_item_id: Some(owner.into()),
+            ..definition(id, universe_id, name)
         }
     }
 
@@ -471,7 +560,7 @@ mod tests {
         insert_field_definition(&connection, &definition("f1", "u1", "Primeiro")).expect("inserir");
         insert_field_definition(&connection, &definition("f2", "u1", "Segundo")).expect("inserir");
 
-        let definitions = list_field_definitions(&connection, "u1").expect("listar");
+        let definitions = list_field_definitions(&connection, "u1", None).expect("listar");
         assert_eq!(definitions[0].sort_order, 0);
         assert_eq!(definitions[1].sort_order, 1);
     }
@@ -502,10 +591,106 @@ mod tests {
         );
         assert!(!delete_field_definition(&connection, "f1", "u2").expect("excluir"));
         assert_eq!(
-            list_field_definitions(&connection, "u1")
+            list_field_definitions(&connection, "u1", None)
                 .expect("listar")
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn campo_de_card_so_aparece_na_ficha_do_dono() {
+        let connection = migrated_memory_database();
+        seed_universe(&connection, "u1");
+        insert_card(&connection, &card("p1", "Card um")).expect("inserir card");
+        insert_card(&connection, &card("p2", "Card dois")).expect("inserir card");
+        insert_field_definition(&connection, &definition("f1", "u1", "Universal"))
+            .expect("inserir");
+        insert_field_definition(&connection, &card_definition("f2", "u1", "So do p1", "p1"))
+            .expect("inserir");
+
+        let catalogo = list_field_definitions(&connection, "u1", None).expect("listar");
+        assert_eq!(
+            catalogo.len(),
+            2,
+            "sem card, a lista e o catalogo do universo"
+        );
+
+        let do_dono = list_field_definitions(&connection, "u1", Some("p1")).expect("listar");
+        assert_eq!(do_dono.len(), 2);
+
+        let do_outro = list_field_definitions(&connection, "u1", Some("p2")).expect("listar");
+        assert_eq!(do_outro.len(), 1);
+        assert_eq!(do_outro[0].id, "f1");
+    }
+
+    #[test]
+    fn alcance_e_dono_precisam_combinar() {
+        // A v15 recusa os dois estados que quebrariam a leitura da ficha:
+        // campo de card sem dono some de todas, e universal com dono confunde.
+        let connection = migrated_memory_database();
+        seed_universe(&connection, "u1");
+        insert_card(&connection, &card("p1", "Card um")).expect("inserir card");
+
+        let orfao = PlanningFieldDefinition {
+            scope: "card".into(),
+            owner_item_id: None,
+            ..definition("f1", "u1", "Sem dono")
+        };
+        assert!(insert_field_definition(&connection, &orfao).is_err());
+
+        let universal_com_dono = PlanningFieldDefinition {
+            scope: "universal".into(),
+            owner_item_id: Some("p1".into()),
+            ..definition("f2", "u1", "Com dono")
+        };
+        assert!(insert_field_definition(&connection, &universal_com_dono).is_err());
+    }
+
+    #[test]
+    fn promover_campo_para_universal_solta_o_dono() {
+        let connection = migrated_memory_database();
+        seed_universe(&connection, "u1");
+        insert_card(&connection, &card("p1", "Card um")).expect("inserir card");
+        insert_card(&connection, &card("p2", "Card dois")).expect("inserir card");
+        insert_field_definition(
+            &connection,
+            &card_definition("f1", "u1", "Prioridade", "p1"),
+        )
+        .expect("inserir");
+
+        assert!(set_field_definition_scope(
+            &connection,
+            "f1",
+            "u1",
+            "universal",
+            None,
+            "2026-06-01 00:00:00"
+        )
+        .expect("promover"));
+
+        let do_outro = list_field_definitions(&connection, "u1", Some("p2")).expect("listar");
+        assert_eq!(do_outro.len(), 1);
+        assert_eq!(do_outro[0].scope, "universal");
+        assert_eq!(do_outro[0].owner_item_id, None);
+    }
+
+    #[test]
+    fn excluir_campos_do_card_nao_encosta_nos_universais() {
+        let connection = migrated_memory_database();
+        seed_universe(&connection, "u1");
+        insert_card(&connection, &card("p1", "Card um")).expect("inserir card");
+        insert_field_definition(&connection, &definition("f1", "u1", "Universal"))
+            .expect("inserir");
+        insert_field_definition(&connection, &card_definition("f2", "u1", "So do p1", "p1"))
+            .expect("inserir");
+
+        assert_eq!(
+            delete_field_definitions_owned_by(&connection, "p1").expect("limpar"),
+            1
+        );
+        let restantes = list_field_definitions(&connection, "u1", None).expect("listar");
+        assert_eq!(restantes.len(), 1);
+        assert_eq!(restantes[0].id, "f1");
     }
 }
