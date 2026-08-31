@@ -57,8 +57,21 @@ até hoje.
 As duas já estão publicadas com instalador, assinatura e `latest.json`. **Este roteiro não
 exige publicar release nova.**
 
+**Melhor ainda, quando disponível: `0.7.4 → 0.9.1`.** A 0.7.4 é schema **10**, então esse
+par cruza **cinco** migrations (11 a 15) e é o equivalente empacotado da fixture
+`schema10_representative.sql` que o CI já testa. Foi o par realmente executado em
+2026-08-31 — ver [`qualification/`](qualification/). Ele não substitui `0.8.0 → 0.9.1`,
+porque a 0.7.4 não consegue criar propriedades tipadas de planejamento e por isso não
+exercita a promessa da migration 15.
+
 Quando existir uma migration 16, o par a testar passa a ser `0.9.1 → a versão que a
 contiver`, pela mesma lógica: escolha sempre o par que cruza migration.
+
+## Execuções registradas
+
+| Data | Par | Caminho | Veredito |
+| --- | --- | --- | --- |
+| 2026-08-31 | 0.7.4 → 0.9.1 | updater interno | [PASSOU, com ressalvas](qualification/2026-08-31-upgrade-0.7.4-para-0.9.1.md) |
 
 ---
 
@@ -95,6 +108,10 @@ Foreign keys   deve ser 0
 ```
 
 ### Passo 2 — Criar conteúdo que a migration vai tocar
+
+> Se você já tem uma instalação antiga **com conteúdo real**, ela vale mais que conteúdo
+> fabricado — foi o caso da execução de 2026-08-31. Pule para o passo 3 e apenas registre o
+> que existe. O passo 2 é para quando se parte de uma instalação limpa.
 
 O conteúdo não é decorativo: ele precisa exercitar **o que a migration 15 altera**. Antes da
 v15 toda propriedade de planejamento valia para o universo inteiro, e a migration não pode
@@ -172,6 +189,14 @@ Depois restaure o backup criado agora, para voltar ao estado atualizado.
 ---
 
 ## 5. Registro de evidência
+
+> **Leia as contagens de uma cópia do banco, não do arquivo em uso.** Abrir o banco ativo
+> pode disparar recuperação de WAL e alterar o arquivo que se está tentando medir. Copie
+> `narrahub.db`, `-wal` e `-shm` para outro lugar e meça a cópia.
+>
+> **Contagem igual não prova conteúdo íntegro:** um capítulo truncado mantém a linha na
+> tabela. Compare também hash do texto dos capítulos, nomes, pares de relação e as linhas
+> de menções e tags.
 
 Uma execução só conta se tiver registro. Copie esta tabela para o documento da release:
 

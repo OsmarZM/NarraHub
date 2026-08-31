@@ -287,7 +287,7 @@ sabotar o `rollback_swap` faz os testes acusarem; o teste antigo não acusava.
 
 ```text
 Owner:  Claude
-Status: REVIEW — roteiro pronto; falta a execução na VM
+Status: REVIEW — roteiro pronto; 1 execução registrada; falta fechar o escopo
 Branch: claude/NH-012-qualificacao-upgrade
 Fase:   1
 ```
@@ -301,9 +301,23 @@ schema 15 e o upgrade **não cruzaria migration nenhuma**. As duas versões já 
 publicadas com instalador, assinatura e `latest.json`, então **não é preciso publicar
 release para rodar este teste**.
 
-**Falta:** executar na VM e preencher a tabela de evidência. Ambiente escolhido pelo humano:
-máquina virtual com snapshot por fase. **Nunca no perfil de uso diário** — o passo 1 instala
-uma versão mais antiga que o banco em uso, e o app recusa banco de schema mais novo.
+**Executado em 2026-08-31:** `0.7.4 → 0.9.1` pelo updater interno, no perfil de produção.
+Cinco migrations (11 a 15), zero perda em 16 tabelas, texto dos capítulos idêntico por hash,
+relações/timeline/menções/tags idênticas linha a linha. Evidência em
+`docs/qualification/2026-08-31-upgrade-0.7.4-para-0.9.1.md`.
+
+**Falta para fechar:**
+
+1. segundo boot, provando que a migration não reaplica;
+2. conferir na **tela** que a interface mostra o que o banco tem — a verificação até aqui
+   foi só no banco;
+3. backup e restauração já na 0.9.1;
+4. instalador por cima (variante 4b);
+5. `0.8.0 → 0.9.1` numa VM, porque a 0.7.4 não cria propriedades tipadas de planejamento e
+   por isso **não exercita a promessa da migration 15**.
+
+**Nunca no perfil de uso diário** quando a origem for mais antiga que o banco instalado: o
+app recusa banco de schema mais novo, e a migração é de mão única.
 
 ---
 
