@@ -26,6 +26,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # A versao e um fato unico do repositorio: manifests, README e CHANGELOG.
+      # Ficava so na pipeline de release, e por isso o README anunciou 0.7.4
+      # durante tres releases sem ninguem reprovar nada.
+      - run: npm run release:validate-version
       - run: npm run build
       - run: npm run test:architecture
       - run: npm run test:planning
