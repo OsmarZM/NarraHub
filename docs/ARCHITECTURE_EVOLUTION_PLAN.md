@@ -1,4 +1,40 @@
-# Plano de evolução arquitetural
+# Plano de evolução arquitetural (registro histórico)
+
+> **Este documento não é a fila de trabalho.** Ele registra como o NarraHub saiu da 0.7.x
+> e chegou onde está, fatia a fatia, com a numeração de fases **antiga**. A ordem de
+> execução válida é [`ai/ROADMAP.md`](ai/ROADMAP.md), e o estado corrente é
+> [`ai/PROJECT_STATE.md`](ai/PROJECT_STATE.md).
+>
+> A numeração antiga e a nova **colidem**: aqui "Fase 5" é o Context Engine; no roadmap
+> atual o Context Engine é a Fase 6 e a Fase 5 é outra coisa. Um agente que tomar este
+> arquivo por fila implementa a fase errada.
+
+## Correspondência entre as duas numerações
+
+| Aqui (antiga) | Situação | Roadmap atual |
+| --- | --- | --- |
+| Fase 0 — Estabilizar a linha 0.7.x | concluída | — |
+| Fase 1 — Rede de segurança e decisões | concluída em parte (backup); a qualificação automatizada ficou faltando | Fase 1 — Qualification |
+| Fase 2 e 2.1 — Modularização Angular | concluídas | — |
+| Fase 3 — Router e carregamento por feature | concluída | — |
+| Fase 4 — Rust Application Core | concluída; sobrou `src-tauri/src/commands/` legado | Fase 3 — Consolidar Rust Core |
+| Fase 5 — Context Engine e IA confiável | não iniciada | **Fase 6** |
+| Fase 6 — Compartilhamento com Local Ownership | entregue em boa parte na 0.7.x (ver [`ONLINE_SHARING.md`](ONLINE_SHARING.md)); o que faltar vira tarefa em `TASKS.md` | — |
+| Fase 7 — Eventos, tombstones e Sync V2 | não iniciada | **Fase 4** |
+| Fase 8 — Consolidação e releases graduais | não iniciada | Fase 7 — RC 1.0 |
+
+O roadmap atual tem ainda a Fase 2 (Workspace Hardening) e a Fase 5 (Features e Design
+System), que não existem aqui: são riscos que apareceram depois deste documento.
+
+## O que continua valendo deste arquivo
+
+Nem tudo aqui é histórico. Três partes seguem sendo regra corrente:
+
+- **Princípios não negociáveis** — resumidos em [`../AGENTS.md`](../AGENTS.md).
+- **Gates obrigatórios de cada fase** (Gates 1 a 5) e a **Regra de publicação** no fim do
+  arquivo — são a base do que a Fase 1 do roadmap vai automatizar.
+- **Invariantes do domínio** — extraídas para [`DOMAIN_INVARIANTS.md`](DOMAIN_INVARIANTS.md),
+  porque são regra corrente e estavam escondidas dentro de um plano.
 
 ## Objetivo
 
@@ -19,40 +55,8 @@ Evoluir o NarraHub 0.7.x para um monólito modular local-first sem reescrita, pe
 
 ## Invariantes do domínio
 
-Invariantes são regras executáveis, não apenas orientação de implementação. Commands Rust, adapters legados, imports, sync e colaboração devem respeitar o mesmo conjunto. Quando uma regra envolver mais de uma escrita, sua validação e alteração acontecem na mesma transação.
-
-1. Um `Chapter` pertence a exatamente um `Book` existente.
-2. Um `Book` pertence a exatamente uma `Story`, e a `Story` pertence a exatamente um `Universe` existente.
-3. Uma `Entity` pertence a exatamente um `Universe` existente.
-4. Uma `Relation` referencia duas entidades existentes no mesmo universo da relação.
-5. Excluir uma entidade nunca deixa relações ou menções quebradas; referências opcionais usam `NULL` explícito e referências obrigatórias são removidas na mesma operação.
-6. Uma revisão ou proposta nunca substitui conteúdo canônico sem um comando explícito de aprovação.
-7. Uma sessão de compartilhamento nunca escreve diretamente em conteúdo canônico; ela cria anotações ou propostas pendentes.
-8. Uma resposta de IA nunca altera conteúdo canônico antes da confirmação do escritor.
-9. Uma migration publicada nunca é alterada; correções de esquema são sempre migrations novas.
-10. Uma operação de domínio falha por inteiro ou é confirmada por inteiro.
-11. IDs persistidos são estáveis; renomear um item não altera sua identidade nem quebra referências.
-
-As foreign keys do SQLite ajudam a proteger essas regras, mas não substituem invariantes de domínio. Por exemplo, as FKs garantem que as pontas de uma relação existam, porém a regra de que ambas pertencem ao mesmo universo precisa ser validada pelo caso de uso.
-
-Testes mínimos que acompanharão a migração para Rust:
-
-```rust
-#[test]
-fn chapter_cannot_reference_missing_book() {}
-
-#[test]
-fn relation_cannot_reference_missing_or_foreign_universe_entity() {}
-
-#[test]
-fn deleting_entity_preserves_domain_integrity() {}
-
-#[test]
-fn collaboration_proposal_never_changes_canonical_content() {}
-
-#[test]
-fn failed_domain_operation_rolls_back_every_write() {}
-```
+Movidas para [`DOMAIN_INVARIANTS.md`](DOMAIN_INVARIANTS.md). Elas são regra corrente, não
+etapa de plano, e ficavam ilegíveis enterradas num documento de fases.
 
 ## Arquitetura-alvo
 
@@ -1083,6 +1087,8 @@ reganhar a permissão sem que o SQL volte junto.
 
 ## Fase 5 — Context Engine e IA confiável
 
+> **Numeração antiga.** Corresponde à **Fase 6** do roadmap atual. Não iniciar antes que a Fase 1 (Qualification) feche.
+
 ### Entregas
 
 - Contrato `AI Context v1` com orçamento explícito.
@@ -1106,6 +1112,8 @@ reganhar a permissão sem que o SQL volte junto.
 Manter leitura do `localStorage` por uma versão após a importação. A migration apenas adiciona tabelas.
 
 ## Fase 6 — Compartilhamento com Local Ownership
+
+> **Numeração antiga.** Entregue em boa parte na 0.7.x. O que ainda faltar deve virar tarefa em `TASKS.md`, não ser retomado como fase.
 
 ### Entregas
 
@@ -1134,6 +1142,8 @@ O transporte atual e viewer embutido continuam disponíveis até a nova rota pas
 
 ## Fase 7 — Eventos, tombstones e Sync V2
 
+> **Numeração antiga.** Corresponde à **Fase 4** do roadmap atual, que a amplia com identidade de dispositivo, transporte criptografado, outbox e cursores. O ADR de transporte vem antes do código.
+
 ### Entregas
 
 - Promover `sync_events` a outbox técnica, sem criar tabela concorrente.
@@ -1158,6 +1168,8 @@ O transporte atual e viewer embutido continuam disponíveis até a nova rota pas
 Sync V1 continua selecionável durante uma versão, mas nunca processa tabelas V2 parcialmente.
 
 ## Fase 8 — Consolidação e releases graduais
+
+> **Numeração antiga.** Corresponde à **Fase 7 — RC 1.0** do roadmap atual.
 
 ### Entregas
 

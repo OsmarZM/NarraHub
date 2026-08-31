@@ -87,6 +87,10 @@ Ortografia, autocomplete, avatares de personagens e anotação por voz ficam na 
 
 ## Regras
 
+As invariantes de domínio — o que nenhuma operação pode violar — estão em
+[`DOMAIN_INVARIANTS.md`](DOMAIN_INVARIANTS.md). As regras abaixo são as de
+implementação que as acompanham.
+
 - IDs são UUIDs e não dependem de sequência local.
 - Uma migration publicada ou aplicada nunca é alterada; qualquer evolução do esquema recebe uma nova versão para preservar o checksum registrado pelo `tauri-plugin-sql`.
 - Contribuições de sessões compartilhadas entram numa fila local; conteúdo canônico só muda após aprovação explícita do autor.

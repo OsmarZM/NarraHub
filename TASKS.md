@@ -162,9 +162,9 @@ batem com a realidade do código.
 ### NH-006 — Reconciliar o plano de evolução antigo
 
 ```text
-Owner:  —
-Status: READY
-Branch: <agente>/NH-006-reconciliar-plano
+Owner:  Claude
+Status: DONE
+Branch: claude/NH-006-reconciliar-plano
 Fase:   0
 ```
 
@@ -182,6 +182,43 @@ a seção de invariantes de domínio para um lugar que não seja um plano — el
 corrente, não plano.
 
 **Arquivos:** `docs/ARCHITECTURE_EVOLUTION_PLAN.md`
+
+---
+
+### NH-007 — Mapear cada invariante ao teste que a prova
+
+```text
+Owner:  —
+Status: READY
+Branch: <agente>/NH-007-mapa-invariantes
+Fase:   0
+```
+
+**Contexto:** as 11 invariantes de domínio vivem agora em `docs/DOMAIN_INVARIANTS.md`. O
+core Rust tem 167 testes e vários cobrem essas regras — mas sob nomes que não as citam.
+Não existe mapa nas duas direções: a invariante não aponta para o teste, e o teste não diz
+qual invariante defende.
+
+Consequência prática: não dá para responder "a invariante 5 está protegida?" sem reler o
+core. Uma invariante que ninguém consegue verificar é indistinguível de uma que ninguém
+implementou — e é assim que uma delas morre em silêncio numa refatoração.
+
+**Objetivo:** cada uma das 11 invariantes aponta para o teste que a prova; cada teste
+correspondente cita o número da invariante. Onde não houver teste, escrever o teste ou
+registrar a lacuna explicitamente — **não** inventar cobertura no papel.
+
+**Pistas já levantadas:**
+
+| Invariante | Teste existente |
+| --- | --- |
+| 4 (relação no mesmo universo) | `relation_cannot_cross_universe_without_health_failure`, `invalid_cross_universe_relation_rolls_back_the_whole_card` |
+| 6 e 7 (proposta não vira cânone) | `campo_fora_do_escopo_nao_grava_nada_e_a_proposta_segue_pendente` |
+| 10 (tudo ou nada) | `card_save_is_atomic_and_relations_are_normalized` |
+
+As demais estão sem mapeamento — o que não significa sem cobertura, significa não
+verificado.
+
+**Arquivos:** `docs/DOMAIN_INVARIANTS.md`, testes em `src-tauri/src/`
 
 ---
 

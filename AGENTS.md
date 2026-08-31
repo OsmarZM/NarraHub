@@ -37,6 +37,11 @@ interface/tauri -> application -> domain -> repository -> SQLite
 9. Não troque framework, banco ou layout global dentro de uma extração arquitetural.
 10. Padrão arquitetural novo exige ADR antes do código.
 
+As invariantes de domínio que toda operação precisa preservar estão em
+[`docs/DOMAIN_INVARIANTS.md`](docs/DOMAIN_INVARIANTS.md). Elas não são negociáveis nem
+opcionais, e a validação delas mora na camada `application/` do core Rust, junto da
+transação.
+
 Adapters legados podem encapsular serviços Angular/SQL durante a migração incremental —
 mas só reduzindo a superfície, nunca ampliando.
 
@@ -147,3 +152,5 @@ mensagens de erro técnicas em inglês, como já é a convenção do repositóri
 | `docs/ADR/` | decisões arquiteturais permanentes |
 | `docs/handoffs/` | o que cada agente fez e descobriu |
 | `docs/ARCHITECTURE.md` | arquitetura corrente (não histórico) |
+| `docs/DOMAIN_INVARIANTS.md` | regras que toda operação preserva |
+| `docs/ARCHITECTURE_EVOLUTION_PLAN.md` | registro histórico, **não** é fila de trabalho |
