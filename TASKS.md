@@ -2,7 +2,7 @@
 
 `AGENTS.md` diz **como** trabalhar. Este arquivo diz **no que** trabalhar.
 
-Fase ativa: **FASE 0 — Higiene de release**. Ver `docs/ai/PROJECT_STATE.md`.
+Fase ativa: **FASE 1 — Qualification**. Ver `docs/ai/PROJECT_STATE.md`.
 
 ## Regras deste arquivo
 
@@ -191,7 +191,7 @@ corrente, não plano.
 Owner:  —
 Status: READY
 Branch: <agente>/NH-007-mapa-invariantes
-Fase:   0
+Fase:   1
 ```
 
 **Contexto:** as 11 invariantes de domínio vivem agora em `docs/DOMAIN_INVARIANTS.md`. O
