@@ -33,15 +33,27 @@ para trás.
 **Objetivo:** `main` passa a conter a versão publicada mais recente e vira o default do
 repositório no GitHub. Release nasce de `main` a partir daí.
 
-**Restrições:** sem force push. Sem copiar arquivos entre branches às cegas — a
-reintegração é por merge, com o diff revisado.
+**Restrições:** sem force push, sem desativar proteção de branch, sem copiar arquivos entre
+branches às cegas.
 
-**Verificado em 2026-08-31:** `main` é ancestral estrito de `feat/native-app-foundation`,
-14 commits atrás, com **zero** commits exclusivos. Não há merge a resolver: é fast-forward.
-Isso elimina a escolha entre "mesclar" e "promover" — as duas dão o mesmo resultado.
+**Verificado em 2026-08-31, contra `origin/main` (a `main` local estava desatualizada):**
 
-**Parte que exige o humano:** trocar o default do repositório no GitHub para `main` e
-ativar proteção de branch. Nenhum agente faz isso sozinho.
+- `origin/main` está em **0.8.0** e tem **um** commit que a branch de trabalho não tem:
+  `fd2e88c`, o merge da PR #1. Esse commit **não tem conteúdo próprio** — a árvore dele é
+  idêntica à da base comum. Ou seja, `main` não tem uma única linha que a branch de
+  trabalho não tenha; ela tem só um artefato de histórico.
+- Portanto **não é fast-forward**, mas o merge é limpo. Confirmado localmente: depois de
+  `git merge --no-ff feat/native-app-foundation` em `main`, a árvore de `main` fica
+  **idêntica** à da branch de trabalho. Nada se perde, nada conflita.
+- `main` **já está protegida**: `git push origin main` é recusado com
+  `push declined due to repository rule violations`. A promoção precisa passar por Pull
+  Request — o que é o comportamento correto e não deve ser contornado.
+
+**Execução:** abrir PR de `feat/native-app-foundation` → `main` e mesclar.
+
+**Parte que exige o humano:** aprovar/mesclar a PR e trocar o default do repositório no
+GitHub para `main`. Nenhum agente faz isso sozinho, e nenhum agente deve usar force push
+nem desativar a proteção para contornar a recusa.
 
 **Validação:**
 

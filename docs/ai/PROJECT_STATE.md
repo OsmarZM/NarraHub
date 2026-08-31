@@ -11,7 +11,7 @@ Atualizado em: 2026-08-31
 | --- | --- |
 | Última tag publicada | `app-v0.9.1` |
 | Manifests em `feat/native-app-foundation` | 0.9.1 (package.json, Cargo.toml, tauri.conf.json) |
-| `main` | **0.7.6** |
+| `origin/main` | **0.8.0** — protegida, promoção só por Pull Request |
 | README.md | 0.9.1 — validado pelo CI desde 4b31646 |
 
 ## Branch canônica
@@ -20,14 +20,18 @@ Atualizado em: 2026-08-31
 
 - O default do `origin` é `feat/native-app-foundation`, e é essa branch que contém
   0.8.0, 0.9.0 e 0.9.1.
-- `main` parou em 0.7.6 e é a branch órfã.
+- `origin/main` parou em 0.8.0, na PR #1, e é a branch órfã.
+
+Cuidado ao verificar isto: a `main` **local** pode estar ainda mais atrasada (estava em
+0.7.6). Compare sempre contra `origin/main` depois de `git fetch`.
 
 Portanto a Fase 0 não é "reintegrar a release na main": é **promover a linha de
 desenvolvimento real para `main`** e passar a tratar `main` como default do repositório.
 
-Verificado em 2026-08-31: `main` é ancestral estrito da branch de trabalho, 14 commits
-atrás, com zero commits exclusivos. É fast-forward, sem merge e sem risco. O que resta é a
-configuração do repositório no GitHub, que é decisão humana. Ver `NH-001` em `TASKS.md`.
+Verificado em 2026-08-31: o único commit exclusivo de `origin/main` é o merge da PR #1,
+que não tem conteúdo próprio. O merge foi testado localmente e deixa a árvore de `main`
+idêntica à da branch de trabalho. `main` já está protegida, então a promoção passa por
+Pull Request. Ver `NH-001` em `TASKS.md`.
 
 ## Fase ativa
 
