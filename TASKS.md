@@ -11,6 +11,8 @@ Fase ativa: **FASE 0 — Higiene de release**. Ver `docs/ai/PROJECT_STATE.md`.
 - Edite **apenas a sua entrada** e commite essa mudança sozinha, para o merge ser trivial.
 - Detalhe do trabalho não vai aqui — vai no handoff (`docs/handoffs/`).
 - `DONE` exige validação executada, não só build verde.
+- Desde a PR #5, `main` é a linha canônica: branch curta a partir de `main`, PR de volta
+  para `main`. `main` é protegida — promoção só por PR, nunca por push direto.
 
 ---
 
@@ -19,9 +21,9 @@ Fase ativa: **FASE 0 — Higiene de release**. Ver `docs/ai/PROJECT_STATE.md`.
 ### NH-001 — Tornar `main` canônica
 
 ```text
-Owner:  —
-Status: READY
-Branch: <agente>/NH-001-main-canonica
+Owner:  Claude
+Status: REVIEW — mesclada; falta trocar o default do repositório
+PR:     #5 (mesclada em 35ef0fa)
 Fase:   0
 ```
 
@@ -49,11 +51,19 @@ branches às cegas.
   `push declined due to repository rule violations`. A promoção precisa passar por Pull
   Request — o que é o comportamento correto e não deve ser contornado.
 
-**Execução:** abrir PR de `feat/native-app-foundation` → `main` e mesclar.
+**Feito:** PR #5 mesclada em 2026-08-31 com o CI verde no commit exato (`98c36ef`).
+`main` está em 0.9.1 e sua árvore é idêntica à de `feat/native-app-foundation`.
 
-**Parte que exige o humano:** aprovar/mesclar a PR e trocar o default do repositório no
-GitHub para `main`. Nenhum agente faz isso sozinho, e nenhum agente deve usar force push
-nem desativar a proteção para contornar a recusa.
+**Falta, e é decisão humana:**
+
+1. Trocar o default do repositório no GitHub para `main`.
+2. Decidir o destino de `feat/native-app-foundation`. Hoje as duas branches são idênticas;
+   mantê-la viva como linha de trabalho recria exatamente a divergência que esta tarefa
+   acabou de fechar. A recomendação é aposentá-la e passar a abrir branches curtas a
+   partir de `main`.
+
+Nenhum agente faz nem 1 nem 2 sozinho, e nenhum agente deve usar force push ou desativar a
+proteção da `main` para contornar uma recusa de push.
 
 **Validação:**
 
