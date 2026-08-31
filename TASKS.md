@@ -36,9 +36,12 @@ repositório no GitHub. Release nasce de `main` a partir daí.
 **Restrições:** sem force push. Sem copiar arquivos entre branches às cegas — a
 reintegração é por merge, com o diff revisado.
 
-**Decisão que precisa do humano antes de executar:** merge de
-`feat/native-app-foundation` em `main`, ou promover a branch a `main` e arquivar a antiga.
-Registrar a escolha em um ADR ou no handoff.
+**Verificado em 2026-08-31:** `main` é ancestral estrito de `feat/native-app-foundation`,
+14 commits atrás, com **zero** commits exclusivos. Não há merge a resolver: é fast-forward.
+Isso elimina a escolha entre "mesclar" e "promover" — as duas dão o mesmo resultado.
+
+**Parte que exige o humano:** trocar o default do repositório no GitHub para `main` e
+ativar proteção de branch. Nenhum agente faz isso sozinho.
 
 **Validação:**
 
@@ -53,8 +56,8 @@ npm run release:validate-version && npm run build && npm run test:architecture
 ### NH-002 — Validação de versão no CI comum
 
 ```text
-Owner:  —
-Status: READY
+Owner:  Claude
+Status: DONE (4b31646)
 Branch: <agente>/NH-002-version-ci
 Fase:   0
 Depende de: nenhuma
@@ -77,8 +80,8 @@ vermelho.
 ### NH-003 — Cobrir README no validador de versão
 
 ```text
-Owner:  —
-Status: READY
+Owner:  Claude
+Status: DONE (4b31646)
 Branch: <agente>/NH-003-readme-version-check
 Fase:   0
 Depende de: NH-002
@@ -98,11 +101,11 @@ citada no README bata com a dos manifests.
 ### NH-004 — Baseline de documentação
 
 ```text
-Owner:  —
-Status: BLOCKED
+Owner:  Claude
+Status: DONE (16a7db4)
 Branch: <agente>/NH-004-doc-baseline
 Fase:   0
-Bloqueada por: NH-001
+Nota: destravada — corrigir a documentação não dependia da main virar canônica.
 ```
 
 **Objetivo:** `README.md` e `docs/ARCHITECTURE.md` passam a descrever o **estado corrente**.
@@ -122,8 +125,8 @@ Bloqueada por: NH-001
 ### NH-005 — Índice de ADRs e adoção do template
 
 ```text
-Owner:  —
-Status: READY
+Owner:  Claude
+Status: DONE
 Branch: <agente>/NH-005-adr-index
 Fase:   0
 ```
@@ -131,6 +134,32 @@ Fase:   0
 **Objetivo:** manter `docs/ADR/README.md` como índice vivo dos ADRs 0001–0006 e de todos os
 seguintes, com status. Já criado nesta fase — a tarefa é revisar se os status registrados
 batem com a realidade do código.
+
+---
+
+### NH-006 — Reconciliar o plano de evolução antigo
+
+```text
+Owner:  —
+Status: READY
+Branch: <agente>/NH-006-reconciliar-plano
+Fase:   0
+```
+
+**Contexto:** `docs/ARCHITECTURE_EVOLUTION_PLAN.md` usa a numeração de fases antiga, em que
+"Fase 5" era o Context Engine. Ela agora conflita com `docs/ai/ROADMAP.md`, onde Context
+Engine é a Fase 6. Um agente que abrir o documento errado implementa a fase errada — que é
+exatamente o que a constituição proíbe.
+
+**Objetivo:** o plano antigo passa a ser explicitamente histórico. Ele mantém o registro
+valioso que tem (invariantes de domínio, histórico fatia a fatia) e deixa de ser lido como
+fila de execução.
+
+**Sugestão:** cabeçalho no topo apontando para o roadmap como única ordem válida, e mover
+a seção de invariantes de domínio para um lugar que não seja um plano — elas são regra
+corrente, não plano.
+
+**Arquivos:** `docs/ARCHITECTURE_EVOLUTION_PLAN.md`
 
 ---
 
@@ -158,6 +187,8 @@ Registrado, **não implementar** antes de a fase correspondente abrir.
 ---
 
 ## DONE
+
+Ver `docs/handoffs/` para o detalhe de cada uma.
 
 ### NH-000 — Protocolo de desenvolvimento multiagente
 
