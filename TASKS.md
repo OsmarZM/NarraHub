@@ -268,21 +268,18 @@ commit, não depois.
 ### NH-011 — Falha no restore com rollback
 
 ```text
-Owner:  —
-Status: READY
-Branch: <agente>/NH-011-restore-rollback
+Owner:  Claude
+Status: DONE
+Branch: claude/NH-011-restore-rollback
 Fase:   1
 ```
 
-**Contexto:** `backup.rs` cobre bem o caminho feliz e várias recusas (hash divergente,
-manifesto malicioso, staging interrompido). O que não vi coberto é o caso que mais
-assusta: **o restore começa, falha no meio, e o banco anterior precisa voltar inteiro.**
-
-`automatic_retention_preserves_manual_and_pre_restore_backups` sugere que existe backup
-pré-restore, o que é a metade certa do mecanismo. Falta o teste que prova a outra metade.
-
-**Objetivo:** injetar falha no meio do restore e provar que o banco anterior volta, com
-`integrity_check` e `foreign_key_check` limpos e as contagens canônicas idênticas.
+**Resultado:** o rollback **já existia e já era bom** — `SwapProgress` rastreia cada passo
+da troca e `rollback_swap` desfaz exatamente o que foi feito. Faltava cobertura, não
+implementação. Agora há dois pontos de falha injetáveis (`AfterActiveMoved`, que cobre o
+estado em que o usuário fica sem banco nenhum no disco, e `AfterInstall`) e asserções de
+`integrity_check`, `foreign_key_check`, sidecars, assets e limpeza. Verificado por mutação:
+sabotar o `rollback_swap` faz os testes acusarem; o teste antigo não acusava.
 
 ---
 
@@ -328,6 +325,36 @@ gate versionado, com espaço para registrar a evidência de cada item por releas
 Base pronta: os **Gates 1 a 5** e a **Regra de publicação** em
 `docs/ARCHITECTURE_EVOLUTION_PLAN.md` já descrevem isso em prosa. O trabalho é torná-los
 verificáveis, não reescrevê-los.
+
+---
+
+### NH-014 — Quando o próprio rollback falha
+
+```text
+Owner:  —
+Status: READY
+Branch: <agente>/NH-014-rollback-falho
+Fase:   1
+```
+
+**Contexto:** `commit_restore_at_internal` trata o caso em que a restauração falha **e o
+rollback também falha**: a mensagem passa a mandar o usuário buscar os arquivos preservados
+no diretório de recuperação. Esse caminho nunca foi exercitado.
+
+É o pior cenário do produto — o usuário fica sem o banco novo e sem o antigo, e a única
+coisa entre ele e a perda do livro é essa mensagem apontar para o lugar certo.
+
+**Objetivo:** provar que, quando o rollback falha, (a) os arquivos preservados continuam no
+diretório de recuperação, (b) a mensagem nomeia esse diretório, e (c) nada é apagado na
+tentativa de limpeza.
+
+**Dificuldade:** injetar falha dentro do `rollback_swap` é mais difícil que nos dois pontos
+da NH-011. Provavelmente exige um segundo ponto de injeção, no mesmo estilo do
+`SwapFailurePoint`.
+
+**Armadilha herdada da NH-011:** um `narrahub.db-wal` avulso ao lado de um banco fora do
+modo WAL é apagado pelo SQLite na primeira abertura. Asserção sobre arquivo vem **antes**
+de qualquer leitura do banco.
 
 ---
 
