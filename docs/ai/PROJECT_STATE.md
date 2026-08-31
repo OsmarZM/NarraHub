@@ -82,10 +82,9 @@ como evidência manual de 0.7.4.
 
 ## Prioridades imediatas
 
-1. `NH-012` — fechar o escopo restante: segundo boot, conferência na tela, backup/restore
-   na 0.9.1, instalador por cima, e `0.8.0 → 0.9.1` numa VM. A primeira execução
-   (`0.7.4 → 0.9.1`, cinco migrations, zero perda) já está registrada em
-   `docs/qualification/`.
+1. `NH-012` — fechar o escopo restante: backup/restore na 0.9.1, instalador por cima, e
+   `0.8.0 → 0.9.1` numa VM. A execução `0.7.4 → 0.9.1` (cinco migrations, zero perda,
+   segundo boot e conferência na tela aprovados) está em `docs/qualification/`.
 2. `NH-010` — fixtures nos schemas 13, 14 e 15.
 3. `NH-014` — o caminho em que o próprio rollback falha.
 4. `NH-013` — checklist de release desktop como gate.
@@ -161,6 +160,8 @@ disco antes de suspeitar do código.
   app precisa do runtime Tauri. Vale olhar com `npm run desktop:dev` antes de qualquer
   release.
 - `public/assets/narrahub-logo-full.png` (1 MB) ficou sem referência depois da PR #9.
+- Não existe escala compartilhada de breakpoints: 12 valores diferentes no CSS e 7 arquivos
+  sem nenhuma media query. Em tela menor o layout se parte por regiões (ver `NH-051`).
 
 ## Não trabalhar ainda
 

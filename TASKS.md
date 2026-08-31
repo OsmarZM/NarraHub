@@ -306,14 +306,14 @@ Cinco migrations (11 a 15), zero perda em 16 tabelas, texto dos capítulos idên
 relações/timeline/menções/tags idênticas linha a linha. Evidência em
 `docs/qualification/2026-08-31-upgrade-0.7.4-para-0.9.1.md`.
 
+Segundo boot e conferência na tela: **feitos e aprovados** — schema v15 sem reaplicar, e a
+interface abre o capítulo com o texto.
+
 **Falta para fechar:**
 
-1. segundo boot, provando que a migration não reaplica;
-2. conferir na **tela** que a interface mostra o que o banco tem — a verificação até aqui
-   foi só no banco;
-3. backup e restauração já na 0.9.1;
-4. instalador por cima (variante 4b);
-5. `0.8.0 → 0.9.1` numa VM, porque a 0.7.4 não cria propriedades tipadas de planejamento e
+1. backup e restauração já na 0.9.1;
+2. instalador por cima (variante 4b);
+3. `0.8.0 → 0.9.1` numa VM, porque a 0.7.4 não cria propriedades tipadas de planejamento e
    por isso **não exercita a promessa da migration 15**.
 
 **Nunca no perfil de uso diário** quando a origem for mais antiga que o banco instalado: o
@@ -386,7 +386,44 @@ Registrado, **não implementar** antes de a fase correspondente abrir.
 | NH-030 | Remover `src-tauri/src/commands/` legado | 3 |
 | NH-040 | ADR do transporte do Sync V2 (threat model + Noise vs TLS) | 4 |
 | NH-050 | Teste de tokens de design (`var(--*)` sem definição reprova o CI) | 5 |
+| NH-051 | Escala de breakpoints e responsividade em telas menores | 5 |
 | NH-060 | Contrato `AIContext v1` e orçamento de contexto | 6 |
+
+---
+
+### NH-051 — Escala de breakpoints e responsividade
+
+```text
+Owner:  —
+Status: BACKLOG — Fase 5, não implementar antes
+Fase:   5
+```
+
+**Relatado pelo autor em 2026-08-31:** em tela menor o layout "não fica muito responsivo,
+está meio ruim em algumas regiões".
+
+**O que foi verificado no CSS** (não é diagnóstico da falha, é o terreno):
+
+- **12 valores de breakpoint diferentes** — 520, 680, 700, 760, 860, 900, 920, 1050, 1100,
+  1180, 1260 e 1450px — e escritos de duas formas (`max-width:680px` e `max-width: 680px`).
+  Não existe escala compartilhada; cada componente escolheu o seu ponto de quebra.
+- **7 arquivos CSS sem nenhuma media query**, entre eles `universe-sidebar`,
+  `contextual-inspector`, `entity-sheet` e `library-page` — que são superfícies grandes de
+  layout.
+
+Isso é consistente com o sintoma: as partes que têm breakpoint reorganizam numa largura, as
+que não têm não reorganizam em nenhuma, e o resultado é um layout que se parte por regiões
+em vez de por tela.
+
+**Não reproduzido.** O app precisa do runtime Tauri e o tooling de browser desta sessão não
+consegue dirigi-lo, então não medi a geometria com a janela pequena. **Antes de implementar,
+peça ao autor a largura da janela e a região exata**, ou reproduza com a janela real.
+
+**Objetivo quando a Fase 5 abrir:** uma escala única de breakpoints em tokens, aplicada às
+superfícies que hoje não reorganizam, e regressão visual por snapshot nas larguras dessa
+escala (ver `NH-050`, que resolve o outro lado do mesmo problema).
+
+**Não implementar agora.** Fase ativa é a 1. Ver `docs/ai/ROADMAP.md`.
 
 ---
 
