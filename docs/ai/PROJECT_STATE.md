@@ -80,6 +80,20 @@ O que falta é menor e mais difícil: fixtures nas versões que os usuários rea
 **app empacotado** (NH-012) — o único que teste unitário não fecha, e que hoje só existe
 como evidência manual de 0.7.4.
 
+## Prioridades imediatas
+
+1. `NH-011` — falha no restore com rollback. **Comece por aqui**: é o maior risco de perda
+   de dados ainda sem teste, e é autocontido.
+2. `NH-012` — ciclo de atualização no app empacotado. O buraco real da fase.
+3. `NH-010` — fixtures nos schemas 13, 14 e 15.
+4. `NH-013` — checklist de release desktop como gate.
+5. `NH-007` — mapear cada invariante de domínio ao teste que a prova.
+
+**Decisão de release tomada em 2026-08-31: segurar a 0.9.2.** O roadmap sugeria publicar ao
+fechar a Fase 0, mas o que entrou desde a 0.9.1 é infraestrutura de projeto, documentação e
+otimização de assets — nada que o escritor perceba. **Não reabra essa pergunta**; quando a
+hora chegar, quem decide é o humano.
+
 ## Status arquitetural
 
 | Área | Status |
@@ -104,9 +118,13 @@ como evidência manual de 0.7.4.
 - Sync V1 não tem transporte criptografado, identidade de dispositivo, outbox nem
   tombstones.
 - Sem teste de tokens de design — foi a causa do bug 0.9.0/0.9.1 (`var(--nh-glass-panel)`
-  usado sem definição).
-- Árvore de trabalho local com modificações não commitadas em `src-tauri/Cargo.toml`,
-  `src/index.html`, `src/styles.css` e assets novos em `public/`.
+  usado sem definição). Checagem ad hoc em 2026-08-31: 34 tokens definidos, 22 usados sem
+  valor de reserva, **zero** usados sem definição. O estado hoje está são; nada impede a
+  regressão de voltar. É a `NH-050`.
+- O tema claro ganhou arte de fundo própria na PR #9 e **ainda não foi visto rodando** — o
+  app precisa do runtime Tauri. Vale olhar com `npm run desktop:dev` antes de qualquer
+  release.
+- `public/assets/narrahub-logo-full.png` (1 MB) ficou sem referência depois da PR #9.
 
 ## Não trabalhar ainda
 
