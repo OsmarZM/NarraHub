@@ -66,6 +66,25 @@ struct RollbackManifest<'a> {
     safety_backup_id: &'a str,
 }
 
+/// Onde a troca de arquivos deve falhar de propósito, para exercitar o rollback.
+///
+/// Era um `bool` que só falhava depois de tudo instalado — o caminho em que o
+/// `SwapProgress` está completo e o rollback tem tudo para desfazer. Os estados
+/// parciais, em que o banco ativo já saiu mas o restaurado ainda não entrou, nunca
+/// eram exercitados, e é neles que um rollback incompleto deixaria o usuário sem
+/// banco nenhum.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum SwapFailurePoint {
+    #[default]
+    None,
+    /// Depois de retirar o banco ativo, os sidecars e os assets, antes de instalar
+    /// o restaurado. O rollback precisa devolver tudo o que saiu.
+    AfterActiveMoved,
+    /// Depois de instalar a base restaurada, com a troca completa.
+    AfterInstall,
+}
+
 #[derive(Default)]
 struct SwapProgress {
     original_database_moved: bool,
@@ -275,13 +294,13 @@ fn commit_restore_at(
     app_data: &Path,
     pending: PendingRestore,
 ) -> Result<RestoreCommitResult, String> {
-    commit_restore_at_internal(app_data, pending, false)
+    commit_restore_at_internal(app_data, pending, SwapFailurePoint::None)
 }
 
 fn commit_restore_at_internal(
     app_data: &Path,
     pending: PendingRestore,
-    inject_failure_after_install: bool,
+    failure_point: SwapFailurePoint,
 ) -> Result<RestoreCommitResult, String> {
     if SystemTime::now()
         .duration_since(pending.prepared_at)
@@ -370,6 +389,10 @@ fn commit_restore_at_internal(
             progress.original_assets_moved = true;
         }
 
+        if failure_point == SwapFailurePoint::AfterActiveMoved {
+            return Err("Falha de teste após retirar a base ativa.".into());
+        }
+
         fs::rename(&staged_database, &active_database)
             .map_err(|error| format!("Não foi possível instalar o banco restaurado: {error}"))?;
         progress.installed_database = true;
@@ -380,7 +403,7 @@ fn commit_restore_at_internal(
             progress.installed_assets = true;
         }
 
-        if inject_failure_after_install {
+        if failure_point == SwapFailurePoint::AfterInstall {
             return Err("Falha de teste após instalar a base restaurada.".into());
         }
 
@@ -572,6 +595,75 @@ mod tests {
                 .expect("insert universe");
         }
 
+        /// Cria os arquivos que o rollback precisa devolver além do banco.
+        ///
+        /// Um `-wal` avulso ao lado de um banco que não está em modo WAL é removido
+        /// pelo próprio SQLite na primeira abertura. Por isso os sidecars são escritos
+        /// depois da preparação, e por isso as asserções sobre eles vêm **antes** de
+        /// qualquer leitura do banco: `universe_names()` abriria a conexão e apagaria
+        /// o arquivo que o teste quer conferir.
+        fn with_sidecars_and_asset(&self) -> &Self {
+            for sidecar in ["narrahub.db-wal", "narrahub.db-shm"] {
+                fs::write(self.root.join(sidecar), b"sidecar original").expect("write sidecar");
+            }
+            let assets = self.root.join("assets");
+            fs::create_dir_all(&assets).expect("create assets");
+            fs::write(assets.join("capa.webp"), b"asset original").expect("write asset");
+            self
+        }
+
+        /// `integrity_check` e `foreign_key_check` no banco ativo. Conferir só os
+        /// nomes dos universos prova que o arquivo voltou, não que ele voltou são.
+        fn assert_healthy(&self) {
+            let connection = Connection::open(self.database()).expect("open db");
+            let integrity: String = connection
+                .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+                .expect("integrity_check");
+            assert_eq!(integrity, "ok", "banco ativo corrompido após o rollback");
+            let violations: i64 = connection
+                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                    row.get(0)
+                })
+                .expect("foreign_key_check");
+            assert_eq!(violations, 0, "foreign keys quebradas após o rollback");
+        }
+
+        /// Nada de staging nem de ponto de rollback pode sobrar: o que sobra hoje
+        /// vira lixo que a próxima restauração encontra pela frente.
+        fn assert_no_leftovers(&self) {
+            for entry in fs::read_dir(&self.root).expect("read app data") {
+                let name = entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .to_string();
+                assert!(
+                    !name.starts_with(".restore-"),
+                    "staging de restauração ficou para trás: {name}"
+                );
+            }
+            let recovery = self.root.join("recovery");
+            if recovery.is_dir() {
+                let pontos = fs::read_dir(&recovery).expect("read recovery").count();
+                assert_eq!(pontos, 0, "o ponto de rollback não foi limpo após desfazer");
+            }
+        }
+
+        /// Confere que o rollback devolveu tudo o que retirou junto do banco.
+        /// Precisa rodar antes de qualquer abertura do SQLite.
+        fn assert_sidecars_and_asset_restored(&self) {
+            for relative in ["narrahub.db-wal", "narrahub.db-shm", "assets/capa.webp"] {
+                let conteudo = fs::read(self.root.join(relative))
+                    .unwrap_or_else(|error| panic!("o rollback não devolveu {relative}: {error}"));
+                let esperado: &[u8] = if relative.starts_with("assets/") {
+                    b"asset original"
+                } else {
+                    b"sidecar original"
+                };
+                assert_eq!(conteudo, esperado, "{relative} voltou com conteúdo errado");
+            }
+        }
+
         fn universe_names(&self) -> Vec<String> {
             let connection = Connection::open(self.database()).expect("open db");
             let mut statement = connection
@@ -666,8 +758,10 @@ mod tests {
             .starts_with(".restore-")));
     }
 
-    #[test]
-    fn failed_swap_restores_the_active_database() {
+    /// Prepara uma restauração real e injeta a falha no ponto pedido, devolvendo a
+    /// mensagem de erro. O cenário é sempre o mesmo — um backup antigo e uma base
+    /// atual com conteúdo a mais — para que o rollback tenha algo concreto a perder.
+    fn restore_falhando_em(ponto: SwapFailurePoint) -> (TestAppData, String) {
         let app = TestAppData::new();
         app.insert_universe("u1", "Backup");
         let selected = create_backup_at(
@@ -681,11 +775,56 @@ mod tests {
         app.insert_universe("u2", "Atual");
         let (_, pending) =
             prepare_restore_at(&app.root, &selected.backup_id, "test").expect("prepare restore");
+        // Depois da preparação: é a última coisa que abre o SQLite antes da troca.
+        app.with_sidecars_and_asset();
 
-        let error = commit_restore_at_internal(&app.root, pending, true)
-            .expect_err("inject failure after installing restored files");
+        let error = commit_restore_at_internal(&app.root, pending, ponto)
+            .expect_err("a falha injetada precisa abortar a restauração");
+        (app, error)
+    }
+
+    #[test]
+    fn failed_swap_restores_the_active_database() {
+        let (app, error) = restore_falhando_em(SwapFailurePoint::AfterInstall);
+
         assert!(error.contains("base anterior foi restaurada"));
+        // Antes de abrir o banco: ver o comentário em `with_sidecars_and_asset`.
+        app.assert_sidecars_and_asset_restored();
+        app.assert_no_leftovers();
         assert_eq!(app.universe_names(), vec!["Atual", "Backup"]);
+        app.assert_healthy();
+    }
+
+    /// O caso que o teste anterior não alcançava: a falha acontece com o banco ativo
+    /// já retirado e o restaurado ainda não instalado. É o único momento em que o
+    /// usuário fica sem banco nenhum no disco, e o rollback precisa devolver tudo o
+    /// que saiu — arquivo principal, WAL, SHM e assets.
+    #[test]
+    fn falha_antes_de_instalar_devolve_banco_sidecars_e_assets() {
+        let (app, error) = restore_falhando_em(SwapFailurePoint::AfterActiveMoved);
+
+        assert!(
+            error.contains("base anterior foi restaurada"),
+            "o rollback precisa ter sido aplicado, e não apenas relatado: {error}"
+        );
+        app.assert_sidecars_and_asset_restored();
+        app.assert_no_leftovers();
+        assert_eq!(app.universe_names(), vec!["Atual", "Backup"]);
+        app.assert_healthy();
+    }
+
+    /// O backup de segurança é criado na preparação, antes de qualquer troca. Se ele
+    /// sumisse quando a restauração falha, o usuário perderia a única cópia do estado
+    /// que tinha antes de tentar restaurar.
+    #[test]
+    fn falha_na_restauracao_preserva_o_backup_de_seguranca() {
+        let (app, _) = restore_falhando_em(SwapFailurePoint::AfterActiveMoved);
+
+        assert_eq!(
+            list_pre_restore_backups(&app.root.join("backups")),
+            1,
+            "o backup pré-restauração precisa sobreviver à falha"
+        );
     }
 
     #[test]

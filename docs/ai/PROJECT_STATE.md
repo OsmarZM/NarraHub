@@ -82,12 +82,15 @@ como evidência manual de 0.7.4.
 
 ## Prioridades imediatas
 
-1. `NH-011` — falha no restore com rollback. **Comece por aqui**: é o maior risco de perda
-   de dados ainda sem teste, e é autocontido.
-2. `NH-012` — ciclo de atualização no app empacotado. O buraco real da fase.
-3. `NH-010` — fixtures nos schemas 13, 14 e 15.
+1. `NH-012` — ciclo de atualização no app empacotado. **O buraco real da fase**, e o único
+   que teste unitário não fecha.
+2. `NH-010` — fixtures nos schemas 13, 14 e 15.
+3. `NH-014` — o caminho em que o próprio rollback falha.
 4. `NH-013` — checklist de release desktop como gate.
 5. `NH-007` — mapear cada invariante de domínio ao teste que a prova.
+
+`NH-011` concluída: o rollback de restauração já existia e era sólido; o que faltava era
+cobertura. Ver `docs/handoffs/2026-08-31-NH-011-claude.md`.
 
 **Decisão de release tomada em 2026-08-31: segurar a 0.9.2.** O roadmap sugeria publicar ao
 fechar a Fase 0, mas o que entrou desde a 0.9.1 é infraestrutura de projeto, documentação e
@@ -106,6 +109,20 @@ hora chegar, quem decide é o humano.
 | Sync V2 | **Não iniciado** |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Foco atual.** Só existe evidência manual de 0.7.4 em `docs/PHASE_0_1_QUALIFICATION.md` |
+
+## Ambiente de desenvolvimento
+
+`TMP`/`TEMP` desta máquina apontam para o `C:`, que está com 87% de uso. Uma
+recompilação completa das dependências Rust derruba o `rustc` com
+`STATUS_STACK_BUFFER_OVERRUN` em crates de terceiros — erro que parece bug de toolchain
+e é falta de espaço. Rode cargo com os temporários no `D:`:
+
+```bash
+TMP='D:\DevTools\NarraHubTmp' TEMP='D:\DevTools\NarraHubTmp' cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+O CI (Ubuntu) nunca reproduziu isso. Crash estranho de compilador aqui: suspeitar de
+disco antes de suspeitar do código.
 
 ## Dívida arquitetural conhecida
 
