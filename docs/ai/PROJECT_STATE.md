@@ -82,8 +82,10 @@ como evidência manual de 0.7.4.
 
 ## Prioridades imediatas
 
-1. `NH-012` — **executar** o roteiro de `docs/QUALIFICATION_UPGRADE.md` numa VM e preencher
-   a tabela de evidência. O roteiro está pronto; a execução é do humano.
+1. `NH-012` — fechar o escopo restante: segundo boot, conferência na tela, backup/restore
+   na 0.9.1, instalador por cima, e `0.8.0 → 0.9.1` numa VM. A primeira execução
+   (`0.7.4 → 0.9.1`, cinco migrations, zero perda) já está registrada em
+   `docs/qualification/`.
 2. `NH-010` — fixtures nos schemas 13, 14 e 15.
 3. `NH-014` — o caminho em que o próprio rollback falha.
 4. `NH-013` — checklist de release desktop como gate.
@@ -109,7 +111,7 @@ hora chegar, quem decide é o humano.
 | Sync V2 | **Não iniciado** |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | Migration, backup e restore cobertos por `cargo test` no CI |
-| Ciclo de atualização empacotado | Roteiro em `docs/QUALIFICATION_UPGRADE.md`; **execução pendente** |
+| Ciclo de atualização empacotado | Roteiro pronto; `0.7.4 → 0.9.1` executado e aprovado; escopo restante em `NH-012` |
 
 ## Versões e schema
 
