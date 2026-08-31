@@ -344,30 +344,18 @@ verificáveis, não reescrevê-los.
 ### NH-014 — Quando o próprio rollback falha
 
 ```text
-Owner:  —
-Status: READY
-Branch: <agente>/NH-014-rollback-falho
+Owner:  Claude
+Status: DONE
+Branch: claude/NH-014-rollback-falho
 Fase:   1
 ```
 
-**Contexto:** `commit_restore_at_internal` trata o caso em que a restauração falha **e o
-rollback também falha**: a mensagem passa a mandar o usuário buscar os arquivos preservados
-no diretório de recuperação. Esse caminho nunca foi exercitado.
-
-É o pior cenário do produto — o usuário fica sem o banco novo e sem o antigo, e a única
-coisa entre ele e a perda do livro é essa mensagem apontar para o lugar certo.
-
-**Objetivo:** provar que, quando o rollback falha, (a) os arquivos preservados continuam no
-diretório de recuperação, (b) a mensagem nomeia esse diretório, e (c) nada é apagado na
-tentativa de limpeza.
-
-**Dificuldade:** injetar falha dentro do `rollback_swap` é mais difícil que nos dois pontos
-da NH-011. Provavelmente exige um segundo ponto de injeção, no mesmo estilo do
-`SwapFailurePoint`.
-
-**Armadilha herdada da NH-011:** um `narrahub.db-wal` avulso ao lado de um banco fora do
-modo WAL é apagado pelo SQLite na primeira abertura. Asserção sobre arquivo vem **antes**
-de qualquer leitura do banco.
+**Resultado:** `SwapFailurePoint::AfterInstallWithBrokenRollback` faz a restauração falhar
+**e** o rollback falhar junto. O teste cobra as quatro coisas que separam o usuário da perda
+do livro: a mensagem avisa que o rollback não deu conta, **nomeia** o diretório preservado,
+a base anterior continua lá e íntegra com o conteúdo certo, e o manifesto do rollback não é
+apagado. Verificado por mutação: tirar o diretório da mensagem faz o teste falhar dizendo
+exatamente qual nome faltou.
 
 ---
 
@@ -399,8 +387,27 @@ Status: BACKLOG — Fase 5, não implementar antes
 Fase:   5
 ```
 
-**Relatado pelo autor em 2026-08-31:** em tela menor o layout "não fica muito responsivo,
-está meio ruim em algumas regiões".
+**Reprodução, dada pelo autor em 2026-08-31:**
+
+```text
+resolução   1366 × 768
+sintoma     não dá para rolar; o app fica sem espaço para exibir o conteúdo
+            e a parte inferior fica muito pequena
+```
+
+1366×768 é a resolução de notebook mais comum que existe, e "não dá para rolar" significa
+**conteúdo inalcançável**, não apenas apertado.
+
+**Mecanismo confirmado no CSS:** o shell é um quadro fixo que nunca rola — `height: 100vh`
+com `overflow: hidden` em `.app-shell`, `.content-stage`, `.content` e
+`.workspace-route-content`. A titlebar come 64px fixos (`--nh-titlebar-height`), então a
+área útil é `calc(100vh - 64px)`: em 768px de altura sobram **704px**. A rolagem foi
+delegada para dentro de cada página.
+
+Verifiquei que **todas as páginas de rota têm `overflow-y: auto`** — library, writing,
+entities, connections, timeline, planning, history, settings e universe-picker. Logo o
+culpado é um contêiner **aninhado** com altura travada, e não a página. Achar qual exige
+medir com a janela em 1366×768; não consegui, porque o app precisa do runtime Tauri.
 
 **O que foi verificado no CSS** (não é diagnóstico da falha, é o terreno):
 
@@ -415,15 +422,13 @@ Isso é consistente com o sintoma: as partes que têm breakpoint reorganizam num
 que não têm não reorganizam em nenhuma, e o resultado é um layout que se parte por regiões
 em vez de por tela.
 
-**Não reproduzido.** O app precisa do runtime Tauri e o tooling de browser desta sessão não
-consegue dirigi-lo, então não medi a geometria com a janela pequena. **Antes de implementar,
-peça ao autor a largura da janela e a região exata**, ou reproduza com a janela real.
-
 **Objetivo quando a Fase 5 abrir:** uma escala única de breakpoints em tokens, aplicada às
 superfícies que hoje não reorganizam, e regressão visual por snapshot nas larguras dessa
 escala (ver `NH-050`, que resolve o outro lado do mesmo problema).
 
-**Não implementar agora.** Fase ativa é a 1. Ver `docs/ai/ROADMAP.md`.
+**Recomendação de prioridade:** isto está catalogado na Fase 5, mas "conteúdo inalcançável
+na resolução de notebook mais comum" é **defeito**, não refinamento de design system.
+Recomendo tratar como defeito e corrigir antes da Fase 5 — decisão do humano.
 
 ---
 
