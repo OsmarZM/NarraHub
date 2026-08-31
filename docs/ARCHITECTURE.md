@@ -4,9 +4,36 @@
 
 Manter o NarraHub funcional sem internet, com persistência por dispositivo e evolução controlada do esquema.
 
-O plano incremental, os gates de atualização e os limites de cada fase estão em [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). Decisões permanentes ficam registradas em [`ADR/`](ADR/).
+Este documento descreve a arquitetura **corrente**. A fila de trabalho e a fase ativa estão em [`ai/PROJECT_STATE.md`](ai/PROJECT_STATE.md) e [`ai/ROADMAP.md`](ai/ROADMAP.md); as regras que todo agente segue estão em [`AGENTS.md`](../AGENTS.md). Decisões permanentes ficam registradas em [`ADR/`](ADR/). O plano histórico fatia a fatia continua em [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md), com a numeração de fases antiga — a ordem de execução válida é a do roadmap.
 
 O primeiro incremento de backup e diagnóstico da Fase 1 está descrito em [`BACKUP_AND_RECOVERY.md`](BACKUP_AND_RECOVERY.md).
+
+## Fluxo
+
+```text
+Componente de feature
+   ↓
+Feature Store            estado da tela
+   ↓
+Gateway tipado           contrato do domínio, sem SQL
+   ↓
+RustCoreService          único lugar que chama invoke()
+   ↓  invoke()
+interface/tauri          DTO de entrada e saída
+   ↓
+application/*_service    caso de uso, transação
+   ↓
+domain                   invariantes
+   ↓
+repository
+   ↓
+SQLite
+```
+
+Nenhum arquivo do frontend executa SQL, e a capability `sql:allow-execute` foi removida.
+Isso não é convenção: `tests/frontend-boundaries.test.mjs` reprova o build se qualquer
+`.ts` sob `src/app/` voltar a conter SQL, se um adaptador legado reaparecer ou se um dos
+serviços SQL removidos for recriado.
 
 ## Camadas
 
@@ -31,7 +58,20 @@ O esquema principal contém:
 
 ### Integração nativa
 
-Rust controla janela, rede local e operações que não devem ser expostas diretamente à interface. Novas regras críticas devem migrar gradualmente dos serviços SQL Angular para comandos Rust transacionais.
+Rust é o núcleo de aplicação e domínio, não apenas uma camada de integração: ele controla
+janela e rede local, mas também é quem detém as regras críticas e as transações.
+
+```text
+src-tauri/src/
+├── interface/tauri/   comandos expostos ao frontend
+├── application/       casos de uso por domínio
+├── domain/            invariantes
+├── infrastructure/    repositórios
+└── database/          migrations
+```
+
+`src-tauri/src/commands/` é o caminho anterior, ainda presente. Sua remoção é a Fase 3 do
+roadmap; até lá, **comando novo nasce em `interface/tauri/`**, nunca em `commands/`.
 
 ### Compartilhamento online
 
@@ -60,7 +100,9 @@ Ortografia, autocomplete, avatares de personagens e anotação por voz ficam na 
 
 ## Limites atuais
 
-- Parte do CRUD ainda usa `tauri-plugin-sql` diretamente no Angular.
+- `src-tauri/src/commands/` coexiste com `interface/tauri/`; há dois caminhos até o banco.
+- `WorkspaceLayout` ainda orquestra domínios demais (preload, busca, sharing, backup, updates).
+- Não existe teste que reprove uma variável CSS usada sem definição — foi a causa da 0.9.0/0.9.1.
 - Exclusões ainda não são propagadas como tombstones entre dispositivos.
 - A sincronização inicial não possui criptografia de transporte.
 - Descoberta automática mDNS ainda não está implementada.

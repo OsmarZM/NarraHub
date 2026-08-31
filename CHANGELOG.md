@@ -2,7 +2,16 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
-## Não publicado
+## 0.9.1 — 2026-08-29
+
+### Tema claro legível
+
+- **Correção**: no tema claro os painéis, a barra de título e os cartões continuavam escuros, com o texto azul-escuro por cima — quase ilegível. Seis variáveis de vidro (`--nh-glass-panel`, `--nh-glass-card`, `--nh-glass-border` e vizinhas) eram usadas em 44 lugares desde a 0.7.6 mas **nunca haviam sido definidas**, então cada uso caía num valor de reserva escuro, nos dois temas.
+- **Correção**: a foto de fundo voltou ao tema claro, agora clareada por um véu de pergaminho, em vez do degradê sem imagem da 0.9.0.
+- **Legibilidade**: o texto secundário do tema claro escureceu (4,47:1 → 6,24:1 de contraste) e o texto de apoio subiu de 2,90:1 para 4,95:1. Boa parte da interface usa fontes de 8-10px, onde o mínimo de acessibilidade importa de verdade.
+- Seis lugares usavam `--nh-glass-border` sem valor de reserva, o que virava `currentColor`: a borda saía da cor do texto. Isso também afetava o tema escuro.
+
+## 0.9.0 — 2026-08-29
 
 ### Correções da interface após a 0.8.0
 
@@ -19,6 +28,8 @@ As alterações relevantes do NarraHub são registradas neste arquivo. O projeto
 ### Fichas de entidade
 
 - **Correção**: abrir uma entidade que estava no fim da lista mostrava a ficha já rolada até o rodapé. A ficha agora abre no começo, e voltar devolve a lista ao ponto em que você estava.
+
+## 0.8.0 — 2026-08-28
 
 ### Canvas livre na tela de Conexões
 
