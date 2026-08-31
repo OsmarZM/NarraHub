@@ -83,6 +83,10 @@ enum SwapFailurePoint {
     AfterActiveMoved,
     /// Depois de instalar a base restaurada, com a troca completa.
     AfterInstall,
+    /// Como `AfterInstall`, mas o rollback também falha. É o pior cenário do produto:
+    /// o usuário fica sem a base nova e sem a antiga, e a única coisa entre ele e a
+    /// perda do livro é a mensagem apontar para os arquivos preservados.
+    AfterInstallWithBrokenRollback,
 }
 
 #[derive(Default)]
@@ -403,7 +407,10 @@ fn commit_restore_at_internal(
             progress.installed_assets = true;
         }
 
-        if failure_point == SwapFailurePoint::AfterInstall {
+        if matches!(
+            failure_point,
+            SwapFailurePoint::AfterInstall | SwapFailurePoint::AfterInstallWithBrokenRollback
+        ) {
             return Err("Falha de teste após instalar a base restaurada.".into());
         }
 
@@ -426,6 +433,7 @@ fn commit_restore_at_internal(
             &active_database,
             &active_assets,
             &progress,
+            failure_point,
         )
         .err();
         remove_restore_staging(&pending.staging);
@@ -455,7 +463,15 @@ fn rollback_swap(
     active_database: &Path,
     active_assets: &Path,
     progress: &SwapProgress,
+    failure_point: SwapFailurePoint,
 ) -> Result<(), String> {
+    // Falhar aqui, antes de mexer em qualquer arquivo, simula o caso real em que o
+    // rollback não consegue devolver nada — disco cheio, arquivo travado por outro
+    // processo, permissão negada. O que importa provar é que, mesmo assim, nada do
+    // que foi preservado é destruído.
+    if failure_point == SwapFailurePoint::AfterInstallWithBrokenRollback {
+        return Err("Falha de teste ao desfazer a troca.".into());
+    }
     if progress.installed_assets && active_assets.exists() {
         fs::remove_dir_all(active_assets).map_err(|error| error.to_string())?;
     }
@@ -811,6 +827,72 @@ mod tests {
         app.assert_no_leftovers();
         assert_eq!(app.universe_names(), vec!["Atual", "Backup"]);
         app.assert_healthy();
+    }
+
+    /// O pior cenário do produto: a restauração falha **e** o rollback falha junto.
+    ///
+    /// O usuário fica sem a base nova e sem a antiga no lugar de sempre. A única coisa
+    /// entre ele e a perda do livro é a mensagem de erro apontar para onde os arquivos
+    /// foram preservados — então é isso que este teste cobra, junto da garantia de que
+    /// a tentativa de limpeza não apaga justamente o que sobrou.
+    #[test]
+    fn rollback_falho_preserva_os_arquivos_e_diz_onde_eles_estao() {
+        let (app, error) = restore_falhando_em(SwapFailurePoint::AfterInstallWithBrokenRollback);
+
+        assert!(
+            error.contains("rollback automático também falhou"),
+            "o usuário precisa saber que o rollback não deu conta: {error}"
+        );
+
+        // A mensagem tem que nomear o diretório, e o diretório tem que existir de fato.
+        let recovery_root = app.root.join("recovery");
+        let preservado = fs::read_dir(&recovery_root)
+            .expect("o diretório de recuperação precisa existir")
+            .map(|entry| entry.expect("entry").path())
+            .next()
+            .expect("o ponto de rollback não pode ter sido apagado");
+        let nome = preservado
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert!(
+            error.contains(&nome),
+            "a mensagem precisa nomear o diretório preservado ({nome}): {error}"
+        );
+
+        // E o que está lá dentro precisa ser a base anterior, íntegra — não um resto.
+        let banco_preservado = preservado.join(DATABASE_FILE_NAME);
+        assert!(
+            banco_preservado.exists(),
+            "a base anterior tem que continuar no ponto de rollback"
+        );
+        let connection = Connection::open(&banco_preservado).expect("abrir base preservada");
+        let integridade: String = connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("integrity_check");
+        assert_eq!(
+            integridade, "ok",
+            "a base preservada não pode estar corrompida"
+        );
+        let nomes: Vec<String> = connection
+            .prepare("SELECT name FROM universes ORDER BY name")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("collect");
+        assert_eq!(
+            nomes,
+            vec!["Atual".to_string(), "Backup".to_string()],
+            "o conteúdo anterior tem que estar inteiro no ponto de rollback"
+        );
+
+        // O manifesto é o que permite entender depois o que aconteceu ali.
+        assert!(
+            preservado.join("restore-rollback.json").exists(),
+            "o manifesto do rollback não pode ser apagado quando o rollback falha"
+        );
     }
 
     /// O backup de segurança é criado na preparação, antes de qualquer troca. Se ele

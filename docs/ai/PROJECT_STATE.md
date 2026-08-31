@@ -86,7 +86,6 @@ como evidência manual de 0.7.4.
    `0.8.0 → 0.9.1` numa VM. A execução `0.7.4 → 0.9.1` (cinco migrations, zero perda,
    segundo boot e conferência na tela aprovados) está em `docs/qualification/`.
 2. `NH-010` — fixtures nos schemas 13, 14 e 15.
-3. `NH-014` — o caminho em que o próprio rollback falha.
 4. `NH-013` — checklist de release desktop como gate.
 5. `NH-007` — mapear cada invariante de domínio ao teste que a prova.
 
@@ -160,8 +159,13 @@ disco antes de suspeitar do código.
   app precisa do runtime Tauri. Vale olhar com `npm run desktop:dev` antes de qualquer
   release.
 - `public/assets/narrahub-logo-full.png` (1 MB) ficou sem referência depois da PR #9.
-- Não existe escala compartilhada de breakpoints: 12 valores diferentes no CSS e 7 arquivos
-  sem nenhuma media query. Em tela menor o layout se parte por regiões (ver `NH-051`).
+- **Em 1366×768 não dá para rolar e a parte inferior fica pequena demais** — conteúdo
+  inalcançável na resolução de notebook mais comum. O shell é um quadro fixo
+  (`100vh` + `overflow: hidden`, menos 64px de titlebar) e delega a rolagem às páginas;
+  todas as páginas de rota têm `overflow-y: auto`, então o culpado é um contêiner aninhado
+  com altura travada. Ver `NH-051` — catalogada na Fase 5, mas é defeito, não refinamento.
+- Não existe escala compartilhada de breakpoints: 12 valores diferentes e 7 arquivos sem
+  nenhuma media query.
 
 ## Não trabalhar ainda
 
