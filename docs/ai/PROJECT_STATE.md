@@ -11,27 +11,25 @@ Atualizado em: 2026-08-31
 | --- | --- |
 | Última tag publicada | `app-v0.9.1` |
 | Manifests em `feat/native-app-foundation` | 0.9.1 (package.json, Cargo.toml, tauri.conf.json) |
-| `origin/main` | **0.8.0** — protegida, promoção só por Pull Request |
+| `origin/main` | **0.9.1** — canônica desde a PR #5; protegida, promoção só por PR |
 | README.md | 0.9.1 — validado pelo CI desde 4b31646 |
 
 ## Branch canônica
 
-**Atenção — a situação real é o inverso do que se supunha.**
+`main`, desde a PR #5 (2026-08-31).
 
-- O default do `origin` é `feat/native-app-foundation`, e é essa branch que contém
-  0.8.0, 0.9.0 e 0.9.1.
-- `origin/main` parou em 0.8.0, na PR #1, e é a branch órfã.
+`origin/main` estava em 0.8.0, parada na PR #1, enquanto 0.9.0 e 0.9.1 saíam de
+`feat/native-app-foundation` — que era o default do `origin`. A branch órfã era a `main`.
+A PR #5 devolveu a ela o papel de linha oficial, sem force push: hoje as árvores das duas
+são idênticas.
 
-Cuidado ao verificar isto: a `main` **local** pode estar ainda mais atrasada (estava em
-0.7.6). Compare sempre contra `origin/main` depois de `git fetch`.
+- `main` é protegida: push direto é recusado, promoção só por Pull Request.
+- Branch nova nasce de `main` e volta para `main` por PR.
+- **Pendente (humano):** trocar o default do repositório no GitHub para `main` e decidir o
+  destino de `feat/native-app-foundation`.
 
-Portanto a Fase 0 não é "reintegrar a release na main": é **promover a linha de
-desenvolvimento real para `main`** e passar a tratar `main` como default do repositório.
-
-Verificado em 2026-08-31: o único commit exclusivo de `origin/main` é o merge da PR #1,
-que não tem conteúdo próprio. O merge foi testado localmente e deixa a árvore de `main`
-idêntica à da branch de trabalho. `main` já está protegida, então a promoção passa por
-Pull Request. Ver `NH-001` em `TASKS.md`.
+Ao verificar o estado das branches, compare sempre contra `origin/main` depois de
+`git fetch` — a `main` local pode estar atrasada e dar um diagnóstico errado.
 
 ## Fase ativa
 
@@ -43,11 +41,14 @@ Fases 1 a 7: **não iniciar**. Ver `docs/ai/ROADMAP.md`.
 
 ## Prioridades imediatas
 
-1. `NH-001` — tornar `main` canônica e default. **Falta a parte do GitHub (humano).**
-2. `NH-002` — validador de versão no CI comum. **Concluída.**
-3. `NH-003` — README coberto pelo validador. **Concluída.**
-4. `NH-004` — README e ARCHITECTURE.md no estado corrente. **Concluída.**
-5. `NH-006` — reconciliar `ARCHITECTURE_EVOLUTION_PLAN.md` com o roadmap novo.
+A Fase 0 está **substancialmente fechada**. NH-001 a NH-005 concluídas; resta:
+
+1. `NH-001` — trocar o default do repositório para `main` e aposentar
+   `feat/native-app-foundation`. **Decisão humana, não faça sozinho.**
+2. `NH-006` — reconciliar `ARCHITECTURE_EVOLUTION_PLAN.md` com o roadmap novo.
+
+Depois disso, o gate da Fase 0 fecha e a **Fase 1 (Qualification)** abre. Não comece a
+Fase 1 antes disso.
 
 ## Status arquitetural
 
@@ -64,7 +65,6 @@ Fases 1 a 7: **não iniciar**. Ver `docs/ai/ROADMAP.md`.
 
 ## Dívida arquitetural conhecida
 
-- `main` não representa o produto publicado.
 - `docs/ARCHITECTURE_EVOLUTION_PLAN.md` usa a numeração de fases antiga e conflita com o
   roadmap novo (ver `NH-006`).
 - `WorkspaceLayout` orquestra domínios demais (navegação, preload, busca, sharing,
