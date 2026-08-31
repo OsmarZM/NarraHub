@@ -286,25 +286,24 @@ sabotar o `rollback_swap` faz os testes acusarem; o teste antigo não acusava.
 ### NH-012 — Ciclo de atualização no app empacotado
 
 ```text
-Owner:  —
-Status: READY
-Branch: <agente>/NH-012-upgrade-empacotado
+Owner:  Claude
+Status: REVIEW — roteiro pronto; falta a execução na VM
+Branch: claude/NH-012-qualificacao-upgrade
 Fase:   1
 ```
 
-**Contexto:** este é o buraco real da Fase 1, e o único que teste unitário não fecha.
-`docs/PHASE_0_1_QUALIFICATION.md` documenta esse ciclo feito **à mão** na 0.7.4. Nunca foi
-repetido automaticamente.
+**Entregue:** `docs/QUALIFICATION_UPGRADE.md` — roteiro reproduzível, a fronteira explícita
+entre o que o CI já cobre e o que só humano faz, e a tabela de evidência por release.
 
-```text
-instalar N → criar conteúdo → fechar → instalar N+1 → abrir → migration → reabrir conteúdo
-```
+**Descoberta que muda a execução:** o par a testar é **0.8.0 → 0.9.1**, não a versão mais
+recente. 0.7.6 e 0.8.0 são schema 14; 0.9.0 e 0.9.1 são schema 15. Uma 0.9.2 hoje teria
+schema 15 e o upgrade **não cruzaria migration nenhuma**. As duas versões já estão
+publicadas com instalador, assinatura e `latest.json`, então **não é preciso publicar
+release para rodar este teste**.
 
-**Objetivo:** roteiro reproduzível para esse ciclo, e a decisão explícita do que é
-automatizável e do que continua sendo checklist humano. Não force automação onde ela vai
-mentir — um checklist honesto vale mais que um teste verde que não exercita o instalador.
-
-**Verificar:** capítulo, entidades, planning, canvas, tags, settings.
+**Falta:** executar na VM e preencher a tabela de evidência. Ambiente escolhido pelo humano:
+máquina virtual com snapshot por fase. **Nunca no perfil de uso diário** — o passo 1 instala
+uma versão mais antiga que o banco em uso, e o app recusa banco de schema mais novo.
 
 ---
 
@@ -315,7 +314,7 @@ Owner:  —
 Status: READY
 Branch: <agente>/NH-013-checklist-release
 Fase:   1
-Depende de: NH-012
+Depende de: NH-012 (o roteiro já existe; falta a execução)
 ```
 
 **Objetivo:** transformar o checklist do roadmap (instalação limpa, upgrade, banco antigo,

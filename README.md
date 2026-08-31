@@ -73,6 +73,7 @@ Consulte:
 - [Assistência à escrita e IA](docs/WRITING_ASSISTANCE.md)
 - [Planejamento em quadro e fichas](docs/PLANNING_CRM.md)
 - [Compatibilidade aplicativo/schema](docs/APP_SCHEMA_COMPATIBILITY.md)
+- [Qualificação do ciclo de atualização](docs/QUALIFICATION_UPGRADE.md)
 - [Atualizações](docs/UPDATES.md)
 - [Histórico de versões](CHANGELOG.md)
 - [Desenvolvimento seguro](docs/DEVELOPMENT.md)
