@@ -82,8 +82,8 @@ como evidência manual de 0.7.4.
 
 ## Prioridades imediatas
 
-1. `NH-012` — ciclo de atualização no app empacotado. **O buraco real da fase**, e o único
-   que teste unitário não fecha.
+1. `NH-012` — **executar** o roteiro de `docs/QUALIFICATION_UPGRADE.md` numa VM e preencher
+   a tabela de evidência. O roteiro está pronto; a execução é do humano.
 2. `NH-010` — fixtures nos schemas 13, 14 e 15.
 3. `NH-014` — o caminho em que o próprio rollback falha.
 4. `NH-013` — checklist de release desktop como gate.
@@ -108,7 +108,24 @@ hora chegar, quem decide é o humano.
 | CI | `ci.yml` cobre Angular + Rust em PR e push |
 | Sync V2 | **Não iniciado** |
 | Context Engine / IA | **Não iniciado** |
-| Qualification harness | **Foco atual.** Só existe evidência manual de 0.7.4 em `docs/PHASE_0_1_QUALIFICATION.md` |
+| Qualification harness | Migration, backup e restore cobertos por `cargo test` no CI |
+| Ciclo de atualização empacotado | Roteiro em `docs/QUALIFICATION_UPGRADE.md`; **execução pendente** |
+
+## Versões e schema
+
+Para escolher o par de versões de qualquer teste de upgrade, o que importa é cruzar
+migration — não pegar a versão mais recente:
+
+| Versão | Schema |
+| --- | --- |
+| 0.7.6 | 14 |
+| 0.8.0 | 14 |
+| 0.9.0 e 0.9.1 | 15 |
+| `main` hoje | 15 |
+
+Consequência prática: **uma 0.9.2 publicada hoje não exercitaria migration nenhuma** num
+upgrade a partir da 0.9.1. O par útil hoje é `0.8.0 → 0.9.1`, e as duas já estão publicadas
+com instalador e assinatura.
 
 ## Ambiente de desenvolvimento
 
