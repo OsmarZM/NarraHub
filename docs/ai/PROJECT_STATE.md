@@ -34,21 +34,39 @@ Ao verificar o estado das branches, compare sempre contra `origin/main` depois d
 ## Fase ativa
 
 ```text
-FASE 0 — Higiene de release / main canônica
+FASE 1 — Qualification e segurança de atualização
 ```
 
-Fases 1 a 7: **não iniciar**. Ver `docs/ai/ROADMAP.md`.
+A **Fase 0 fechou em 2026-08-31**. Gate conferido item a item:
 
-## Prioridades imediatas
+| Critério do gate | Evidência |
+| --- | --- |
+| `main` contém a versão publicada mais recente | PR #5; `main` em 0.9.1 |
+| `main` é o default do repositório | trocado no GitHub; branches mescladas apagadas |
+| Versões sincronizadas | `release:validate-version` verde |
+| README representa o produto atual | 0.9.1, com as capacidades de 0.8.0/0.9.0 |
+| ARCHITECTURE representa o código atual | fluxo real documentado; afirmação falsa sobre SQL removida |
+| CI reprova versão inconsistente | passo no `ci.yml`, exercitado na própria PR #5 |
+| CI verde | Angular + Core Rust |
 
-A Fase 0 está **substancialmente fechada**. NH-001 a NH-005 concluídas; resta:
+Fases 2 a 7: **não iniciar**. Ver `docs/ai/ROADMAP.md`.
 
-1. `NH-001` — trocar o default do repositório para `main` e aposentar
-   `feat/native-app-foundation`. **Decisão humana, não faça sozinho.**
-2. `NH-006` — reconciliar `ARCHITECTURE_EVOLUTION_PLAN.md` com o roadmap novo.
+## O que a Fase 1 precisa provar
 
-Depois disso, o gate da Fase 0 fecha e a **Fase 1 (Qualification)** abre. Não comece a
-Fase 1 antes disso.
+```text
+mudar → compilar → instalar → atualizar → recuperar
+```
+
+sem perder o livro de ninguém. Enquanto isso não estiver automatizado, toda mudança nas
+fases seguintes é feita no escuro — é por isso que a Qualification vem antes do Sync V2 e
+não depois.
+
+O que já existe para aproveitar: `docs/PHASE_0_1_QUALIFICATION.md` (evidência **manual** de
+0.7.4, schema 10 → 13), os Gates 1 a 5 e a Regra de publicação em
+`docs/ARCHITECTURE_EVOLUTION_PLAN.md`, e 167 testes no core Rust.
+
+O que falta é o que nenhum deles cobre: repetir aquilo sozinho, a cada PR, em bancos de
+versões anteriores.
 
 ## Status arquitetural
 
@@ -61,12 +79,12 @@ Fase 1 antes disso.
 | CI | `ci.yml` cobre Angular + Rust em PR e push |
 | Sync V2 | **Não iniciado** |
 | Context Engine / IA | **Não iniciado** |
-| Qualification harness | Parcial — `docs/PHASE_0_1_QUALIFICATION.md` é evidência manual de 0.7.4 |
+| Qualification harness | **Foco atual.** Só existe evidência manual de 0.7.4 em `docs/PHASE_0_1_QUALIFICATION.md` |
 
 ## Dívida arquitetural conhecida
 
-- `docs/ARCHITECTURE_EVOLUTION_PLAN.md` usa a numeração de fases antiga e conflita com o
-  roadmap novo (ver `NH-006`).
+- Nenhuma invariante de domínio aponta para o teste que a prova, e nenhum teste diz qual
+  invariante defende (ver `NH-007`).
 - `WorkspaceLayout` orquestra domínios demais (navegação, preload, busca, sharing,
   imagens, backup, updates, colaboração).
 - `src-tauri/src/commands/` legado coexiste com `interface/tauri/` — **9 arquivos de comando
@@ -85,6 +103,10 @@ Sync V2
 Context Engine / embeddings
 decomposição de features (Planning, Writing, Entities)
 design system hardening
+Workspace hardening
+remoção do commands/ legado
 ```
 
-Bloqueado até a Fase 0 e a Fase 1 (Qualification) fecharem seus gates.
+Bloqueado até a Fase 1 (Qualification) fechar seu gate. A ordem não é burocracia: todos
+esses itens mexem em código que hoje ninguém consegue provar que continua migrando bancos
+antigos corretamente.
