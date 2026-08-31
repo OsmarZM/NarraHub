@@ -12,12 +12,12 @@
   --nh-ink-muted: #4f5a68;
   --nh-wine: #4c102f;
   --nh-wine-hover: #641840;
-  --nh-coral: #c9683d;
-  --nh-ochre: #b88938;
-  --nh-sage: #6c8a67;
+  --nh-coral: #b84f22;
+  --nh-ochre: #996e22;
+  --nh-sage: #50704b;
   --nh-border: #ded3c7;
   --nh-danger: #a8463f;
-  --nh-success: #3f7c59;
+  --nh-success: #2c6f48;
   --nh-radius-sm: 8px;
   --nh-radius-md: 12px;
   --nh-radius-lg: 18px;
@@ -26,13 +26,16 @@
   --nh-titlebar-height: 64px;
   --nh-shadow: 0 20px 55px rgba(64, 43, 32, .13);
   --nh-shadow-soft: 0 8px 24px rgba(64, 43, 32, .08);
-  /* Fundo do shell — no tema claro a nebulosa dá lugar a um pergaminho luminoso. */
+  /* A arte clara otimizada preserva contraste sem compor a nebulosa escura em runtime. */
+  --nh-bg-nebula-img: url('/backgrounds/cosmic-nebula-light.webp');
   --nh-bg-nebula-color: #f7f2e9;
-  /* A mesma arte da nebulosa, clareada por um véu de pergaminho por cima: a foto
-     continua legível como fundo sem roubar contraste do texto escuro. */
-  --nh-bg-nebula-img:
-    linear-gradient(160deg, rgba(253, 248, 240, .80) 0%, rgba(247, 242, 233, .76) 52%, rgba(239, 229, 216, .82) 100%),
-    url('/backgrounds/cosmic-nebula.jpg');
+  --nh-glass-panel: rgba(255, 250, 242, 0.86);
+  --nh-glass-panel-subtle: rgba(255, 250, 242, 0.74);
+  --nh-glass-border: rgba(94, 72, 54, 0.18);
+  --nh-glass-border-glow: rgba(76, 16, 47, 0.42);
+  --nh-glass-card: rgba(255, 252, 246, 0.82);
+  --nh-glass-card-hover: rgba(255, 255, 255, 0.95);
+  --nh-glass-filter: blur(18px);
   --nh-star-display: none;
   --nh-star-opacity: 0;
   --nh-vignette: radial-gradient(circle at 50% 45%, transparent 42%, rgba(120, 95, 70, .09) 82%, rgba(100, 78, 58, .16) 100%);
@@ -56,16 +59,15 @@
   --nh-success: #71b889;
   --nh-shadow: 0 24px 70px rgba(0, 0, 0, .55);
   --nh-shadow-soft: 0 10px 30px rgba(0, 0, 0, .35);
-  --nh-glass-filter: blur(20px);
-  /* Vidro: só os tokens que têm uso sem valor de reserva. Os demais continuam
-     resolvendo pelo fallback de cada lugar, para o tema escuro não mudar. */
-  --nh-glass-panel: rgba(18, 13, 30, 0.72);
-  --nh-glass-card-hover: rgba(34, 25, 50, 0.72);
+  --nh-bg-nebula-img: url('/backgrounds/cosmic-nebula.webp');
+  --nh-bg-nebula-color: #0b0813;
+  --nh-glass-panel-subtle: rgba(14, 11, 24, 0.55);
   --nh-glass-border: rgba(255, 255, 255, 0.09);
   --nh-glass-border-glow: rgba(226, 140, 180, 0.4);
-  /* Fundo do shell — a arte cósmica só existe no tema escuro. */
-  --nh-bg-nebula-color: #0b0813;
-  --nh-bg-nebula-img: url('/backgrounds/cosmic-nebula.jpg');
+  --nh-glass-card: rgba(22, 16, 34, 0.65);
+  --nh-glass-filter: blur(20px);
+  --nh-glass-panel: rgba(18, 13, 30, 0.72);
+  --nh-glass-card-hover: rgba(34, 25, 50, 0.72);
   --nh-star-display: block;
   --nh-star-opacity: 0.9;
   --nh-vignette: radial-gradient(circle at 50% 45%, transparent 35%, rgba(10, 8, 16, .45) 80%, rgba(8, 6, 14, .8) 100%);
@@ -89,16 +91,15 @@
     --nh-success: #71b889;
     --nh-shadow: 0 24px 70px rgba(0, 0, 0, .55);
     --nh-shadow-soft: 0 10px 30px rgba(0, 0, 0, .35);
-    --nh-glass-filter: blur(20px);
-  /* Vidro: só os tokens que têm uso sem valor de reserva. Os demais continuam
-     resolvendo pelo fallback de cada lugar, para o tema escuro não mudar. */
-  --nh-glass-panel: rgba(18, 13, 30, 0.72);
-  --nh-glass-card-hover: rgba(34, 25, 50, 0.72);
-  --nh-glass-border: rgba(255, 255, 255, 0.09);
-  --nh-glass-border-glow: rgba(226, 140, 180, 0.4);
-    /* Fundo do shell — a arte cósmica só existe no tema escuro. */
+    --nh-bg-nebula-img: url('/backgrounds/cosmic-nebula.webp');
     --nh-bg-nebula-color: #0b0813;
-    --nh-bg-nebula-img: url('/backgrounds/cosmic-nebula.jpg');
+    --nh-glass-panel-subtle: rgba(14, 11, 24, 0.55);
+    --nh-glass-border: rgba(255, 255, 255, 0.09);
+    --nh-glass-border-glow: rgba(226, 140, 180, 0.4);
+    --nh-glass-card: rgba(22, 16, 34, 0.65);
+    --nh-glass-filter: blur(20px);
+    --nh-glass-panel: rgba(18, 13, 30, 0.72);
+    --nh-glass-card-hover: rgba(34, 25, 50, 0.72);
     --nh-star-display: block;
     --nh-star-opacity: 0.9;
     --nh-vignette: radial-gradient(circle at 50% 45%, transparent 35%, rgba(10, 8, 16, .45) 80%, rgba(8, 6, 14, .8) 100%);

@@ -33,3 +33,8 @@ zip = { version = "4", default-features = false, features = ["deflate"] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2"
+
+[profile.dev]
+incremental = true
+debug = 1 # Gera tabelas de linhas em vez de símbolos de debug pesados, acelerando o link.exe em até 75%
+
