@@ -61,12 +61,24 @@ sem perder o livro de ninguém. Enquanto isso não estiver automatizado, toda mu
 fases seguintes é feita no escuro — é por isso que a Qualification vem antes do Sync V2 e
 não depois.
 
-O que já existe para aproveitar: `docs/PHASE_0_1_QUALIFICATION.md` (evidência **manual** de
-0.7.4, schema 10 → 13), os Gates 1 a 5 e a Regra de publicação em
-`docs/ARCHITECTURE_EVOLUTION_PLAN.md`, e 167 testes no core Rust.
+**A Fase 1 não começa do zero — o plano original supunha que sim.** Levantamento de
+2026-08-31:
 
-O que falta é o que nenhum deles cobre: repetir aquilo sozinho, a cada PR, em bancos de
-versões anteriores.
+| Já existe | Onde |
+| --- | --- |
+| Fixture povoada de schema 10, 18 tabelas | `src-tauri/fixtures/schema10_representative.sql` |
+| Upgrade da fixture sem perda de dados | `representative_schema10_fixture_upgrades_without_data_loss` |
+| Testes por migration, v7 a v15, com `foreign_key_check` | `database/migrations.rs` |
+| Cadeia 1→15 em arquivo real + `integrity_check` | `full_migration_chain_creates_a_reopenable_file_database` |
+| Backup com WAL, hash divergente, path traversal, staging interrompido, retenção | `database/backup.rs` |
+
+Tudo isso já roda no CI via `cargo test`. A rede de segurança de migration e backup existe
+e é boa.
+
+O que falta é menor e mais difícil: fixtures nas versões que os usuários realmente têm
+(NH-010), o rollback de um restore que falha no meio (NH-011), e o ciclo de atualização no
+**app empacotado** (NH-012) — o único que teste unitário não fecha, e que hoje só existe
+como evidência manual de 0.7.4.
 
 ## Status arquitetural
 

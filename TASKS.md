@@ -222,16 +222,121 @@ verificado.
 
 ---
 
+## FASE 1 — Qualification
+
+> **Leia antes de pegar qualquer uma destas.** O plano original supunha que a Fase 1
+> começava do zero. Não começa. Levantamento feito em 2026-08-31:
+>
+> - `src-tauri/fixtures/schema10_representative.sql` **já existe**, com 18 tabelas
+>   povoadas (universos, histórias, livros, capítulos, entidades, atributos, relações,
+>   menções, tags, timeline, planning, attachments, devices, sync_events, colaboração).
+> - `representative_schema10_fixture_upgrades_without_data_loss` **já testa** o upgrade
+>   dessa fixture sem perda de dados.
+> - Existem testes por migration de v7 a v15, com `pragma_foreign_key_check` em vários.
+> - `full_migration_chain_creates_a_reopenable_file_database` roda a cadeia 1→15 num
+>   arquivo real, reabre e confere `integrity_check`.
+> - `backup.rs` testa backup online com WAL, rejeição por hash divergente, path traversal
+>   no manifesto, staging interrompido e retenção que preserva backups pré-restore.
+> - Tudo isso **já roda no CI** via `cargo test`.
+>
+> Ou seja: a rede de segurança de migration e backup existe e é boa. O que falta é menor,
+> mais específico, e mais difícil — está listado abaixo. **Não recrie o que já existe.**
+
+### NH-010 — Fixture representativa nas versões que os usuários têm hoje
+
+```text
+Owner:  —
+Status: READY
+Branch: <agente>/NH-010-fixtures
+Fase:   1
+```
+
+**Contexto:** só existe fixture povoada no schema 10. Um usuário que instalou a 0.9.1 está
+no schema 15. A próxima migration (16) será exercitada a partir de um banco 15 que só
+existe sinteticamente, pela cadeia 10→15 — o que é razoável, mas não é a mesma coisa que um
+banco que viveu num app real, com dados irregulares.
+
+**Objetivo:** fixtures povoadas com ponto de partida em 13, 14 e 15, além da de 10. E um
+teste que reprove quando uma migration nova não tiver fixture de origem.
+
+**Cuidado:** fixtures são anonimizadas por construção — dados inventados, nunca conteúdo
+real de escritor. Se algum dia partirmos de um banco real, a anonimização vem antes do
+commit, não depois.
+
+---
+
+### NH-011 — Falha no restore com rollback
+
+```text
+Owner:  —
+Status: READY
+Branch: <agente>/NH-011-restore-rollback
+Fase:   1
+```
+
+**Contexto:** `backup.rs` cobre bem o caminho feliz e várias recusas (hash divergente,
+manifesto malicioso, staging interrompido). O que não vi coberto é o caso que mais
+assusta: **o restore começa, falha no meio, e o banco anterior precisa voltar inteiro.**
+
+`automatic_retention_preserves_manual_and_pre_restore_backups` sugere que existe backup
+pré-restore, o que é a metade certa do mecanismo. Falta o teste que prova a outra metade.
+
+**Objetivo:** injetar falha no meio do restore e provar que o banco anterior volta, com
+`integrity_check` e `foreign_key_check` limpos e as contagens canônicas idênticas.
+
+---
+
+### NH-012 — Ciclo de atualização no app empacotado
+
+```text
+Owner:  —
+Status: READY
+Branch: <agente>/NH-012-upgrade-empacotado
+Fase:   1
+```
+
+**Contexto:** este é o buraco real da Fase 1, e o único que teste unitário não fecha.
+`docs/PHASE_0_1_QUALIFICATION.md` documenta esse ciclo feito **à mão** na 0.7.4. Nunca foi
+repetido automaticamente.
+
+```text
+instalar N → criar conteúdo → fechar → instalar N+1 → abrir → migration → reabrir conteúdo
+```
+
+**Objetivo:** roteiro reproduzível para esse ciclo, e a decisão explícita do que é
+automatizável e do que continua sendo checklist humano. Não force automação onde ela vai
+mentir — um checklist honesto vale mais que um teste verde que não exercita o instalador.
+
+**Verificar:** capítulo, entidades, planning, canvas, tags, settings.
+
+---
+
+### NH-013 — Checklist de release desktop como gate
+
+```text
+Owner:  —
+Status: READY
+Branch: <agente>/NH-013-checklist-release
+Fase:   1
+Depende de: NH-012
+```
+
+**Objetivo:** transformar o checklist do roadmap (instalação limpa, upgrade, banco antigo,
+backup, restore, restart, autosave, compartilhamento, tema claro, tema escuro, updater) em
+gate versionado, com espaço para registrar a evidência de cada item por release.
+
+Base pronta: os **Gates 1 a 5** e a **Regra de publicação** em
+`docs/ARCHITECTURE_EVOLUTION_PLAN.md` já descrevem isso em prosa. O trabalho é torná-los
+verificáveis, não reescrevê-los.
+
+---
+
 ## BACKLOG
 
 Registrado, **não implementar** antes de a fase correspondente abrir.
 
 | ID | Tarefa | Fase |
 | --- | --- | --- |
-| NH-010 | Fixtures de bancos históricos anonimizados | 1 |
-| NH-011 | Qualification harness de migration automatizado | 1 |
-| NH-012 | Teste de atualização N → N+1 | 1 |
-| NH-013 | Teste de backup/restore e de falha no restore com rollback | 1 |
 | NH-020 | Extrair `WorkspaceSessionService` | 2 |
 | NH-021 | Mover orquestração de preload para fora do layout | 2 |
 | NH-022 | Lifecycle próprio do `GlobalSearchService` | 2 |
