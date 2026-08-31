@@ -4,7 +4,7 @@ Aplicativo local-first para escrever livros, organizar universos narrativos e si
 
 O NarraHub é distribuído como aplicativo Windows e Android com Tauri 2. A interface Angular é empacotada dentro do aplicativo; não existe servidor web externo ou navegador no uso de produção.
 
-## Versão 0.7.4
+## Versão 0.9.1
 
 Fluxos implementados:
 
@@ -15,8 +15,10 @@ Fluxos implementados:
 - atributos dinâmicos de entidades;
 - fichas editáveis com imagem principal, galeria e atributos próprios de cada tipo;
 - grafo Cytoscape navegável com zoom, filtros, formas por tipo e nós reposicionáveis;
+- canvas livre de Conexões com posição de nó persistida, elementos de título, imagem e nota, e ligações de diagrama separadas das relações canônicas;
 - timeline persistida com datas reais ou fictícias e vínculo com eventos existentes;
 - planejamento Kanban persistido, arrastável e capaz de reutilizar capítulos existentes;
+- propriedades de planejamento com alcance explícito: universais para todos os cards ou restritas a um card, promovíveis nas duas direções sem perder valores;
 - revisões automáticas de capítulos e histórico de alterações;
 - temas claro, escuro e conforme o sistema;
 - sincronização bidirecional por endereço local e código temporário;
@@ -24,6 +26,7 @@ Fluxos implementados:
 - isolamento de coleções e respostas assíncronas por universo;
 - layout responsivo para desktop e telas móveis;
 - controles nativos de minimizar, maximizar/restaurar e fechar;
+- carregamento sob demanda de cada seção do workspace por rota própria;
 - exclusão segura de histórias, livros, capítulos, entidades e ligações;
 - editor responsivo com largura de leitura, resumo recolhível e fichas fora da área de escrita;
 - corretor ortográfico, autocomplete de personagens e vocabulário recorrente;
@@ -47,13 +50,18 @@ Para desenvolvimento Windows, use `npm run desktop:dev`. O inicializador reutili
 
 ```text
 Angular 22
-   ↓ comandos Tauri e serviços locais
+Componente → Feature Store → Gateway tipado → RustCoreService
+   ↓ invoke()
 Tauri 2 / Rust
+interface/tauri → application → domain → repository
    ↓
 SQLite local
    ↕ rede Wi-Fi privada
 SQLite de outro dispositivo
 ```
+
+Nenhum código Angular executa SQL nem conhece tabelas: o núcleo Rust é quem fala com o
+banco. Isso é verificado por `npm run test:architecture`, não apenas combinado.
 
 Consulte:
 
@@ -68,7 +76,11 @@ Consulte:
 - [Atualizações](docs/UPDATES.md)
 - [Histórico de versões](CHANGELOG.md)
 - [Desenvolvimento seguro](docs/DEVELOPMENT.md)
-- [Notas da versão 0.7.4](docs/RELEASE_0.7.4.md)
+- [Constituição dos agentes](AGENTS.md)
+- [Estado corrente de engenharia](docs/ai/PROJECT_STATE.md)
+- [Roadmap até a 1.0](docs/ai/ROADMAP.md)
+
+Este README e [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) descrevem o **estado corrente** do produto. O histórico de versões vive no [CHANGELOG](CHANGELOG.md) e nas notas de release em `docs/RELEASE_*.md`; nenhum dos dois deve virar arquivo de arqueologia.
 
 ## Desenvolvimento
 
