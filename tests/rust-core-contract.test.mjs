@@ -98,22 +98,81 @@ test('todo comando chamado pelo frontend existe no Rust e está registrado no in
   }
 });
 
-test('o core Rust não é chamado por fora do adaptador de gateway', () => {
-  // `invoke()` espalhado por componente traria de volta o acoplamento que a
-  // Fase 2 desmontou. A porta é RustCoreService, e quem a usa é adaptador.
-  const offenders = [];
+test('só as portas nativas falam com o Tauri', () => {
+  // Este teste substitui um que prometia mais do que entregava: ele se chamava "o core Rust
+  // não é chamado por fora do adaptador de gateway", mas procurava apenas a string
+  // `RustCoreService` dentro de `features/`. Uma chamada direta a `invoke('sync_start')` num
+  // componente passava sem ser vista.
+  //
+  // E a regra que ele tentava proteger também estava errada. A documentação dizia que
+  // `RustCoreService` era a única porta Tauri do aplicativo, mas o produto real tem duas
+  // coisas diferentes atravessando a mesma fronteira:
+  //
+  //   persistência de domínio   →  RustCoreService  →  interface/tauri
+  //   capacidades da plataforma →  core/native/*    →  sync, share, IA, backup, updater
+  //
+  // Forçar as duas na mesma abstração produzia uma documentação que o código contradizia.
+  // A regra verdadeira é mais simples e mais forte: componentes, stores, layouts e serviços
+  // de aplicação nunca falam com o Tauri. Só as portas falam.
+  const PORTAS_PERMITIDAS = [
+    // A porta do núcleo de domínio.
+    'core/services/rust-core.service.ts',
+    // As portas de plataforma. Cada uma existe porque a capacidade é do sistema, não do
+    // domínio: elas não gravam conteúdo do escritor, elas acionam o dispositivo.
+    'core/native/sync.service.ts',
+    'core/native/online-share.service.ts',
+    'core/native/ai.service.ts',
+    'core/native/backup.service.ts',
+    'core/native/update.service.ts',
+    'core/native/production-replica.service.ts',
+    // A janela é do sistema operacional, não do produto: ela não guarda o livro
+    // de ninguém. Antes desta porta, `getCurrentWindow()` estava em quatro arquivos.
+    'core/native/window.service.ts',
+    // Ciclo de vida do pool SQLite: abre e fecha a conexão, não executa SQL.
+    'core/services/database.service.ts',
+  ];
+
+  const infratores = [];
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) { walk(path); continue; }
+      const caminho = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(caminho); continue; }
       if (!entry.name.endsWith('.ts')) continue;
-      if (entry.name.startsWith('rust-') && entry.name.endsWith('.gateway.ts')) continue;
-      const source = readFileSync(path, 'utf8');
-      if (source.includes('RustCoreService')) offenders.push(path);
+      const fonte = readFileSync(caminho, 'utf8');
+      // `isTauri()` fica de fora de propósito: é detecção de ambiente, não capacidade.
+      // Um componente precisa saber se está no desktop para decidir o que mostrar, e
+      // proibir isso empurraria uma pergunta trivial para dentro de uma porta.
+      //
+      // O que a regra alcança é **acionar** o sistema: comando Tauri, janela, plugin.
+      const falaComTauri = /\binvoke\s*[<(]/u.test(fonte)
+        || fonte.includes("from '@tauri-apps/api/window'")
+        || fonte.includes("from '@tauri-apps/plugin-")
+        || /@tauri-apps\/api\/(path|event|shell|fs|dpi)/u.test(fonte);
+      if (!falaComTauri) continue;
+      const relativo = caminho.replace(/\\/gu, '/');
+      if (PORTAS_PERMITIDAS.some((porta) => relativo.endsWith(porta))) continue;
+      infratores.push(relativo.slice(relativo.indexOf('src/app/')));
     }
   };
-  walk(featuresDir);
-  assert.deepEqual(offenders, [], `RustCoreService só pode ser usado por adaptador Rust: ${offenders.join(', ')}`);
+  walk(fileURLToPath(new URL('../src/app/', import.meta.url)));
+
+  assert.deepEqual(
+    infratores,
+    [],
+    'só as portas de core/native e o RustCoreService podem falar com o Tauri. '
+      + `Fora da lista: ${infratores.join(', ')}. `
+      + 'Se a capacidade é nova, crie uma porta em core/native e acrescente-a à lista — '
+      + 'com a justificativa de por que ela é plataforma e não domínio.',
+  );
+});
+
+test('a porta de domínio não vira porta de plataforma', () => {
+  // A separação só vale se as duas metades não se misturarem de novo. O RustCoreService
+  // existe para comandos de domínio; se ele começar a acionar janela, updater ou rede, a
+  // fronteira desaparece por dentro, sem nenhum arquivo novo aparecer.
+  const core = readFileSync(new URL('../src/app/core/services/rust-core.service.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(core, /@tauri-apps\/plugin-|@tauri-apps\/api\/(window|path|event|shell|fs)/u,
+    'capacidade de plataforma pertence a core/native, não à porta do núcleo de domínio');
 });
 
 test('a lista de atributos padrão é a mesma nos dois lados', () => {

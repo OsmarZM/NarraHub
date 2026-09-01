@@ -11,12 +11,19 @@ Se algo aqui conflitar com outro arquivo de instrução, **este arquivo vence**.
 ## 1. Arquitetura
 
 ```text
-Frontend
-Feature Component -> Feature Store -> Gateway tipado -> RustCoreService -> invoke()
-
+Frontend — domínio                     Frontend — plataforma
+Component -> Store -> Gateway          core/native/*
+          -> RustCoreService           sync · share · IA · backup
+                    |                  update · janela · réplica
+                    +-------- fronteira Tauri --------+
+                                       |
 Backend
 interface/tauri -> application -> domain -> repository -> SQLite
 ```
+
+O frontend tem **duas** portas para o Tauri, não uma. `RustCoreService` é a porta do núcleo
+de domínio — o que o escritor cria e o app guarda. `core/native/*` são as portas de
+plataforma — o que o sistema operacional oferece. Ver [ADR 0008](docs/ADR/0008-fronteira-nativa-e-portas-de-plataforma.md).
 
 - O NarraHub é local-first. O SQLite local é a fonte canônica dos dados do usuário.
 - O produto é um monólito modular. Não introduza microserviços, ORM, CRDT, event bus
@@ -27,7 +34,9 @@ interface/tauri -> application -> domain -> repository -> SQLite
 ## 2. Regras não negociáveis
 
 1. Nenhum SQL no Angular. Código de UI não conhece tabelas nem o plugin SQLite.
-2. Nenhum `invoke()` fora de um gateway/adaptador autorizado.
+2. Componentes, stores, layouts e serviços de aplicação **nunca falam com o Tauri**.
+   Só as portas falam: `core/services/rust-core.service.ts` e `core/native/*`.
+   `isTauri()` é exceção — é detecção de ambiente, não capacidade.
 3. Migration publicada é imutável. Toda correção de schema é uma migration nova.
 4. Mutação crítica que toca várias tabelas é transacional: tudo ou nada.
 5. O Router é a fonte da verdade da navegação.

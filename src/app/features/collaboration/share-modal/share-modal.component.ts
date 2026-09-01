@@ -1,6 +1,6 @@
 import { Component, EventEmitter, Input, OnInit, Output, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { SharePermission } from '../../../core/services/online-share.service';
+import { SharePermission } from '../../../core/native/online-share.service';
 import { UniverseStore } from '../../library/state/universe.store';
 import { CollaborationStore } from '../state/collaboration.store';
 

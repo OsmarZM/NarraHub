@@ -1,6 +1,6 @@
 import { Component, ElementRef, Input, OnChanges, SimpleChanges, ViewEncapsulation, computed, effect, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { AiService } from '../../../core/services/ai.service';
+import { AiService } from '../../../core/native/ai.service';
 import { Router } from '@angular/router';
 import { AppState } from '../../../core/state/app.state';
 import { WorkspaceSyncService } from '../../../application/workspace-sync.service';

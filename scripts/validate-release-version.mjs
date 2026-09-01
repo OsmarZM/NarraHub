@@ -49,4 +49,22 @@ if (changelogVersion !== version) {
   );
 }
 
-console.log(`Versão ${version} consistente em package.json, Cargo.toml, tauri.conf.json, README.md e CHANGELOG.md.`);
+// O PROJECT_STATE é a memória compartilhada de Claude, Codex e Gemini: os três leem esse
+// arquivo antes de agir. Memória compartilhada desatualizada é pior que memória nenhuma,
+// porque os três passam a raciocinar em cima do mesmo erro, com confiança. Em 2026-09-01 ele
+// ainda anunciava 0.9.1 e citava uma branch já apagada.
+const projectState = await readFile('docs/ai/PROJECT_STATE.md', 'utf8');
+const stateVersion = projectState.match(/^\|\s*Versão corrente\s*\|\s*\*{0,2}(\S+?)\*{0,2}\s*\|/mu)?.[1];
+if (!stateVersion) {
+  throw new Error(
+    'docs/ai/PROJECT_STATE.md precisa de uma linha "| Versão corrente | X.Y.Z |" na tabela de versão.',
+  );
+}
+if (stateVersion !== version) {
+  throw new Error(
+    `docs/ai/PROJECT_STATE.md diz que a versão corrente é ${stateVersion}, mas os manifests estão em ${version}. ` +
+      'Os agentes leem esse arquivo como fonte da verdade — corrija antes de seguir.',
+  );
+}
+
+console.log(`Versão ${version} consistente em package.json, Cargo.toml, tauri.conf.json, README.md, CHANGELOG.md e PROJECT_STATE.md.`);

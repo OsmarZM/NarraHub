@@ -1,7 +1,7 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { isTauri } from '@tauri-apps/api/core';
-import { AiService } from '../core/services/ai.service';
-import { BackupService } from '../core/services/backup.service';
+import { AiService } from '../core/native/ai.service';
+import { BackupService } from '../core/native/backup.service';
 import { DatabaseService } from '../core/services/database.service';
 import { DatabaseCompatibility } from './database-compatibility';
 import { CollaborationStore } from '../features/collaboration/state/collaboration.store';

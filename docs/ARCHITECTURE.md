@@ -17,7 +17,7 @@ Feature Store            estado da tela
    ↓
 Gateway tipado           contrato do domínio, sem SQL
    ↓
-RustCoreService          único lugar que chama invoke()
+RustCoreService          a porta do núcleo de domínio
    ↓  invoke()
 interface/tauri          DTO de entrada e saída
    ↓
@@ -29,6 +29,19 @@ repository
    ↓
 SQLite
 ```
+
+### Duas portas, não uma
+
+O frontend fala com o Tauri por dois caminhos, e eles existem por motivos diferentes:
+
+| Porta | Para quê |
+| --- | --- |
+| `core/services/rust-core.service.ts` | comandos de domínio: o que o escritor cria |
+| `core/native/*` | capacidades da plataforma: sync, share, IA, backup, updater, janela, réplica |
+
+A documentação já afirmou que `RustCoreService` era a única porta. Nunca foi — e a regra
+falsa não protegia nada. Hoje a regra é "só as portas falam com o Tauri", e ela é verificada
+por teste. Ver [ADR 0008](ADR/0008-fronteira-nativa-e-portas-de-plataforma.md).
 
 Nenhum arquivo do frontend executa SQL, e a capability `sql:allow-execute` foi removida.
 Isso não é convenção: `tests/frontend-boundaries.test.mjs` reprova o build se qualquer

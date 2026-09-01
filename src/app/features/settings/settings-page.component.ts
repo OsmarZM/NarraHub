@@ -1,9 +1,9 @@
 import { Component, OnInit, ViewEncapsulation, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { AiMode, AiModelProfile, AiService } from '../../core/services/ai.service';
-import { BackupManifest } from '../../core/services/backup.service';
+import { AiMode, AiModelProfile, AiService } from '../../core/native/ai.service';
+import { BackupManifest } from '../../core/native/backup.service';
 import { CollaborationContribution, SharePermission } from '../collaboration/models/collaboration.models';
-import { StoredOnlineShare } from '../../core/services/online-share.service';
+import { StoredOnlineShare } from '../../core/native/online-share.service';
 import { ThemeService } from '../../core/services/theme.service';
 import { CollaborationStore } from '../collaboration/state/collaboration.store';
 import { ProductionReplicaComponent } from '../production-replica/production-replica.component';
