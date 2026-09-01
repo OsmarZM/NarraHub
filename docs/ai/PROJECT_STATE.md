@@ -87,8 +87,8 @@ como evidência manual de 0.7.4.
 1. `NH-012` — fechar o escopo restante: backup/restore na 0.9.1, instalador por cima, e
    `0.8.0 → 0.9.1` numa VM. A execução `0.7.4 → 0.9.1` (cinco migrations, zero perda,
    segundo boot e conferência na tela aprovados) está em `docs/qualification/`.
-2. `NH-007` — mapear cada invariante de domínio ao teste que a prova.
-3. `NH-013` — checklist de release desktop como gate.
+2. `NH-013` — checklist de release desktop como gate.
+
 
 `NH-011` concluída: o rollback de restauração já existia e era sólido; o que faltava era
 cobertura. Ver `docs/handoffs/2026-08-31-NH-011-claude.md`.
@@ -151,8 +151,6 @@ disco antes de suspeitar do código.
   voltar para ela seguirá com um app que não abre. O portão só protege downgrades feitos a
   partir da primeira versão que o contiver.
 
-- Nenhuma invariante de domínio aponta para o teste que a prova, e nenhum teste diz qual
-  invariante defende (ver `NH-007`).
 - `WorkspaceLayout` orquestra domínios demais (navegação, preload, busca, sharing,
   imagens, backup, updates, colaboração).
 - `src-tauri/src/commands/` legado coexiste com `interface/tauri/` — **9 arquivos de comando
