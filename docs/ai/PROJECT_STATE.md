@@ -43,6 +43,32 @@ Publicada com a tabela 2.1 do checklist **dispensada por decisão registrada** �
 
 A partir da 0.9.3 a tabela 2.1 é obrigatória.
 
+## O que existe fora do repositório
+
+A pasta que contém este repositório guarda um **andaime de 2026-08-20**, substituído por
+inteiro pelo NarraHub atual:
+
+```text
+Projetos MVP/NarraHub/          não é repositório git
+├── narrahub-app/               ← a raiz do repositório é aqui
+├── angular-src/                66 ocorrências de SQL em serviços hoje proibidos
+├── rust-src/commands/          byte a byte igual ao diretório removido na Fase 3
+├── design-system/              CSS anterior ao styles.css
+└── lançadores .bat/.ps1        conveniência local; duplicam npm start e desktop:dev
+```
+
+**Decisão de 2026-09-01: nada disso é versionado.** Commitá-lo devolveria ao repositório o
+código que várias fases trabalharam para remover — e num lugar onde os gates não olham, já
+que eles varrem `src/`. Num projeto com três agentes fazendo `grep`, código morto com nome
+vivo é pior que código morto apagado: o próximo que procurar `universe.service.ts` acharia o
+defunto.
+
+Os arquivos continuam no disco do autor. O que o Git precisa preservar — a história do código
+real — ele já preserva.
+
+O gate `o andaime superado não volta para o repositório` reprova se `angular-src/`,
+`rust-src/` ou `design-system/` aparecerem na raiz.
+
 ## Fase ativa
 
 ```text

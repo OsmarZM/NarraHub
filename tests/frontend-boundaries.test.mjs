@@ -75,8 +75,34 @@ test('nenhum arquivo do frontend executa SQL (critério de saída da Fase 4)', (
       }
     }
   };
-  walk(fileURLToPath(new URL('../src/app/', import.meta.url)));
+  // `src/` inteiro, e não só `src/app/`: um arquivo com SQL fora da pasta de código do
+  // Angular continuaria invisível para este teste, que é exatamente como o andaime
+  // superado da pasta acima do repositório poderia voltar sem ninguém ver.
+  walk(fileURLToPath(new URL('../src/', import.meta.url)));
   assert.deepEqual(offenders, [], `SQL no frontend: ${offenders.join(', ')}`);
+});
+
+test('o andaime superado não volta para o repositório', () => {
+  // Fora deste repositório, na pasta que o contém, existe um andaime de 2026-08-20 que o
+  // NarraHub atual substituiu por inteiro: `angular-src/` com 66 ocorrências de SQL em
+  // serviços que hoje são proibidos, `rust-src/commands/` byte a byte igual ao diretório
+  // removido na Fase 3, e `design-system/` anterior ao `styles.css`.
+  //
+  // Ele não é versionado de propósito — decisão registrada em `docs/ai/PROJECT_STATE.md`.
+  // Este teste existe porque a forma mais provável de ele voltar não é alguém decidir
+  // reintroduzi-lo: é alguém copiar a pasta para dentro do repositório sem perceber o que
+  // ela contém. Num projeto onde três agentes fazem `grep`, código morto com nome vivo é
+  // pior que código morto apagado.
+  const proibidos = ['angular-src', 'rust-src', 'design-system'];
+  const raiz = fileURLToPath(new URL('../', import.meta.url));
+  for (const nome of proibidos) {
+    assert.ok(
+      !existsSync(join(raiz, nome)),
+      `${nome}/ apareceu na raiz do repositório. É o andaime anterior ao NarraHub atual: `
+        + 'contém SQL no frontend e comandos legados que os gates desta suíte existem para '
+        + 'manter fora. Se o objetivo era preservar histórico, o Git já tem o do código real.',
+    );
+  }
 });
 
 test('a camada de serviços SQL legada foi removida', () => {
