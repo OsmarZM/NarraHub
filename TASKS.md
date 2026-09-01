@@ -499,33 +499,53 @@ Ver a NH-020.
 ### NH-022 — `GlobalSearchService` assume o próprio lifecycle
 
 ```text
-Owner:  —
-Status: READY
-Branch: <agente>/NH-022-busca-lifecycle
+Owner:  Claude
+Status: DONE — resolvida pela NH-020, sem código novo
 Fase:   2
 ```
 
-**Objetivo:** o serviço já existe em `application/global-search.service.ts`. Ele passa a ter
-`initializeUniverse()`, `refresh()`, `query()` e `reset()`, para o layout não precisar saber
-**quais stores precisam estar carregados para pesquisar**.
+**Verificado antes de implementar, e o problema já não existia.**
+
+A tarefa queria dar ao serviço `initializeUniverse()`, `refresh()`, `query()` e `reset()`
+para que o layout não precisasse saber quais stores carregar para pesquisar. Mas:
+
+- o serviço tem **58 linhas** e expõe `results` como `computed` sobre os stores — ele não
+  tem estado próprio para inicializar nem resetar; zera junto quando os stores zeram;
+- o layout só lê `globalSearch.results`;
+- e quem carrega os stores agora é o `WorkspaceSessionService`, desde a NH-020. **O
+  acoplamento que esta tarefa atacaria saiu junto com a sessão.**
+
+Acrescentar quatro métodos de ciclo de vida a um `computed` seria cerimônia: API maior,
+mesmo comportamento, mais uma coisa para manter em sincronia.
+
+O que sobra no layout é `openGlobalSearchResult`, que **navega** para o resultado — e navegar
+é do layout, não do serviço de busca.
+
+**Se um dia a busca ganhar índice próprio** — o `TODO(Fase 4)` no antigo preload aponta para
+isso — aí ela passa a ter estado e a tarefa se justifica de novo.
 
 ---
 
 ### NH-023 — Extrair `WorkspaceShareService`
 
 ```text
-Owner:  —
-Status: READY
-Branch: <agente>/NH-023-share-service
+Owner:  Claude
+Status: DONE
+Branch: claude/NH-022-023-busca-e-share
 Fase:   2
 ```
 
-**Objetivo:** hoje o layout monta `OnlineShareDocument` e `SharedUniverse`, e ainda prepara
-imagens. Ele não deveria saber comprimir WebP nem montar capítulo.
+**Esta era real.** O layout montava `OnlineShareDocument` e `SharedUniverse`, achatava
+entidade com atributos, e **redimensionava imagem em canvas para WebP**. Compressão de imagem
+num componente de layout significa que qualquer mudança no formato do documento compartilhado
+passa pelo arquivo mais movimentado do frontend.
 
-**Nota:** já existe teste de fronteira dizendo que o layout "delega colaboração e
-compartilhamento para a feature". Confirme o que ele já garante antes de assumir que a
-extração está por fazer.
+**Entregue:** `WorkspaceShareService` é dono da montagem do documento e da preparação de
+imagem, com os três limites que estavam soltos no código agora nomeados
+(`MAX_INLINE_IMAGE_BYTES`, `MAX_IMAGE_EDGE`, `WEBP_QUALITY`).
+
+O layout continua dono do que é dele: abrir a sessão, cifrar, copiar o link e avisar o
+usuário. O serviço não conhece `ShellState` — o teste cobra isso.
 
 ---
 
