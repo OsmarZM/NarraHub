@@ -46,53 +46,35 @@ A partir da 0.9.3 a tabela 2.1 é obrigatória.
 ## Fase ativa
 
 ```text
-FASE 3 — Consolidar Rust Core
+FASE 4 — Sync V2
 ```
 
-A **Fase 2 fechou em 2026-09-01**. O gate é executável — `GATE DA FASE 2: as quatro
-proibições do WorkspaceLayout` — e cada proibição foi verificada por mutação:
+As fases **3 e 3.5 fecharam em 2026-09-01**, com gates executáveis:
 
-| Proibição | Onde foi parar |
+| Gate | Reprova quando |
 | --- | --- |
-| conhecer implementação de gateway | continua proibido; o layout fala com stores e serviços |
-| montar payload de compartilhamento | `WorkspaceShareService` |
-| carregar domínios manualmente | `WorkspaceSessionService` |
-| executar regra de domínio | `WorkspaceSyncService`; SQL nunca |
+| `comando de domínio só nasce em interface/tauri` | um `#[tauri::command]` de domínio aparece fora do lugar |
+| `o diretório commands legado não volta` | o caminho antigo é recriado |
+| `só as portas nativas falam com o Tauri` | `invoke()`, janela ou plugin fora de `core/native` |
 
-`WorkspaceLayout` foi de **523 para 434 linhas** — mas o número é consequência. O que mudou é
-que ele deixou de conhecer a lista de domínios, a persistência da sessão, a compressão de
-imagem e a sequência de releitura após colaboração.
+O legado era menor do que o roadmap dizia — 35 linhas, oito arquivos de placeholder — e o
+problema real era outro: um comando de domínio em `database/planning.rs`. Um gate contra o
+diretório não o pegaria; o gate contra **colocação** pega.
 
-Duas tarefas da fase não precisaram de código, e verificar antes economizou o trabalho:
-`NH-021` foi absorvida pela `NH-020` porque separá-las deixaria um estado pior; `NH-022` foi
-resolvida pela `NH-020`, já que o acoplamento que ela atacaria saiu junto com a sessão.
+## Antes de escrever qualquer código do Sync V2
 
-**Não foi criado event bus, CQRS nem mediator** — application services explícitos deram conta.
+O roadmap é explícito: **ADR e threat model primeiro**. O que precisa estar decidido antes:
 
-## Lição que a Fase 2 deixou
+1. contra quem estamos nos defendendo — outro dispositivo na mesma rede capturando tráfego,
+   se passando por peer ou fazendo replay; **não** alguém que já desbloqueou a máquina;
+2. transporte: Noise Protocol ou TLS com certificate pinning;
+3. a matriz de conflitos, por agregado.
 
-O gate passou na primeira tentativa **com a violação reintroduzida de propósito**. A causa
-não estava na regra: as expressões regulares foram escritas por script Python, e `\b` virou um
-caractere de **backspace literal** (0x08) — invisível no `grep`, e que nunca casa.
+E a decisão que já está tomada e vale registrar: **sem CRDT agora.** Outbox, operações
+idempotentes, tombstones e conflitos explícitos resolvem os agregados. Texto de capítulo em
+edição simultânea é o único candidato, e só no futuro, só naquele agregado.
 
-Uma varredura achou 18 ocorrências em 5 asserções, três delas de testes anteriores que já
-tinham sido declarados verificados. Todas corrigidas e reverificadas.
-
-**Regra prática:** teste que nunca falhou não é teste. Antes de confiar num gate novo, quebre
-a regra de propósito e confirme que ele acusa — e, se a asserção foi gerada por script,
-confira os bytes.
-
-## O que a Fase 3 precisa resolver
-
-`src-tauri/src/commands/` (9 arquivos) coexiste com `interface/tauri/` (9 arquivos): dois
-caminhos completos até o banco. A fase remove o antigo.
-
-Regras da fase, do roadmap: todo comando segue `DTO → application → domain → repository`;
-o contrato de erros (`validation`, `not_found`, `conflict`, `storage`, `unavailable`) é
-mantido; operação multi-estrutura é atômica; **sem ORM**; e `sync.rs`, `online_share.rs` e
-`local_ai.rs` só se modularizam quando expandirem, não porque cresceram.
-
-**Gate:** nenhum caminho antigo paralelo sobrevive.
+A mudança de fundo é `replicação de estado inteiro → replicação incremental de mudanças`.
 
 ## Status arquitetural
 
@@ -104,7 +86,9 @@ mantido; operação multi-estrutura é atômica; **sem ORM**; e `sync.rs`, `onli
 | Validador de versão | Roda no CI comum; cobre os 3 manifests + README + CHANGELOG |
 | CI | `ci.yml` cobre Angular + Rust em PR e push |
 | `WorkspaceLayout` | **Resolvido** na Fase 2, com gate executável |
-| `commands/` legado | **Foco atual** — Fase 3 |
+| `commands/` legado | **Removido** na Fase 3 |
+| Fronteira nativa do frontend | **Formalizada** — ADR 0008 |
+| Sync V1 sem criptografia | **Foco atual** — Fase 4 |
 | Sync V2 | **Não iniciado** |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |

@@ -2,7 +2,7 @@
 
 `AGENTS.md` diz **como** trabalhar. Este arquivo diz **no que** trabalhar.
 
-Fase ativa: **FASE 3 — Consolidar Rust Core**. Ver `docs/ai/PROJECT_STATE.md`.
+Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 
 ## Regras deste arquivo
 
@@ -602,13 +602,57 @@ controle antes de confiar num teste novo.
 
 ---
 
+## FASE 3 e 3.5 — concluídas em 2026-09-01
+
+### NH-030 — Consolidar o Rust Core
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   3
+```
+
+**A descrição da fase estava errada nas duas direções**, e a revisão arquitetural do autor
+mostrou isso:
+
+| O que o roadmap dizia | O que era |
+| --- | --- |
+| "dois caminhos completos até o banco" | `commands/` tinha **35 linhas**; oito dos dez arquivos eram só comentários de placeholder, e o único comando registrado (`get_app_info`) **não era chamado por ninguém** |
+| gate = "sem `commands/` legado" | não pegaria `planning_save_card`, um comando de domínio em `database/planning.rs` com validação, transação e SQL juntos |
+
+**Feito:** `commands/` removido inteiro; `get_app_info` removido em vez de migrado, por ser
+código morto; e `planning_save_card` migrado para
+`interface/tauri → application → repository`, com os dois testes que o protegiam movidos
+junto e passando.
+
+**Gate:** `comando de domínio só nasce em interface/tauri`, com exceções nomeadas para
+infraestrutura e a exigência de que cada uma traga o motivo escrito. Duas mutações, duas
+reprovações.
+
+---
+
+### NH-031 — Fronteira nativa do frontend
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   3.5
+ADR:    0008
+```
+
+Portas separadas para domínio e plataforma; seis serviços movidos para `core/native/`;
+`NativeWindowService` criado. O gate varre `src/app` inteiro atrás de `invoke()`,
+`api/window` e plugins — substituindo um teste que prometia proteger isso e só procurava a
+string `RustCoreService`.
+
+---
+
 ## BACKLOG
 
 Registrado, **não implementar** antes de a fase correspondente abrir.
 
 | ID | Tarefa | Fase |
 | --- | --- | --- |
-| NH-030 | Remover `src-tauri/src/commands/` legado | 3 |
 | NH-040 | ADR do transporte do Sync V2 (threat model + Noise vs TLS) | 4 |
 | NH-050 | Teste de tokens de design (`var(--*)` sem definição reprova o CI) | 5 |
 | NH-051 | Escala de breakpoints e responsividade em telas menores | 5 |
