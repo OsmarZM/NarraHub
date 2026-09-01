@@ -1,11 +1,11 @@
 import { CommonModule } from '@angular/common';
 import { isTauri } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { NativeWindowService } from '../../core/native/window.service';
 import { Component, Input, OnChanges, SimpleChanges, ViewChild, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CdkDragDrop, DragDropModule, moveItemInArray } from '@angular/cdk/drag-drop';
 import { Book, BookOption, ChapterOption, ContentTag, Entity, MentionOccurrence, Story } from '../../core/models';
-import { AiService } from '../../core/services/ai.service';
+import { AiService } from '../../core/native/ai.service';
 import { Router } from '@angular/router';
 import { AppState } from '../../core/state/app.state';
 import { WorkspaceSyncService } from '../../application/workspace-sync.service';
@@ -44,6 +44,8 @@ interface PendingRename { kind: RenameKind; id: string; name: string }
   styleUrl: './writing-page.component.css',
 })
 export class WritingPageComponent implements OnChanges {
+  private readonly nativeWindow = inject(NativeWindowService);
+
   readonly Math = Math;
 
   @Input({ required: true }) universeId = '';
@@ -69,8 +71,7 @@ export class WritingPageComponent implements OnChanges {
 
   async toggleFullscreen(): Promise<void> {
     if (!isTauri()) return;
-    const win = getCurrentWindow();
-    await win.setFullscreen(!(await win.isFullscreen()));
+    await this.nativeWindow.toggleFullscreen();
   }
 
   readonly pendingDelete = signal<PendingDelete | null>(null);

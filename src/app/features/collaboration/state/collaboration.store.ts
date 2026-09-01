@@ -1,7 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { isTauri } from '@tauri-apps/api/core';
 import { CollaborationContribution, CollaborationSession, SharePermission } from '../models/collaboration.models';
-import { OnlineShareDocument, OnlineShareService, OnlineShareStatus, StoredOnlineShare } from '../../../core/services/online-share.service';
+import { OnlineShareDocument, OnlineShareService, OnlineShareStatus, StoredOnlineShare } from '../../../core/native/online-share.service';
 import { CollaborationGateway } from '../gateways/collaboration.gateway';
 
 export interface ReviewResult {

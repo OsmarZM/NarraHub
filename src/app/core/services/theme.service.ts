@@ -1,11 +1,12 @@
-import { Injectable, signal } from '@angular/core';
-import { isTauri } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { inject, Injectable, signal } from '@angular/core';
+import { NativeWindowService } from '../native/window.service';
 
 export type ThemePreference = 'light' | 'dark' | 'system';
 
 @Injectable({ providedIn: 'root' })
 export class ThemeService {
+  private readonly nativeWindow = inject(NativeWindowService);
+
   readonly preference = signal<ThemePreference>('system');
   readonly resolvedTheme = signal<'light' | 'dark'>('light');
   private readonly media: MediaQueryList | null =
@@ -52,15 +53,15 @@ export class ThemeService {
       if (document.body) this.applyToElement(document.body, resolved);
     }
 
-    // Sincroniza o WebView e os controles nativos com a preferência escolhida.
-    if (isTauri()) {
+    // Sincroniza a moldura nativa com a preferência escolhida. `null` devolve a decisão
+    // ao sistema operacional, que é o que "seguir o sistema" significa aqui.
+    {
       try {
-        const win = getCurrentWindow();
-        if (win && typeof win.setTheme === 'function') {
-          void win.setTheme(this.preference() === 'system' ? null : resolved).catch((error) => {
+        void this.nativeWindow
+          .setTheme(this.preference() === 'system' ? null : resolved)
+          .catch((error) => {
             console.warn('Não foi possível sincronizar o tema da janela nativa.', error);
           });
-        }
       } catch (error) {
         console.warn('Não foi possível acessar a janela nativa para aplicar o tema.', error);
       }

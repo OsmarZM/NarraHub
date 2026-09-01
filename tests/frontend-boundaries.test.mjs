@@ -237,7 +237,7 @@ test('invariante 8: a IA não tem por onde escrever conteúdo canônico', () => 
   // O dia em que alguém injetar um store aqui — por conveniência, para "já salvar" — a
   // garantia deixa de existir sem que nenhum outro teste perceba. Ver
   // docs/DOMAIN_INVARIANTS.md.
-  const source = readFileSync(new URL('../src/app/core/services/ai.service.ts', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../src/app/core/native/ai.service.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /inject\(\s*\w*(Store|Gateway|DatabaseService)\s*\)/u,
     'o AiService não pode injetar store, gateway nem DatabaseService: é a ausência desse caminho que garante que a IA não altera conteúdo canônico sem confirmação');
   assert.doesNotMatch(source, /\b(INSERT|UPDATE|DELETE)\b/u,

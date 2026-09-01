@@ -15,6 +15,7 @@ fizemos Y?", a resposta deveria estar aqui.
 | [0005](0005-versioned-ai-context.md) | Contexto de IA limitado e versionado | Accepted |
 | [0006](0006-backup-as-critical-infrastructure.md) | Backup como infraestrutura crítica | Accepted |
 | [0007](0007-modo-de-recuperacao-por-schema-incompativel.md) | Modo de recuperação por schema incompatível | Accepted |
+| [0008](0008-fronteira-nativa-e-portas-de-plataforma.md) | Fronteira nativa: domínio e plataforma são portas diferentes | Accepted |
 
 Os ADRs 0001–0006 foram escritos sem campo `Status` explícito; todos estão em vigor. Os
 próximos devem usar `_TEMPLATE.md`, que inclui o campo.

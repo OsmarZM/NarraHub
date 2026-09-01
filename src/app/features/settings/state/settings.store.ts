@@ -1,13 +1,13 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { isTauri } from '@tauri-apps/api/core';
 import { SyncResult, SyncServerStatus } from '../../../core/models';
-import { BackupManifest, BackupService, BackupValidation, DatabaseHealthReport, RestorePreparation } from '../../../core/services/backup.service';
+import { BackupManifest, BackupService, BackupValidation, DatabaseHealthReport, RestorePreparation } from '../../../core/native/backup.service';
 // DatabaseService is injected here on purpose, unlike the domain gateways: restoring a
 // backup has to close and reopen the app's own SQLite connection pool, which is native
 // pool lifecycle, not the SQL-vs-Rust boundary the other LegacyXGateway adapters abstract.
 import { DatabaseService } from '../../../core/services/database.service';
-import { SyncService } from '../../../core/services/sync.service';
-import { AppUpdateInfo, UpdateService } from '../../../core/services/update.service';
+import { SyncService } from '../../../core/native/sync.service';
+import { AppUpdateInfo, UpdateService } from '../../../core/native/update.service';
 
 export type UpdatePhase = 'idle' | 'checking' | 'available' | 'backing-up' | 'downloading' | 'current' | 'error';
 

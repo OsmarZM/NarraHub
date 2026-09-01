@@ -3,11 +3,10 @@ import { Component, OnDestroy, ViewChild, computed, effect, inject, signal } fro
 import { FormsModule } from '@angular/forms';
 import { RouterOutlet } from '@angular/router';
 import { isTauri } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   BookOption, ChapterOption, Entity, MetadataOwnerType, PlanningItem, UniverseWithStats,
 } from './core/models';
-import { BackupManifest } from './core/services/backup.service';
+import { BackupManifest } from './core/native/backup.service';
 import { AppNavigationId, AppRouteState } from './core/navigation/app-navigation';
 import { AppNavigationService } from './core/navigation/app-navigation.service';
 import { AppState } from './core/state/app.state';
@@ -27,6 +26,7 @@ import { GlobalSearchResult, GlobalSearchService } from './application/global-se
 import { WorkspaceSessionService } from './application/workspace-session.service';
 import { WorkspaceShareService } from './application/workspace-share.service';
 import { WorkspaceSyncService } from './application/workspace-sync.service';
+import { NativeWindowService } from './core/native/window.service';
 import { ShellState } from './shell/state/shell.state';
 import { SidebarNavItem, UniverseSidebarComponent } from './shell/universe-sidebar/universe-sidebar.component';
 
@@ -79,6 +79,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   private readonly session = inject(WorkspaceSessionService);
   private readonly share = inject(WorkspaceShareService);
   private readonly workspaceSync = inject(WorkspaceSyncService);
+  private readonly nativeWindow = inject(NativeWindowService);
 
   readonly searchQuery = this.shell.searchQuery;
   readonly activeNav = computed(() => this.navigation.activeData().navigationId);
@@ -141,7 +142,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   ngOnDestroy(): void {
     this.session.reset();
   }
-  async toggleFullscreen(): Promise<void> { if (isTauri()) { const win = getCurrentWindow(); await win.setFullscreen(!(await win.isFullscreen())); } }
+  async toggleFullscreen(): Promise<void> { await this.nativeWindow.toggleFullscreen(); }
   async loadUniverses(): Promise<void> {
     await this.universeStore.load();
     await this.knowledgeStore.refreshLibraryPreviewTags();

@@ -7,7 +7,7 @@ import {
   ProductionReplicaService,
   ProductionReplicaStatus,
   ReplicaCatalogItem,
-} from '../../core/services/production-replica.service';
+} from '../../core/native/production-replica.service';
 
 @Component({
   selector: 'app-production-replica',

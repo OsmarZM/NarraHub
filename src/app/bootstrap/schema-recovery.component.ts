@@ -1,6 +1,6 @@
 import { Component, Input, computed, inject, signal } from '@angular/core';
-import { BackupManifest, BackupService } from '../core/services/backup.service';
-import { UpdateService } from '../core/services/update.service';
+import { BackupManifest, BackupService } from '../core/native/backup.service';
+import { UpdateService } from '../core/native/update.service';
 import { DatabaseCompatibility } from './database-compatibility';
 
 /**

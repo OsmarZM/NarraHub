@@ -3,33 +3,45 @@
 > Fonte da verdade sobre "onde estamos". Qualquer agente lê este arquivo antes de agir.
 > Atualize-o ao fechar uma tarefa que mude versão, fase ou dívida conhecida.
 
-Atualizado em: 2026-08-31
+Atualizado em: 2026-09-01
 
 ## Versão
 
 | Item | Valor |
 | --- | --- |
-| Última tag publicada | `app-v0.9.1` |
-| Manifests em `feat/native-app-foundation` | 0.9.1 (package.json, Cargo.toml, tauri.conf.json) |
-| `origin/main` | **0.9.1** — canônica desde a PR #5; protegida, promoção só por PR |
-| README.md | 0.9.1 — validado pelo CI desde 4b31646 |
+| Versão corrente | **0.9.2** |
+| Última tag publicada | `app-v0.9.2`, em 2026-09-01 |
+| `origin/main` | 0.9.2 — canônica e **default** do repositório |
+| Manifests, README e CHANGELOG | 0.9.2, sob teste no CI |
+
+A linha "Versão corrente" acima é lida por `scripts/validate-release-version.mjs`: se ela
+divergir dos manifests, o CI reprova. Este arquivo é a memória compartilhada de três agentes,
+e memória compartilhada desatualizada é pior que memória nenhuma — os três raciocinam em cima
+do erro ao mesmo tempo, com confiança.
 
 ## Branch canônica
 
-`main`, desde a PR #5 (2026-08-31).
+`main`, canônica e default do repositório desde 2026-08-31.
 
-`origin/main` estava em 0.8.0, parada na PR #1, enquanto 0.9.0 e 0.9.1 saíam de
-`feat/native-app-foundation` — que era o default do `origin`. A branch órfã era a `main`.
-A PR #5 devolveu a ela o papel de linha oficial, sem force push: hoje as árvores das duas
-são idênticas.
-
-- `main` é protegida: push direto é recusado, promoção só por Pull Request.
+- Protegida: push direto é recusado, promoção só por Pull Request.
 - Branch nova nasce de `main` e volta para `main` por PR.
-- **Pendente (humano):** trocar o default do repositório no GitHub para `main` e decidir o
-  destino de `feat/native-app-foundation`.
+- As branches paralelas (`feat/native-app-foundation` e a de trabalho antiga) **foram
+  apagadas**; todo o conteúdo delas está na `main`.
 
 Ao verificar o estado das branches, compare sempre contra `origin/main` depois de
-`git fetch` — a `main` local pode estar atrasada e dar um diagnóstico errado.
+`git fetch` — a `main` local pode estar atrasada e dar um diagnóstico errado. Foi assim que
+um diagnóstico de "fast-forward" saiu errado nesta sessão.
+
+## Verificação pendente da 0.9.2
+
+Publicada com a tabela 2.1 do checklist **dispensada por decisão registrada** — ver
+`docs/releases/0.9.2.md`. Continua sem verificação visual:
+
+1. o updater de um NarraHub 0.9.1 instalado detectando e aplicando a 0.9.2;
+2. a tela de recuperação por schema incompatível;
+3. a arte nova do tema claro.
+
+A partir da 0.9.3 a tabela 2.1 é obrigatória.
 
 ## Fase ativa
 

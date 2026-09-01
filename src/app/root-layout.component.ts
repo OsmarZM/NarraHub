@@ -1,8 +1,8 @@
 import { Component, HostListener, OnDestroy, ViewEncapsulation, computed, inject } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { isTauri } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { AppBootstrapService } from './bootstrap/app-bootstrap.service';
+import { NativeWindowService } from './core/native/window.service';
 import { SchemaRecoveryComponent } from './bootstrap/schema-recovery.component';
 import { AppNavigationService } from './core/navigation/app-navigation.service';
 import { AppState } from './core/state/app.state';
@@ -23,6 +23,7 @@ import { TitlebarComponent } from './shell/titlebar/titlebar.component';
 })
 export class RootLayoutComponent implements OnDestroy {
   readonly bootstrap = inject(AppBootstrapService);
+  private readonly nativeWindow = inject(NativeWindowService);
   readonly shell = inject(ShellState);
   private readonly appState = inject(AppState);
   private readonly navigation = inject(AppNavigationService);
@@ -66,11 +67,11 @@ export class RootLayoutComponent implements OnDestroy {
   }
 
   async minimizeWindow(): Promise<void> {
-    if (isTauri()) await getCurrentWindow().minimize();
+    await this.nativeWindow.minimize();
   }
 
   async toggleMaximizeWindow(): Promise<void> {
-    if (isTauri()) await getCurrentWindow().toggleMaximize();
+    await this.nativeWindow.toggleMaximize();
   }
 
   async closeWindow(): Promise<void> {
@@ -78,9 +79,9 @@ export class RootLayoutComponent implements OnDestroy {
     await this.collaboration.syncIncoming();
     await this.collaboration.endAllActiveQuietly();
     await this.collaboration.stopShareQuietly();
-    if (isTauri()) {
+    if (this.nativeWindow.available) {
       this.bootstrap.shutdown();
-      await getCurrentWindow().close();
+      await this.nativeWindow.close();
     }
   }
 

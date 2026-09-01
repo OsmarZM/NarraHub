@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { EntityWithDetails, UniverseWithStats } from '../core/models';
-import { OnlineShareDocument, SharedUniverse } from '../core/services/online-share.service';
+import { OnlineShareDocument, SharedUniverse } from '../core/native/online-share.service';
 import { EntityStore } from '../features/entities/state/entity.store';
 import { ManuscriptStore } from '../features/manuscript/state/manuscript.store';
 
