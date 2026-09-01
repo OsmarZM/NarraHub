@@ -2,7 +2,7 @@
 
 `AGENTS.md` diz **como** trabalhar. Este arquivo diz **no que** trabalhar.
 
-Fase ativa: **FASE 2 — Workspace Hardening**. Ver `docs/ai/PROJECT_STATE.md`.
+Fase ativa: **FASE 3 — Consolidar Rust Core**. Ver `docs/ai/PROJECT_STATE.md`.
 
 ## Regras deste arquivo
 
@@ -552,33 +552,53 @@ usuário. O serviço não conhece `ShellState` — o teste cobra isso.
 ### NH-024 — Ampliar `WorkspaceSyncService` (cross-domain)
 
 ```text
-Owner:  —
-Status: READY
-Branch: <agente>/NH-024-cross-domain
+Owner:  Claude
+Status: DONE
+Branch: claude/NH-024-025-cross-domain
 Fase:   2
 ```
 
-**Objetivo:** capítulo salvo dispara atualização de menções, estatísticas e índices por um
-caminho só, em vez de a página chamar `KnowledgeStore`, `UniverseStore` e `ConnectionsStore`
-em sequência.
+Capítulo e entidade já eram coordenados pelo serviço. O que faltava era a revisão de
+colaboração aprovada, que mexe em manuscrito, entidades e estatísticas — e vivia no layout,
+onde só quem passasse por ali conseguiria reaproveitá-la. Virou `onCollaborationReviewApplied`.
+
+**Achado:** o layout tinha um `refreshUniverseStats` **cópia byte a byte** do que já existia
+no serviço, e **ninguém o chamava**. Código morto duplicado, do tipo que só aparece quando se
+vai extrair.
 
 ---
 
 ### NH-025 — Teste de fronteira do `WorkspaceLayout`
 
 ```text
-Owner:  —
-Status: READY
-Branch: <agente>/NH-025-fronteira-layout
+Owner:  Claude
+Status: DONE — gate da Fase 2
+Branch: claude/NH-024-025-cross-domain
 Fase:   2
-Depende de: as extrações acima
 ```
 
-**Este é o gate da fase.** Ele prova as quatro proibições do topo desta seção.
+`GATE DA FASE 2: as quatro proibições do WorkspaceLayout` prova as quatro regras do roadmap
+como código, e não como contagem de linhas. Cinco mutações, cinco reprovações.
 
-Siga o padrão que já funcionou: o teste precisa reprovar quando a regra é reintroduzida de
-propósito. Teste que nunca falhou não é teste — dois desta sessão passaram na primeira
-tentativa **e também com o defeito de volta**.
+**E foi ele que expôs um problema maior.** A primeira versão passava com a violação de
+gateway reintroduzida. A causa: eu escrevi as expressões regulares por script Python, e o
+`` de borda de palavra virou um **caractere de backspace literal** (0x08) — invisível no
+`grep`, e que nunca casa com nada.
+
+Uma varredura achou **18 ocorrências, em 5 asserções**, incluindo três de testes anteriores
+que eu havia declarado verificados:
+
+| Asserção | Estava morta |
+| --- | --- |
+| layout não conhece gateway | sim |
+| layout não executa SQL | sim |
+| sessão não conhece Router | sim |
+| sessão não executa SQL | sim |
+| `AiService` não contém SQL (invariante 8) | sim |
+
+Todas corrigidas e reverificadas por mutação. **Regra que fica:** escrever regex por script
+com escape em camadas é frágil; confira o resultado com `cat -A` ou varra caracteres de
+controle antes de confiar num teste novo.
 
 ---
 
