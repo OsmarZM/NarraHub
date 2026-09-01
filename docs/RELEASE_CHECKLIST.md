@@ -119,6 +119,12 @@ de instalações, perfis e configuração que nenhum usuário tem. Sempre que po
 ambiente descartável. O aplicativo recusa o banco por segurança — e a partir da versão que
 contém o ADR 0007 ele explica isso numa tela em vez de não abrir.
 
+**Dispensa é decisão registrada, não omissão.** Publicar sem a tabela 2.1 é possível — quem
+decide é o humano — mas a ficha da release precisa dizer **o que foi dispensado, por quê, e o
+que isso custa**. Foi o que aconteceu na 0.9.2: ela corrigia justamente os defeitos que
+motivaram este checklist, e segurá-la esperando o processo inverteria a ordem. Uma tabela em
+branco e uma dispensa fundamentada parecem iguais daqui a seis meses — e não são.
+
 **Falha na tabela 2.1 impede a publicação.** Não existe "passou quase tudo". Se um item não
 se aplica àquela release, escreva por que — não deixe em branco.
 
