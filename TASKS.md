@@ -2,7 +2,7 @@
 
 `AGENTS.md` diz **como** trabalhar. Este arquivo diz **no que** trabalhar.
 
-Fase ativa: **FASE 1 — Qualification**. Ver `docs/ai/PROJECT_STATE.md`.
+Fase ativa: **FASE 2 — Workspace Hardening**. Ver `docs/ai/PROJECT_STATE.md`.
 
 ## Regras deste arquivo
 
@@ -289,7 +289,7 @@ sabotar o `rollback_swap` faz os testes acusarem; o teste antigo não acusava.
 
 ```text
 Owner:  Claude
-Status: REVIEW — roteiro pronto; 1 execução registrada; falta fechar o escopo
+Status: DONE — roteiro pronto e três execuções registradas
 Branch: claude/NH-012-qualificacao-upgrade
 Fase:   1
 ```
@@ -316,11 +316,15 @@ passou, sem corromper arquivo. Ambiente alheio vale mais que o do desenvolvedor,
 tem o histórico de instalações e perfis que só existe na máquina de quem constrói o produto.
 Evidência relatada, não medida — as contagens não foram comparadas lá.
 
-**Falta para fechar:**
+**Terceira execução, 2026-09-01 — a que fecha a tarefa:** o autor rodou `0.8.0 → 0.9.1`, com
+o universo contendo propriedades personalizadas de planejamento. Nada se perdeu, o backup foi
+criado corretamente, e as propriedades sobreviveram com os valores.
 
-1. backup e restauração já na 0.9.1;
-2. `0.8.0 → 0.9.1`, porque a 0.7.4 não cria propriedades tipadas de planejamento e por isso
-   **não exercita a promessa da migration 15**.
+Isso exercita a promessa da migration 15, que as duas execuções anteriores não alcançavam: no
+schema 14 a coluna `scope` **não existia**, então toda propriedade era universal por natureza;
+a migration adiciona `scope NOT NULL DEFAULT 'universal'`. O autor confirmou ainda que, já na
+0.9.1, campos por card e universais convivem corretamente — ou seja, a capacidade nova
+funciona **sobre um banco migrado**, que é onde ela teria mais chance de falhar.
 
 **Nunca no perfil de uso diário** quando a origem for mais antiga que o banco instalado: o
 app recusa banco de schema mais novo, e a migração é de mão única.
@@ -330,20 +334,26 @@ app recusa banco de schema mais novo, e a migração é de mão única.
 ### NH-013 — Checklist de release desktop como gate
 
 ```text
-Owner:  —
-Status: READY
-Branch: <agente>/NH-013-checklist-release
+Owner:  Claude
+Status: DONE
+Branch: claude/NH-013-checklist-release
 Fase:   1
-Depende de: NH-012 (o roteiro já existe; falta a execução)
 ```
 
-**Objetivo:** transformar o checklist do roadmap (instalação limpa, upgrade, banco antigo,
-backup, restore, restart, autosave, compartilhamento, tema claro, tema escuro, updater) em
-gate versionado, com espaço para registrar a evidência de cada item por release.
+**Entregue:** `docs/RELEASE_CHECKLIST.md` e o comando `npm run release:preflight`.
 
-Base pronta: os **Gates 1 a 5** e a **Regra de publicação** em
-`docs/ARCHITECTURE_EVOLUTION_PLAN.md` já descrevem isso em prosa. O trabalho é torná-los
-verificáveis, não reescrevê-los.
+O checklist separa três coisas que o roadmap tratava como uma: o que o CI já garante em todo
+PR, o que o workflow de release garante, e o que só humano consegue.
+
+**Correção feita no próprio documento antes de commitar:** a primeira versão dizia "release
+sem esta tabela preenchida não é publicável", mas metade dos itens — instalação limpa,
+updater detectando, artefatos no destino — **exige que os artefatos já existam**. O gate era
+impossível de cumprir como escrito. A tabela humana virou duas: `2.1` sobre um instalador
+local, que bloqueia a publicação, e `2.2` sobre a release no ar, que bloqueia o anúncio.
+
+`release:preflight` roda exatamente a lista do job de release. Preflight verde não garante a
+release, mas preflight vermelho garante que ela vai falhar — e falhar em minutos aqui é
+melhor que falhar no runner.
 
 ---
 
@@ -419,18 +429,127 @@ da versão que a contiver. Voltar para a 0.8.0 continuará sem tela de recupera�
 
 ---
 
+## FASE 2 — Workspace Hardening
+
+> **Leia antes de pegar qualquer uma.** O gate desta fase é um teste de fronteira, não uma
+> contagem de linhas: `WorkspaceLayout` não pode conhecer implementação de gateway, montar
+> payload de compartilhamento, carregar domínios manualmente nem executar regra de domínio.
+> Linhas são consequência, não arquitetura.
+>
+> **Não crie event bus, CQRS nem mediator.** Application services explícitos primeiro. Se
+> eles explodirem de dependências, aí revisamos — com ADR, não no meio de um PR de extração.
+>
+> E o padrão desta sessão vale aqui também: **verifique antes de implementar.** Cinco vezes
+> seguidas o repositório estava em estado melhor do que o plano supunha.
+
+### NH-020 — Extrair `WorkspaceSessionService`
+
+```text
+Owner:  —
+Status: READY
+Branch: <agente>/NH-020-workspace-session
+Fase:   2
+```
+
+**Objetivo:** abrir, fechar e trocar universo; resetar stores; descartar resposta assíncrona
+de um universo anterior. Hoje parte disso vive no layout.
+
+**Comece por aqui:** é o que segura as outras extrações. Sem um dono do ciclo de vida da
+sessão, cada extração seguinte teria que inventar o seu.
+
+**Cuidado:** já existe `universeResolver` cuidando da seleção de universo depois do
+bootstrap, com teste de fronteira que proíbe ele de tocar em stores de domínio. A extração
+não pode duplicar essa responsabilidade — leia `app.routes.ts` e o resolver antes.
+
+---
+
+### NH-021 — Tirar o preload multi-domínio do layout
+
+```text
+Owner:  —
+Status: READY
+Branch: <agente>/NH-021-preload
+Fase:   2
+Depende de: NH-020
+```
+
+**Objetivo:** `loadWorkspaceData()` carrega entities, timeline, manuscript, planning e
+knowledge direto do layout. Isso vira responsabilidade da camada de aplicação.
+
+---
+
+### NH-022 — `GlobalSearchService` assume o próprio lifecycle
+
+```text
+Owner:  —
+Status: READY
+Branch: <agente>/NH-022-busca-lifecycle
+Fase:   2
+```
+
+**Objetivo:** o serviço já existe em `application/global-search.service.ts`. Ele passa a ter
+`initializeUniverse()`, `refresh()`, `query()` e `reset()`, para o layout não precisar saber
+**quais stores precisam estar carregados para pesquisar**.
+
+---
+
+### NH-023 — Extrair `WorkspaceShareService`
+
+```text
+Owner:  —
+Status: READY
+Branch: <agente>/NH-023-share-service
+Fase:   2
+```
+
+**Objetivo:** hoje o layout monta `OnlineShareDocument` e `SharedUniverse`, e ainda prepara
+imagens. Ele não deveria saber comprimir WebP nem montar capítulo.
+
+**Nota:** já existe teste de fronteira dizendo que o layout "delega colaboração e
+compartilhamento para a feature". Confirme o que ele já garante antes de assumir que a
+extração está por fazer.
+
+---
+
+### NH-024 — Ampliar `WorkspaceSyncService` (cross-domain)
+
+```text
+Owner:  —
+Status: READY
+Branch: <agente>/NH-024-cross-domain
+Fase:   2
+```
+
+**Objetivo:** capítulo salvo dispara atualização de menções, estatísticas e índices por um
+caminho só, em vez de a página chamar `KnowledgeStore`, `UniverseStore` e `ConnectionsStore`
+em sequência.
+
+---
+
+### NH-025 — Teste de fronteira do `WorkspaceLayout`
+
+```text
+Owner:  —
+Status: READY
+Branch: <agente>/NH-025-fronteira-layout
+Fase:   2
+Depende de: as extrações acima
+```
+
+**Este é o gate da fase.** Ele prova as quatro proibições do topo desta seção.
+
+Siga o padrão que já funcionou: o teste precisa reprovar quando a regra é reintroduzida de
+propósito. Teste que nunca falhou não é teste — dois desta sessão passaram na primeira
+tentativa **e também com o defeito de volta**.
+
+---
+
 ## BACKLOG
 
 Registrado, **não implementar** antes de a fase correspondente abrir.
 
 | ID | Tarefa | Fase |
 | --- | --- | --- |
-| NH-020 | Extrair `WorkspaceSessionService` | 2 |
-| NH-021 | Mover orquestração de preload para fora do layout | 2 |
-| NH-022 | Lifecycle próprio do `GlobalSearchService` | 2 |
-| NH-023 | Extrair `WorkspaceShareService` | 2 |
-| NH-024 | Ampliar `WorkspaceSyncService` (cross-domain) | 2 |
-| NH-025 | Teste de fronteira do `WorkspaceLayout` | 2 |
 | NH-030 | Remover `src-tauri/src/commands/` legado | 3 |
 | NH-040 | ADR do transporte do Sync V2 (threat model + Noise vs TLS) | 4 |
 | NH-050 | Teste de tokens de design (`var(--*)` sem definição reprova o CI) | 5 |
