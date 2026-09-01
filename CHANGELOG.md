@@ -2,6 +2,34 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.9.2 — 2026-09-01
+
+### Quando o aplicativo é mais antigo que os seus dados
+
+- **Correção**: instalar uma versão anterior por cima de um banco mais novo fazia o NarraHub
+  **não abrir** — sem janela e sem mensagem — enquanto os dados continuavam intactos no disco.
+  Agora aparece uma tela que explica o que houve, mostra qual versão de dados você tem, e
+  oferece atualizar o aplicativo ou voltar para um backup compatível.
+- O aplicativo nunca abre um banco que não entende. Isso já era verdade e continua sendo: a
+  diferença é que agora ele diz por quê, em vez de fechar calado.
+- A lista de backups oferecida nessa tela mostra só os que aquela versão consegue abrir.
+
+### Telas menores
+
+- **Correção**: em janelas de 1366×768 o conteúdo que passava da altura da tela ficava
+  cortado **e sem barra de rolagem** — em Ajustes, a lista de backups simplesmente sumia.
+  Cinco telas eram afetadas: Ajustes, Conexões, Histórico, Timeline e Entidades.
+
+### Tema claro e desempenho
+
+- **Correção**: os painéis de vidro do tema claro caíam em cores de reserva porque as
+  variáveis existiam só no tema escuro.
+- Texto de apoio e destaques do tema claro escureceram, para leitura mais confortável nos
+  tamanhos pequenos que a interface usa.
+- As artes de fundo e a logo passaram a ser servidas em WebP: o fundo caiu de 805 KB para
+  86 KB e a logo de 1073 KB para 16 KB. O tema claro ganhou arte própria em vez de reaproveitar
+  a nebulosa escura clareada por um véu.
+
 ## 0.9.1 — 2026-08-29
 
 ### Tema claro legível
