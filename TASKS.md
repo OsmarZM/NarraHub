@@ -362,11 +362,25 @@ exatamente qual nome faltou.
 ### NH-015 — Modo de recuperação por schema incompatível
 
 ```text
-Owner:  —
-Status: BLOCKED — aguardando aprovação do ADR 0007
-Branch: <agente>/NH-015-recuperacao-schema
+Owner:  Claude
+Status: DONE — ADR aprovado e implementado em 2026-09-01
+Branch: claude/NH-015-recuperacao-schema
 Fase:   1
 ```
+
+**Entregue:** comando `database_compatibility` (Rust, read-only, barato, não falha em
+instalação nova), portão no `AppBootstrapService` antes de `db.init()`, e a tela
+`SchemaRecoveryComponent` com atualização, restauração de backup **compatível** e a
+explicação de que os dados estão intactos.
+
+**Gates:** 5 testes Rust incluindo banco em `LATEST + 1`, e um teste de fronteira que
+compara a posição das duas chamadas no bootstrap — inverter a ordem reprova, verificado por
+mutação.
+
+**Não verificado:** a aparência da tela rodando. O app precisa do runtime Tauri e o tooling
+de browser desta sessão não consegue dirigi-lo. Para ver a tela de verdade, aponte um perfil
+descartável para um banco de schema maior que o `LATEST_SCHEMA_VERSION` e rode
+`npm run desktop:qualification`.
 
 **Origem:** incidente real de 2026-09-01. O autor instalou a 0.8.0 sobre um banco em schema
 15 e **o app não abriu** — sem janela, sem mensagem. Os dados estavam intactos o tempo todo;

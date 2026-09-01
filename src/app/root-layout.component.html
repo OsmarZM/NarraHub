@@ -12,6 +12,11 @@
   />
 
   <div class="content-stage" [class.focus-mode]="shell.focusMode()">
+    @if (bootstrap.schemaIncompatible(); as incompatibilidade) {
+      <!-- Banco mais novo que este executável: nada da aplicação pode subir, porque nenhuma
+           tela funciona sem o pool. A recuperação substitui o conteúdo inteiro. -->
+      <app-schema-recovery [compatibility]="incompatibilidade" />
+    } @else {
     @if (bootstrap.error()) { <div class="alert error-alert" role="alert"><span>Não foi possível inicializar o NarraHub. {{ bootstrap.error() }}</span></div> }
     @if (shell.errorMessage()) { <div class="alert error-alert" role="alert"><span>{{ shell.errorMessage() }}</span><button type="button" (click)="shell.errorMessage.set('')">×</button></div> }
     @if (shell.infoMessage()) { <div class="toast" role="status">{{ shell.infoMessage() }}</div> }
@@ -40,5 +45,6 @@
     }
 
     <router-outlet />
+    }
   </div>
 </app-shell>

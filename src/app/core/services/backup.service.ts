@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { DatabaseCompatibility } from '../../bootstrap/database-compatibility';
 import { normalizeNativeCommandError } from '../errors/native-command-error';
 
 export type BackupReason = 'manual' | 'pre_migration' | 'pre_update' | 'pre_restore' | 'periodic';
@@ -58,6 +59,16 @@ export interface RestoreCommitResult {
 
 @Injectable({ providedIn: 'root' })
 export class BackupService {
+  /**
+   * Portão de compatibilidade do boot. Diferente de `health()`, não roda `integrity_check`
+   * nem as consultas de invariante — precisa ser barato — e não falha quando o banco ainda
+   * não existe, que é o primeiro boot de qualquer instalação nova.
+   */
+  async compatibility(): Promise<DatabaseCompatibility> {
+    this.ensureDesktop();
+    return this.invokeDatabase<DatabaseCompatibility>('database_compatibility');
+  }
+
   async health(): Promise<DatabaseHealthReport> {
     this.ensureDesktop();
     return this.invokeDatabase<DatabaseHealthReport>('database_health');

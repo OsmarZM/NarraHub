@@ -1,7 +1,7 @@
 # ADR 0007 — Modo de recuperação por schema incompatível
 
 ```text
-Status:       Proposed
+Status:       Accepted  (aprovado pelo autor em 2026-09-01)
 Data:         2026-09-01
 Fase:         1 — Qualification e segurança de atualização
 Proposto por: Claude, a partir de um incidente real relatado pelo autor
@@ -140,6 +140,29 @@ passado — só parar de produzir esse futuro.
 oferecidos exclui os incompatíveis. Some-se a isso um passo no
 [`QUALIFICATION_UPGRADE.md`](../QUALIFICATION_UPGRADE.md) cobrindo o downgrade, que hoje
 o roteiro só sabe proibir.
+
+## Implementação
+
+Entregue em `NH-015`, na mesma data da aprovação.
+
+O portão é o comando `database_compatibility`, separado de `database_health` por dois
+motivos que só aparecem num caminho de boot: ele não roda `integrity_check`,
+`foreign_key_check` nem as consultas de invariante — caras num banco de vários MB — e ele
+**não falha quando o banco ainda não existe**, que é o primeiro boot de toda instalação
+nova. Ele abre o arquivo em `SQLITE_OPEN_READ_ONLY`, então não há como corromper aquilo que
+se está tentando proteger.
+
+Uma regra de desenho que vale registrar: **incompatibilidade volta como dado, nunca como
+`Err`**. Um portão que estoura devolveria o app exatamente ao defeito que ele existe para
+corrigir — morrer sem dizer nada. Há teste só para isso.
+
+Gates que impedem a regressão:
+
+- `banco_mais_novo_que_o_app_e_incompativel` e `incompatibilidade_e_resposta_e_nao_erro`, no
+  Rust, com um banco em `LATEST + 1`;
+- `o pool só é aberto depois do portão de compatibilidade de schema (ADR 0007)`, em
+  `tests/frontend-boundaries.test.mjs`, que compara a posição das duas chamadas no
+  `AppBootstrapService` e reprova se a ordem se inverter.
 
 ## Revisitar quando
 

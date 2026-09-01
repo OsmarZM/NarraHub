@@ -1,4 +1,5 @@
 use super::error::{DatabaseCommandError, DatabaseCommandResult};
+use super::migrations::LATEST_SCHEMA_VERSION;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -36,6 +37,59 @@ pub struct DatabaseHealthReport {
     pub foreign_key_violations: u64,
     pub issues: Vec<DatabaseHealthIssue>,
     pub table_counts: BTreeMap<String, u64>,
+}
+
+/// Resposta do portão de compatibilidade que roda antes de abrir o pool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseCompatibility {
+    pub database_exists: bool,
+    pub schema_version: i64,
+    pub supported_schema_version: i64,
+    pub compatible: bool,
+}
+
+/// Diz se este executável entende o banco que está no disco — **sem abri-lo para escrita**.
+///
+/// Existe separado de `database_health` por dois motivos que importam num portão de boot:
+/// ele não roda `integrity_check`, `foreign_key_check` nem as consultas de invariante, que
+/// são caras num banco de vários MB; e ele **não falha quando o banco ainda não existe**,
+/// que é o primeiro boot de qualquer instalação nova.
+#[tauri::command]
+pub fn database_compatibility(app: AppHandle) -> DatabaseCommandResult<DatabaseCompatibility> {
+    let path = super::app_database_path(&app).map_err(DatabaseCommandError::unavailable)?;
+    inspect_compatibility(&path).map_err(DatabaseCommandError::storage)
+}
+
+pub fn inspect_compatibility(path: &Path) -> Result<DatabaseCompatibility, String> {
+    if !path.is_file() {
+        // Instalação nova: não há o que ser incompatível, e o plugin vai criar o banco.
+        return Ok(DatabaseCompatibility {
+            database_exists: false,
+            schema_version: 0,
+            supported_schema_version: LATEST_SCHEMA_VERSION,
+            compatible: true,
+        });
+    }
+
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| format!("Não foi possível ler a versão do banco local: {error}"))?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|error| error.to_string())?;
+    let schema_version = detect_schema_version(&connection)?;
+
+    Ok(DatabaseCompatibility {
+        database_exists: true,
+        schema_version,
+        supported_schema_version: LATEST_SCHEMA_VERSION,
+        // Banco mais antigo é compatível: as migrations sobem. Mais novo, não: este
+        // executável não conhece as colunas que ele tem, e escrever ali estragaria dado.
+        compatible: schema_version <= LATEST_SCHEMA_VERSION,
+    })
 }
 
 #[tauri::command]
@@ -299,5 +353,96 @@ mod tests {
         let report = inspect_database(&path).expect("inspect database");
         assert!(report.healthy, "unexpected issues: {:?}", report.issues);
         std::fs::remove_file(path).ok();
+    }
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+    use crate::database::migrations::{sql_for_version, LATEST_SCHEMA_VERSION};
+    use uuid::Uuid;
+
+    struct TempDb(std::path::PathBuf);
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            std::fs::remove_file(&self.0).ok();
+        }
+    }
+
+    fn banco_no_schema(versao: i64) -> TempDb {
+        let path = std::env::temp_dir().join(format!("narrahub-compat-{}.db", Uuid::new_v4()));
+        let connection = Connection::open(&path).expect("criar banco");
+        for v in 1..=LATEST_SCHEMA_VERSION {
+            connection
+                .execute_batch(sql_for_version(v).expect("migration conhecida"))
+                .expect("aplicar migration");
+        }
+        // O runtime registra a versão em _sqlx_migrations; os testes reproduzem isso para
+        // exercitar o mesmo caminho de detecção que o app usa de verdade.
+        connection
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS _sqlx_migrations (version BIGINT PRIMARY KEY);",
+            )
+            .expect("criar tabela de migrations");
+        for v in 1..=versao {
+            connection
+                .execute("INSERT INTO _sqlx_migrations (version) VALUES (?1)", [v])
+                .expect("registrar migration");
+        }
+        drop(connection);
+        TempDb(path)
+    }
+
+    #[test]
+    fn banco_ausente_nao_bloqueia_o_primeiro_boot() {
+        let inexistente = std::env::temp_dir().join(format!("nao-existe-{}.db", Uuid::new_v4()));
+        let resultado = inspect_compatibility(&inexistente).expect("não pode falhar");
+        assert!(!resultado.database_exists);
+        assert!(
+            resultado.compatible,
+            "instalação nova não tem banco, e isso não é incompatibilidade"
+        );
+    }
+
+    #[test]
+    fn banco_no_schema_atual_e_compativel() {
+        let db = banco_no_schema(LATEST_SCHEMA_VERSION);
+        let resultado = inspect_compatibility(&db.0).expect("inspecionar");
+        assert_eq!(resultado.schema_version, LATEST_SCHEMA_VERSION);
+        assert!(resultado.compatible);
+    }
+
+    #[test]
+    fn banco_mais_antigo_e_compativel_porque_as_migrations_sobem() {
+        let db = banco_no_schema(LATEST_SCHEMA_VERSION - 1);
+        let resultado = inspect_compatibility(&db.0).expect("inspecionar");
+        assert!(
+            resultado.compatible,
+            "banco antigo é o caso normal de atualização, não de bloqueio"
+        );
+    }
+
+    /// O incidente de 2026-09-01: instalar uma versão antiga sobre um banco novo.
+    #[test]
+    fn banco_mais_novo_que_o_app_e_incompativel() {
+        let db = banco_no_schema(LATEST_SCHEMA_VERSION + 1);
+        let resultado = inspect_compatibility(&db.0).expect("inspecionar sem falhar");
+        assert_eq!(resultado.schema_version, LATEST_SCHEMA_VERSION + 1);
+        assert_eq!(resultado.supported_schema_version, LATEST_SCHEMA_VERSION);
+        assert!(
+            !resultado.compatible,
+            "um banco mais novo que o executável precisa ser recusado antes de abrir o pool"
+        );
+    }
+
+    /// O portão precisa **informar**, não estourar: se ele falhar, o app volta a morrer
+    /// sem dizer nada, que é exatamente o defeito que ele existe para corrigir.
+    #[test]
+    fn incompatibilidade_e_resposta_e_nao_erro() {
+        let db = banco_no_schema(LATEST_SCHEMA_VERSION + 1);
+        assert!(
+            inspect_compatibility(&db.0).is_ok(),
+            "incompatibilidade tem que voltar como dado, nunca como Err"
+        );
     }
 }
