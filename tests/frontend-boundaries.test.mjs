@@ -165,6 +165,22 @@ test('WorkspaceLayout não é dono do ciclo de vida da sessão de universo (Fase
   assert.match(layout, /inject\(WorkspaceSessionService\)/u,
     'o layout delega a sessão em vez de reimplementá-la');
 
+  // Compartilhamento: o layout orquestra a sessão e avisa o usuário, mas não sabe montar o
+  // documento nem comprimir imagem. Enquanto isso morava aqui, mudar o formato do documento
+  // compartilhado passava pelo arquivo mais movimentado do frontend.
+  assert.ok(!layout.includes('toDataURL'),
+    'compressão de imagem é do WorkspaceShareService, não de um componente de layout');
+  assert.ok(!layout.includes("createElement('canvas')"),
+    'o layout não manipula canvas para preparar imagem de compartilhamento');
+  assert.doesNotMatch(layout, /SharedUniverse/u,
+    'montar o universo compartilhado é do WorkspaceShareService');
+  assert.match(layout, /inject\(WorkspaceShareService\)/u,
+    'o layout delega a montagem do documento compartilhado');
+
+  const share = readFileSync(new URL('../src/app/application/workspace-share.service.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(share, /shell\.|showInfo|showError/u,
+    'o serviço de compartilhamento monta o documento; quem avisa o usuário é quem o chamou');
+
   // E o serviço não pode puxar interface para dentro: ele existe para ser chamado por
   // qualquer caminho, não só pelo layout.
   const session = readFileSync(new URL('../src/app/application/workspace-session.service.ts', import.meta.url), 'utf8');

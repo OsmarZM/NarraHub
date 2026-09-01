@@ -5,12 +5,11 @@ import { RouterOutlet } from '@angular/router';
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
-  BookOption, ChapterOption, Entity, EntityWithDetails, MetadataOwnerType, PlanningItem, UniverseWithStats,
+  BookOption, ChapterOption, Entity, MetadataOwnerType, PlanningItem, UniverseWithStats,
 } from './core/models';
 import { BackupManifest } from './core/services/backup.service';
 import { AppNavigationId, AppRouteState } from './core/navigation/app-navigation';
 import { AppNavigationService } from './core/navigation/app-navigation.service';
-import { OnlineShareDocument, SharedUniverse } from './core/services/online-share.service';
 import { AppState } from './core/state/app.state';
 import { ShareCreateRequest, ShareModalComponent } from './features/collaboration/share-modal/share-modal.component';
 import { CollaborationStore } from './features/collaboration/state/collaboration.store';
@@ -26,6 +25,7 @@ import { SettingsStore } from './features/settings/state/settings.store';
 import { TimelineStore } from './features/timeline/state/timeline.store';
 import { GlobalSearchResult, GlobalSearchService } from './application/global-search.service';
 import { WorkspaceSessionService } from './application/workspace-session.service';
+import { WorkspaceShareService } from './application/workspace-share.service';
 import { ShellState } from './shell/state/shell.state';
 import { SidebarNavItem, UniverseSidebarComponent } from './shell/universe-sidebar/universe-sidebar.component';
 
@@ -76,6 +76,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   private readonly navigation = inject(AppNavigationService);
   private readonly globalSearch = inject(GlobalSearchService);
   private readonly session = inject(WorkspaceSessionService);
+  private readonly share = inject(WorkspaceShareService);
 
   readonly searchQuery = this.shell.searchQuery;
   readonly activeNav = computed(() => this.navigation.activeData().navigationId);
@@ -358,16 +359,12 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     try {
       await this.saveChapterNow();
       const selectedUniverses = this.universes().filter((universe) => request.universeIds.includes(universe.id));
-      const sharedUniverses = await Promise.all(selectedUniverses.map((universe) => this.buildSharedUniverse(universe, request.includeChapters, request.includeEntities)));
-      const title = selectedUniverses.length === 1 ? selectedUniverses[0].name : `${selectedUniverses.length} universos literários`;
-      const document: OnlineShareDocument = {
-        version: 3,
-        kind: 'workspace',
-        title,
+      const document = await this.share.buildDocument({
+        universes: selectedUniverses,
+        includeChapters: request.includeChapters,
+        includeEntities: request.includeEntities,
         permission: request.permission,
-        universes: sharedUniverses,
-        sharedAt: new Date().toISOString(),
-      };
+      });
       const result = await this.collaborationStore.createShare(document, request.expiresInDays, selectedUniverses.map((item) => item.id));
       if (!result.ok) { this.reportError('Não foi possível criar o compartilhamento online.', new Error(result.error || '')); return; }
       const copied = await this.copyToClipboard(this.collaborationStore.shareLink());
@@ -435,40 +432,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   }
 
 
-  private async buildSharedUniverse(universe: UniverseWithStats, includeChapters: boolean, includeEntities: boolean): Promise<SharedUniverse> {
-    const [chapters, entities] = await Promise.all([
-      includeChapters ? this.manuscriptStore.listChaptersSnapshot(universe.id) : Promise.resolve([]),
-      includeEntities ? this.entityStore.listSnapshot(universe.id) : Promise.resolve([]),
-    ]);
-    const details = includeEntities
-      ? (await Promise.all(entities.map((entity) => this.entityStore.getDetailsSnapshot(entity.id)))).filter((entity): entity is EntityWithDetails => !!entity)
-      : [];
-    return {
-      id: universe.id,
-      name: universe.name,
-      description: universe.description,
-      coverImage: await this.prepareShareImage(universe.cover_image),
-      chapters: chapters.map((chapter) => ({
-        id: chapter.id,
-        title: chapter.title,
-        content: chapter.content,
-        summary: chapter.summary,
-        storyName: chapter.story_name,
-        bookName: chapter.book_name,
-      })),
-      entities: await Promise.all(details.map(async (entity) => ({
-        id: entity.id,
-        type: entity.type,
-        name: entity.name,
-        summary: entity.summary,
-        description: entity.description,
-        image: await this.prepareShareImage(entity.image),
-        canonStatus: entity.canon_status,
-        attributes: entity.attributes.filter((attribute) => attribute.value.trim()).map((attribute) => ({ key: attribute.key, value: attribute.value })),
-      }))),
-    };
-  }
-
   private async refreshAfterCollaborationReview(universeId: string): Promise<void> {
     await this.loadUniverses();
     if (!universeId || this.appState.activeUniverseId() !== universeId) return;
@@ -480,22 +443,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     if (universe) this.appState.activeUniverse.update((active) => active ? { ...active, ...universe } : active);
   }
 
-  private async prepareShareImage(dataUrl: string): Promise<string> {
-    if (!dataUrl || dataUrl.length <= 180_000) return dataUrl;
-    return new Promise((resolve) => {
-      const image = new Image();
-      image.onload = () => {
-        const scale = Math.min(1, 720 / Math.max(image.naturalWidth, image.naturalHeight));
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-        canvas.getContext('2d')?.drawImage(image, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL('image/webp', 0.76));
-      };
-      image.onerror = () => resolve('');
-      image.src = dataUrl;
-    });
-  }
   private showInfo(message: string): void { this.shell.showInfo(message); }
   private reportError(message: string, error: unknown): void { this.shell.showError(message, error); }
 }
