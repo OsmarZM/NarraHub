@@ -1,7 +1,8 @@
-use crate::database::error::DatabaseCommandResult;
+use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
+use crate::domain::ids::{new_id, now_timestamp};
 use crate::domain::planning::{PlanningCardPlacement, PlanningFieldDefinition, PlanningItem};
-use rusqlite::{Connection, Transaction};
-use std::collections::BTreeMap;
+use rusqlite::{params, Connection, Transaction};
+use std::collections::{BTreeMap, HashMap};
 
 use super::connection::map_sqlite_error;
 
@@ -357,6 +358,195 @@ pub fn delete_field_definition(
         )
         .map_err(map_sqlite_error)?;
     Ok(affected > 0)
+}
+
+/// Definição de campo que um card específico pode preencher.
+///
+/// Vive aqui, e não no domínio, porque é a forma como a linha volta do banco: o serviço a
+/// consome para validar o valor antes de gravar.
+pub struct CardFieldDefinition {
+    pub field_type: String,
+    pub options: Vec<String>,
+}
+
+pub fn card_exists_in_universe(
+    connection: &Connection,
+    card_id: &str,
+    universe_id: &str,
+) -> DatabaseCommandResult<bool> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM planning_items WHERE id = ?1 AND universe_id = ?2)",
+            params![card_id, universe_id],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)
+}
+
+/// O capítulo referenciado pelo card precisa ser do mesmo universo.
+///
+/// O schema não garante isso sozinho: a foreign key liga o card ao capítulo, mas o universo
+/// do capítulo só se alcança subindo por `books` e `stories`. É a invariante 4 aplicada ao
+/// planejamento — as duas pontas no mesmo universo.
+pub fn chapter_belongs_to_universe(
+    connection: &Connection,
+    chapter_id: &str,
+    universe_id: &str,
+) -> DatabaseCommandResult<bool> {
+    connection
+        .query_row(
+            r#"SELECT EXISTS(
+                   SELECT 1 FROM chapters c
+                   JOIN books b ON b.id = c.book_id
+                   JOIN stories s ON s.id = b.story_id
+                   WHERE c.id = ?1 AND s.universe_id = ?2
+               )"#,
+            params![chapter_id, universe_id],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)
+}
+
+/// Só as definições que este card pode preencher: as universais e as que pertencem a ele.
+///
+/// Filtrar aqui, e não só na tela, é o que impede um card de gravar valor num campo privado
+/// de outro card.
+pub fn field_definitions_for_card(
+    connection: &Connection,
+    universe_id: &str,
+    card_id: &str,
+) -> DatabaseCommandResult<HashMap<String, CardFieldDefinition>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, field_type, options_json
+               FROM planning_field_definitions
+              WHERE universe_id = ?1
+                AND (owner_item_id IS NULL OR owner_item_id = ?2)",
+        )
+        .map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map(params![universe_id, card_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(map_sqlite_error)?;
+    let mut definitions = HashMap::new();
+    for row in rows {
+        let (id, field_type, options_json) = row.map_err(map_sqlite_error)?;
+        let options = serde_json::from_str::<Vec<String>>(&options_json).map_err(|_| {
+            DatabaseCommandError::storage(format!("As opções do campo {id} estão inválidas."))
+        })?;
+        definitions.insert(
+            id,
+            CardFieldDefinition {
+                field_type,
+                options,
+            },
+        );
+    }
+    Ok(definitions)
+}
+
+pub fn delete_field_links(connection: &Connection, card_id: &str) -> DatabaseCommandResult<()> {
+    connection
+        .execute(
+            "DELETE FROM planning_field_links WHERE planning_item_id = ?1",
+            [card_id],
+        )
+        .map_err(map_sqlite_error)?;
+    Ok(())
+}
+
+pub fn insert_field_link(
+    connection: &Connection,
+    card_id: &str,
+    field_id: &str,
+    field_type: &str,
+    target_id: &str,
+) -> DatabaseCommandResult<()> {
+    let (story_id, entity_id, tag_id) = match field_type {
+        "story" => (Some(target_id), None, None),
+        "character" => (None, Some(target_id), None),
+        "tags" => (None, None, Some(target_id)),
+        _ => {
+            return Err(DatabaseCommandError::validation(
+                "Tipo de relação personalizada inválido.",
+            ))
+        }
+    };
+    connection
+        .execute(
+            r#"INSERT INTO planning_field_links
+               (id, planning_item_id, field_definition_id, story_id, entity_id, tag_id, created_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+            params![
+                new_id(),
+                card_id,
+                field_id,
+                story_id,
+                entity_id,
+                tag_id,
+                now_timestamp(),
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    Ok(())
+}
+
+/// Dados da ficha do card que a gravação atualiza de uma vez.
+pub struct CardSheetUpdate<'a> {
+    pub id: &'a str,
+    pub universe_id: &'a str,
+    pub title: &'a str,
+    pub description: &'a str,
+    pub image: &'a str,
+    pub status: &'a str,
+    pub chapter_id: Option<&'a str>,
+    pub scalar_values_json: &'a str,
+}
+
+/// Atualiza a ficha e, quando a etapa muda, recoloca o card no fim da coluna nova.
+///
+/// O `CASE` existe para isso: mudar de etapa sem recalcular `sort_order` deixaria o card
+/// numa posição que pertence à coluna antiga. Devolve `false` quando o card não existe mais
+/// naquele universo.
+pub fn update_card_sheet(
+    connection: &Connection,
+    sheet: &CardSheetUpdate<'_>,
+) -> DatabaseCommandResult<bool> {
+    let updated = connection
+        .execute(
+            r#"UPDATE planning_items
+               SET title = ?1,
+                   description = ?2,
+                   image = ?3,
+                   sort_order = CASE WHEN status <> ?4 THEN (
+                       SELECT COALESCE(MAX(other.sort_order), -1) + 1
+                       FROM planning_items other
+                       WHERE other.universe_id = ?9 AND other.status = ?4 AND other.id <> ?8
+                   ) ELSE sort_order END,
+                   status = ?4,
+                   chapter_id = ?5,
+                   custom_field_values = ?6,
+                   updated_at = ?7
+               WHERE id = ?8 AND universe_id = ?9"#,
+            params![
+                sheet.title,
+                sheet.description,
+                sheet.image,
+                sheet.status,
+                sheet.chapter_id,
+                sheet.scalar_values_json,
+                now_timestamp(),
+                sheet.id,
+                sheet.universe_id,
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    Ok(updated == 1)
 }
 
 #[cfg(test)]

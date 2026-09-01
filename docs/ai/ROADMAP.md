@@ -16,6 +16,7 @@ FASE  0 → Higiene de release / main canônica
 FASE  1 → Qualification e segurança de atualização
 FASE  2 → Hardening do frontend / Workspace
 FASE  3 → Consolidação do Rust Core
+FASE  3.5 → Fronteira nativa do frontend
 FASE  4 → Sync V2
 FASE  5 → Features e Design System
 FASE  6 → Context Engine / IA
@@ -106,7 +107,44 @@ Não usar contagem de linhas como regra — linhas são consequência, não arqu
 - 3.5 Sem ORM. `rusqlite` resolve.
 - 3.6 Modularizar `sync.rs` / `online_share.rs` / `local_ai.rs` só quando expandirem.
 
-**Gate:** nenhum caminho antigo paralelo sobrevive.
+**Gate revisto após revisão arquitetural:** a formulação original — "nenhum caminho antigo
+paralelo sobrevive" — era fraca nas duas direções. Alarmista sobre `commands/`, que tinha 35
+linhas e oito arquivos de placeholder; e frouxa sobre o que importava, porque não pegaria o
+`#[tauri::command]` de domínio que vivia em `database/planning.rs` com validação, transação e
+SQL no mesmo arquivo.
+
+O gate real é sobre **colocação**:
+
+> Comando de domínio só nasce em `interface/tauri`.
+
+Com exceções nomeadas para infraestrutura genuína — backup, recovery, health, réplica, IA,
+share e sync — cada uma com o motivo escrito. Exceção sem justificativa é violação com
+permissão. Ver `interface/command_placement.rs`.
+
+---
+
+## FASE 3.5 — Fronteira nativa do frontend
+
+Acrescentada em 2026-09-01, a partir de revisão arquitetural. Pequena, e precisa vir antes do
+Sync V2 — que vai adicionar capacidade de plataforma nova e precisa de um lugar óbvio para
+ela.
+
+**O problema que ela resolve:** a documentação afirmava que `RustCoreService` era a única
+porta Tauri do frontend. Nunca foi — sete arquivos falavam com o Tauri, e `getCurrentWindow()`
+estava solto em mais quatro. Não era o código errado: era a documentação forçando
+**persistência de domínio** e **capacidade de plataforma** dentro da mesma abstração.
+
+```text
+Feature Store → Domain Gateway → RustCoreService   o que o escritor cria
+                                 core/native/*     o que o sistema oferece
+```
+
+**Feito:** portas separadas, seis serviços movidos para `core/native/`, `NativeWindowService`
+criado, e um gate que varre `src/app` inteiro atrás de `invoke()`, `api/window` e plugins.
+Ver [ADR 0008](../ADR/0008-fronteira-nativa-e-portas-de-plataforma.md).
+
+**O que sobra para quando o Sync V2 chegar:** cada capacidade nova entra como porta em
+`core/native/`, com uma linha no gate e a justificativa de por que é plataforma e não domínio.
 
 ---
 
@@ -184,6 +222,22 @@ para issue/PR separado.
 
 ---
 
+## Ordem de execução, revista em 2026-09-01
+
+A revisão arquitetural propôs uma ordem que o roadmap adota:
+
+| # | O quê | Por que nesta posição |
+| --- | --- | --- |
+| 1 | Fonte da verdade multiagente sob teste | três agentes leem `PROJECT_STATE.md` antes de agir; desatualizado, os três erram juntos |
+| 2 | Fechar o Rust Core | comando de domínio só em `interface/tauri` |
+| 3 | Fronteira nativa do frontend | o Sync V2 vai trazer capacidade nova e precisa de onde colocá-la |
+| 4 | Sync V2 | ADR e threat model antes de qualquer código |
+| 5 | Design system e breakpoints | depois das fundações de dados, não antes |
+| 6 | Context Engine | depende de identidade de alteração e revisões, que o Sync V2 amadurece |
+| 7 | Colaboração em tempo real / CRDT | só se o produto pedir edição simultânea de texto |
+
+Os três primeiros foram concluídos em 2026-09-01.
+
 ## Milestones sugeridos no GitHub
 
 ```text
@@ -206,3 +260,14 @@ CRDT            embeddings em tudo            vector database
 
 A arquitetura desejada continua sendo `modular monolith + local-first + Rust core +
 SQLite`. Isso é vantagem, não limitação.
+
+**Sobre CRDT, com uma ressalva.** Para universos, personagens, entidades, relações, cards,
+timeline, livros e metadados, `outbox + operações idempotentes + tombstones + conflitos
+explícitos` resolve. CRDT ali seria custo sem benefício.
+
+O único candidato legítimo é **texto de capítulo em edição simultânea** — e só naquele
+agregado, no futuro, se o produto pedir. Transformar o SQLite inteiro em CRDT é a ideia que
+parece linda e consome seis meses.
+
+O modelo do NarraHub reduz ainda mais essa pressão: **autoria canônica permanece sob controle
+do escritor**, então não há necessidade de convergência automática agressiva.

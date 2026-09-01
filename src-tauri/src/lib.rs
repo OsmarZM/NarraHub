@@ -1,5 +1,4 @@
 pub mod application;
-pub mod commands;
 pub mod database;
 pub mod domain;
 pub mod infrastructure;
@@ -162,7 +161,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
-            commands::universe_commands::get_app_info,
             // Core Rust (Fase 4) — leituras e estatísticas
             interface::tauri::universe_commands::universe_list,
             interface::tauri::universe_commands::universe_get,
@@ -253,7 +251,7 @@ pub fn run() {
             database::production_replica::production_replica_refresh,
             database::production_replica::production_replica_catalog,
             database::production_replica::production_replica_chapter,
-            database::planning::planning_save_card,
+            interface::tauri::planning_commands::planning_save_card,
             local_ai::local_ai_status,
             local_ai::install_local_ai,
             local_ai::start_local_ai_engine,

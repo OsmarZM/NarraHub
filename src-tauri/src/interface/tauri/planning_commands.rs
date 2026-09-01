@@ -128,3 +128,15 @@ pub fn planning_field_definition_delete(
 ) -> DatabaseCommandResult<()> {
     planning_service::delete_field_definition(&super::database(&app)?, &id, &universe_id)
 }
+
+/// Grava a ficha inteira do card.
+///
+/// Antes vivia em `database/planning.rs`, com validação, transação e SQL no mesmo arquivo.
+/// Era o último comando de domínio fora de `interface/tauri` — ver a Fase 3 do roadmap.
+#[tauri::command]
+pub fn planning_save_card(
+    app: AppHandle,
+    request: planning_service::PlanningCardSaveRequest,
+) -> DatabaseCommandResult<()> {
+    planning_service::save_card(&super::database(&app)?, request)
+}
