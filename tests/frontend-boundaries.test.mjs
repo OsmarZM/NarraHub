@@ -141,6 +141,34 @@ test('bootstrap global termina antes do Router e não depende do RootLayout', ()
   assert.doesNotMatch(layout, /ngOnInit|this\.db\.init\(\)|this\.ai\.initialize\(\)/u);
 });
 
+test('GATE DA FASE 2: as quatro proibições do WorkspaceLayout', () => {
+  // O roadmap define o gate desta fase como quatro proibições, e não como contagem de
+  // linhas: "linhas são consequência, não arquitetura". Este teste é a versão executável
+  // delas. Os testes acima cobrem cada extração; este cobre a regra que as motivou.
+  const layout = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
+
+  // 1. Não conhecer implementação de gateway.
+  assert.doesNotMatch(layout, /Gateway\b/u,
+    'o layout fala com stores e serviços de aplicação, nunca com gateway');
+
+  // 2. Não montar payload de compartilhamento.
+  assert.doesNotMatch(layout, /SharedUniverse|OnlineShareDocument/u,
+    'montar o documento compartilhado é do WorkspaceShareService');
+
+  // 3. Não carregar domínios manualmente.
+  for (const store of ['entityStore', 'timelineStore', 'manuscriptStore', 'planningStore', 'knowledgeStore']) {
+    assert.ok(!layout.includes(`${store}.load(`),
+      `carregar ${store} é do WorkspaceSessionService`);
+  }
+
+  // 4. Não executar regra de domínio. SQL nunca; e as regras que atravessam domínios
+  //    pertencem ao WorkspaceSyncService.
+  assert.doesNotMatch(layout, /\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE FROM\b/u,
+    'o layout não executa SQL');
+  assert.doesNotMatch(layout, /refreshAfterExternalChange|rebuildMentionIndex|syncChapterMentions/u,
+    'coordenação entre domínios é do WorkspaceSyncService');
+});
+
 test('WorkspaceLayout não é dono do ciclo de vida da sessão de universo (Fase 2)', () => {
   // O layout acumulava navegação, lifecycle, preload, busca, sharing, backup e updates. O
   // ciclo de vida da sessão saiu primeiro porque é o que as outras extrações dependem.
@@ -181,12 +209,22 @@ test('WorkspaceLayout não é dono do ciclo de vida da sessão de universo (Fase
   assert.doesNotMatch(share, /shell\.|showInfo|showError/u,
     'o serviço de compartilhamento monta o documento; quem avisa o usuário é quem o chamou');
 
+  // Coordenação cross-domain: aprovar uma revisão de colaboração mexe em manuscrito,
+  // entidades e estatísticas. O layout dispara o evento; quem sabe a sequência é o
+  // WorkspaceSyncService — senão toda página que aprove revisão teria que repeti-la.
+  assert.doesNotMatch(layout, /refreshAfterExternalChange/u,
+    'reler domínio após mudança externa é coordenação cross-domain, não do layout');
+  assert.doesNotMatch(layout, /refreshStats\(/u,
+    'recalcular estatísticas do universo é do WorkspaceSyncService');
+  assert.match(layout, /inject\(WorkspaceSyncService\)/u,
+    'o layout dispara o evento e delega a sequência');
+
   // E o serviço não pode puxar interface para dentro: ele existe para ser chamado por
   // qualquer caminho, não só pelo layout.
   const session = readFileSync(new URL('../src/app/application/workspace-session.service.ts', import.meta.url), 'utf8');
-  assert.doesNotMatch(session, /@angular\/router|Router/u,
+  assert.doesNotMatch(session, /@angular\/router|Router\b/u,
     'quem navega é o layout; a sessão só cuida dos dados');
-  assert.doesNotMatch(session, /SELECT|INSERT|UPDATE/u,
+  assert.doesNotMatch(session, /\bSELECT\b|\bINSERT\b|\bUPDATE\b/u,
     'a sessão fala com stores, nunca com SQL');
 });
 
@@ -202,7 +240,7 @@ test('invariante 8: a IA não tem por onde escrever conteúdo canônico', () => 
   const source = readFileSync(new URL('../src/app/core/services/ai.service.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /inject\(\s*\w*(Store|Gateway|DatabaseService)\s*\)/u,
     'o AiService não pode injetar store, gateway nem DatabaseService: é a ausência desse caminho que garante que a IA não altera conteúdo canônico sem confirmação');
-  assert.doesNotMatch(source, /(INSERT|UPDATE|DELETE)/u,
+  assert.doesNotMatch(source, /\b(INSERT|UPDATE|DELETE)\b/u,
     'o AiService não pode conter SQL');
 });
 

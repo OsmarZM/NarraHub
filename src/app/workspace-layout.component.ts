@@ -26,6 +26,7 @@ import { TimelineStore } from './features/timeline/state/timeline.store';
 import { GlobalSearchResult, GlobalSearchService } from './application/global-search.service';
 import { WorkspaceSessionService } from './application/workspace-session.service';
 import { WorkspaceShareService } from './application/workspace-share.service';
+import { WorkspaceSyncService } from './application/workspace-sync.service';
 import { ShellState } from './shell/state/shell.state';
 import { SidebarNavItem, UniverseSidebarComponent } from './shell/universe-sidebar/universe-sidebar.component';
 
@@ -77,6 +78,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   private readonly globalSearch = inject(GlobalSearchService);
   private readonly session = inject(WorkspaceSessionService);
   private readonly share = inject(WorkspaceShareService);
+  private readonly workspaceSync = inject(WorkspaceSyncService);
 
   readonly searchQuery = this.shell.searchQuery;
   readonly activeNav = computed(() => this.navigation.activeData().navigationId);
@@ -374,7 +376,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   }
 
   onCollaborationApplied(universeId: string): void {
-    void this.refreshAfterCollaborationReview(universeId);
+    void this.workspaceSync.onCollaborationReviewApplied(universeId);
   }
 
   private async copyToClipboard(text: string): Promise<boolean> {
@@ -385,11 +387,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
 
   formatDate(value: string): string { if (!value) return 'Sem data'; const date = new Date(value.length === 10 ? `${value}T12:00:00` : value); return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' }); }
 
-  private async refreshUniverseStats(): Promise<void> {
-    const id = this.appState.activeUniverseId(); if (!id) return;
-    const updated = await this.universeStore.refreshStats(id);
-    if (updated && this.appState.activeUniverseId() === id) this.appState.activeUniverse.set(updated);
-  }
 
 
   setWorkspaceNavigation(navId: Exclude<AppNavigationId, 'inicio' | 'configuracoes'>): void {
@@ -431,17 +428,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     }
   }
 
-
-  private async refreshAfterCollaborationReview(universeId: string): Promise<void> {
-    await this.loadUniverses();
-    if (!universeId || this.appState.activeUniverseId() !== universeId) return;
-    const [universe] = await Promise.all([
-      this.universeStore.get(universeId),
-      this.manuscriptStore.refreshAfterExternalChange(universeId),
-      this.entityStore.refreshAfterExternalChange(universeId),
-    ]);
-    if (universe) this.appState.activeUniverse.update((active) => active ? { ...active, ...universe } : active);
-  }
 
   private showInfo(message: string): void { this.shell.showInfo(message); }
   private reportError(message: string, error: unknown): void { this.shell.showError(message, error); }

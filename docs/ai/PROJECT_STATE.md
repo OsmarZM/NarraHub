@@ -34,39 +34,53 @@ Ao verificar o estado das branches, compare sempre contra `origin/main` depois d
 ## Fase ativa
 
 ```text
-FASE 2 — Workspace Hardening
+FASE 3 — Consolidar Rust Core
 ```
 
-A **Fase 1 fechou em 2026-09-01**. Gate conferido item a item:
+A **Fase 2 fechou em 2026-09-01**. O gate é executável — `GATE DA FASE 2: as quatro
+proibições do WorkspaceLayout` — e cada proibição foi verificada por mutação:
 
-| Critério do gate | Evidência |
+| Proibição | Onde foi parar |
 | --- | --- |
-| Fixtures de bancos históricos | `schema10_representative.sql` e `schema15_native.sql`, com gate que exige fixture nova a cada migration |
-| Harness de migration automatizado | cadeia 1→15 em arquivo real, `integrity_check`, `foreign_key_check`, teste por migration de v7 a v15 |
-| Teste de atualização N → N+1 | três execuções reais registradas em `docs/qualification/` |
-| Backup e restauração | `backup.rs` e `recovery.rs`, incluindo falha no meio do restore **e** falha do próprio rollback |
-| Checklist de release como gate | `docs/RELEASE_CHECKLIST.md` + `npm run release:preflight` |
-| Invariantes verificáveis | mapa executável em `domain/invariant_coverage.rs`, com três gates |
+| conhecer implementação de gateway | continua proibido; o layout fala com stores e serviços |
+| montar payload de compartilhamento | `WorkspaceShareService` |
+| carregar domínios manualmente | `WorkspaceSessionService` |
+| executar regra de domínio | `WorkspaceSyncService`; SQL nunca |
 
-Extra, que não estava no plano e nasceu de incidente real: modo de recuperação por schema
-incompatível (`ADR 0007`, `NH-015`) — o app deixou de morrer em silêncio depois de um
-downgrade.
+`WorkspaceLayout` foi de **523 para 434 linhas** — mas o número é consequência. O que mudou é
+que ele deixou de conhecer a lista de domínios, a persistência da sessão, a compressão de
+imagem e a sequência de releitura após colaboração.
 
-Fases 3 a 7: **não iniciar**. Ver `docs/ai/ROADMAP.md`.
+Duas tarefas da fase não precisaram de código, e verificar antes economizou o trabalho:
+`NH-021` foi absorvida pela `NH-020` porque separá-las deixaria um estado pior; `NH-022` foi
+resolvida pela `NH-020`, já que o acoplamento que ela atacaria saiu junto com a sessão.
 
-## O que a Fase 2 precisa resolver
+**Não foi criado event bus, CQRS nem mediator** — application services explícitos deram conta.
 
-`WorkspaceLayout` acumula navegação, lifecycle, preload, busca, sharing, imagens, backup,
-updates, colaboração, universo e tags. O problema não é o tamanho: é que ele está virando um
-segundo `AppComponent`, e cada feature nova passa por ele.
+## Lição que a Fase 2 deixou
 
-O gate da fase é um **teste de fronteira**, não uma contagem de linhas: o layout não pode
-conhecer implementações de gateway, não pode montar payload de compartilhamento, não pode
-carregar domínios manualmente e não pode executar regra de domínio. Linhas são consequência,
-não arquitetura.
+O gate passou na primeira tentativa **com a violação reintroduzida de propósito**. A causa
+não estava na regra: as expressões regulares foram escritas por script Python, e `\b` virou um
+caractere de **backspace literal** (0x08) — invisível no `grep`, e que nunca casa.
 
-**Não criar event bus, CQRS nem mediator.** Application services explícitos primeiro; se eles
-explodirem de dependências, aí revisamos — com ADR.
+Uma varredura achou 18 ocorrências em 5 asserções, três delas de testes anteriores que já
+tinham sido declarados verificados. Todas corrigidas e reverificadas.
+
+**Regra prática:** teste que nunca falhou não é teste. Antes de confiar num gate novo, quebre
+a regra de propósito e confirme que ele acusa — e, se a asserção foi gerada por script,
+confira os bytes.
+
+## O que a Fase 3 precisa resolver
+
+`src-tauri/src/commands/` (9 arquivos) coexiste com `interface/tauri/` (9 arquivos): dois
+caminhos completos até o banco. A fase remove o antigo.
+
+Regras da fase, do roadmap: todo comando segue `DTO → application → domain → repository`;
+o contrato de erros (`validation`, `not_found`, `conflict`, `storage`, `unavailable`) é
+mantido; operação multi-estrutura é atômica; **sem ORM**; e `sync.rs`, `online_share.rs` e
+`local_ai.rs` só se modularizam quando expandirem, não porque cresceram.
+
+**Gate:** nenhum caminho antigo paralelo sobrevive.
 
 ## Status arquitetural
 
@@ -77,7 +91,8 @@ explodirem de dependências, aí revisamos — com ADR.
 | Rust Application Core | **Concluído** — resta limpar `src-tauri/src/commands/` legado |
 | Validador de versão | Roda no CI comum; cobre os 3 manifests + README + CHANGELOG |
 | CI | `ci.yml` cobre Angular + Rust em PR e push |
-| `WorkspaceLayout` sobrecarregado | **Foco atual** — Fase 2 |
+| `WorkspaceLayout` | **Resolvido** na Fase 2, com gate executável |
+| `commands/` legado | **Foco atual** — Fase 3 |
 | Sync V2 | **Não iniciado** |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
@@ -122,8 +137,6 @@ disco antes de suspeitar do código.
   voltar para ela seguirá com um app que não abre. O portão só protege downgrades feitos a
   partir da primeira versão que o contiver.
 
-- `WorkspaceLayout` orquestra domínios demais (navegação, preload, busca, sharing,
-  imagens, backup, updates, colaboração).
 - `src-tauri/src/commands/` legado coexiste com `interface/tauri/` — **9 arquivos de comando
   de cada lado**, ou seja, dois caminhos completos até o banco, não uma sobra pequena.
 - Sync V1 não tem transporte criptografado, identidade de dispositivo, outbox nem
