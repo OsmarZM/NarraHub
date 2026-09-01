@@ -67,6 +67,8 @@ não depois.
 | Já existe | Onde |
 | --- | --- |
 | Fixture povoada de schema 10, 18 tabelas | `src-tauri/fixtures/schema10_representative.sql` |
+| Fixture **nativa** de schema 15, com as formas que a migração não produz | `src-tauri/fixtures/schema15_native.sql` |
+| Gate que reprova migration nova sem fixture | `existe_fixture_nativa_para_o_schema_mais_recente` |
 | Upgrade da fixture sem perda de dados | `representative_schema10_fixture_upgrades_without_data_loss` |
 | Testes por migration, v7 a v15, com `foreign_key_check` | `database/migrations.rs` |
 | Cadeia 1→15 em arquivo real + `integrity_check` | `full_migration_chain_creates_a_reopenable_file_database` |
@@ -85,9 +87,8 @@ como evidência manual de 0.7.4.
 1. `NH-012` — fechar o escopo restante: backup/restore na 0.9.1, instalador por cima, e
    `0.8.0 → 0.9.1` numa VM. A execução `0.7.4 → 0.9.1` (cinco migrations, zero perda,
    segundo boot e conferência na tela aprovados) está em `docs/qualification/`.
-2. `NH-010` — fixtures nos schemas 13, 14 e 15.
-4. `NH-013` — checklist de release desktop como gate.
-5. `NH-007` — mapear cada invariante de domínio ao teste que a prova.
+2. `NH-007` — mapear cada invariante de domínio ao teste que a prova.
+3. `NH-013` — checklist de release desktop como gate.
 
 `NH-011` concluída: o rollback de restauração já existia e era sólido; o que faltava era
 cobertura. Ver `docs/handoffs/2026-08-31-NH-011-claude.md`.

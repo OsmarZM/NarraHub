@@ -821,6 +821,7 @@ mod tests {
 
     const REPRESENTATIVE_SCHEMA_V10_FIXTURE: &str =
         include_str!("../../fixtures/schema10_representative.sql");
+    const NATIVE_SCHEMA_V15_FIXTURE: &str = include_str!("../../fixtures/schema15_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -831,6 +832,118 @@ mod tests {
         connection
             .pragma_update(None, "user_version", last)
             .expect("record schema version");
+    }
+
+    /// Um banco que **nasceu** no schema 15 não tem a mesma forma de um que **chegou** nele
+    /// por migração. A migration 15 converte todo campo de planejamento pré-existente para
+    /// universal; só um banco nativo tem `scope = 'card'` com `owner_item_id`, e
+    /// `custom_field_values` preenchido.
+    ///
+    /// Sem esta fixture, a próxima migration seria testada apenas contra o formato migrado —
+    /// e o formato nativo, que é o da maioria dos usuários daqui para frente, chegaria à
+    /// produção sem nunca ter passado por um upgrade em teste.
+    #[test]
+    fn fixture_nativa_de_v15_carrega_e_mantem_as_formas_que_so_ela_tem() {
+        let path = std::env::temp_dir().join(format!("narrahub-v15-native-{}.db", Uuid::new_v4()));
+        {
+            let connection = Connection::open(&path).expect("create database");
+            connection
+                .execute_batch("PRAGMA foreign_keys = ON;")
+                .expect("enable foreign keys");
+            apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+            connection
+                .execute_batch(NATIVE_SCHEMA_V15_FIXTURE)
+                .expect("carregar a fixture nativa de schema 15");
+        }
+
+        let db = Connection::open(&path).expect("reopen");
+        db.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys");
+
+        let integrity: String = db
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("integrity_check");
+        assert_eq!(integrity, "ok");
+        let violacoes: i64 = db
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("foreign_key_check");
+        assert_eq!(
+            violacoes, 0,
+            "a fixture nativa não pode nascer com FK quebrada"
+        );
+
+        // A forma que a migration 15 nunca produz: campo restrito a um card.
+        let (escopo, dono): (String, Option<String>) = db
+            .query_row(
+                "SELECT scope, owner_item_id FROM planning_field_definitions WHERE id = 'fx15-fd2'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("campo restrito a card precisa existir na fixture");
+        assert_eq!(escopo, "card");
+        assert_eq!(
+            dono.as_deref(),
+            Some("fx15-pi1"),
+            "campo com escopo de card precisa apontar para o card dono"
+        );
+
+        // Valores preenchidos: o que uma migration futura teria que preservar.
+        let valores: String = db
+            .query_row(
+                "SELECT custom_field_values FROM planning_items WHERE id = 'fx15-pi1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("card com valores preenchidos");
+        assert!(
+            valores.contains("fx15-fd2"),
+            "os valores do campo próprio precisam estar lá"
+        );
+
+        // Canvas ligando entidade a um nó que não é ficha: anotação, não relação canônica.
+        let arestas: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM canvas_edges WHERE source_kind = 'entity' AND target_kind = 'canvas'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar arestas do canvas");
+        assert_eq!(arestas, 1);
+
+        // E o canvas continua fora do cânone: nenhuma relação foi criada por tabela de canvas.
+        let relacoes: i64 = db
+            .query_row("SELECT COUNT(*) FROM relations", [], |row| row.get(0))
+            .expect("contar relações");
+        assert_eq!(
+            relacoes, 2,
+            "as arestas de canvas não podem virar relações do universo"
+        );
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Gate: toda migration nova precisa ganhar uma fixture nativa do schema que ela cria.
+    ///
+    /// Sem isto, a suíte continuaria verde enquanto a cobertura envelhece em silêncio — que é
+    /// o modo mais comum de uma rede de segurança apodrecer.
+    #[test]
+    fn existe_fixture_nativa_para_o_schema_mais_recente() {
+        let esperado = format!("schema{LATEST_SCHEMA_VERSION}_native.sql");
+        let diretorio = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let encontrado = std::fs::read_dir(&diretorio)
+            .expect("ler o diretório de fixtures")
+            .filter_map(|entry| entry.ok())
+            .any(|entry| entry.file_name().to_string_lossy() == esperado);
+
+        assert!(
+            encontrado,
+            "falta {esperado} em {}. Uma migration nova precisa de uma fixture nascida no \
+             schema que ela cria: a fixture antiga só produz o formato migrado, e nunca o \
+             formato nativo que os usuários passam a ter.",
+            diretorio.display()
+        );
     }
 
     #[test]

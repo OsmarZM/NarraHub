@@ -242,26 +242,43 @@ verificado.
 > Ou seja: a rede de segurança de migration e backup existe e é boa. O que falta é menor,
 > mais específico, e mais difícil — está listado abaixo. **Não recrie o que já existe.**
 
-### NH-010 — Fixture representativa nas versões que os usuários têm hoje
+### NH-010 — Fixture nativa do schema mais recente
 
 ```text
-Owner:  —
-Status: READY
-Branch: <agente>/NH-010-fixtures
+Owner:  Claude
+Status: DONE
+Branch: claude/NH-010-fixture-nativa
 Fase:   1
 ```
 
-**Contexto:** só existe fixture povoada no schema 10. Um usuário que instalou a 0.9.1 está
-no schema 15. A próxima migration (16) será exercitada a partir de um banco 15 que só
-existe sinteticamente, pela cadeia 10→15 — o que é razoável, mas não é a mesma coisa que um
-banco que viveu num app real, com dados irregulares.
+**O escopo mudou depois de olhar o problema de perto**, e ficou mais útil.
 
-**Objetivo:** fixtures povoadas com ponto de partida em 13, 14 e 15, além da de 10. E um
-teste que reprove quando uma migration nova não tiver fixture de origem.
+A tarefa dizia "fixtures povoadas nos schemas 13, 14 e 15". Mas migrar a fixture de schema
+10 pela cadeia já produz um banco em 15 — o que ela **não** produz é o formato **nativo**. A
+migration 15 converte todo campo de planejamento pré-existente para universal; só um banco
+que nasceu no 15 tem `scope = 'card'` com `owner_item_id`, `custom_field_values` preenchido,
+e arestas de canvas ligando entidade a nó.
 
-**Cuidado:** fixtures são anonimizadas por construção — dados inventados, nunca conteúdo
-real de escritor. Se algum dia partirmos de um banco real, a anonimização vem antes do
-commit, não depois.
+Qualquer migration 16 vai encontrar os dois formatos no mundo real. Sem a fixture nativa, só
+o migrado seria testado — e o nativo, que é o da maioria dos usuários daqui para frente,
+chegaria à produção sem nunca ter passado por um upgrade em teste.
+
+Fixtures em 13 e 14 não foram criadas: elas só reproduziriam estados que a cadeia já cobre,
+e cada fixture a mais é manutenção a mais. **Se uma migration futura provar o contrário, aí
+elas se justificam.**
+
+**Entregue:** `src-tauri/fixtures/schema15_native.sql`, com as formas que só o nativo tem, e
+dois testes — um que carrega e confere integridade, FK e essas formas, e o **gate**
+`existe_fixture_nativa_para_o_schema_mais_recente`, que reprova quando o
+`LATEST_SCHEMA_VERSION` sobe sem ganhar fixture. Verificado por mutação: escondendo o
+arquivo, o gate acusa nomeando o que falta.
+
+**Descoberta útil para quem escrever a próxima fixture:** ela quebrou quatro vezes por
+motivos que só o schema conhece — `NOT NULL DEFAULT ''` recusando `NULL` explícito,
+`owner_type` que aceita `'timeline'` e não `'timeline_event'`, `canvas_edges` que aceita
+`'canvas'` e não `'node'`, `planning_items.status` sem `'RASCUNHO'`, e ordem de inserção
+importando por causa de `owner_item_id`. Vale dumpar CHECKs e NOT NULLs antes de escrever,
+em vez de descobrir um por rodada.
 
 ---
 
