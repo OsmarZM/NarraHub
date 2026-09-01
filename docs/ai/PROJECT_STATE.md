@@ -34,69 +34,39 @@ Ao verificar o estado das branches, compare sempre contra `origin/main` depois d
 ## Fase ativa
 
 ```text
-FASE 1 — Qualification e segurança de atualização
+FASE 2 — Workspace Hardening
 ```
 
-A **Fase 0 fechou em 2026-08-31**. Gate conferido item a item:
+A **Fase 1 fechou em 2026-09-01**. Gate conferido item a item:
 
 | Critério do gate | Evidência |
 | --- | --- |
-| `main` contém a versão publicada mais recente | PR #5; `main` em 0.9.1 |
-| `main` é o default do repositório | trocado no GitHub; branches mescladas apagadas |
-| Versões sincronizadas | `release:validate-version` verde |
-| README representa o produto atual | 0.9.1, com as capacidades de 0.8.0/0.9.0 |
-| ARCHITECTURE representa o código atual | fluxo real documentado; afirmação falsa sobre SQL removida |
-| CI reprova versão inconsistente | passo no `ci.yml`, exercitado na própria PR #5 |
-| CI verde | Angular + Core Rust |
+| Fixtures de bancos históricos | `schema10_representative.sql` e `schema15_native.sql`, com gate que exige fixture nova a cada migration |
+| Harness de migration automatizado | cadeia 1→15 em arquivo real, `integrity_check`, `foreign_key_check`, teste por migration de v7 a v15 |
+| Teste de atualização N → N+1 | três execuções reais registradas em `docs/qualification/` |
+| Backup e restauração | `backup.rs` e `recovery.rs`, incluindo falha no meio do restore **e** falha do próprio rollback |
+| Checklist de release como gate | `docs/RELEASE_CHECKLIST.md` + `npm run release:preflight` |
+| Invariantes verificáveis | mapa executável em `domain/invariant_coverage.rs`, com três gates |
 
-Fases 2 a 7: **não iniciar**. Ver `docs/ai/ROADMAP.md`.
+Extra, que não estava no plano e nasceu de incidente real: modo de recuperação por schema
+incompatível (`ADR 0007`, `NH-015`) — o app deixou de morrer em silêncio depois de um
+downgrade.
 
-## O que a Fase 1 precisa provar
+Fases 3 a 7: **não iniciar**. Ver `docs/ai/ROADMAP.md`.
 
-```text
-mudar → compilar → instalar → atualizar → recuperar
-```
+## O que a Fase 2 precisa resolver
 
-sem perder o livro de ninguém. Enquanto isso não estiver automatizado, toda mudança nas
-fases seguintes é feita no escuro — é por isso que a Qualification vem antes do Sync V2 e
-não depois.
+`WorkspaceLayout` acumula navegação, lifecycle, preload, busca, sharing, imagens, backup,
+updates, colaboração, universo e tags. O problema não é o tamanho: é que ele está virando um
+segundo `AppComponent`, e cada feature nova passa por ele.
 
-**A Fase 1 não começa do zero — o plano original supunha que sim.** Levantamento de
-2026-08-31:
+O gate da fase é um **teste de fronteira**, não uma contagem de linhas: o layout não pode
+conhecer implementações de gateway, não pode montar payload de compartilhamento, não pode
+carregar domínios manualmente e não pode executar regra de domínio. Linhas são consequência,
+não arquitetura.
 
-| Já existe | Onde |
-| --- | --- |
-| Fixture povoada de schema 10, 18 tabelas | `src-tauri/fixtures/schema10_representative.sql` |
-| Fixture **nativa** de schema 15, com as formas que a migração não produz | `src-tauri/fixtures/schema15_native.sql` |
-| Gate que reprova migration nova sem fixture | `existe_fixture_nativa_para_o_schema_mais_recente` |
-| Upgrade da fixture sem perda de dados | `representative_schema10_fixture_upgrades_without_data_loss` |
-| Testes por migration, v7 a v15, com `foreign_key_check` | `database/migrations.rs` |
-| Cadeia 1→15 em arquivo real + `integrity_check` | `full_migration_chain_creates_a_reopenable_file_database` |
-| Backup com WAL, hash divergente, path traversal, staging interrompido, retenção | `database/backup.rs` |
-
-Tudo isso já roda no CI via `cargo test`. A rede de segurança de migration e backup existe
-e é boa.
-
-O que falta é menor e mais difícil: fixtures nas versões que os usuários realmente têm
-(NH-010), o rollback de um restore que falha no meio (NH-011), e o ciclo de atualização no
-**app empacotado** (NH-012) — o único que teste unitário não fecha, e que hoje só existe
-como evidência manual de 0.7.4.
-
-## Prioridades imediatas
-
-1. `NH-012` — fechar o escopo restante: backup/restore na 0.9.1, instalador por cima, e
-   `0.8.0 → 0.9.1` numa VM. A execução `0.7.4 → 0.9.1` (cinco migrations, zero perda,
-   segundo boot e conferência na tela aprovados) está em `docs/qualification/`.
-2. `NH-013` — checklist de release desktop como gate.
-
-
-`NH-011` concluída: o rollback de restauração já existia e era sólido; o que faltava era
-cobertura. Ver `docs/handoffs/2026-08-31-NH-011-claude.md`.
-
-**Decisão de release tomada em 2026-08-31: segurar a 0.9.2.** O roadmap sugeria publicar ao
-fechar a Fase 0, mas o que entrou desde a 0.9.1 é infraestrutura de projeto, documentação e
-otimização de assets — nada que o escritor perceba. **Não reabra essa pergunta**; quando a
-hora chegar, quem decide é o humano.
+**Não criar event bus, CQRS nem mediator.** Application services explícitos primeiro; se eles
+explodirem de dependências, aí revisamos — com ADR.
 
 ## Status arquitetural
 
@@ -107,10 +77,11 @@ hora chegar, quem decide é o humano.
 | Rust Application Core | **Concluído** — resta limpar `src-tauri/src/commands/` legado |
 | Validador de versão | Roda no CI comum; cobre os 3 manifests + README + CHANGELOG |
 | CI | `ci.yml` cobre Angular + Rust em PR e push |
+| `WorkspaceLayout` sobrecarregado | **Foco atual** — Fase 2 |
 | Sync V2 | **Não iniciado** |
 | Context Engine / IA | **Não iniciado** |
-| Qualification harness | Migration, backup e restore cobertos por `cargo test` no CI |
-| Ciclo de atualização empacotado | Roteiro pronto; `0.7.4 → 0.9.1` executado e aprovado; escopo restante em `NH-012` |
+| Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
+| Ciclo de atualização empacotado | **Concluído.** Roteiro, checklist de release e três execuções reais |
 
 ## Versões e schema
 
@@ -176,10 +147,9 @@ Sync V2
 Context Engine / embeddings
 decomposição de features (Planning, Writing, Entities)
 design system hardening
-Workspace hardening
 remoção do commands/ legado
 ```
 
-Bloqueado até a Fase 1 (Qualification) fechar seu gate. A ordem não é burocracia: todos
-esses itens mexem em código que hoje ninguém consegue provar que continua migrando bancos
-antigos corretamente.
+A Fase 1 fechou, então a rede de segurança existe: mudanças agora são provadas contra
+migration, backup e restauração automaticamente. O que continua bloqueado está bloqueado
+pela ordem do roadmap, não por falta de rede.

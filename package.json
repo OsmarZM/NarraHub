@@ -26,6 +26,7 @@
     "validate:local-ai": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/validate-local-ai.mjs",
     "release:prepare-config": "node scripts/prepare-release-config.mjs",
     "release:validate-updater": "node scripts/validate-updater-environment.mjs",
+    "release:preflight": "npm run build && npm run test:architecture && npm run test:ai && npm run test:planning && npm run share-api:test && npm run release:validate-ui && npm run release:validate-version && npm run release:validate-desktop && cargo test --manifest-path src-tauri/Cargo.toml",
     "release:validate-version": "node scripts/validate-release-version.mjs",
     "release:validate-desktop": "node scripts/validate-desktop-config.mjs",
     "release:validate-ui": "node scripts/validate-production-ui.mjs",
