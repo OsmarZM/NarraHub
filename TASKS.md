@@ -309,12 +309,16 @@ relações/timeline/menções/tags idênticas linha a linha. Evidência em
 Segundo boot e conferência na tela: **feitos e aprovados** — schema v15 sem reaplicar, e a
 interface abre o capítulo com o texto.
 
+**Segunda execução, 2026-09-01:** o autor repetiu o ciclo **na máquina de outra pessoa** e
+passou, sem corromper arquivo. Ambiente alheio vale mais que o do desenvolvedor, porque não
+tem o histórico de instalações e perfis que só existe na máquina de quem constrói o produto.
+Evidência relatada, não medida — as contagens não foram comparadas lá.
+
 **Falta para fechar:**
 
 1. backup e restauração já na 0.9.1;
-2. instalador por cima (variante 4b);
-3. `0.8.0 → 0.9.1` numa VM, porque a 0.7.4 não cria propriedades tipadas de planejamento e
-   por isso **não exercita a promessa da migration 15**.
+2. `0.8.0 → 0.9.1`, porque a 0.7.4 não cria propriedades tipadas de planejamento e por isso
+   **não exercita a promessa da migration 15**.
 
 **Nunca no perfil de uso diário** quando a origem for mais antiga que o banco instalado: o
 app recusa banco de schema mais novo, e a migração é de mão única.
@@ -433,13 +437,65 @@ Registrado, **não implementar** antes de a fase correspondente abrir.
 
 ---
 
-### NH-051 — Escala de breakpoints e responsividade
+### NH-051 — Conteúdo inalcançável em 1366×768
+
+```text
+Owner:  Claude
+Status: DONE — tratado como defeito, não como refinamento de Fase 5
+Fase:   1 (reclassificada)
+```
+
+**Causa encontrada.** `root-layout.component.css` tem `ViewEncapsulation.None`, e duas
+regras globais competiam pelo mesmo seletor:
+
+```css
+.home-view,.feature-page { height: 100%; overflow-y: auto; ... }
+.feature-page            { ...; overflow: hidden; }
+```
+
+A segunda vem depois, com a mesma especificidade, e **o atalho `overflow` zera o eixo
+vertical junto com o horizontal**. Resultado: uma página da altura exata da janela que corta
+tudo o que passar disso, sem barra de rolagem. Em tela grande nada passava; em 1366×768, a
+lista de backups dos Ajustes passava — e ficava inalcançável.
+
+Afetava 5 páginas: Ajustes, Conexões, Histórico, Timeline e Entidades.
+
+**Correção:** `overflow: hidden` → `overflow-x: hidden; overflow-y: auto`, preservando a
+intenção de cortar na horizontal.
+
+**Gate:** `tests/layout-scroll.test.mjs` resolve a cascata como o navegador resolve — última
+declaração vence — e reprova qualquer superfície de página com altura travada na janela e
+overflow vertical `hidden`. Verificado por mutação.
+
+Contêineres de shell (`.content-stage`, `.nh-content`) ficam **de fora** do teste de
+propósito: eles cortam por desenho e delegam a rolagem para a página lá dentro.
+
+**Continua aberto, e é outra coisa:** não existe escala compartilhada de breakpoints — 12
+valores diferentes no CSS e 7 arquivos sem nenhuma media query. Isso é refinamento de design
+system e segue como `NH-052`, na Fase 5.
+
+---
+
+### NH-052 — Escala compartilhada de breakpoints
 
 ```text
 Owner:  —
 Status: BACKLOG — Fase 5, não implementar antes
 Fase:   5
 ```
+
+Doze valores de breakpoint diferentes no CSS — 520, 680, 700, 760, 860, 900, 920, 1050,
+1100, 1180, 1260 e 1450px — escritos de duas formas (`max-width:680px` e
+`max-width: 680px`), e 7 arquivos sem nenhuma media query, entre eles `universe-sidebar`,
+`contextual-inspector`, `entity-sheet` e `library-page`.
+
+Cada componente escolheu o próprio ponto de quebra, então o layout reorganiza por região em
+vez de por tela. Isso é diferente do defeito da `NH-051`, que era conteúdo inalcançável e já
+foi corrigido: aqui não há dado fora de alcance, há inconsistência visual.
+
+**Objetivo:** escala única em tokens, aplicada às superfícies que hoje não reorganizam, e
+regressão visual por snapshot nas larguras dessa escala. Faz par com a `NH-050` — as duas
+são o mesmo problema, CSS sem contrato verificável.
 
 **Reprodução, dada pelo autor em 2026-08-31:**
 
