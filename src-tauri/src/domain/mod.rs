@@ -14,6 +14,7 @@ pub mod canvas;
 pub mod collaboration;
 pub mod entity;
 pub mod ids;
+pub mod invariant_coverage;
 pub mod knowledge;
 pub mod manuscript;
 pub mod planning;

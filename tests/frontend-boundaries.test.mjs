@@ -141,6 +141,22 @@ test('bootstrap global termina antes do Router e não depende do RootLayout', ()
   assert.doesNotMatch(layout, /ngOnInit|this\.db\.init\(\)|this\.ai\.initialize\(\)/u);
 });
 
+test('invariante 8: a IA não tem por onde escrever conteúdo canônico', () => {
+  // Diferente das outras dez, esta invariante não é provada por um teste no core Rust.
+  // Ela é garantida pela AUSÊNCIA de caminho de escrita: o AiService não injeta store nem
+  // gateway nenhum, então não existe como uma resposta de IA virar conteúdo salvo sem que
+  // uma página peça isso explicitamente.
+  //
+  // O dia em que alguém injetar um store aqui — por conveniência, para "já salvar" — a
+  // garantia deixa de existir sem que nenhum outro teste perceba. Ver
+  // docs/DOMAIN_INVARIANTS.md.
+  const source = readFileSync(new URL('../src/app/core/services/ai.service.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /inject\(\s*\w*(Store|Gateway|DatabaseService)\s*\)/u,
+    'o AiService não pode injetar store, gateway nem DatabaseService: é a ausência desse caminho que garante que a IA não altera conteúdo canônico sem confirmação');
+  assert.doesNotMatch(source, /(INSERT|UPDATE|DELETE)/u,
+    'o AiService não pode conter SQL');
+});
+
 test('o pool só é aberto depois do portão de compatibilidade de schema (ADR 0007)', () => {
   // O incidente de 2026-09-01: instalar uma versão antiga sobre um banco novo fazia o app
   // não abrir, sem janela e sem mensagem, porque a falha acontece dentro do
