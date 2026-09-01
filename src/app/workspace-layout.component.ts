@@ -25,6 +25,7 @@ import { ManuscriptStore } from './features/manuscript/state/manuscript.store';
 import { SettingsStore } from './features/settings/state/settings.store';
 import { TimelineStore } from './features/timeline/state/timeline.store';
 import { GlobalSearchResult, GlobalSearchService } from './application/global-search.service';
+import { WorkspaceSessionService } from './application/workspace-session.service';
 import { ShellState } from './shell/state/shell.state';
 import { SidebarNavItem, UniverseSidebarComponent } from './shell/universe-sidebar/universe-sidebar.component';
 
@@ -74,6 +75,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   private readonly timelineStore = inject(TimelineStore);
   private readonly navigation = inject(AppNavigationService);
   private readonly globalSearch = inject(GlobalSearchService);
+  private readonly session = inject(WorkspaceSessionService);
 
   readonly searchQuery = this.shell.searchQuery;
   readonly activeNav = computed(() => this.navigation.activeData().navigationId);
@@ -93,7 +95,8 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   readonly updateInfo = this.settingsStore.updateInfo;
   readonly updateProgress = this.settingsStore.updateProgress;
   readonly updatePromptDismissed = this.settingsStore.updatePromptDismissed;
-  readonly lastOpenedUniverseId = signal<string | null>(localStorage.getItem('narrahub.lastUniverseId'));
+  /** Quem guarda isto é o `WorkspaceSessionService`; aqui é só leitura para o template. */
+  readonly lastOpenedUniverseId = this.session.lastOpenedUniverseId;
   readonly renamingUniverse = signal(false);
 
   renameValue = '';
@@ -110,9 +113,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   readonly globalSearchResults = this.globalSearch.results;
 
 
-  private workspaceEpoch = 0;
   private restoringRoute = false;
-  private loadedUniverseId: string | null = null;
   /**
    * Chave da última navegação já refletida em AppState.workspaceView() (e nos
    * demais efeitos colaterais de selectNav()/returnToLibrary()/openSettings()).
@@ -135,7 +136,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   }
 
   ngOnDestroy(): void {
-    this.resetWorkspaceData();
+    this.session.reset();
   }
   async toggleFullscreen(): Promise<void> { if (isTauri()) { const win = getCurrentWindow(); await win.setFullscreen(!(await win.isFullscreen())); } }
   async loadUniverses(): Promise<void> {
@@ -160,17 +161,16 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   }
 
   async openUniverse(universe: UniverseWithStats, updateRoute = true): Promise<void> {
-    await this.saveChapterNow();
-    this.workspaceEpoch += 1; this.resetWorkspaceData();
-    localStorage.setItem('narrahub.lastUniverseId', universe.id); this.lastOpenedUniverseId.set(universe.id);
-    this.searchQuery.set(''); this.appState.openUniverse(universe); await this.loadWorkspaceData();
+    this.searchQuery.set('');
+    const { preloadError } = await this.session.open(universe);
+    if (preloadError) this.reportError('Não foi possível carregar os dados do universo.', preloadError);
     if (updateRoute) await this.navigation.navigate('escrita', universe.id);
   }
 
   onUniverseUpdated(): void { this.showInfo('Universo atualizado.'); }
 
   onUniverseDeleted(universeId: string): void {
-    if (this.lastOpenedUniverseId() === universeId) { localStorage.removeItem('narrahub.lastUniverseId'); this.lastOpenedUniverseId.set(null); }
+    this.session.forget(universeId);
     if (this.appState.activeUniverseId() === universeId) void this.returnToLibrary();
     this.showInfo('Universo excluído do banco local.');
   }
@@ -201,7 +201,8 @@ export class WorkspaceLayoutComponent implements OnDestroy {
 
   async returnToLibrary(updateRoute = true): Promise<void> {
     this.lastSyncedRouteKey = this.routeKey('inicio', null);
-    await this.saveChapterNow(); this.workspaceEpoch += 1; this.appState.goHome(); this.searchQuery.set(''); this.resetWorkspaceData();
+    this.searchQuery.set('');
+    await this.session.close();
     if (updateRoute) await this.navigation.navigate('inicio', null);
   }
 
@@ -225,29 +226,16 @@ export class WorkspaceLayoutComponent implements OnDestroy {
 
   toggleInspector(): void { this.manuscriptStore.toggleInspector(); }
 
+  /**
+   * Mantido porque o template e o caminho de restauração de rota chamam por aqui. A carga em
+   * si é do `WorkspaceSessionService`: o layout não sabe mais quais domínios existem nem em
+   * que ordem carregá-los.
+   */
   async loadWorkspaceData(): Promise<void> {
-    const id = this.appState.activeUniverseId(); if (!id) return;
-    const epoch = this.workspaceEpoch;
-    try {
-      // Pré-carga deliberada, não preguiça: a busca global do cabeçalho é
-      // cross-domain e precisa dos cinco domínios sem que o usuário tenha
-      // visitado cada seção. `force` porque abrir um universo é o ponto de
-      // atualização — reabrir o mesmo universo tem que trazer dado fresco.
-      // Os stores têm guarda de deduplicação, então o ngOnChanges de cada
-      // página logo em seguida não repete o SQL.
-      // TODO(Fase 4): mover isso para um GlobalSearchStore com índice próprio
-      // e deixar cada seção carregar sob demanda.
-      await Promise.all([
-        this.entityStore.load(id, true),
-        this.timelineStore.load(id, true),
-        this.manuscriptStore.load(id, true),
-        this.planningStore.load(id, true),
-        this.knowledgeStore.load(id, true),
-      ]);
-      if (epoch !== this.workspaceEpoch || this.appState.activeUniverseId() !== id) return;
-      this.loadedUniverseId = id;
-      void this.knowledgeStore.rebuildMentionIndex(id, this.manuscriptStore.universeChapters(), this.entityStore.entities());
-    } catch (error) { this.reportError('Não foi possível carregar os dados do universo.', error); }
+    const id = this.appState.activeUniverseId();
+    if (!id) return;
+    const error = await this.session.ensureLoaded(id);
+    if (error) this.reportError('Não foi possível carregar os dados do universo.', error);
   }
 
   async openBookOption(book: BookOption): Promise<void> {
@@ -258,7 +246,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     if (await this.manuscriptStore.openChapterOption(option)) this.setWorkspaceNavigation('escrita');
   }
 
-  private async saveChapterNow(): Promise<void> { await this.manuscriptStore.saveNow(); }
+  private async saveChapterNow(): Promise<void> { await this.session.saveActiveChapter(); }
 
 
   selectEntityTab(type: EntityHubType | null): void {
@@ -438,7 +426,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
       }
 
       if (!route.universeId || this.appState.activeUniverseId() !== route.universeId) return;
-      if (this.loadedUniverseId !== route.universeId) await this.loadWorkspaceData();
+      await this.loadWorkspaceData();
       const navItem = this.navItems.find((item) => item.id === route.navId);
       if (navItem) await this.selectNav(navItem, false);
     } finally {
@@ -446,16 +434,6 @@ export class WorkspaceLayoutComponent implements OnDestroy {
     }
   }
 
-  private resetWorkspaceData(): void {
-    this.loadedUniverseId = null;
-    this.manuscriptStore.reset();
-    this.entityStore.reset();
-    this.knowledgeStore.reset();
-    this.connectionsStore.reset();
-    this.timelineStore.reset();
-    this.historyStore.reset();
-    this.planningStore.reset();
-  }
 
   private async buildSharedUniverse(universe: UniverseWithStats, includeChapters: boolean, includeEntities: boolean): Promise<SharedUniverse> {
     const [chapters, entities] = await Promise.all([
