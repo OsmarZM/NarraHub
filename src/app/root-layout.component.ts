@@ -3,6 +3,7 @@ import { RouterOutlet } from '@angular/router';
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { AppBootstrapService } from './bootstrap/app-bootstrap.service';
+import { SchemaRecoveryComponent } from './bootstrap/schema-recovery.component';
 import { AppNavigationService } from './core/navigation/app-navigation.service';
 import { AppState } from './core/state/app.state';
 import { CollaborationStore } from './features/collaboration/state/collaboration.store';
@@ -15,7 +16,7 @@ import { TitlebarComponent } from './shell/titlebar/titlebar.component';
 @Component({
   selector: 'app-root-layout',
   standalone: true,
-  imports: [RouterOutlet, AppShellComponent, TitlebarComponent],
+  imports: [RouterOutlet, AppShellComponent, TitlebarComponent, SchemaRecoveryComponent],
   templateUrl: './root-layout.component.html',
   styleUrl: './root-layout.component.css',
   encapsulation: ViewEncapsulation.None,

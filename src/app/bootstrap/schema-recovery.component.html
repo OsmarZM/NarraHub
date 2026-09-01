@@ -1,0 +1,92 @@
+<section class="recovery" role="alert">
+  <header class="recovery-head">
+    <span class="recovery-icon" aria-hidden="true">⇧</span>
+    <div>
+      <h1>Este NarraHub é mais antigo que os seus dados</h1>
+      <p class="recovery-lead">
+        Seus dados estão intactos. Este aplicativo é que não sabe lê-los, e por isso não abriu
+        o banco — abrir seria escrever em campos que ele não conhece.
+      </p>
+    </div>
+  </header>
+
+  <dl class="recovery-versions">
+    <div>
+      <dt>Dados no disco</dt>
+      <dd>schema {{ compatibility.schemaVersion }}</dd>
+    </div>
+    <div>
+      <dt>Este aplicativo entende até</dt>
+      <dd>schema {{ compatibility.supportedSchemaVersion }}</dd>
+    </div>
+  </dl>
+
+  @if (message()) { <p class="recovery-status" role="status">{{ message() }}</p> }
+  @if (progress() > 0) {
+    <div class="recovery-progress" role="progressbar" [attr.aria-valuenow]="progress()" aria-valuemin="0" aria-valuemax="100">
+      <i [style.width.%]="progress()"></i>
+    </div>
+  }
+  @if (error()) { <p class="recovery-error">{{ error() }}</p> }
+
+  <div class="recovery-actions">
+    <button type="button" class="recovery-primary" [disabled]="busy()" (click)="searchUpdate()">
+      Atualizar o NarraHub
+    </button>
+    @if (!backupsLoaded()) {
+      <button type="button" class="recovery-secondary" [disabled]="busy()" (click)="loadBackups()">
+        Voltar para uma versão anterior
+      </button>
+    }
+  </div>
+
+  @if (backupsLoaded()) {
+    <section class="recovery-backups">
+      <h2>Voltar para uma versão anterior</h2>
+      <p class="recovery-note">
+        Restaurar um backup devolve os dados ao formato que esta versão entende. <strong>O
+        trabalho feito depois da data do backup é perdido</strong> — é o preço de voltar, e
+        não há como evitá-lo.
+      </p>
+
+      @if (compatibleBackups().length === 0) {
+        <p class="recovery-empty">
+          Nenhum backup deste dispositivo é compatível com esta versão. Atualizar o NarraHub
+          é o único caminho — e continua sendo o que preserva todo o seu trabalho.
+        </p>
+      } @else {
+        <ul class="recovery-backup-list">
+          @for (backup of compatibleBackups(); track backup.backupId) {
+            <li>
+              <span class="recovery-backup-info">
+                <b>{{ formatDate(backup.createdAt) }}</b>
+                <small>schema {{ backup.schemaVersion }} · app {{ backup.appVersion }} · {{ formatSize(backup.database.sizeBytes + backup.assets.totalBytes) }}</small>
+              </span>
+              @if (confirmingBackupId() === backup.backupId) {
+                <span class="recovery-confirm">
+                  <button type="button" class="recovery-danger" [disabled]="busy()" (click)="restore(backup.backupId)">Confirmar</button>
+                  <button type="button" class="recovery-text" [disabled]="busy()" (click)="confirmingBackupId.set('')">Cancelar</button>
+                </span>
+              } @else {
+                <button type="button" class="recovery-text" [disabled]="busy()" (click)="confirmingBackupId.set(backup.backupId)">Restaurar</button>
+              }
+            </li>
+          }
+        </ul>
+      }
+
+      @if (incompatibleBackupCount() > 0) {
+        <p class="recovery-note">
+          {{ incompatibleBackupCount() }} backup(s) foram omitidos por também serem mais novos
+          que esta versão.
+        </p>
+      }
+    </section>
+  }
+
+  <footer class="recovery-foot">
+    Seus arquivos ficam em <code>%APPDATA%\com.narrahub.app</code>. Nada nesta tela apaga
+    dado: atualizar preserva tudo, e restaurar só troca o banco depois de criar outro backup
+    do estado atual.
+  </footer>
+</section>

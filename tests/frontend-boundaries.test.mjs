@@ -141,6 +141,31 @@ test('bootstrap global termina antes do Router e não depende do RootLayout', ()
   assert.doesNotMatch(layout, /ngOnInit|this\.db\.init\(\)|this\.ai\.initialize\(\)/u);
 });
 
+test('o pool só é aberto depois do portão de compatibilidade de schema (ADR 0007)', () => {
+  // O incidente de 2026-09-01: instalar uma versão antiga sobre um banco novo fazia o app
+  // não abrir, sem janela e sem mensagem, porque a falha acontece dentro do
+  // provideAppInitializer -- antes de a interface existir para mostrar o erro.
+  // Se esta ordem se inverter, o app volta a morrer em silêncio.
+  const bootstrap = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
+  const portao = bootstrap.indexOf('this.backupService.compatibility()');
+  const abertura = bootstrap.indexOf('this.db.init()');
+  assert.notEqual(portao, -1, 'o bootstrap precisa consultar a compatibilidade do schema');
+  assert.notEqual(abertura, -1, 'o bootstrap continua responsável por abrir o pool');
+  assert.ok(portao < abertura, 'a verificação de compatibilidade tem que vir ANTES de abrir o pool');
+  assert.match(bootstrap, /if \(!compatibility\.compatible\)[\s\S]{0,160}return;/u,
+    'banco incompatível precisa interromper a inicialização sem abrir o pool');
+
+  // A tela de recuperação não pode depender do banco: ela existe justamente para o caso
+  // em que o banco não pode ser aberto.
+  const recovery = readFileSync(new URL('../src/app/bootstrap/schema-recovery.component.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(recovery, /inject\(DatabaseService\)/u,
+    'a tela de recuperação não pode injetar o DatabaseService: ela existe justamente para quando o banco não abre');
+
+  // E o layout precisa dar a ela o lugar todo: nenhuma rota funciona sem o pool.
+  const layout = readFileSync(new URL('../src/app/root-layout.component.html', import.meta.url), 'utf8');
+  assert.match(layout, /schemaIncompatible\(\)[\s\S]*<app-schema-recovery/u);
+});
+
 test('resolver seleciona somente o universo depois do bootstrap e falha de forma recuperável', () => {
   const routes = readFileSync(new URL('../src/app/app.routes.ts', import.meta.url), 'utf8');
   const resolver = readFileSync(new URL('../src/app/routing/universe.resolver.ts', import.meta.url), 'utf8');

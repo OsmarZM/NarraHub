@@ -243,6 +243,7 @@ pub fn run() {
             interface::tauri::planning_commands::planning_field_definition_delete,
             updater_configured,
             database::health::database_health,
+            database::health::database_compatibility,
             database::backup::backup_create,
             database::backup::backup_list,
             database::backup::backup_validate,
