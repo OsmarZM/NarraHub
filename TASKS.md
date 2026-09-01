@@ -359,6 +359,46 @@ exatamente qual nome faltou.
 
 ---
 
+### NH-015 — Modo de recuperação por schema incompatível
+
+```text
+Owner:  —
+Status: BLOCKED — aguardando aprovação do ADR 0007
+Branch: <agente>/NH-015-recuperacao-schema
+Fase:   1
+```
+
+**Origem:** incidente real de 2026-09-01. O autor instalou a 0.8.0 sobre um banco em schema
+15 e **o app não abriu** — sem janela, sem mensagem. Os dados estavam intactos o tempo todo;
+a percepção de perda foi total.
+
+**Por que o alerta que já existe não apareceu:** a falha acontece no
+`provideAppInitializer`, antes de a interface existir. O `root-layout` tem um alerta pronto
+para esse erro, mas ele nunca é renderizado. **Tratamento de erro que só funciona depois que
+o app subiu não serve para o erro que impede o app de subir.**
+
+**Desenho aprovado no ADR:** ver
+[`ADR 0007`](docs/ADR/0007-modo-de-recuperacao-por-schema-incompativel.md). Não implemente
+antes de o ADR sair de `Proposed`.
+
+**As peças já existem**, o que torna isto mais barato do que parece:
+
+- `database_health` → `inspect_database` abre o arquivo com `rusqlite` **independente do
+  pool** e devolve `schemaVersion`;
+- `LATEST_SCHEMA_VERSION` é conhecido pelo app;
+- o manifesto de backup já carrega `schemaVersion`, e a tela de Ajustes já o exibe — então
+  filtrar backups compatíveis é imediato.
+
+**Gate:** teste que abre um banco de schema `LATEST + 1` e prova que o pool **não** é
+aberto, que o modo de recuperação é ativado, e que a lista de backups exclui os
+incompatíveis.
+
+**Cuidado que precisa sobreviver:** a verificação só protege downgrades feitos **a partir**
+da versão que a contiver. Voltar para a 0.8.0 continuará sem tela de recuperação, porque a
+0.8.0 já está publicada e é imutável.
+
+---
+
 ## BACKLOG
 
 Registrado, **não implementar** antes de a fase correspondente abrir.
