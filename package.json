@@ -22,7 +22,7 @@
     "test:ai": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/ai-prompt.test.mjs",
     "test:planning": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/planning-board.test.mjs",
     "test:navigation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/app-navigation.test.mjs",
-    "test:architecture": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/app-navigation.test.mjs tests/frontend-boundaries.test.mjs tests/native-command-error.test.mjs tests/rust-core-contract.test.mjs",
+    "test:architecture": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/app-navigation.test.mjs tests/frontend-boundaries.test.mjs tests/native-command-error.test.mjs tests/rust-core-contract.test.mjs tests/layout-scroll.test.mjs",
     "validate:local-ai": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/validate-local-ai.mjs",
     "release:prepare-config": "node scripts/prepare-release-config.mjs",
     "release:validate-updater": "node scripts/validate-updater-environment.mjs",
