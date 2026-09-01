@@ -141,6 +141,39 @@ test('bootstrap global termina antes do Router e não depende do RootLayout', ()
   assert.doesNotMatch(layout, /ngOnInit|this\.db\.init\(\)|this\.ai\.initialize\(\)/u);
 });
 
+test('WorkspaceLayout não é dono do ciclo de vida da sessão de universo (Fase 2)', () => {
+  // O layout acumulava navegação, lifecycle, preload, busca, sharing, backup e updates. O
+  // ciclo de vida da sessão saiu primeiro porque é o que as outras extrações dependem.
+  //
+  // O que este teste protege não é o tamanho do arquivo — é o layout não voltar a saber
+  // QUAIS stores existem e em que ordem zerá-los. Toda vez que um domínio novo entrar, quem
+  // precisa saber disso é o WorkspaceSessionService, num lugar só.
+  const layout = readFileSync(new URL('../src/app/workspace-layout.component.ts', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(layout, /\w+Store\.reset\(\)/u,
+    'zerar stores é do WorkspaceSessionService: o layout não pode conhecer a lista de domínios');
+  assert.doesNotMatch(layout, /narrahub\.lastUniverseId/u,
+    'a persistência do último universo aberto pertence ao WorkspaceSessionService');
+  // `universeStore.load()` continua aqui de propósito: é a lista da biblioteca, não a
+  // pré-carga de um universo aberto. O que não pode voltar são os cinco domínios do workspace.
+  for (const store of ['entityStore', 'timelineStore', 'manuscriptStore', 'planningStore', 'knowledgeStore']) {
+    assert.ok(!layout.includes(`${store}.load(`),
+      `a pré-carga de ${store} saiu do layout e é do WorkspaceSessionService`);
+  }
+  assert.doesNotMatch(layout, /rebuildMentionIndex/u,
+    'reconstruir o índice de menções é parte da sessão, não do layout');
+  assert.match(layout, /inject\(WorkspaceSessionService\)/u,
+    'o layout delega a sessão em vez de reimplementá-la');
+
+  // E o serviço não pode puxar interface para dentro: ele existe para ser chamado por
+  // qualquer caminho, não só pelo layout.
+  const session = readFileSync(new URL('../src/app/application/workspace-session.service.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(session, /@angular\/router|Router/u,
+    'quem navega é o layout; a sessão só cuida dos dados');
+  assert.doesNotMatch(session, /SELECT|INSERT|UPDATE/u,
+    'a sessão fala com stores, nunca com SQL');
+});
+
 test('invariante 8: a IA não tem por onde escrever conteúdo canônico', () => {
   // Diferente das outras dez, esta invariante não é provada por um teste no core Rust.
   // Ela é garantida pela AUSÊNCIA de caminho de escrita: o AiService não injeta store nem

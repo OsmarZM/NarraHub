@@ -442,14 +442,34 @@ da versão que a contiver. Voltar para a 0.8.0 continuará sem tela de recupera�
 > E o padrão desta sessão vale aqui também: **verifique antes de implementar.** Cinco vezes
 > seguidas o repositório estava em estado melhor do que o plano supunha.
 
-### NH-020 — Extrair `WorkspaceSessionService`
+### NH-020 — Extrair `WorkspaceSessionService` (absorve a NH-021)
 
 ```text
-Owner:  —
-Status: READY
-Branch: <agente>/NH-020-workspace-session
+Owner:  Claude
+Status: DONE
+Branch: claude/NH-020-workspace-session
 Fase:   2
 ```
+
+**O recorte do plano não sobreviveu ao código, e foi corrigido.** A NH-021 (tirar o preload)
+separava `loadWorkspaceData` do `openUniverse` que a chama. Em dois PRs, o estado intermediário
+seria pior que o atual: o serviço de sessão abriria o universo mas dependeria do layout para
+carregá-lo. As duas viraram uma extração só.
+
+**Resultado:** `WorkspaceSessionService` é dono de abrir, fechar, trocar e esquecer universo;
+de zerar os sete stores; da época que descarta pré-carga de universo anterior; e da pré-carga
+em si. O layout caiu de 523 para 501 linhas — mas o número não é o ponto, e sim que ele deixou
+de saber **quais** stores existem e em que ordem zerá-los.
+
+**Duas fronteiras que o serviço respeita, e que o teste cobra:** ele não conhece Router — quem
+navega é o layout — e não conhece SQL. Erro de pré-carga é **devolvido**, não exibido: uma
+pré-carga que falha não aborta a abertura, e quem chamou decide como avisar.
+
+**Gate:** `WorkspaceLayout não é dono do ciclo de vida da sessão de universo (Fase 2)`.
+Verificado por mutação — devolver `entityStore.reset()` ao layout reprova.
+
+**Nota de asserção:** `universeStore.load()` continua no layout de propósito, e o teste diz
+isso. É a lista da biblioteca, não a pré-carga de um universo aberto.
 
 **Objetivo:** abrir, fechar e trocar universo; resetar stores; descartar resposta assíncrona
 de um universo anterior. Hoje parte disso vive no layout.
@@ -466,15 +486,13 @@ não pode duplicar essa responsabilidade — leia `app.routes.ts` e o resolver a
 ### NH-021 — Tirar o preload multi-domínio do layout
 
 ```text
-Owner:  —
-Status: READY
-Branch: <agente>/NH-021-preload
+Owner:  Claude
+Status: DONE — absorvida pela NH-020
 Fase:   2
-Depende de: NH-020
 ```
 
-**Objetivo:** `loadWorkspaceData()` carrega entities, timeline, manuscript, planning e
-knowledge direto do layout. Isso vira responsabilidade da camada de aplicação.
+Separar do `openUniverse` que a chama deixaria um estado intermediário pior que o original.
+Ver a NH-020.
 
 ---
 
