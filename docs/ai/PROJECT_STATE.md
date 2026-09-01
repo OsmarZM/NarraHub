@@ -85,7 +85,10 @@ como evidência manual de 0.7.4.
 1. `NH-012` — fechar o escopo restante: backup/restore na 0.9.1, instalador por cima, e
    `0.8.0 → 0.9.1` numa VM. A execução `0.7.4 → 0.9.1` (cinco migrations, zero perda,
    segundo boot e conferência na tela aprovados) está em `docs/qualification/`.
-2. `NH-010` — fixtures nos schemas 13, 14 e 15.
+2. `NH-015` — modo de recuperação por schema incompatível. **Depende de aprovação humana do
+   ADR 0007.** Nasceu de incidente real: o app não abre depois de um downgrade, sem dar
+   nenhuma pista, com os dados intactos.
+3. `NH-010` — fixtures nos schemas 13, 14 e 15.
 4. `NH-013` — checklist de release desktop como gate.
 5. `NH-007` — mapear cada invariante de domínio ao teste que a prova.
 
@@ -142,6 +145,10 @@ O CI (Ubuntu) nunca reproduziu isso. Crash estranho de compilador aqui: suspeita
 disco antes de suspeitar do código.
 
 ## Dívida arquitetural conhecida
+
+- **O app não abre quando o banco é mais novo que ele, e não diz por quê.** Incidente real
+  de 2026-09-01. O alerta existe no `root-layout`, mas a falha acontece antes de a interface
+  existir. Ver `ADR 0007` e `NH-015`.
 
 - Nenhuma invariante de domínio aponta para o teste que a prova, e nenhum teste diz qual
   invariante defende (ver `NH-007`).

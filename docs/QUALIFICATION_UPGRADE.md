@@ -93,6 +93,46 @@ Snapshot C   depois do upgrade
 
 ---
 
+## 3.1 Se você já instalou uma versão antiga por cima
+
+Aconteceu de verdade em 2026-09-01, com o autor do produto. O procedimento é curto, e é
+importante saber que **não há perda de dado nenhuma** neste cenário.
+
+**Sintoma:** depois de instalar uma versão mais antiga, o aplicativo não abre. Sem janela,
+sem mensagem.
+
+**Causa:** desinstalar o NarraHub **não apaga** `%APPDATA%`. A versão antiga encontra um
+banco de schema mais novo do que ela entende e se recusa a abri-lo. Isso é a proteção do
+[ADR 0004](ADR/0004-immutable-migrations-and-updates.md) funcionando — uma versão antiga que
+abrisse esse banco escreveria em colunas que não conhece, e aí sim haveria estrago.
+
+**Diagnóstico**, sem abrir o banco em uso:
+
+1. Copie `%APPDATA%\com.narrahub.app\narrahub.db` (e `-wal`/`-shm`, se existirem) para
+   outra pasta.
+2. Na cópia, leia `SELECT MAX(version) FROM _sqlx_migrations`. Esse é o schema dos dados.
+3. Compare com o `LATEST_SCHEMA_VERSION` da versão instalada.
+
+Se o primeiro for maior, é este caso.
+
+**Correção: reinstale uma versão igual ou mais nova que o schema do banco.** O banco volta a
+abrir na hora, intacto.
+
+**Não restaure backup para "consertar".** O banco não está quebrado; o aplicativo é que é
+antigo demais. Restaurar um backup anterior jogaria fora trabalho sem necessidade.
+Restauração só entra quando o objetivo é mesmo **voltar** para a versão antiga — aí é o
+caminho correto, e é o que o [ADR 0007](ADR/0007-modo-de-recuperacao-por-schema-incompativel.md)
+propõe transformar em fluxo guiado dentro do app.
+
+| Versão | Entende até o schema |
+| --- | --- |
+| 0.7.4 | 10 |
+| 0.7.5 | 13 |
+| 0.7.6 e 0.8.0 | 14 |
+| 0.9.0 e 0.9.1 | 15 |
+
+---
+
 ## 4. Roteiro
 
 ### Passo 1 — Instalar a versão antiga
