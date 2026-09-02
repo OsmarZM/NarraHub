@@ -582,7 +582,7 @@ como código, e não como contagem de linhas. Cinco mutações, cinco reprovaç�
 
 **E foi ele que expôs um problema maior.** A primeira versão passava com a violação de
 gateway reintroduzida. A causa: eu escrevi as expressões regulares por script Python, e o
-`` de borda de palavra virou um **caractere de backspace literal** (0x08) — invisível no
+`\b` de borda de palavra virou um **caractere de backspace literal** (0x08) — invisível no
 `grep`, e que nunca casa com nada.
 
 Uma varredura achou **18 ocorrências, em 5 asserções**, incluindo três de testes anteriores
@@ -759,14 +759,192 @@ vetor de sequências por origem fica como está, sem otimização de tamanho.
 
 O ponto 2 é o mais afiado, e a falha era minha de um jeito específico: o gate "assinatura
 inválida" já estava na matriz da revisão 2 **sem nenhuma contraparte no envelope**. Prometia
-proteger algo que o contrato não definia — o mesmo padrão que esta sessão já pegou no ``
+proteger algo que o contrato não definia — o mesmo padrão que esta sessão já pegou no `\b`
 corrompido e no teste que dizia procurar `invoke()` e não procurava.
 
 Também entrou **ciclo de vida do dispositivo** (`active`, `retired`, `revoked`), sem o qual um
 aparelho abandonado contaria para sempre na retenção de tombstones e travaria qualquer poda
 futura.
 
-**Só implementar depois de o ADR sair de `Proposed`.**
+**Aceito em 2026-09-02**, na terceira revisão, junto com a ordem de implementação de catorze
+etapas — registrada na seção 23 do ADR.
+
+---
+
+### NH-041 — Sync V2, etapa 1: migration e estruturas
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4  (etapa 1 de 14)
+Schema: 16
+```
+
+A etapa cria o **lugar** onde a replicação vai morar. Nenhum evento é gerado, enviado ou
+aplicado ainda.
+
+A decisão de método vale mais que a lista de tabelas: **os invariantes do ADR viraram triggers
+e chaves estrangeiras**, e não convenção. O ADR descreve em prosa que o log é imutável e que o
+cursor é contíguo; o banco agora recusa a linha que viola isso. A alternativa era confiar que
+ninguém escreveria errado, e confiar não é mecanismo.
+
+| Invariante do ADR | Como o banco segura |
+| --- | --- |
+| log imutável (§12) | triggers que abortam `UPDATE` e `DELETE` em `sync_events` |
+| não se aplica o que não está no log (§12) | FK de `sync_applied_events` → `sync_events` |
+| origem precisa estar no roster (§5.2) | FK de `sync_events.device_id` → `sync_devices` |
+| cursor é a maior sequência **contígua** (§13) | trigger que exige densidade só no intervalo `(último_anterior, último_novo]`, e só acima de `baseline_seq` |
+| envelope tem assinatura (§10) | `signature TEXT NOT NULL`, **sem `DEFAULT`** |
+| `updated_at` não é causalidade (§11, §20) | nenhuma tabela do V2 tem a coluna, e um teste varre as oito |
+
+O trigger de contiguidade é o mais interessante dos seis: ele é a única formulação que pega a
+lacuna. Com o cursor em 100 e a chegada do 102, não adianta perguntar "o 101 foi aplicado?" —
+o 101 nunca chegou, e não está em lugar nenhum para ser consultado. O que funciona é cobrar
+**densidade**.
+
+**Correção pedida pelo autor antes da etapa 2.** A primeira versão desse trigger cobrava os seq
+`1..N` no log, e isso **contradizia a seção 14 do próprio ADR**: um aparelho semeado por
+snapshot recebe `Desktop = 1803` e por definição não tem esses 1803 eventos — é para não
+transferi-los que o snapshot existe. O gate teria tornado impossível gravar o cursor semeado,
+ou forçado a transferência da história inteira, anulando o bootstrap.
+
+O cursor passou a ter duas marcas: `baseline_seq`, até onde o conteúdo chegou por snapshot, e
+`last_seq_applied`. A densidade vale **acima do baseline**. No pareamento comum o baseline é 0 e
+nada muda. `baseline_seq` é imutável depois de escrito — um baseline mutável seria snapshot por
+cima de cursor existente, que a seção 14 já chama de regressão ao V1.
+
+A verificação também passou a olhar só o **intervalo** entre o cursor antigo e o novo. O estado
+anterior já foi validado quando foi gravado; recontar desde o começo custava O(N) por evento
+aplicado, num log que só cresce.
+
+**A mutação isolada pegou um gate falso meu.** `o_cursor_nao_nasce_abaixo_do_baseline` passava
+mesmo com a `CHECK` removida, porque o `INSERT` usava um dispositivo que já tinha linha de
+cursor: falhava por chave primária, sem nunca tocar no invariante. Quarta ocorrência do mesmo
+padrão nesta sessão, e a primeira encontrada por mutação de um mecanismo só — a mutação em
+bloco derrubara dezessete testes ao mesmo tempo e escondeu esse.
+
+**Três coisas foram deliberadamente deixadas de fora**, e o comentário da migration diz por quê:
+
+- **chave privada** — mora fora do banco, porque o banco vai para backup;
+- **contador de `seq`** — derivado de `MAX(seq)` da própria origem. É o que faz a restauração
+  de backup funcionar: o aparelho novo começa do 1 como origem nova, e um contador guardado
+  estaria errado exatamente aí;
+- **tabela de pendentes** — pendente é "está no log e não está em aplicados". Duas fontes da
+  mesma verdade é como se perde a verdade.
+
+**Ajuste de ordem, feito com justificativa:** o campo `signature` e a identidade Ed25519 entram
+aqui, e não na etapa 7. A etapa 6 constrói o relay que repassa envelope de terceiros; se a
+assinatura só nascesse na 7, o gate da 6 passaria **provando a coisa insegura**. A 7 continua
+sendo verificação, roster e ciclo de vida.
+
+**Os seis gates foram verificados por mutação**, não por leitura — cada mecanismo foi removido
+e a suíte foi vista reprovando exatamente os testes correspondentes, e nenhum outro. Sem isso
+não há como distinguir um gate que protege de um gate que só existe.
+
+Suíte: 195 testes Rust, 0 falhas.
+
+---
+
+### NH-043 — Reconciliação: "fonte da verdade" não é o último aparelho
+
+```text
+Owner:  Claude
+Status: DONE — só ADR, sem código
+Fase:   4  (afeta as etapas 2, 4 e principalmente 16)
+```
+
+Correção de filosofia trazida pelo autor. **Não muda o schema 16**; muda como a causalidade e a
+matriz de conflitos devem ser implementadas.
+
+A regra anterior do ADR — *"texto de capítulo: conflito explícito, nunca resolve sozinho"* —
+protegia contra `last-write-wins` e acertava nisso, mas errava para o outro lado: interrompia o
+escritor por qualquer vírgula divergente.
+
+A regra nova:
+
+> Texto de capítulo nunca perde uma revisão em silêncio. Alterações não sobrepostas são
+> mescladas automaticamente por **três vias**; sobrepostas exigem decisão humana. As duas
+> revisões originais permanecem preservadas.
+
+O que mudou no ADR:
+
+- **§16 reescrito.** Se PC e celular ficaram offline e os dois receberam alterações legítimas,
+  **os dois são verdade**. O sistema reconcilia revisões, não escolhe aparelho.
+- **Granularidade por bloco**, não pelo capítulo inteiro. "PC mexeu no bloco B, Android no
+  bloco E" não é conflito.
+- **Nenhuma revisão perdedora é apagada**, nem depois de merge automático: `A0`, `A1`, `A2` e
+  `A3` ficam recuperáveis. Para texto, armazenamento é barato perto do valor do conteúdo.
+- **Degrau por importância mantido e explicitado**: capítulo ganha três vias e preservação;
+  nome de personagem cai numa central de conflitos simples; posição de card se resolve por
+  desempate e ninguém precisa saber.
+- **§21 reforçado, não enfraquecido.** Poderia parecer que reconciliar texto exige CRDT. CRDT
+  resolve edição concorrente **em tempo real**, sem ponto de decisão; o NarraHub tem edição
+  alternada offline, que possui justamente o que falta ao caso do CRDT — uma **base comum
+  identificável**. `base_rev` + grafo + três vias + preservação resolve, com muito menos
+  maquinaria.
+- Cinco gates novos de reconciliação, mais um de fronteira: `last-write-wins` em texto de
+  capítulo **reprova**.
+
+**Pré-requisito descoberto ao revisar isso:** o merge por bloco precisa saber se *este*
+parágrafo do Android é o mesmo *daquele* do PC — e hoje não sabe. `chapters.content` guarda o
+HTML de `editor.getHTML()` com StarterKit puro, sem identidade nos nós. Um parágrafo inserido
+acima desloca todos os outros, e o alinhamento por posição concluiria que o capítulo inteiro
+mudou dos dois lados.
+
+O ADR passou a exigir **id estável de bloco antes de qualquer evento ou revisão de capítulo**,
+com id novo em bloco colado, e um fallback assimétrico de propósito: casamento ambíguo ou sem
+id cai em **conflito do capítulo inteiro**, nunca em merge adivinhado. Degradar para conflito é
+chato; degradar para adivinhação apaga trabalho.
+
+É trabalho de produto além do transporte, então não pertence às etapas 1–14 — mas bloqueia a
+reconciliação de texto. Até existir, texto de capítulo se comporta como conflito explícito
+inteiro.
+
+---
+
+### NH-044 — Três armadilhas registradas nas etapas certas
+
+```text
+Owner:  Claude
+Status: DONE — só ADR, sem código
+Fase:   4  (etapas 2, 7 e 12)
+```
+
+Levantadas pelo autor ao revisar a etapa 1. Nenhuma é problema da migration — duas existem
+justamente porque o schema está obrigando a fazer certo.
+
+| Etapa | Armadilha | Gate |
+| --- | --- | --- |
+| 2 | `SELECT MAX(seq)+1` seguido de `INSERT` deixa duas threads escolherem 101. A `UNIQUE` transforma corrupção em erro, mas sem serialização ou retry o resultado é **escrita local sem evento** — o dado existe aqui e nunca sai daqui | duas escritas concorrentes produzem `seq` diferentes e nenhuma alteração fica sem evento |
+| 12 | a FK `sync_cursors → sync_devices` obriga o roster a chegar **antes** do vetor. Bootstrap é roster + snapshot + vetor, na mesma transação | vetor citando origem ausente do roster reprova, por integridade referencial |
+| 7 | chave privada fica fora do backup, `sync_devices` fica dentro: um backup restaurado afirma ser um dispositivo cuja chave não existe mais ali | restore rebaixa o `self` antigo, registra a identidade nova, e o primeiro evento local nasce com `seq = 1` |
+
+A terceira fecha o argumento de por que `seq` é **derivado** de `MAX(seq)` e não guardado num
+contador: um contador restaurado continuaria de onde o aparelho antigo parou, assinando com
+uma chave diferente sob um `device_id` que não é o seu.
+
+---
+
+### NH-042 — Gate contra caractere de controle literal
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4  (transversal)
+```
+
+Terceira aparição do mesmo bug nesta sessão, e a mais irônica: o byte `0x08` estava dentro da
+frase do próprio `TASKS.md` que descrevia o episódio anterior — `` `\b` `` renderizado como
+`` `` ``, invisível no terminal.
+
+A origem é sempre a mesma: uma sequência de escape atravessa uma camada a mais (shell, Python,
+JSON) e vira o byte de verdade. Numa expressão regular, `/Gateway\b/u` passa a casar outra
+coisa e **continua parecendo certa na tela**. Foi assim que cinco asserções foram corrompidas —
+três delas depois de eu já ter declarado que estavam verificadas.
+
+O gate não é inteligente, e não precisa ser: varre todo arquivo versionado e reprova qualquer
+caractere de controle fora de tabulação e quebra de linha, apontando arquivo, linha e o
+codepoint. Verificado por mutação.
 
 ---
 
