@@ -582,7 +582,7 @@ como código, e não como contagem de linhas. Cinco mutações, cinco reprovaç�
 
 **E foi ele que expôs um problema maior.** A primeira versão passava com a violação de
 gateway reintroduzida. A causa: eu escrevi as expressões regulares por script Python, e o
-`` de borda de palavra virou um **caractere de backspace literal** (0x08) — invisível no
+`\b` de borda de palavra virou um **caractere de backspace literal** (0x08) — invisível no
 `grep`, e que nunca casa com nada.
 
 Uma varredura achou **18 ocorrências, em 5 asserções**, incluindo três de testes anteriores
@@ -759,14 +759,92 @@ vetor de sequências por origem fica como está, sem otimização de tamanho.
 
 O ponto 2 é o mais afiado, e a falha era minha de um jeito específico: o gate "assinatura
 inválida" já estava na matriz da revisão 2 **sem nenhuma contraparte no envelope**. Prometia
-proteger algo que o contrato não definia — o mesmo padrão que esta sessão já pegou no ``
+proteger algo que o contrato não definia — o mesmo padrão que esta sessão já pegou no `\b`
 corrompido e no teste que dizia procurar `invoke()` e não procurava.
 
 Também entrou **ciclo de vida do dispositivo** (`active`, `retired`, `revoked`), sem o qual um
 aparelho abandonado contaria para sempre na retenção de tombstones e travaria qualquer poda
 futura.
 
-**Só implementar depois de o ADR sair de `Proposed`.**
+**Aceito em 2026-09-02**, na terceira revisão, junto com a ordem de implementação de catorze
+etapas — registrada na seção 23 do ADR.
+
+---
+
+### NH-041 — Sync V2, etapa 1: migration e estruturas
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4  (etapa 1 de 14)
+Schema: 16
+```
+
+A etapa cria o **lugar** onde a replicação vai morar. Nenhum evento é gerado, enviado ou
+aplicado ainda.
+
+A decisão de método vale mais que a lista de tabelas: **os invariantes do ADR viraram triggers
+e chaves estrangeiras**, e não convenção. O ADR descreve em prosa que o log é imutável e que o
+cursor é contíguo; o banco agora recusa a linha que viola isso. A alternativa era confiar que
+ninguém escreveria errado, e confiar não é mecanismo.
+
+| Invariante do ADR | Como o banco segura |
+| --- | --- |
+| log imutável (§12) | triggers que abortam `UPDATE` e `DELETE` em `sync_events` |
+| não se aplica o que não está no log (§12) | FK de `sync_applied_events` → `sync_events` |
+| origem precisa estar no roster (§5.2) | FK de `sync_events.device_id` → `sync_devices` |
+| cursor é a maior sequência **contígua** (§13) | trigger que exige `COUNT(*) = N` dos seq `1..N` aplicados daquela origem |
+| envelope tem assinatura (§10) | `signature TEXT NOT NULL`, **sem `DEFAULT`** |
+| `updated_at` não é causalidade (§11, §20) | nenhuma tabela do V2 tem a coluna, e um teste varre as oito |
+
+O trigger de contiguidade é o mais interessante dos seis: ele é a única formulação que pega a
+lacuna. Com o cursor em 100 e a chegada do 102, não adianta perguntar "o 101 foi aplicado?" —
+o 101 nunca chegou, e não está em lugar nenhum para ser consultado. O que funciona é cobrar
+**densidade**: para o cursor chegar a N, os seq de 1 a N daquela origem precisam todos estar no
+log e aplicados.
+
+**Três coisas foram deliberadamente deixadas de fora**, e o comentário da migration diz por quê:
+
+- **chave privada** — mora fora do banco, porque o banco vai para backup;
+- **contador de `seq`** — derivado de `MAX(seq)` da própria origem. É o que faz a restauração
+  de backup funcionar: o aparelho novo começa do 1 como origem nova, e um contador guardado
+  estaria errado exatamente aí;
+- **tabela de pendentes** — pendente é "está no log e não está em aplicados". Duas fontes da
+  mesma verdade é como se perde a verdade.
+
+**Ajuste de ordem, feito com justificativa:** o campo `signature` e a identidade Ed25519 entram
+aqui, e não na etapa 7. A etapa 6 constrói o relay que repassa envelope de terceiros; se a
+assinatura só nascesse na 7, o gate da 6 passaria **provando a coisa insegura**. A 7 continua
+sendo verificação, roster e ciclo de vida.
+
+**Os seis gates foram verificados por mutação**, não por leitura — cada mecanismo foi removido
+e a suíte foi vista reprovando exatamente os testes correspondentes, e nenhum outro. Sem isso
+não há como distinguir um gate que protege de um gate que só existe.
+
+Suíte: 195 testes Rust, 0 falhas.
+
+---
+
+### NH-042 — Gate contra caractere de controle literal
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4  (transversal)
+```
+
+Terceira aparição do mesmo bug nesta sessão, e a mais irônica: o byte `0x08` estava dentro da
+frase do próprio `TASKS.md` que descrevia o episódio anterior — `` `\b` `` renderizado como
+`` `` ``, invisível no terminal.
+
+A origem é sempre a mesma: uma sequência de escape atravessa uma camada a mais (shell, Python,
+JSON) e vira o byte de verdade. Numa expressão regular, `/Gateway\b/u` passa a casar outra
+coisa e **continua parecendo certa na tela**. Foi assim que cinco asserções foram corrompidas —
+três delas depois de eu já ter declarado que estavam verificadas.
+
+O gate não é inteligente, e não precisa ser: varre todo arquivo versionado e reprova qualquer
+caractere de controle fora de tabulação e quebra de linha, apontando arquivo, linha e o
+codepoint. Verificado por mutação.
 
 ---
 

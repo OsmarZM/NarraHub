@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { execSync } from 'node:child_process';
 
 /**
  * A documentação de estado tem que descrever a `main` atual, não uma foto antiga.
@@ -113,5 +114,48 @@ test('todo ADR citado na documentação de estado existe', () => {
     ausentes,
     [],
     `ADR citado na documentação e ausente do índice em docs/ADR/README.md: ${ausentes.join(', ')}`,
+  );
+});
+
+/**
+ * Caractere de controle literal em documento — a terceira aparicao do mesmo bug.
+ *
+ * Escrever `\b` numa expressao regular atravessando camadas de escape (shell, Python, JSON)
+ * produz o byte 0x08 em vez das duas letras. A regex passa a casar outra coisa e continua
+ * parecendo certa na tela, porque o terminal nao desenha um backspace. Nesta sessao isso
+ * corrompeu cinco asserçoes de teste — tres das quais eu ja tinha declarado verificadas — e
+ * depois voltou dentro da propria frase do TASKS.md que descrevia o episodio.
+ *
+ * O byte e invisivel; o gate nao precisa ser inteligente, precisa existir. Nenhum documento
+ * deste repositorio tem motivo para conter controle fora de tabulacao e quebra de linha.
+ */
+test('nenhum documento carrega caractere de controle invisivel', () => {
+  const arquivos = execSync('git ls-files "*.md" "*.mjs" "*.rs" "*.ts" "*.sql"', {
+    cwd: raiz,
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+  })
+    .split('\n')
+    .filter(Boolean);
+
+  // Tabulacao (0x09), quebra de linha (0x0A) e retorno (0x0D) sao legitimos. O resto nao.
+  const proibidos = /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/u;
+
+  const sujos = [];
+  for (const arquivo of arquivos) {
+    const conteudo = readFileSync(new URL(`../${arquivo}`, import.meta.url), 'utf8');
+    const posicao = conteudo.search(proibidos);
+    if (posicao === -1) continue;
+    const linha = conteudo.slice(0, posicao).split('\n').length;
+    const codigo = conteudo.codePointAt(posicao).toString(16).padStart(4, '0');
+    sujos.push(`${arquivo}:${linha} (U+${codigo.toUpperCase()})`);
+  }
+
+  assert.deepEqual(
+    sujos,
+    [],
+    `Caractere de controle literal encontrado. Quase sempre e uma sequencia de escape que ` +
+      `atravessou uma camada a mais e virou o byte de verdade — \\b vira 0x08, \\f vira 0x0C. ` +
+      `Escreva o arquivo por um script em disco, sem passar por aspas de shell: ${sujos.join(', ')}`,
   );
 });

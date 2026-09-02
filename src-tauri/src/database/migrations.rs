@@ -1,7 +1,7 @@
 //! NarraHub — Database Migrations
 //! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 15;
+pub const LATEST_SCHEMA_VERSION: i64 = 16;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -20,6 +20,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         13 => Some(MIGRATION_V13),
         14 => Some(MIGRATION_V14),
         15 => Some(MIGRATION_V15),
+        16 => Some(MIGRATION_V16),
         _ => None,
     }
 }
@@ -813,6 +814,246 @@ BEGIN
 END;
 "#;
 
+pub const MIGRATION_V16: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v16
+-- Sync V2 - estruturas de replicacao (ADR 0009)
+-- ============================================
+--
+-- Esta migration nao replica nada. Ela cria o lugar onde a replicacao vai
+-- morar, e usa o proprio banco para segurar os invariantes que o ADR 0009
+-- descreve em prosa. Cada trigger aqui existe porque a alternativa era
+-- "lembrar de nao fazer", e lembrar nao e mecanismo.
+--
+-- O que NAO esta aqui, de proposito:
+--
+--   * chave privada. O ADR 0009 secao 5 e explicito: a privada mora no
+--     diretorio de dados do app, fora do banco, porque o banco vai para
+--     backup e backup vai para pendrive. Dois aparelhos com a mesma
+--     identidade produziriam sequencias conflitantes sob o mesmo device_id,
+--     que e corrupcao silenciosa do cursor de todos os outros.
+--
+--   * contador local de seq. O proximo seq deste dispositivo e
+--     MAX(seq) + 1 sobre a propria origem no log. Derivar em vez de guardar
+--     e o que faz o caso de restauracao funcionar: um backup aberto em outra
+--     maquina vira um dispositivo NOVO, que comeca do 1 como origem nova,
+--     enquanto os eventos da origem antiga continuam no log como origem
+--     estrangeira. Um contador guardado estaria errado exatamente ai.
+--
+--   * buffer de pendentes. Nao e tabela: pendente e "esta em sync_events e
+--     nao esta em sync_applied_events". Uma tabela separada teria que ser
+--     mantida em sincronia com o log, e sincronizar duas fontes da mesma
+--     verdade e como se perde a verdade. Por isso evento LOCAL tambem entra
+--     em sync_applied_events: "aplicado" quer dizer "refletido nos
+--     agregados", e escrita local esta refletida por construcao.
+--
+--   * nenhuma coluna updated_at, em nenhuma tabela desta migration. A
+--     causalidade do V2 e base_rev/new_rev. Relogio de parede nao entra no
+--     desenho nem como conveniencia, porque conveniencia e como ele volta.
+
+-- O formato antigo de sync_events vem da v1 e nunca foi povoado: nenhum
+-- caminho de codigo do repositorio insere nele. Por isso pode ser substituido
+-- em vez de migrado. sync_conflicts e sync_peers ficam onde estao - o Sync V1
+-- ainda escreve neles e ainda e o que esta em producao.
+DROP INDEX IF EXISTS idx_sync_events_created;
+DROP TABLE IF EXISTS sync_events;
+
+-- Roster: quem pertence ao conjunto -----------------------------------------
+--
+-- Distinto de sync_peers de proposito. sync_peers e endereco: com quem este
+-- aparelho consegue abrir conexao. sync_devices e confianca: de quem este
+-- aparelho aceita eventos, inclusive retransmitidos por um terceiro. Papel de
+-- transporte nao e papel de replicacao (ADR 0009 secao 2).
+CREATE TABLE sync_devices (
+    device_id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    ed25519_public TEXT NOT NULL,
+    x25519_public TEXT NOT NULL DEFAULT '',
+    -- retired destrava a poda futura de tombstones; revoked sinaliza para
+    -- revisao humana sem apagar o que foi feito antes do comprometimento.
+    state TEXT NOT NULL DEFAULT 'active'
+        CHECK (state IN ('active', 'retired', 'revoked')),
+    -- device_id de quem introduziu no roster. Vazio = pareamento direto.
+    introduced_by TEXT NOT NULL DEFAULT '',
+    -- este aparelho, entre os do roster. No maximo uma linha pode ter 1.
+    is_self INTEGER NOT NULL DEFAULT 0 CHECK (is_self IN (0, 1)),
+    added_at TEXT NOT NULL DEFAULT (datetime('now')),
+    state_changed_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE UNIQUE INDEX idx_sync_devices_self ON sync_devices(is_self) WHERE is_self = 1;
+
+-- O log: append-only, local e recebido no mesmo lugar ------------------------
+--
+-- Nao ha tabela de outbox. O outbox e a consulta
+-- WHERE device_id = (SELECT device_id FROM sync_devices WHERE is_self = 1).
+-- Guardar o envelope recebido e o que permite retransmitir: sem isso, aplicar
+-- um evento do Desktop deixaria o Notebook com o agregado atualizado e sem o
+-- envelope, e a propagacao transitiva morreria em silencio.
+CREATE TABLE sync_events (
+    event_id TEXT PRIMARY KEY NOT NULL,
+    -- ORIGEM do evento, nao quem entregou. O relay nao se sobrescreve aqui.
+    device_id TEXT NOT NULL REFERENCES sync_devices(device_id),
+    seq INTEGER NOT NULL CHECK (seq > 0),
+    -- sem FK para universes: um evento pode ser guardado por um relay que nem
+    -- conhece aquele universo, e o evento que CRIA o universo chegaria antes
+    -- da linha que ele referencia.
+    universe_id TEXT NOT NULL DEFAULT '',
+    aggregate_type TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
+    operation TEXT NOT NULL CHECK (operation IN ('upsert', 'delete')),
+    payload TEXT NOT NULL DEFAULT '',
+    -- vazio = primeira revisao do agregado. Nao e "desconhecido".
+    base_rev TEXT NOT NULL DEFAULT '',
+    new_rev TEXT NOT NULL,
+    -- Ed25519 da ORIGEM sobre a representacao canonica. Sem DEFAULT de
+    -- proposito: quem insere e obrigado a dizer o que esta colocando aqui.
+    signature TEXT NOT NULL,
+    -- diagnostico, jamais causalidade. Nenhuma decisao de ordem le esta coluna.
+    logged_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Duas coisas diferentes com o mesmo (origem, seq) e o comeco da divergencia.
+CREATE UNIQUE INDEX idx_sync_events_origin_seq ON sync_events(device_id, seq);
+CREATE INDEX idx_sync_events_aggregate
+    ON sync_events(aggregate_type, aggregate_id);
+
+-- Log imutavel deixa de ser promessa e vira propriedade do banco.
+CREATE TRIGGER trg_sync_events_sem_update
+BEFORE UPDATE ON sync_events
+BEGIN
+    SELECT RAISE(ABORT, 'sync_events e append-only: evento nao se edita.');
+END;
+
+CREATE TRIGGER trg_sync_events_sem_delete
+BEFORE DELETE ON sync_events
+BEGIN
+    SELECT RAISE(ABORT, 'sync_events e append-only: evento nao se apaga.');
+END;
+
+-- Um delete carrega ausencia, nao conteudo; um upsert carrega o estado novo.
+-- Um upsert vazio chegaria do outro lado como "apague o corpo do capitulo".
+CREATE TRIGGER trg_sync_events_payload_coerente
+BEFORE INSERT ON sync_events
+BEGIN
+    SELECT RAISE(ABORT, 'Evento upsert precisa de payload.')
+     WHERE NEW.operation = 'upsert' AND NEW.payload = '';
+    SELECT RAISE(ABORT, 'Evento delete nao carrega payload.')
+     WHERE NEW.operation = 'delete' AND NEW.payload <> '';
+    SELECT RAISE(ABORT, 'Evento precisa de new_rev.')
+     WHERE NEW.new_rev = '';
+END;
+
+-- Idempotencia --------------------------------------------------------------
+--
+-- A FK e o ponto: nao se marca como aplicado aquilo que nao esta no log. E o
+-- primeiro dos quatro efeitos da secao 12 do ADR, cobrado pelo banco.
+CREATE TABLE sync_applied_events (
+    event_id TEXT PRIMARY KEY NOT NULL REFERENCES sync_events(event_id),
+    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Cursores: por ORIGEM, e contiguos -----------------------------------------
+CREATE TABLE sync_cursors (
+    origin_device_id TEXT PRIMARY KEY NOT NULL REFERENCES sync_devices(device_id),
+    last_seq_applied INTEGER NOT NULL DEFAULT 0 CHECK (last_seq_applied >= 0)
+);
+
+-- O cursor e a maior sequencia CONTIGUA aplicada, e nao o maior seq visto.
+-- Com cursor em 100 e a chegada do 102, avancar para 102 faria o 101 nunca
+-- mais ser pedido: perda silenciosa, o pior tipo. O trigger cobra densidade -
+-- para chegar a N, todos os seq de 1 a N daquela origem precisam estar no log
+-- e aplicados. E a unica formulacao que pega a lacuna, porque o 101 que nunca
+-- chegou nao esta em lugar nenhum para ser consultado de outro jeito.
+CREATE TRIGGER trg_sync_cursor_contiguo_update
+BEFORE UPDATE OF last_seq_applied ON sync_cursors
+BEGIN
+    SELECT RAISE(ABORT, 'Cursor nao retrocede.')
+     WHERE NEW.last_seq_applied < OLD.last_seq_applied;
+
+    SELECT RAISE(ABORT, 'Cursor so avanca ate a maior sequencia contigua aplicada.')
+     WHERE NEW.last_seq_applied > 0
+       AND (SELECT COUNT(*)
+              FROM sync_events e
+              JOIN sync_applied_events a ON a.event_id = e.event_id
+             WHERE e.device_id = NEW.origin_device_id
+               AND e.seq <= NEW.last_seq_applied) <> NEW.last_seq_applied;
+END;
+
+CREATE TRIGGER trg_sync_cursor_contiguo_insert
+BEFORE INSERT ON sync_cursors
+BEGIN
+    SELECT RAISE(ABORT, 'Cursor so avanca ate a maior sequencia contigua aplicada.')
+     WHERE NEW.last_seq_applied > 0
+       AND (SELECT COUNT(*)
+              FROM sync_events e
+              JOIN sync_applied_events a ON a.event_id = e.event_id
+             WHERE e.device_id = NEW.origin_device_id
+               AND e.seq <= NEW.last_seq_applied) <> NEW.last_seq_applied;
+END;
+
+-- Causalidade: cadeia de revisoes por agregado ------------------------------
+CREATE TABLE sync_aggregate_state (
+    aggregate_type TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
+    current_rev TEXT NOT NULL,
+    PRIMARY KEY (aggregate_type, aggregate_id)
+);
+
+-- Historia suficiente para responder "o base_rev que chegou e ancestral
+-- conhecido?". base_rev desconhecido nao e conflito: e pedido de
+-- reconciliacao daquele agregado.
+CREATE TABLE sync_revision_history (
+    aggregate_type TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
+    rev TEXT NOT NULL,
+    base_rev TEXT NOT NULL DEFAULT '',
+    event_id TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (aggregate_type, aggregate_id, rev)
+);
+
+CREATE INDEX idx_sync_revision_base
+    ON sync_revision_history(aggregate_type, aggregate_id, base_rev);
+
+-- Tombstones ----------------------------------------------------------------
+--
+-- Retencao indefinida na V2 por decisao do ADR: podar exigiria provar que
+-- todos os peers viram a exclusao, e um tablet pode ficar meses na gaveta.
+-- Guardar demais e barato; ressuscitar conteudo apagado assusta o escritor.
+CREATE TABLE sync_tombstones (
+    aggregate_type TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
+    deleted_rev TEXT NOT NULL,
+    deleted_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (aggregate_type, aggregate_id)
+);
+
+-- Divergencias --------------------------------------------------------------
+--
+-- Nome diferente de sync_conflicts porque a coisa e diferente, e porque a
+-- tabela do V1 continua viva enquanto o V1 estiver em producao. O V1 registra
+-- conflito por CAMPO, com valor local e remoto. O V2 registra duas revisoes
+-- que partiram da mesma base - o agregado inteiro, com os dois lados
+-- preservados. Nenhuma versao e descartada em silencio.
+CREATE TABLE sync_divergences (
+    id TEXT PRIMARY KEY NOT NULL,
+    aggregate_type TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
+    base_rev TEXT NOT NULL,
+    local_rev TEXT NOT NULL,
+    remote_rev TEXT NOT NULL,
+    remote_event_id TEXT NOT NULL,
+    detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at TEXT NOT NULL DEFAULT '',
+    resolution TEXT NOT NULL DEFAULT ''
+        CHECK (resolution IN ('', 'local', 'remote', 'manual'))
+);
+
+CREATE INDEX idx_sync_divergences_abertas
+    ON sync_divergences(aggregate_type, aggregate_id)
+    WHERE resolved_at = '';
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -822,6 +1063,7 @@ mod tests {
     const REPRESENTATIVE_SCHEMA_V10_FIXTURE: &str =
         include_str!("../../fixtures/schema10_representative.sql");
     const NATIVE_SCHEMA_V15_FIXTURE: &str = include_str!("../../fixtures/schema15_native.sql");
+    const NATIVE_SCHEMA_V16_FIXTURE: &str = include_str!("../../fixtures/schema16_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -920,6 +1162,397 @@ mod tests {
             relacoes, 2,
             "as arestas de canvas não podem virar relações do universo"
         );
+
+        std::fs::remove_file(path).ok();
+    }
+
+    // ========================================================================
+    // Sync V2 - estruturas (ADR 0009, migration v16)
+    //
+    // Cada teste aqui existe porque um trigger existe, e cada trigger existe
+    // porque a alternativa era confiar que ninguem escreveria a linha errada.
+    // Um trigger sem teste que o veja REPROVAR e uma promessa, nao uma
+    // garantia - foi assim que a matriz da revisao 2 do ADR chegou a ter um
+    // gate de "assinatura invalida" sem campo de assinatura no envelope.
+    // ========================================================================
+
+    /// Banco no schema 16 com a fixture nativa carregada, pronto para uso.
+    fn banco_v16_com_fixture() -> (Connection, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!("narrahub-v16-{}.db", Uuid::new_v4()));
+        {
+            let connection = Connection::open(&path).expect("criar banco v16");
+            connection
+                .execute_batch("PRAGMA foreign_keys = ON;")
+                .expect("ligar foreign keys");
+            apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+            connection
+                .execute_batch(NATIVE_SCHEMA_V16_FIXTURE)
+                .expect("carregar a fixture nativa de schema 16");
+        }
+        let db = Connection::open(&path).expect("reabrir");
+        db.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("ligar foreign keys");
+        (db, path)
+    }
+
+    #[test]
+    fn a_fixture_nativa_v16_carrega_integra() {
+        let (db, path) = banco_v16_com_fixture();
+
+        let integridade: String = db
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("integrity_check");
+        assert_eq!(integridade, "ok");
+
+        let violacoes: i64 = db
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("foreign_key_check");
+        assert_eq!(violacoes, 0, "a fixture nao pode nascer com FK quebrada");
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// O pendente e uma AUSENCIA em `sync_applied_events`, nao uma tabela.
+    ///
+    /// Este teste protege a decisao de derivar em vez de guardar: se alguem
+    /// criar uma tabela de pendentes um dia, vai ter que responder por que
+    /// duas fontes da mesma verdade sao melhores que uma.
+    #[test]
+    fn pendente_e_evento_no_log_que_ainda_nao_foi_aplicado() {
+        let (db, path) = banco_v16_com_fixture();
+
+        let pendentes: Vec<String> = db
+            .prepare(
+                "SELECT e.event_id
+                   FROM sync_events e
+              LEFT JOIN sync_applied_events a ON a.event_id = e.event_id
+                  WHERE a.event_id IS NULL
+               ORDER BY e.event_id",
+            )
+            .expect("preparar consulta de pendentes")
+            .query_map([], |row| row.get(0))
+            .expect("consultar pendentes")
+            .collect::<Result<_, _>>()
+            .expect("ler pendentes");
+
+        assert_eq!(
+            pendentes,
+            vec!["fx16-e-203".to_string()],
+            "o seq 3 do Android chegou e nao foi aplicado: e o pendente"
+        );
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// A correcao 4 do ADR 0009, em forma executavel.
+    ///
+    /// O cursor do Android esta em 1. O seq 2 nunca chegou e o 3 esta no log.
+    /// Avancar para 3 e a perda silenciosa que o desenho da revisao 2
+    /// permitia: o 2 nunca mais seria pedido, e ninguem saberia que ele
+    /// existiu. O banco recusa.
+    #[test]
+    fn cursor_nao_atravessa_lacuna() {
+        let (db, path) = banco_v16_com_fixture();
+
+        let erro = db
+            .execute(
+                "UPDATE sync_cursors SET last_seq_applied = 3 WHERE origin_device_id = 'fx16-dev-droid'",
+                [],
+            )
+            .expect_err("o cursor nao pode saltar por cima do seq 2 ausente");
+        assert!(
+            erro.to_string().contains("contigua"),
+            "reprovou pelo motivo errado: {erro}"
+        );
+
+        // E o mesmo salto passa a ser legitimo assim que a lacuna fecha - o
+        // que prova que o trigger cobra CONTIGUIDADE, e nao "cursor imovel".
+        db.execute_batch(
+            "INSERT INTO sync_events (event_id, device_id, seq, universe_id, aggregate_type, aggregate_id, operation, payload, base_rev, new_rev, signature)
+             VALUES ('fx16-e-202', 'fx16-dev-droid', 2, 'fx16-u1', 'planning', 'fx16-p0', 'upsert', '{\"title\":\"A que faltava\"}', '', 'fx16-rev-p0-a', 'fx16-sig-202');
+             INSERT INTO sync_applied_events (event_id) VALUES ('fx16-e-202');
+             INSERT INTO sync_applied_events (event_id) VALUES ('fx16-e-203');",
+        )
+        .expect("fechar a lacuna");
+
+        db.execute(
+            "UPDATE sync_cursors SET last_seq_applied = 3 WHERE origin_device_id = 'fx16-dev-droid'",
+            [],
+        )
+        .expect("com 1, 2 e 3 aplicados o cursor avanca ate 3");
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Estar no log nao basta: o cursor cobra APLICADO.
+    ///
+    /// Sem esta metade, um peer poderia guardar o envelope, falhar em
+    /// aplica-lo e ainda assim declarar que viu - e o dado nunca chegaria.
+    #[test]
+    fn cursor_nao_avanca_sobre_evento_apenas_guardado() {
+        let (db, path) = banco_v16_com_fixture();
+
+        // Fecha a lacuna no LOG, mas nao aplica nada.
+        db.execute_batch(
+            "INSERT INTO sync_events (event_id, device_id, seq, universe_id, aggregate_type, aggregate_id, operation, payload, base_rev, new_rev, signature)
+             VALUES ('fx16-e-202', 'fx16-dev-droid', 2, 'fx16-u1', 'planning', 'fx16-p0', 'upsert', '{\"title\":\"Guardada\"}', '', 'fx16-rev-p0-a', 'fx16-sig-202');",
+        )
+        .expect("guardar o evento sem aplicar");
+
+        db.execute(
+            "UPDATE sync_cursors SET last_seq_applied = 3 WHERE origin_device_id = 'fx16-dev-droid'",
+            [],
+        )
+        .expect_err("2 e 3 estao no log e nenhum foi aplicado: o cursor fica onde esta");
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn cursor_nao_retrocede() {
+        let (db, path) = banco_v16_com_fixture();
+
+        db.execute(
+            "UPDATE sync_cursors SET last_seq_applied = 1 WHERE origin_device_id = 'fx16-dev-note'",
+            [],
+        )
+        .expect_err("recuar o cursor faria o peer pedir de novo o que ja aplicou");
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Log imutavel deixa de ser adjetivo e vira propriedade do banco.
+    #[test]
+    fn o_log_e_append_only() {
+        let (db, path) = banco_v16_com_fixture();
+
+        db.execute(
+            "UPDATE sync_events SET payload = '{\"name\":\"outro\"}' WHERE event_id = 'fx16-e-002'",
+            [],
+        )
+        .expect_err("editar um evento reescreveria a historia que outros peers ja assinaram");
+
+        db.execute("DELETE FROM sync_events WHERE event_id = 'fx16-e-002'", [])
+            .expect_err("apagar um evento tiraria do relay o que ele precisa retransmitir");
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// A correcao 1 do ADR 0009: nao se marca como aplicado o que nao esta no
+    /// log. Sem o envelope guardado, o relay nao tem o que repassar, e a
+    /// propagacao transitiva morre em silencio.
+    #[test]
+    fn nao_se_aplica_o_que_nao_esta_no_log() {
+        let (db, path) = banco_v16_com_fixture();
+
+        db.execute(
+            "INSERT INTO sync_applied_events (event_id) VALUES ('fx16-e-nunca-visto')",
+            [],
+        )
+        .expect_err("aplicado sem envelope guardado e o buraco que a revisao 3 fechou");
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// A correcao 2 do ADR 0009, na estrutura: origem desconhecida nao entra.
+    #[test]
+    fn evento_de_origem_fora_do_roster_nao_entra_no_log() {
+        let (db, path) = banco_v16_com_fixture();
+
+        db.execute(
+            "INSERT INTO sync_events (event_id, device_id, seq, aggregate_type, aggregate_id, operation, payload, new_rev, signature)
+             VALUES ('fx16-e-999', 'fx16-dev-forasteiro', 1, 'character', 'fx16-c5', 'upsert', '{}', 'fx16-rev-x', 'fx16-sig-999')",
+            [],
+        )
+        .expect_err("parear com um relay nao pode virar aceitar qualquer origem que ele repasse");
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Duas coisas diferentes com o mesmo (origem, seq) e o comeco da
+    /// divergencia: os cursores de todos os outros peers passariam a
+    /// significar coisas diferentes.
+    #[test]
+    fn a_mesma_origem_nao_repete_sequencia() {
+        let (db, path) = banco_v16_com_fixture();
+
+        db.execute(
+            "INSERT INTO sync_events (event_id, device_id, seq, aggregate_type, aggregate_id, operation, payload, new_rev, signature)
+             VALUES ('fx16-e-outro', 'fx16-dev-note', 1, 'character', 'fx16-c5', 'upsert', '{}', 'fx16-rev-y', 'fx16-sig-outro')",
+            [],
+        )
+        .expect_err("o seq 1 do Notebook ja significa um evento especifico");
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Um upsert vazio chegaria do outro lado como "apague o corpo do
+    /// capitulo", e um delete com payload sugeriria que ha o que restaurar.
+    #[test]
+    fn operacao_e_payload_precisam_concordar() {
+        let (db, path) = banco_v16_com_fixture();
+
+        db.execute(
+            "INSERT INTO sync_events (event_id, device_id, seq, aggregate_type, aggregate_id, operation, payload, new_rev, signature)
+             VALUES ('fx16-e-a', 'fx16-dev-desk', 90, 'character', 'fx16-c5', 'upsert', '', 'fx16-rev-a', 'fx16-sig-a')",
+            [],
+        )
+        .expect_err("upsert sem payload apagaria o agregado do outro lado");
+
+        db.execute(
+            "INSERT INTO sync_events (event_id, device_id, seq, aggregate_type, aggregate_id, operation, payload, new_rev, signature)
+             VALUES ('fx16-e-b', 'fx16-dev-desk', 91, 'character', 'fx16-c5', 'delete', '{\"name\":\"x\"}', 'fx16-rev-b', 'fx16-sig-b')",
+            [],
+        )
+        .expect_err("delete carrega ausencia, nao conteudo");
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Gate contra a falha que a revisao 3 do ADR corrigiu no papel: um gate
+    /// de assinatura sem campo de assinatura no contrato.
+    ///
+    /// `signature` e NOT NULL SEM DEFAULT de proposito - quem insere e
+    /// obrigado a dizer o que esta colocando ali. Um DEFAULT '' deixaria o
+    /// evento sem assinatura passar despercebido ate a hora de verificar.
+    #[test]
+    fn o_envelope_exige_assinatura() {
+        let (db, path) = banco_v16_com_fixture();
+
+        db.execute(
+            "INSERT INTO sync_events (event_id, device_id, seq, aggregate_type, aggregate_id, operation, payload, new_rev)
+             VALUES ('fx16-e-sem-assinatura', 'fx16-dev-desk', 92, 'character', 'fx16-c5', 'upsert', '{}', 'fx16-rev-c')",
+            [],
+        )
+        .expect_err("omitir a assinatura precisa ser um erro, nao um valor vazio silencioso");
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// O gate de fronteira da secao 20 do ADR, na forma mais barata possivel.
+    ///
+    /// `updated_at` nao pode ser o mecanismo de causalidade do V2. A maneira
+    /// mais provavel de ele voltar nao e uma decisao: e alguem adicionando a
+    /// coluna "porque toda tabela tem". Se ela nao existe, ninguem a le.
+    #[test]
+    fn nenhuma_tabela_do_sync_v2_tem_relogio_de_parede_para_ordenar() {
+        let (db, path) = banco_v16_com_fixture();
+
+        let tabelas = [
+            "sync_devices",
+            "sync_events",
+            "sync_applied_events",
+            "sync_cursors",
+            "sync_aggregate_state",
+            "sync_revision_history",
+            "sync_tombstones",
+            "sync_divergences",
+        ];
+
+        for tabela in tabelas {
+            let colunas: Vec<String> = db
+                .prepare(&format!("SELECT name FROM pragma_table_info('{tabela}')"))
+                .expect("preparar pragma_table_info")
+                .query_map([], |row| row.get(0))
+                .expect("listar colunas")
+                .collect::<Result<_, _>>()
+                .expect("ler colunas");
+
+            assert!(
+                !colunas.iter().any(|coluna| coluna == "updated_at"),
+                "{tabela} ganhou updated_at. A causalidade do Sync V2 e base_rev/new_rev \
+                 (ADR 0009 secao 11): relogios de aparelhos diferentes divergem, e o caso que \
+                 importa - duas edicoes offline a partir da mesma versao - e exatamente o que \
+                 updated_at nao distingue. Se a coluna e mesmo necessaria para diagnostico, \
+                 use outro nome e prove que nenhuma decisao de ordem a le."
+            );
+        }
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// A migration nao pode ter tocado no que o Sync V1 ainda usa.
+    ///
+    /// `sync_conflicts` continua sendo escrita por `sync.rs` em producao. A
+    /// v16 substitui `sync_events`, que nunca foi povoada, e deixa o resto em
+    /// paz - trocar as duas coisas de uma vez seria quebrar o que funciona
+    /// para preparar o que ainda nao existe.
+    #[test]
+    fn a_v16_nao_derruba_as_tabelas_que_o_sync_v1_usa() {
+        let (db, path) = banco_v16_com_fixture();
+
+        for tabela in ["sync_conflicts", "sync_peers", "devices"] {
+            let existe: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [tabela],
+                    |row| row.get(0),
+                )
+                .expect("consultar sqlite_master");
+            assert_eq!(existe, 1, "{tabela} sumiu, e o Sync V1 ainda escreve nela");
+        }
+
+        // E o formato antigo de sync_events, esse sim, foi embora.
+        let colunas: Vec<String> = db
+            .prepare("SELECT name FROM pragma_table_info('sync_events')")
+            .expect("preparar pragma_table_info")
+            .query_map([], |row| row.get(0))
+            .expect("listar colunas")
+            .collect::<Result<_, _>>()
+            .expect("ler colunas");
+        assert!(
+            colunas.iter().any(|coluna| coluna == "signature"),
+            "sync_events ficou no formato da v1: a substituicao nao aconteceu"
+        );
+        assert!(
+            !colunas.iter().any(|coluna| coluna == "applied_at"),
+            "a coluna applied_at do formato antigo sobreviveu; aplicacao agora e tabela propria"
+        );
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Um banco que ja existia precisa chegar ao 16 sem perder nada.
+    #[test]
+    fn upgrade_de_um_banco_v15_povoado_chega_ao_16() {
+        let path = std::env::temp_dir().join(format!("narrahub-v15-para-16-{}.db", Uuid::new_v4()));
+        {
+            let connection = Connection::open(&path).expect("criar banco v15");
+            connection
+                .execute_batch("PRAGMA foreign_keys = ON;")
+                .expect("ligar foreign keys");
+            apply_migrations(&connection, 1, 15);
+            connection
+                .execute_batch(NATIVE_SCHEMA_V15_FIXTURE)
+                .expect("carregar a fixture nativa de schema 15");
+            apply_migrations(&connection, 16, 16);
+        }
+
+        let db = Connection::open(&path).expect("reabrir");
+        db.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("ligar foreign keys");
+
+        let violacoes: i64 = db
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("foreign_key_check");
+        assert_eq!(violacoes, 0);
+
+        // O conteudo do escritor atravessou a migration intacto.
+        let universos: i64 = db
+            .query_row("SELECT COUNT(*) FROM universes", [], |row| row.get(0))
+            .expect("contar universos");
+        assert!(universos > 0, "a v16 nao pode levar o conteudo junto");
+
+        // E o banco migrado comeca sem nenhum dispositivo e sem nenhum evento:
+        // a v16 cria o lugar, e quem povoa e o pareamento.
+        let dispositivos: i64 = db
+            .query_row("SELECT COUNT(*) FROM sync_devices", [], |row| row.get(0))
+            .expect("contar dispositivos");
+        assert_eq!(dispositivos, 0);
 
         std::fs::remove_file(path).ok();
     }
