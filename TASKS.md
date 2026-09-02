@@ -793,7 +793,7 @@ ninguém escreveria errado, e confiar não é mecanismo.
 | log imutável (§12) | triggers que abortam `UPDATE` e `DELETE` em `sync_events` |
 | não se aplica o que não está no log (§12) | FK de `sync_applied_events` → `sync_events` |
 | origem precisa estar no roster (§5.2) | FK de `sync_events.device_id` → `sync_devices` |
-| cursor é a maior sequência **contígua** (§13) | trigger que exige `COUNT(*) = N` dos seq `1..N` aplicados daquela origem |
+| cursor é a maior sequência **contígua** (§13) | trigger que exige densidade só no intervalo `(último_anterior, último_novo]`, e só acima de `baseline_seq` |
 | envelope tem assinatura (§10) | `signature TEXT NOT NULL`, **sem `DEFAULT`** |
 | `updated_at` não é causalidade (§11, §20) | nenhuma tabela do V2 tem a coluna, e um teste varre as oito |
 
@@ -884,6 +884,21 @@ O que mudou no ADR:
   maquinaria.
 - Cinco gates novos de reconciliação, mais um de fronteira: `last-write-wins` em texto de
   capítulo **reprova**.
+
+**Pré-requisito descoberto ao revisar isso:** o merge por bloco precisa saber se *este*
+parágrafo do Android é o mesmo *daquele* do PC — e hoje não sabe. `chapters.content` guarda o
+HTML de `editor.getHTML()` com StarterKit puro, sem identidade nos nós. Um parágrafo inserido
+acima desloca todos os outros, e o alinhamento por posição concluiria que o capítulo inteiro
+mudou dos dois lados.
+
+O ADR passou a exigir **id estável de bloco antes de qualquer evento ou revisão de capítulo**,
+com id novo em bloco colado, e um fallback assimétrico de propósito: casamento ambíguo ou sem
+id cai em **conflito do capítulo inteiro**, nunca em merge adivinhado. Degradar para conflito é
+chato; degradar para adivinhação apaga trabalho.
+
+É trabalho de produto além do transporte, então não pertence às etapas 1–14 — mas bloqueia a
+reconciliação de texto. Até existir, texto de capítulo se comporta como conflito explícito
+inteiro.
 
 ---
 

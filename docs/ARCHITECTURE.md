@@ -66,7 +66,10 @@ O esquema principal contém:
 - `relations`, `mentions`;
 - `timeline_events`, `planning_items`, `planning_field_definitions`, `attachments`;
 - `chapter_revisions`, `change_log`;
-- `devices`, `sync_peers`, `sync_events`, `sync_conflicts`.
+- Sync V1, ainda em produção: `devices`, `sync_peers`, `sync_conflicts`.
+- Sync V2, criadas pelo schema 16 e ainda sem escrita (ADR 0009): `sync_devices`,
+  `sync_events`, `sync_applied_events`, `sync_cursors`, `sync_aggregate_state`,
+  `sync_revision_history`, `sync_tombstones`, `sync_divergences`.
 - `collaboration_sessions`, `collaboration_contributions`.
 
 ### Integração nativa
@@ -116,7 +119,9 @@ implementação que as acompanham.
 - Toda exclusão em cascata respeita foreign keys.
 - Capítulos geram revisão antes de alteração de título ou conteúdo.
 - Um snapshot remoto mais antigo não substitui um registro local mais novo.
-- Conteúdo de capítulo alterado simultaneamente gera `sync_conflicts`.
+- Conteúdo de capítulo alterado simultaneamente gera `sync_conflicts` — no **Sync V1**. O V2
+  registra em `sync_divergences` e reconcilia por revisão (ADR 0009 §16); as duas tabelas não
+  se misturam.
 - Dados de demonstração só podem existir em fixtures explícitas de teste.
 - Toda consulta de workspace é limitada pelo universo ativo; respostas assíncronas de um universo anterior são descartadas após a troca.
 
