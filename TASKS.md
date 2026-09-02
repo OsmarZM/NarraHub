@@ -647,6 +647,48 @@ string `RustCoreService`.
 
 ---
 
+### NH-039 — Reconciliar a documentação com a `main`
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4 (preparação)
+```
+
+Pedida pelo autor antes da NH-040. **Sem mudança de arquitetura nem de código.**
+
+**Contradições encontradas e corrigidas:**
+
+| Onde | Dizia | Realidade |
+| --- | --- | --- |
+| `ARCHITECTURE.md` | `commands/` "ainda presente", remoção é a Fase 3 | removido na Fase 3 |
+| `ARCHITECTURE.md` | `commands/` coexiste, "dois caminhos até o banco" | um caminho |
+| `ARCHITECTURE.md` | `WorkspaceLayout` "ainda orquestra domínios demais" | resolvido na Fase 2 |
+| `PROJECT_STATE.md` | "resta limpar `commands/` legado" | e três linhas abaixo, "Removido na Fase 3" — o arquivo se contradizia |
+| `PROJECT_STATE.md` | dívida: "9 arquivos de comando de cada lado" | zero |
+| `PROJECT_STATE.md` | "não trabalhar ainda: Sync V2" | Sync V2 **é** a fase ativa |
+
+A última era a pior: o mesmo arquivo declarava a fase ativa e, algumas linhas abaixo, mandava
+não trabalhar nela. Um agente que lê de cima para baixo obedece a última instrução que viu.
+
+**E o pedido de tornar as afirmações verificáveis** virou `tests/docs-consistency.test.mjs`,
+no `test:architecture`:
+
+| Gate | Reprova quando |
+| --- | --- |
+| documento descreve `commands/` como existente | o diretório não existe e a prosa diz que sim |
+| fase ativa na lista de "não trabalhar ainda" | o arquivo se contradiz |
+| versão do `PROJECT_STATE` diverge do manifesto | a memória compartilhada envelhece |
+| ADR citado ausente do índice | referência a decisão que não existe |
+
+Três mutações, três reprovações.
+
+**O que estes gates não fazem, dito de frente:** eles conferem as poucas afirmações com
+contraparte no disco. Prosa desatualizada que não menciona arquivo, versão ou fase continua
+passando — nenhum teste substitui reler o documento ao fechar uma fase.
+
+---
+
 ## BACKLOG
 
 Registrado, **não implementar** antes de a fase correspondente abrir.

@@ -83,8 +83,13 @@ src-tauri/src/
 └── database/          migrations
 ```
 
-`src-tauri/src/commands/` é o caminho anterior, ainda presente. Sua remoção é a Fase 3 do
-roadmap; até lá, **comando novo nasce em `interface/tauri/`**, nunca em `commands/`.
+Comando de domínio nasce **apenas** em `interface/tauri/`. O caminho anterior,
+`src-tauri/src/commands/`, foi removido na Fase 3, e a regra deixou de ser uma convenção: o
+gate `comando de domínio só nasce em interface/tauri`, em `interface/command_placement.rs`,
+reprova um `#[tauri::command]` de domínio em qualquer outro lugar.
+
+Infraestrutura genuína — backup, restauração, diagnóstico, réplica, IA local, share, sync e
+updater — tem exceção nomeada nesse gate, cada uma com o motivo escrito.
 
 ### Compartilhamento online
 
@@ -117,11 +122,22 @@ implementação que as acompanham.
 
 ## Limites atuais
 
-- `src-tauri/src/commands/` coexiste com `interface/tauri/`; há dois caminhos até o banco.
-- `WorkspaceLayout` ainda orquestra domínios demais (preload, busca, sharing, backup, updates).
-- Não existe teste que reprove uma variável CSS usada sem definição — foi a causa da 0.9.0/0.9.1.
-- Exclusões ainda não são propagadas como tombstones entre dispositivos.
-- A sincronização inicial não possui criptografia de transporte.
+- Não existe teste que reprove uma variável CSS usada sem definição — foi a causa da
+  0.9.0/0.9.1. Uma checagem ad hoc mostrou o estado atual são, mas nada impede a regressão
+  de voltar (`NH-050`).
+- Não existe escala compartilhada de breakpoints: 12 valores diferentes no CSS (`NH-052`).
+- A sincronização não tem transporte criptografado, identidade persistente de dispositivo,
+  outbox nem tombstones — exclusões não se propagam entre dispositivos. É o escopo da
+  Fase 4.
+
+O que **deixou** de ser limite, e por qual gate:
+
+| Era limite até | Resolvido em | Gate que impede o retorno |
+| --- | --- | --- |
+| CRUD com SQL no Angular | Fase 4 antiga | `nenhum arquivo do frontend executa SQL` |
+| `WorkspaceLayout` orquestrando domínios | Fase 2 | `GATE DA FASE 2: as quatro proibições` |
+| `commands/` legado paralelo | Fase 3 | `comando de domínio só nasce em interface/tauri` |
+| `invoke()` espalhado pelo frontend | Fase 3.5 | `só as portas nativas falam com o Tauri` |
 - Descoberta automática mDNS ainda não está implementada.
 - A memória criativa atual registra apenas orientações explícitas e decisões aceitas, com limite e escopo por universo. Busca semântica/embeddings e o AI Router ainda não estão implementados.
 
