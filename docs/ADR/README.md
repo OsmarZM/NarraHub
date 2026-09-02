@@ -16,7 +16,7 @@ fizemos Y?", a resposta deveria estar aqui.
 | [0006](0006-backup-as-critical-infrastructure.md) | Backup como infraestrutura crítica | Accepted |
 | [0007](0007-modo-de-recuperacao-por-schema-incompativel.md) | Modo de recuperação por schema incompatível | Accepted |
 | [0008](0008-fronteira-nativa-e-portas-de-plataforma.md) | Fronteira nativa: domínio e plataforma são portas diferentes | Accepted |
-| [0009](0009-sync-v2.md) | Sync V2: peers simétricos, identidade e replicação incremental | **Proposed** (2ª revisão) |
+| [0009](0009-sync-v2.md) | Sync V2: peers simétricos, identidade e replicação incremental | **Proposed** (3ª revisão) |
 
 Os ADRs 0001–0006 foram escritos sem campo `Status` explícito; todos estão em vigor. Os
 próximos devem usar `_TEMPLATE.md`, que inclui o campo.

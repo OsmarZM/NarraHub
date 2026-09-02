@@ -693,7 +693,7 @@ passando — nenhum teste substitui reler o documento ao fechar uma fase.
 
 ```text
 Owner:  Claude
-Status: REVIEW — segunda revisão, aguardando decisão humana
+Status: REVIEW — terceira revisão, aguardando decisão humana
 Fase:   4
 ADR:    0009 (Proposed)
 ```
@@ -745,6 +745,26 @@ ficou dormindo — a migration é aditiva. O que falta nelas é justamente a cau
 **Sem CRDT**, e o motivo completo está no ADR: só texto de capítulo em edição simultânea é
 candidato legítimo, e a autoria canônica sob controle do escritor reduz a pressão por
 convergência automática.
+
+**Revisão 3, 2026-09-01 — cinco correções do autor.** A direção da revisão 2 foi aprovada; o
+vetor de sequências por origem fica como está, sem otimização de tamanho.
+
+| # | O que estava errado | Correção |
+| --- | --- | --- |
+| 1 | `sync_events` era outbox local e `sync_applied_events` só registrava IDs — **depois de aplicar, o relay não teria mais o envelope para repassar** | `sync_events` vira log imutável com eventos locais **e** recebidos; outbox é a consulta `WHERE device_id = self` |
+| 2 | store-and-forward sem autenticidade: Noise autentica o peer da conexão, não a origem de um evento retransmitido | assinatura Ed25519 no envelope, relay repassa sem reassinar, e **roster** de origens confiáveis |
+| 3 | PIN de 8 dígitos usado direto como `psk` do `XXpsk0` | QR com 32 bytes de CSPRNG como principal; PIN por PAKE como alternativa |
+| 4 | cursor avançava para o maior `seq` visto | cursor é a maior sequência **contígua**; lacuna deixa o evento pendente |
+| 5 | snapshot e vetor lidos separadamente no bootstrap | os dois saem da **mesma transação de leitura** |
+
+O ponto 2 é o mais afiado, e a falha era minha de um jeito específico: o gate "assinatura
+inválida" já estava na matriz da revisão 2 **sem nenhuma contraparte no envelope**. Prometia
+proteger algo que o contrato não definia — o mesmo padrão que esta sessão já pegou no ``
+corrompido e no teste que dizia procurar `invoke()` e não procurava.
+
+Também entrou **ciclo de vida do dispositivo** (`active`, `retired`, `revoked`), sem o qual um
+aparelho abandonado contaria para sempre na retenção de tombstones e travaria qualquer poda
+futura.
 
 **Só implementar depois de o ADR sair de `Proposed`.**
 
