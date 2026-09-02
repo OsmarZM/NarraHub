@@ -89,6 +89,11 @@ diretório não o pegaria; o gate contra **colocação** pega.
 
 ## Antes de escrever qualquer código do Sync V2
 
+> **O ADR existe e está `Proposed`.** `docs/ADR/0009-sync-v2.md`, terceira revisão, aguardando
+> decisão humana. **Nenhum código de sync deve ser escrito enquanto ele não for `Accepted`** —
+> as três revisões mudaram premissa de produto, modelo de persistência e esquema de pairing,
+> e implementar em cima de um documento em revisão é construir para jogar fora.
+
 O roadmap é explícito: **ADR e threat model primeiro**. O que precisa estar decidido antes:
 
 1. contra quem estamos nos defendendo — outro dispositivo na mesma rede capturando tráfego,
@@ -115,7 +120,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | `commands/` legado | **Removido** na Fase 3 |
 | Fronteira nativa do frontend | **Formalizada** — ADR 0008 |
 | Sync V1 sem criptografia | **Foco atual** — Fase 4 |
-| Sync V2 | **Não iniciado** |
+| Sync V2 | **ADR 0009 `Proposed`** (3ª revisão) — código não iniciado, e não deve iniciar antes do `Accepted` |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
 | Ciclo de atualização empacotado | **Concluído.** Roteiro, checklist de release e três execuções reais |
