@@ -869,6 +869,14 @@ Duas correções ao texto do ADR, feitas na implementação:
 - **Separador de domínio.** Sem ele, outra estrutura do sistema que por acaso concatenasse os
   mesmos bytes produziria o mesmo hash.
 
+**O ADR contradizia esta implementação, e o ADR é que estava errado.** Ele dizia que *"evento
+cujo `base_rev` seja ancestral conhecido é aplicável"*. Com `A0 → A1 → A2` local e a chegada de
+`B1` com `base_rev = A0`, `A0` é ancestral conhecido — e aplicar direto sobrescreveria `A1` e
+`A2` sem ninguém decidir nada. Ancestral conhecido significa apenas que **sabemos de onde ele
+partiu**, o que separa concorrência de história desconhecida, não aplicável de não aplicável. O
+§11 foi reescrito com as quatro saídas antes do merge, porque é dele que os três agentes vão
+tirar a regra.
+
 A classificação tem **quatro** saídas, e a quarta é a que evita inventar problema:
 
 | Saída | Quando |
@@ -900,10 +908,68 @@ locked`) e o retry roda as cinco vezes — e perde as cinco, porque cada tentati
 novo com a mesma probabilidade. **Retry não substitui modo de transação.** Com `DEFERRED`, o
 `MAX(seq)` é lido antes de o lock de escrita existir; `IMMEDIATE` pega o lock antes da leitura.
 
-Não há backoff, de propósito: sob `IMMEDIATE`, chegar ao retry significa que o `busy_timeout` de
-oito segundos já expirou e a espera já aconteceu dentro do SQLite. Esse caminho **não é
-exercitado pela suíte**, e está dito no código — testá-lo exigiria segurar o lock por mais de
-oito segundos, e o custo não paga o que provaria.
+#### O orçamento de espera, e um erro meu que o autor desfez
+
+Eu tinha escrito que testar o retry exigiria segurar o lock por mais de oito segundos, e que o
+custo não pagava. **Estava errado, por tomar o `busy_timeout` da conexão como dado.** O append
+passou a ter espera própria por tentativa, e aí basta segurar o lock por algumas centenas de
+milissegundos.
+
+Contar tentativas também era a métrica errada: 5 tentativas × 8s de `busy_timeout` permitem um
+pior caso perto de **quarenta segundos**, e este é o caminho do autosave. Um editor que trava
+quarenta segundos é pior que um que avisa que não conseguiu salvar.
+
+```text
+ESPERA_INICIAL   250ms   primeira fatia; dobra a cada tentativa
+ORCAMENTO_TOTAL   10s    teto do bloqueio percebido pelo escritor
+```
+
+O limite passou a ser **tempo total**, não número de tentativas. O `busy_timeout` é devolvido ao
+valor de origem nas duas saídas — sem isso, uma saída por erro contaminaria a conexão e o resto
+do aplicativo passaria a desistir cedo. Os dois viraram teste, e os dois foram vistos
+reprovando quando o mecanismo foi removido.
+
+#### E a primeira versão do orçamento causou inanição
+
+Fatia fixa de 250 ms. O gate de concorrência **passou isolado e reprovou na suíte completa**:
+
+```text
+Não foi possível registrar o evento em 10s (25 tentativas).
+Último erro: database is locked
+```
+
+Vinte e cinco tentativas, todas perdidas. Diagnóstico antes de mexer: **não** era violação de
+`UNIQUE` — o `IMMEDIATE` estava funcionando. Era o problema oposto ao original: com fatia curta,
+a thread desiste de esperar e volta ao fim da disputa repetidamente enquanto as outras avançam.
+Com os oito segundos de antes ela ficava na fila e acabava ganhando.
+
+A fatia passou a dobrar a cada tentativa, sempre limitada pelo que resta do orçamento. Recupera
+a espera longa sem levantar o teto, e mantém as primeiras tentativas baratas — que é o que
+deixa o teste do retry na casa das centenas de milissegundos.
+
+A lição operacional: **um teste de concorrência que só roda isolado não provou nada.** Este só
+falhou quando a máquina estava sob a carga da suíte inteira.
+
+#### E consertar o orçamento cegou o gate — o gate precisou ser dividido
+
+Com espera crescente, o laço passou a **absorver** as falhas do `DEFERRED`. Trocar `IMMEDIATE`
+por `DEFERRED` deixou de reprovar: a mutação passou verde com 8×6, com 4×4 e com 8×2. O retry
+consertado escondia o defeito que o gate existia para pegar.
+
+Uma tentativa intermediária piorou isso: tolerar falha por contenção "porque falha limpa não é
+alteração perdida". O argumento é verdadeiro e a mudança foi um erro — **falha por contenção é
+o sintoma do defeito**, e aceitá-la é aceitar o defeito.
+
+O gate virou dois, cada um cobrando uma coisa:
+
+| Teste | Cobra | Reprova quando |
+| --- | --- | --- |
+| `escritas_locais_concorrentes_recebem_sequencias_distintas` | o caminho integrado: seq único e contíguo, evento por escrita, nenhum evento sem aplicação, cursor consistente | qualquer escrita não vira evento |
+| `uma_tentativa_sozinha_nao_perde_a_corrida` | o **modo de transação**, chamando `tentar_append` sem o retry por cima | `DEFERRED` — 8 tentativas simultâneas, e quem lê `MAX(seq)` antes do lock perde |
+
+O segundo é o que a mutação exige. Sem ele, `IMMEDIATE` poderia ter sido trocado por
+`DEFERRED` e a suíte inteira continuaria verde — o desenho ficaria certo por acidente, sustentado
+por um retry que gasta dez segundos disfarçando o problema.
 
 O gate roda 8 threads × 6 escritas contra banco em arquivo, com barreira para largarem juntas.
 Sem a barreira as escritas se enfileirariam sozinhas e o teste não exercitaria nada.
@@ -915,6 +981,31 @@ Sem a barreira as escritas se enfileirariam sozinhas e o teste não exercitaria 
 diferente do mesmo conteúdo, e o evento seria recusado **como se tivesse sido adulterado**. O
 teste usa JSON com chaves fora de ordem e espaço irregular, exatamente o que um reserializador
 "arrumaria".
+
+O `outbox_since` **falha fechado** em operação desconhecida: tratar como `upsert` faria um
+evento corrompido virar escrita de conteúdo, e um `delete` ilegível viraria ressurreição
+silenciosa do agregado.
+
+#### Registrado para as etapas seguintes
+
+**Etapa 2.5, antes da 3.** A etapa 2 grava `signature = ''` porque não existe chave para
+assinar. Enquanto os eventos só nascem em teste, tudo bem; a etapa 3 liga o log às escritas
+reais, e aí passam a nascer eventos de verdade. Como `sync_events` é append-only por trigger,
+**evento nascido sem assinatura não pode ser assinado depois** — o começo do log ficaria
+permanentemente inverificável e precisaria de uma exceção eterna no caminho de verificação de
+assinatura, que é o pior lugar possível para ter uma.
+
+A 2.5 é pequena de propósito: gerar o par Ed25519 local, guardar a privada fora do banco,
+registrar o `self` e assinar no nascimento. A etapa 7 continua responsável por **verificar**
+origem de terceiros, roster e ciclo de vida — assinar o que é meu e verificar o que é dos
+outros são trabalhos diferentes, e só o primeiro tem prazo ditado pela imutabilidade do log.
+
+**Etapa 3 usa a transação do domínio.** `append_local_event` abre a própria transação
+`IMMEDIATE`, o que serve enquanto ele é chamado sozinho. Na etapa 3, `UPDATE chapter; COMMIT`
+seguido de `append_local_event()` recriaria exatamente o buraco que o outbox existe para
+fechar. A função precisa ser quebrada em uma que opere sobre uma `&Transaction` recebida de
+fora, com o `append_local_event` autônomo virando uma casca fina. O gate cobra os **dois**
+sentidos: falhou o evento, o dado volta; falhou o dado, o evento não existe.
 
 ---
 

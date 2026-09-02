@@ -26,10 +26,10 @@
 //!    falharia com `SQLITE_BUSY_SNAPSHOT` **depois** de o trabalho estar
 //!    feito. `IMMEDIATE` pega o lock antes da leitura, então `MAX(seq)` já é
 //!    lido sob exclusividade.
-//! 2. **Retry.** Com `IMMEDIATE`, a concorrência vira espera em vez de
-//!    conflito, e o `busy_timeout` da conexão cobre a espera. O retry existe
-//!    para o que sobra: timeout estourado sob carga. Desistir em silêncio
-//!    seria de novo a escrita sem evento.
+//! 2. **Retry dentro de um orçamento.** Com `IMMEDIATE`, a concorrência vira
+//!    espera em vez de conflito, e o `busy_timeout` cobre a espera. O retry
+//!    existe para o que sobra: timeout estourado sob carga. Desistir em
+//!    silêncio seria de novo a escrita sem evento.
 //!
 //! **A ordem entre as duas importa, e foi medida.** Com `DEFERRED` e o retry
 //! mantido em cinco tentativas, o gate de concorrência continua reprovando:
@@ -38,25 +38,76 @@
 //! perder. Retry não substitui modo de transação — ele só cobre o resíduo de
 //! um desenho que já está certo.
 //!
-//! Não há backoff de propósito: sob `IMMEDIATE`, chegar ao retry significa
-//! que o `busy_timeout` de oito segundos já expirou, e a espera já
-//! aconteceu dentro do SQLite. Esse caminho **não é exercitado pela suíte**;
-//! testá-lo exigiria segurar o lock por mais de oito segundos, e o custo do
-//! teste não paga o que ele provaria.
+//! ## O orçamento de espera é explícito, e é curto
+//!
+//! Contar tentativas era a métrica errada. Cinco tentativas contra o
+//! `busy_timeout` padrão de oito segundos permitem um pior caso perto de
+//! **quarenta segundos** — e este caminho é o do autosave. Um editor que
+//! trava quarenta segundos é pior que um que avisa que não conseguiu salvar.
+//!
+//! O que se limita aqui é o **tempo total**, não o número de tentativas:
+//!
+//! ```text
+//! ESPERA_INICIAL   250ms   primeira fatia; dobra a cada tentativa
+//! ORCAMENTO_TOTAL   10s    teto do bloqueio percebido pelo escritor
+//! ```
+//!
+//! ### Por que a fatia cresce: fatia curta demais causa inanição
+//!
+//! A primeira versão usava 250ms fixos em toda tentativa. O gate de
+//! concorrência passava isolado e **reprovou na suíte completa**, sob carga:
+//!
+//! ```text
+//! Não foi possível registrar o evento em 10s (25 tentativas).
+//! Último erro: database is locked
+//! ```
+//!
+//! Vinte e cinco tentativas, todas perdidas. Não era violação de `UNIQUE` —
+//! o `IMMEDIATE` estava funcionando. Era o oposto do problema original: com
+//! uma fatia curta, a thread desiste de esperar e volta ao fim da disputa,
+//! repetidamente, enquanto as outras avançam. Com os oito segundos de antes
+//! ela ficava na fila e eventualmente ganhava.
+//!
+//! Dobrar a fatia recupera esse comportamento sem levantar o teto: as
+//! primeiras tentativas são baratas — e é o que mantém o teste do retry na
+//! casa das centenas de milissegundos — e as últimas esperam de verdade.
+//!
+//! O `busy_timeout` da conexão é ajustado durante o append e devolvido ao
+//! valor de origem no fim, inclusive quando a operação falha.
 
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::ids::new_id;
 use crate::domain::sync::{
     compute_revision, AggregateHistory, AggregateRef, EventEnvelope, Operation,
 };
+use crate::infrastructure::sqlite::connection::BUSY_TIMEOUT;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
+use std::time::{Duration, Instant};
 
-/// Quantas vezes uma escrita local tenta de novo antes de desistir.
-///
-/// Baixo de propósito: com `BEGIN IMMEDIATE` e `busy_timeout`, chegar aqui
-/// já significa contenção fora do normal. Insistir muito esconderia o
-/// problema em vez de revelá-lo.
-const MAX_TENTATIVAS: u32 = 5;
+/// Quanto o SQLite segura a PRIMEIRA tentativa antes de devolver "locked".
+/// Dobra a cada tentativa, sempre limitada pelo que resta do orçamento.
+const ESPERA_INICIAL: Duration = Duration::from_millis(250);
+
+/// Teto do bloqueio que o escritor pode perceber ao salvar.
+const ORCAMENTO_TOTAL: Duration = Duration::from_secs(10);
+
+/// Operação que não é `upsert` nem `delete`. O CHECK do schema impede que
+/// ela nasça, então chegar aqui significa banco adulterado ou corrompido —
+/// motivo de sobra para parar em vez de adivinhar.
+#[derive(Debug)]
+struct OperacaoDesconhecida(String);
+
+impl std::fmt::Display for OperacaoDesconhecida {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "operação de sincronização desconhecida no log: {:?}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for OperacaoDesconhecida {}
 
 /// Uma escrita local a registrar no log.
 pub struct LocalChange<'a> {
@@ -88,21 +139,54 @@ pub fn append_local_event(
     connection: &mut Connection,
     change: &LocalChange<'_>,
 ) -> DatabaseCommandResult<EventEnvelope> {
-    let mut ultimo_erro = None;
-    for _ in 0..MAX_TENTATIVAS {
+    // Quem ajusta o `busy_timeout` é o laço, por tentativa. Aqui só se
+    // garante a devolução ao valor de origem nas duas saídas: sem isso, uma
+    // saída por erro deixaria a conexão com a fatia do append, e todo o resto
+    // do aplicativo passaria a desistir cedo.
+    let resultado = append_dentro_do_orcamento(connection, change);
+    let _ = connection.busy_timeout(BUSY_TIMEOUT);
+    resultado
+}
+
+fn append_dentro_do_orcamento(
+    connection: &mut Connection,
+    change: &LocalChange<'_>,
+) -> DatabaseCommandResult<EventEnvelope> {
+    let inicio = Instant::now();
+    let mut tentativas = 0_u32;
+    let mut espera = ESPERA_INICIAL;
+
+    // O erro que sai do laço é sempre o da última tentativa que estourou o
+    // orçamento — não há valor inicial a descartar.
+    let ultimo_erro = loop {
+        let restante = ORCAMENTO_TOTAL.saturating_sub(inicio.elapsed());
+
+        // A fatia cresce a cada tentativa, sempre limitada pelo que resta do
+        // orçamento. É o que impede a inanição descrita no cabeçalho sem
+        // levantar o teto de espera do escritor.
+        connection
+            .busy_timeout(espera.min(restante))
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+
+        tentativas += 1;
         match tentar_append(connection, change) {
             Ok(envelope) => return Ok(envelope),
-            Err(erro) if e_contencao(&erro) => ultimo_erro = Some(erro),
+            Err(erro) if e_contencao(&erro) => {
+                if inicio.elapsed() >= ORCAMENTO_TOTAL {
+                    break erro;
+                }
+                espera = (espera * 2).min(ORCAMENTO_TOTAL);
+            }
+            // Erro que não é contenção não melhora com repetição.
             Err(erro) => return Err(erro),
         }
-    }
+    };
+
     Err(DatabaseCommandError::storage(format!(
-        "Não foi possível registrar o evento de sincronização depois de {MAX_TENTATIVAS} \
-         tentativas. A alteração NÃO foi gravada, de propósito: gravar o dado sem o evento \
-         deixaria a alteração presa neste aparelho para sempre. Último erro: {}",
-        ultimo_erro
-            .map(|erro| erro.to_string())
-            .unwrap_or_else(|| "desconhecido".into())
+        "Não foi possível registrar o evento de sincronização em {}s ({tentativas} tentativas). \
+         A alteração NÃO foi gravada, de propósito: gravar o dado sem o evento deixaria a \
+         alteração presa neste aparelho para sempre. Último erro: {ultimo_erro}",
+        ORCAMENTO_TOTAL.as_secs(),
     )))
 }
 
@@ -340,6 +424,16 @@ pub fn outbox_since(
     let eventos = statement
         .query_map(rusqlite::params![device_id, depois_de], |row| {
             let operacao: String = row.get(6)?;
+            // Falha fechada. Tratar operação desconhecida como `upsert` faria
+            // um evento corrompido virar uma escrita de conteúdo — e um
+            // `delete` ilegível viraria ressurreição silenciosa do agregado.
+            let operation = Operation::parse(&operacao).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    6,
+                    rusqlite::types::Type::Text,
+                    Box::new(OperacaoDesconhecida(operacao.clone())),
+                )
+            })?;
             Ok(EventEnvelope {
                 event_id: row.get(0)?,
                 device_id: row.get(1)?,
@@ -347,7 +441,7 @@ pub fn outbox_since(
                 universe_id: row.get(3)?,
                 aggregate_type: row.get(4)?,
                 aggregate_id: row.get(5)?,
-                operation: Operation::parse(&operacao).unwrap_or(Operation::Upsert),
+                operation,
                 payload: row.get(7)?,
                 base_rev: row.get(8)?,
                 new_rev: row.get(9)?,
@@ -366,6 +460,7 @@ mod tests {
     use crate::infrastructure::sqlite::test_support::TemporaryDatabase;
     use std::collections::HashSet;
     use std::sync::{Arc, Barrier};
+    use std::time::{Duration, Instant};
 
     fn registrar_identidade(connection: &Connection, device_id: &str, is_self: i64) {
         connection
@@ -392,10 +487,23 @@ mod tests {
     /// alteração fica sem evento.
     ///
     /// A `UNIQUE(device_id, seq)` sozinha não garante isto: ela transforma a
-    /// corrida em erro, e um erro aqui seria uma escrita local sem evento —
-    /// o dado ficaria preso neste aparelho para sempre, e nada registraria
-    /// que faltou. Este teste roda escritas de verdade, em threads de
-    /// verdade, contra um banco em arquivo.
+    /// corrida em erro, e um erro mal tratado seria uma escrita local sem
+    /// evento — o dado ficaria preso neste aparelho para sempre, e nada
+    /// registraria que faltou. Este teste roda escritas de verdade, em
+    /// threads de verdade, contra um banco em arquivo.
+    ///
+    /// ## Por que ele exige ZERO falhas
+    ///
+    /// Uma versão intermediária tolerava falha por contenção, com o argumento
+    /// de que falha limpa não é alteração perdida. O argumento é verdadeiro e
+    /// a mudança **cegou o gate**: sob `DEFERRED` as escritas falham
+    /// justamente por contenção, e o teste passou a aceitar isso como normal.
+    /// A mutação provou — trocar `IMMEDIATE` por `DEFERRED` deixou de reprovar.
+    ///
+    /// Falha por contenção é exatamente o sintoma do defeito. O gate exige
+    /// que **nenhuma** aconteça, e a carga foi reduzida em vez da exigência:
+    /// 4×4 em vez de 8×6, porque o defeito aparece com dois escritores e as
+    /// 48 escritas de antes só estouravam o orçamento sob a suíte inteira.
     #[test]
     fn escritas_locais_concorrentes_recebem_sequencias_distintas() {
         let temporario = TemporaryDatabase::new();
@@ -404,8 +512,11 @@ mod tests {
             registrar_identidade(&connection, "dev-local", 1);
         }
 
-        const ESCRITORES: usize = 8;
-        const POR_ESCRITOR: usize = 6;
+        // Quatro escritores já produzem a corrida — o defeito que este gate
+        // pega aparece com dois. Oito só aumentavam a chance de o orçamento
+        // estourar sob carga, sem provar nada a mais.
+        const ESCRITORES: usize = 4;
+        const POR_ESCRITOR: usize = 4;
 
         let barreira = Arc::new(Barrier::new(ESCRITORES));
         let caminho = temporario.database.clone();
@@ -423,9 +534,13 @@ mod tests {
                 for indice in 0..POR_ESCRITOR {
                     let id = format!("cap-{escritor}-{indice}");
                     let payload = format!("{{\"titulo\":\"{id}\"}}");
-                    let envelope = append_local_event(&mut connection, &mudanca(&id, &payload))
-                        .expect("toda escrita local precisa virar evento");
-                    sequencias.push(envelope.seq);
+                    match append_local_event(&mut connection, &mudanca(&id, &payload)) {
+                        Ok(envelope) => sequencias.push(envelope.seq),
+                        // Falhar aqui é o sintoma do defeito, contenção
+                        // inclusive: com `IMMEDIATE` a disputa vira espera, e
+                        // espera dentro do orçamento termina em sucesso.
+                        Err(erro) => panic!("toda escrita local precisa virar evento: {erro}"),
+                    }
                 }
                 sequencias
             }));
@@ -440,6 +555,12 @@ mod tests {
             );
         }
 
+        assert_eq!(
+            todas.len(),
+            ESCRITORES * POR_ESCRITOR,
+            "alguma escrita não virou evento"
+        );
+
         let distintas: HashSet<i64> = todas.iter().copied().collect();
         assert_eq!(
             distintas.len(),
@@ -447,22 +568,37 @@ mod tests {
             "duas escritas receberam o mesmo seq: {todas:?}"
         );
 
-        // E o log não pode ter lacuna: seq local nasce contíguo, e é isso que
-        // permite ao cursor da própria origem avançar.
+        // Seq local nasce contíguo, e é isso que permite ao cursor da própria
+        // origem avançar. Uma escrita que falhou não consome sequência.
         let mut ordenadas: Vec<i64> = distintas.into_iter().collect();
         ordenadas.sort_unstable();
         let esperadas: Vec<i64> = (1..=(ESCRITORES * POR_ESCRITOR) as i64).collect();
         assert_eq!(ordenadas, esperadas, "a sequência local ficou com buraco");
 
         let connection = temporario.database.read().expect("abrir para leitura");
+
+        // Um evento por sucesso, e nenhum a mais: a falha não deixou rastro.
         let gravados: i64 = connection
             .query_row("SELECT COUNT(*) FROM sync_events", [], |row| row.get(0))
             .expect("contar eventos");
         assert_eq!(
             gravados as usize,
-            ESCRITORES * POR_ESCRITOR,
-            "alguma alteração ficou sem evento"
+            todas.len(),
+            "o número de eventos não bate com o de escritas bem-sucedidas"
         );
+
+        // E nenhum evento ficou sem a marca de aplicado — os quatro efeitos da
+        // transação entraram juntos ou não entraram.
+        let sem_aplicacao: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sync_events e
+                  LEFT JOIN sync_applied_events a ON a.event_id = e.event_id
+                  WHERE a.event_id IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("procurar evento sem aplicação");
+        assert_eq!(sem_aplicacao, 0, "evento gravado sem a marca de aplicado");
 
         let cursor: i64 = connection
             .query_row(
@@ -471,7 +607,176 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("ler cursor da própria origem");
-        assert_eq!(cursor as usize, ESCRITORES * POR_ESCRITOR);
+        assert_eq!(
+            cursor as usize,
+            todas.len(),
+            "o cursor não pode estar à frente do que foi gravado"
+        );
+    }
+
+    /// GATE DO MODO DE TRANSAÇÃO, sem o retry por cima.
+    ///
+    /// O gate integrado acima deixou de distinguir `IMMEDIATE` de `DEFERRED`
+    /// assim que o retry ganhou espera crescente: o laço passou a absorver as
+    /// falhas do modo errado, e a mutação deixou de reprovar. Um gate que não
+    /// reprova quando o mecanismo cai não protege nada.
+    ///
+    /// Este exercita **uma tentativa só**, com o `busy_timeout` de origem:
+    ///
+    /// ```text
+    /// IMMEDIATE  →  o lock é pego antes da leitura de MAX(seq).
+    ///               As tentativas fazem fila e todas terminam.
+    ///
+    /// DEFERRED   →  MAX(seq) é lido antes de o lock existir. Outra conexão
+    ///               commita no meio, o snapshot fica velho, e o commit falha
+    ///               DEPOIS de o trabalho estar feito.
+    /// ```
+    #[test]
+    fn uma_tentativa_sozinha_nao_perde_a_corrida() {
+        let temporario = TemporaryDatabase::new();
+        {
+            let connection = temporario.database.write().expect("abrir para escrita");
+            registrar_identidade(&connection, "dev-local", 1);
+        }
+
+        const ESCRITORES: usize = 8;
+        let barreira = Arc::new(Barrier::new(ESCRITORES));
+        let caminho = temporario.database.clone();
+
+        let mut linhas = Vec::new();
+        for escritor in 0..ESCRITORES {
+            let barreira = Arc::clone(&barreira);
+            let banco = caminho.clone();
+            linhas.push(std::thread::spawn(move || {
+                let mut connection = banco.write().expect("abrir para escrita");
+                barreira.wait();
+                let id = format!("cap-{escritor}");
+                let payload = format!("{{\"titulo\":\"{id}\"}}");
+                // Sem retry: é o modo de transação que tem que segurar.
+                tentar_append(&mut connection, &mudanca(&id, &payload)).map(|envelope| envelope.seq)
+            }));
+        }
+
+        let mut sequencias = Vec::new();
+        for linha in linhas {
+            let resultado = linha.join().expect("thread não pode entrar em pânico");
+            sequencias.push(resultado.unwrap_or_else(|erro| {
+                panic!(
+                    "uma tentativa perdeu a corrida — o lock não foi pego antes da leitura: {erro}"
+                )
+            }));
+        }
+
+        let distintas: HashSet<i64> = sequencias.iter().copied().collect();
+        assert_eq!(distintas.len(), ESCRITORES, "seq repetido: {sequencias:?}");
+    }
+
+    /// O retry deixa de ser caminho não exercitado.
+    ///
+    /// Eu tinha escrito que testar isto exigiria segurar o lock por mais de
+    /// oito segundos. Estava errado por assumir o `busy_timeout` da conexão
+    /// como dado: o append agora tem espera **própria** por tentativa, e
+    /// basta segurar o lock por mais tempo que ela.
+    ///
+    /// ```text
+    /// outra conexão segura BEGIN IMMEDIATE por ~600ms
+    ///   tentativa 1  →  espera 250ms  →  "database is locked"
+    ///   tentativa 2  →  espera 250ms  →  "database is locked"
+    ///   lock libera
+    ///   tentativa 3  →  sucesso
+    /// ```
+    #[test]
+    fn o_retry_atravessa_um_lock_temporario() {
+        let temporario = TemporaryDatabase::new();
+        {
+            let connection = temporario.database.write().expect("abrir para escrita");
+            registrar_identidade(&connection, "dev-local", 1);
+        }
+
+        const SEGURAR_POR: Duration = Duration::from_millis(600);
+        let liberado = Arc::new(Barrier::new(2));
+
+        let banco = temporario.database.clone();
+        let sinal = Arc::clone(&liberado);
+        let bloqueador = std::thread::spawn(move || {
+            let mut connection = banco.write().expect("abrir para escrita");
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .expect("segurar o lock de escrita");
+            // Só depois de o lock existir é que o append pode começar; senão o
+            // teste poderia passar sem nunca ter havido contenção.
+            sinal.wait();
+            std::thread::sleep(SEGURAR_POR);
+            tx.rollback().expect("soltar o lock");
+        });
+
+        let mut connection = temporario.database.write().expect("abrir para escrita");
+        liberado.wait();
+        let comeco = Instant::now();
+        let envelope = append_local_event(&mut connection, &mudanca("cap-1", r#"{"t":"a"}"#))
+            .expect("o retry precisa atravessar um lock temporário");
+        let decorrido = comeco.elapsed();
+
+        bloqueador.join().expect("thread do lock");
+
+        assert_eq!(envelope.seq, 1);
+        assert!(
+            decorrido >= ESPERA_INICIAL,
+            "terminou em {decorrido:?}: rápido demais para ter havido contenção, \
+             e o teste estaria passando sem exercitar o retry"
+        );
+        assert!(
+            decorrido < ORCAMENTO_TOTAL,
+            "o orçamento existe para não deixar o escritor esperando: {decorrido:?}"
+        );
+    }
+
+    /// O `busy_timeout` curto é do append, não da conexão.
+    ///
+    /// Sem devolver o valor de origem, uma única chamada contaminaria a
+    /// conexão e todo o resto do aplicativo passaria a desistir em 250ms —
+    /// inclusive numa saída por erro, que é o caminho mais fácil de esquecer.
+    #[test]
+    fn o_append_devolve_o_busy_timeout_da_conexao() {
+        let temporario = TemporaryDatabase::new();
+        let mut connection = temporario.database.write().expect("abrir para escrita");
+
+        // Sem identidade: caminho de erro.
+        append_local_event(&mut connection, &mudanca("cap-1", "{}"))
+            .expect_err("sem is_self a escrita falha");
+
+        // `busy_timeout` não tem getter; medimos o efeito. Com 250ms residual,
+        // esta espera terminaria muito antes do que o valor de origem manda.
+        let banco = temporario.database.clone();
+        let liberado = Arc::new(Barrier::new(2));
+        let sinal = Arc::clone(&liberado);
+        let bloqueador = std::thread::spawn(move || {
+            let mut outra = banco.write().expect("abrir para escrita");
+            let tx = outra
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .expect("segurar o lock");
+            sinal.wait();
+            std::thread::sleep(Duration::from_millis(900));
+            tx.rollback().expect("soltar o lock");
+        });
+
+        liberado.wait();
+        let comeco = Instant::now();
+        let resultado = connection.execute(
+            "INSERT INTO sync_devices (device_id, ed25519_public) VALUES ('x', 'y')",
+            [],
+        );
+        let decorrido = comeco.elapsed();
+        bloqueador.join().expect("thread do lock");
+
+        assert!(
+            resultado.is_ok(),
+            "a conexão desistiu antes de o lock soltar: o busy_timeout curto do append vazou"
+        );
+        assert!(
+            decorrido >= Duration::from_millis(500),
+            "a escrita não chegou a esperar: {decorrido:?}"
+        );
     }
 
     /// Sem identidade registrada, a escrita **falha** em vez de gravar um
