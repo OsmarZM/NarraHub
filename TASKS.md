@@ -954,9 +954,90 @@ Registrado, **não implementar** antes de a fase correspondente abrir.
 
 | ID | Tarefa | Fase |
 | --- | --- | --- |
+| NH-045 | Identidade persistente de blocos do editor (detalhado abaixo) | 4, fora das etapas 1–14 |
 | NH-050 | Teste de tokens de design (`var(--*)` sem definição reprova o CI) | 5 |
 | NH-051 | Escala de breakpoints e responsividade em telas menores | 5 |
 | NH-060 | Contrato `AIContext v1` e orçamento de contexto | 6 |
+
+---
+
+### NH-045 — Identidade persistente de blocos do editor
+
+```text
+Owner:  —
+Status: BACKLOG
+Fase:   4, fora das etapas 1–14
+Bloqueia:     merge automático por bloco (ADR 0009 §16)
+Não bloqueia: nada da infraestrutura do Sync V2
+```
+
+**Objetivo:** permitir reconciliação de capítulos por bloco. Sem isso o sistema não consegue
+responder se *este* parágrafo do Android é o mesmo *daquele* do PC, e teria que adivinhar.
+
+**Regras:**
+
+- `block_id` persistente, gerado na criação;
+- editar preserva o id;
+- mover preserva o id;
+- copiar e colar gera id **novo** — dois blocos distintos nunca compartilham identidade;
+- id duplicado reprova, e é corrigido **antes** de persistir;
+- conteúdo legado comprovadamente idêntico pode ser normalizado;
+- conteúdo legado divergente cai em conflito integral;
+- casamento ambíguo **nunca** faz merge automático.
+
+#### A parte difícil não é gerar os ids. É inicializá-los em conteúdo que já existe.
+
+Gerar UUID para os parágrafos existentes em cada aparelho, independentemente, é a solução
+óbvia — e é catastrófica:
+
+```text
+mesmo capítulo legado, já presente nos dois aparelhos
+
+PC       P1 = uuid-A   P2 = uuid-B   P3 = uuid-C
+Android  P1 = uuid-X   P2 = uuid-Y   P3 = uuid-Z
+
+conteúdo idêntico, e nenhum bloco corresponde a nenhum outro
+```
+
+O merge por bloco passaria a funcionar **pior** que a ausência dele: todo capítulo legado
+viraria divergência total no primeiro sync, e o escritor veria conflito em texto que ninguém
+tocou.
+
+**Caminho seguro, em duas situações:**
+
+| Situação | Como os ids nascem |
+| --- | --- |
+| aparelho novo recebendo o acervo | os ids vêm **no snapshot do bootstrap**, junto com o conteúdo. Trivial e sem ambiguidade |
+| dois aparelhos estabelecidos com o mesmo conteúdo | fase de **normalização** antes de habilitar o merge fino |
+
+A normalização compara o capítulo inteiro por hash:
+
+```text
+hash(PC) == hash(Android)   →  um deles fornece a identidade estrutural,
+                               e os dois passam a usar os mesmos ids
+
+hash(PC) != hash(Android)   →  não inventa correspondência
+                               →  conflito de capítulo inteiro
+                               →  humano resolve
+                               →  o resultado recebe ids estáveis
+                               →  daí em diante o merge por bloco funciona
+```
+
+#### Dois atalhos que parecem boas ideias e não são
+
+**`block_id = hash(texto)`** — tentador porque resolveria a inicialização de graça. Mas o id
+mudaria exatamente quando não pode:
+
+```text
+"João entrou na casa."            →  id X
+"João entrou lentamente na casa." →  id Y      ← e era pra ser o mesmo bloco
+```
+
+**`chapter_id + índice`** — inserir um parágrafo no começo renumera todos os outros, que é
+justamente o caso que a identidade existe para sobreviver.
+
+O id precisa ser identidade, não derivação: nasce com o bloco, sobrevive à edição e à
+movimentação, e só um bloco novo ganha um novo.
 
 ---
 
