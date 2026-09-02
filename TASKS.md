@@ -800,8 +800,28 @@ ninguém escreveria errado, e confiar não é mecanismo.
 O trigger de contiguidade é o mais interessante dos seis: ele é a única formulação que pega a
 lacuna. Com o cursor em 100 e a chegada do 102, não adianta perguntar "o 101 foi aplicado?" —
 o 101 nunca chegou, e não está em lugar nenhum para ser consultado. O que funciona é cobrar
-**densidade**: para o cursor chegar a N, os seq de 1 a N daquela origem precisam todos estar no
-log e aplicados.
+**densidade**.
+
+**Correção pedida pelo autor antes da etapa 2.** A primeira versão desse trigger cobrava os seq
+`1..N` no log, e isso **contradizia a seção 14 do próprio ADR**: um aparelho semeado por
+snapshot recebe `Desktop = 1803` e por definição não tem esses 1803 eventos — é para não
+transferi-los que o snapshot existe. O gate teria tornado impossível gravar o cursor semeado,
+ou forçado a transferência da história inteira, anulando o bootstrap.
+
+O cursor passou a ter duas marcas: `baseline_seq`, até onde o conteúdo chegou por snapshot, e
+`last_seq_applied`. A densidade vale **acima do baseline**. No pareamento comum o baseline é 0 e
+nada muda. `baseline_seq` é imutável depois de escrito — um baseline mutável seria snapshot por
+cima de cursor existente, que a seção 14 já chama de regressão ao V1.
+
+A verificação também passou a olhar só o **intervalo** entre o cursor antigo e o novo. O estado
+anterior já foi validado quando foi gravado; recontar desde o começo custava O(N) por evento
+aplicado, num log que só cresce.
+
+**A mutação isolada pegou um gate falso meu.** `o_cursor_nao_nasce_abaixo_do_baseline` passava
+mesmo com a `CHECK` removida, porque o `INSERT` usava um dispositivo que já tinha linha de
+cursor: falhava por chave primária, sem nunca tocar no invariante. Quarta ocorrência do mesmo
+padrão nesta sessão, e a primeira encontrada por mutação de um mecanismo só — a mutação em
+bloco derrubara dezessete testes ao mesmo tempo e escondeu esse.
 
 **Três coisas foram deliberadamente deixadas de fora**, e o comentário da migration diz por quê:
 

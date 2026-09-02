@@ -10,6 +10,9 @@
 --     com o cursor daquela origem parado antes dele. É o caso da correção 4 do ADR 0009,
 --     gravado em disco em vez de descrito em prosa;
 --   * um dispositivo `retired` que ainda é origem de eventos históricos legítimos;
+--   * uma origem **semeada por snapshot**: cursor alto, `baseline_seq` igual a ele e nenhum
+--     evento dela no log. É a forma que o bootstrap produz, e a que denunciou o erro da
+--     primeira versão do trigger de contiguidade;
 --   * uma divergência aberta, com as duas revisões preservadas e nenhuma escolhida.
 --
 -- Um banco real vai ter todas essas formas ao mesmo tempo. Se a fixture só tivesse o caminho
@@ -30,7 +33,10 @@ INSERT INTO sync_devices (device_id, name, ed25519_public, x25519_public, state,
   -- Aposentado, e ainda assim origem de eventos que continuam válidos. Apagar a linha
   -- quebraria a FK do log e reescreveria a história; é por isso que o estado existe em vez
   -- de o aparelho simplesmente sumir do roster.
-  ('fx16-dev-velho', 'Tablet antigo',         'fx16-ed-velho', '',             'retired', '',              0, '2026-08-20 10:00:00');
+  ('fx16-dev-velho', 'Tablet antigo',         'fx16-ed-velho', '',             'retired', '',              0, '2026-08-20 10:00:00'),
+  -- Origem cujo conteúdo chegou aqui por SNAPSHOT, e não evento a evento. Não há uma única
+  -- linha dela no log, e é assim que tem que ser.
+  ('fx16-dev-longe', 'Desktop do estudio',    'fx16-ed-longe', 'fx16-x-longe', 'active',  '',              0, '');
 
 -- ── Log ─────────────────────────────────────────────────────────────────────
 -- Origem local: duas escritas deste aparelho.
@@ -75,13 +81,19 @@ INSERT INTO sync_applied_events (event_id, applied_at) VALUES
 -- ele sobrevive ao processo porque mora em disco, não em memória.
 
 -- ── Cursores ────────────────────────────────────────────────────────────────
-INSERT INTO sync_cursors (origin_device_id, last_seq_applied) VALUES
-  ('fx16-dev-desk',  2),
-  ('fx16-dev-note',  3),
+INSERT INTO sync_cursors (origin_device_id, baseline_seq, last_seq_applied) VALUES
+  ('fx16-dev-desk',  0, 2),
+  ('fx16-dev-note',  0, 3),
   -- 1, e não 3. O seq 2 do Android nunca chegou; avançar até o 3 faria o 2 nunca mais ser
   -- pedido, e ninguém saberia que ele existiu.
-  ('fx16-dev-droid', 1),
-  ('fx16-dev-velho', 2);
+  ('fx16-dev-droid', 0, 1),
+  ('fx16-dev-velho', 0, 2),
+  -- Semeado por snapshot: `baseline_seq = 1803` e nenhum evento desta origem no log. Este é
+  -- o caso que a primeira versão do trigger de contiguidade tornava impossível de gravar —
+  -- ela cobrava os seq 1..1803 no log, que é exatamente a história que o snapshot existe
+  -- para não precisar transferir. Daqui para cima a densidade volta a valer: o 1805 não
+  -- entra sem o 1804.
+  ('fx16-dev-longe', 1803, 1803);
 
 -- ── Causalidade ─────────────────────────────────────────────────────────────
 -- O personagem c1 continua em `fx16-rev-c1-b`: a divergência está aberta e nenhuma versão

@@ -956,15 +956,39 @@ CREATE TABLE sync_applied_events (
 -- Cursores: por ORIGEM, e contiguos -----------------------------------------
 CREATE TABLE sync_cursors (
     origin_device_id TEXT PRIMARY KEY NOT NULL REFERENCES sync_devices(device_id),
-    last_seq_applied INTEGER NOT NULL DEFAULT 0 CHECK (last_seq_applied >= 0)
+    -- Ate onde o conteudo daquela origem chegou por SNAPSHOT, sem passar pelo
+    -- log. Zero quando o pareamento foi comum: nesse caso tudo veio por evento.
+    -- Vem do vetor de sequencias lido na mesma transacao do snapshot (ADR 0009
+    -- secao 14), e por isso e exatamente o ponto a partir do qual o incremental
+    -- comeca a valer.
+    baseline_seq INTEGER NOT NULL DEFAULT 0 CHECK (baseline_seq >= 0),
+    last_seq_applied INTEGER NOT NULL DEFAULT 0 CHECK (last_seq_applied >= 0),
+    -- O cursor nunca fica atras da semente: o conteudo ate ali ja esta no banco.
+    CHECK (last_seq_applied >= baseline_seq)
 );
 
 -- O cursor e a maior sequencia CONTIGUA aplicada, e nao o maior seq visto.
 -- Com cursor em 100 e a chegada do 102, avancar para 102 faria o 101 nunca
--- mais ser pedido: perda silenciosa, o pior tipo. O trigger cobra densidade -
--- para chegar a N, todos os seq de 1 a N daquela origem precisam estar no log
--- e aplicados. E a unica formulacao que pega a lacuna, porque o 101 que nunca
--- chegou nao esta em lugar nenhum para ser consultado de outro jeito.
+-- mais ser pedido: perda silenciosa, o pior tipo. O trigger cobra densidade,
+-- que e a unica formulacao capaz de ver a lacuna - o 101 que nunca chegou nao
+-- esta em lugar nenhum para ser consultado de outro jeito.
+--
+-- Mas a densidade so vale ACIMA DO BASELINE, e a primeira versao deste trigger
+-- errava exatamente ai: cobrava os seq de 1 a N no log. Um aparelho semeado por
+-- snapshot (ADR 0009 secao 14) recebe o vetor daquele instante - digamos
+-- Desktop = 1803 - e por definicao NAO tem os 1803 eventos no log; e essa a
+-- razao de o snapshot existir. A regra antiga tornava impossivel gravar o
+-- cursor semeado, ou obrigaria a transferir a historia inteira, anulando o
+-- bootstrap.
+--
+--   baseline_seq       ate aqui o conteudo veio pelo snapshot, sem eventos
+--   last_seq_applied   daqui para cima, cada seq precisa ter passado pelo log
+--
+-- Fora do bootstrap, baseline_seq = 0 e o comportamento e o de sempre.
+--
+-- A verificacao tambem passou a olhar so o INTERVALO entre o cursor antigo e o
+-- novo. O estado anterior ja foi validado quando foi gravado; recontar desde o
+-- comeco a cada avanco custa O(N) por evento aplicado, num log que so cresce.
 CREATE TRIGGER trg_sync_cursor_contiguo_update
 BEFORE UPDATE OF last_seq_applied ON sync_cursors
 BEGIN
@@ -972,24 +996,42 @@ BEGIN
      WHERE NEW.last_seq_applied < OLD.last_seq_applied;
 
     SELECT RAISE(ABORT, 'Cursor so avanca ate a maior sequencia contigua aplicada.')
-     WHERE NEW.last_seq_applied > 0
+     WHERE NEW.last_seq_applied > OLD.last_seq_applied
        AND (SELECT COUNT(*)
               FROM sync_events e
               JOIN sync_applied_events a ON a.event_id = e.event_id
              WHERE e.device_id = NEW.origin_device_id
-               AND e.seq <= NEW.last_seq_applied) <> NEW.last_seq_applied;
+               AND e.seq > OLD.last_seq_applied
+               AND e.seq <= NEW.last_seq_applied)
+           <> NEW.last_seq_applied - OLD.last_seq_applied;
 END;
 
+-- Um baseline que pudesse mudar seria um snapshot aplicado por cima de um
+-- cursor existente - e o ADR 0009 secao 14 chama isso pelo nome: regressao ao
+-- V1, onde estado inteiro sobrescrevia estado inteiro. Semeia-se uma vez, na
+-- criacao da linha.
+CREATE TRIGGER trg_sync_cursor_baseline_imutavel
+BEFORE UPDATE OF baseline_seq ON sync_cursors
+BEGIN
+    SELECT RAISE(ABORT, 'Baseline se semeia uma vez: snapshot sobre cursor existente e regressao ao V1.')
+     WHERE NEW.baseline_seq <> OLD.baseline_seq;
+END;
+
+-- Na criacao, o intervalo cobrado vai do baseline ate o cursor. No bootstrap os
+-- dois sao iguais, o intervalo e vazio e nada e exigido do log - que e
+-- precisamente o caso que a versao anterior tornava impossivel.
 CREATE TRIGGER trg_sync_cursor_contiguo_insert
 BEFORE INSERT ON sync_cursors
 BEGIN
     SELECT RAISE(ABORT, 'Cursor so avanca ate a maior sequencia contigua aplicada.')
-     WHERE NEW.last_seq_applied > 0
+     WHERE NEW.last_seq_applied > NEW.baseline_seq
        AND (SELECT COUNT(*)
               FROM sync_events e
               JOIN sync_applied_events a ON a.event_id = e.event_id
              WHERE e.device_id = NEW.origin_device_id
-               AND e.seq <= NEW.last_seq_applied) <> NEW.last_seq_applied;
+               AND e.seq > NEW.baseline_seq
+               AND e.seq <= NEW.last_seq_applied)
+           <> NEW.last_seq_applied - NEW.baseline_seq;
 END;
 
 -- Causalidade: cadeia de revisoes por agregado ------------------------------
@@ -1306,6 +1348,134 @@ mod tests {
             [],
         )
         .expect_err("2 e 3 estao no log e nenhum foi aplicado: o cursor fica onde esta");
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// O caso que a primeira versão deste gate tornava impossível.
+    ///
+    /// Um aparelho semeado por snapshot (ADR 0009 §14) recebe o vetor daquele
+    /// instante e **não tem** os eventos correspondentes no log — é essa a
+    /// razão de o snapshot existir. Cobrar os seq `1..N` no log obrigaria a
+    /// transferir a história inteira, anulando o bootstrap.
+    #[test]
+    fn cursor_semeado_por_snapshot_nao_exige_historico_no_log() {
+        let (db, path) = banco_v16_com_fixture();
+
+        let (baseline, cursor): (i64, i64) = db
+            .query_row(
+                "SELECT baseline_seq, last_seq_applied FROM sync_cursors WHERE origin_device_id = 'fx16-dev-longe'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("ler o cursor semeado");
+        assert_eq!((baseline, cursor), (1803, 1803));
+
+        let eventos: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sync_events WHERE device_id = 'fx16-dev-longe'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar eventos da origem semeada");
+        assert_eq!(
+            eventos, 0,
+            "a origem semeada por snapshot nao tem historico no log, e o cursor dela existe assim mesmo"
+        );
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// E o baseline não vira uma porta dos fundos: acima dele, a densidade
+    /// continua valendo exatamente como antes.
+    #[test]
+    fn acima_do_baseline_a_densidade_volta_a_valer() {
+        let (db, path) = banco_v16_com_fixture();
+
+        // 1805 sem o 1804 é a mesma perda silenciosa de sempre.
+        db.execute_batch(
+            "INSERT INTO sync_events (event_id, device_id, seq, universe_id, aggregate_type, aggregate_id, operation, payload, new_rev, signature)
+             VALUES ('fx16-e-1805', 'fx16-dev-longe', 1805, 'fx16-u1', 'planning', 'fx16-p8', 'upsert', '{\"title\":\"Depois da semente\"}', 'fx16-rev-p8-a', 'fx16-sig-1805');
+             INSERT INTO sync_applied_events (event_id) VALUES ('fx16-e-1805');",
+        )
+        .expect("guardar e aplicar o 1805");
+
+        let erro = db
+            .execute(
+                "UPDATE sync_cursors SET last_seq_applied = 1805 WHERE origin_device_id = 'fx16-dev-longe'",
+                [],
+            )
+            .expect_err("o 1804 nao chegou: o cursor nao pode passar por cima dele");
+        assert!(
+            erro.to_string().contains("contigua"),
+            "reprovou pelo motivo errado: {erro}"
+        );
+
+        // Com o 1804 aplicado, os dois consolidam.
+        db.execute_batch(
+            "INSERT INTO sync_events (event_id, device_id, seq, universe_id, aggregate_type, aggregate_id, operation, payload, new_rev, signature)
+             VALUES ('fx16-e-1804', 'fx16-dev-longe', 1804, 'fx16-u1', 'planning', 'fx16-p7', 'upsert', '{\"title\":\"A que faltava\"}', 'fx16-rev-p7-a', 'fx16-sig-1804');
+             INSERT INTO sync_applied_events (event_id) VALUES ('fx16-e-1804');",
+        )
+        .expect("fechar a lacuna");
+
+        db.execute(
+            "UPDATE sync_cursors SET last_seq_applied = 1805 WHERE origin_device_id = 'fx16-dev-longe'",
+            [],
+        )
+        .expect("com 1804 e 1805 aplicados o cursor avanca");
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Snapshot por cima de cursor existente é regressão ao V1, e o ADR 0009
+    /// §14 chama isso pelo nome. Semeia-se uma vez.
+    #[test]
+    fn o_baseline_nao_se_re_semeia() {
+        let (db, path) = banco_v16_com_fixture();
+
+        db.execute(
+            "UPDATE sync_cursors SET baseline_seq = 5000 WHERE origin_device_id = 'fx16-dev-longe'",
+            [],
+        )
+        .expect_err("re-semear o baseline seria estado inteiro sobrescrevendo estado inteiro");
+
+        // E semear uma origem que veio por evento também não: o baseline dela é 0.
+        db.execute(
+            "UPDATE sync_cursors SET baseline_seq = 2 WHERE origin_device_id = 'fx16-dev-note'",
+            [],
+        )
+        .expect_err("origem que chegou por evento nao ganha semente depois");
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// O cursor nunca fica atrás da semente: o conteúdo até ali já está no
+    /// banco, e pedi-lo de novo seria pedir o snapshot inteiro outra vez.
+    #[test]
+    fn o_cursor_nao_nasce_abaixo_do_baseline() {
+        let (db, path) = banco_v16_com_fixture();
+
+        // Origem nova, sem cursor ainda. Reaproveitar uma das que ja tem linha faria o
+        // INSERT falhar por chave primaria, e o teste passaria sem nunca tocar no
+        // invariante - foi assim que esta versao do gate mentiu na primeira mutacao.
+        db.execute(
+            "INSERT INTO sync_devices (device_id, ed25519_public) VALUES ('fx16-dev-novo', 'fx16-ed-novo')",
+            [],
+        )
+        .expect("registrar a origem nova");
+
+        let erro = db
+            .execute(
+                "INSERT INTO sync_cursors (origin_device_id, baseline_seq, last_seq_applied)
+                 VALUES ('fx16-dev-novo', 900, 400)",
+                [],
+            )
+            .expect_err("cursor abaixo do baseline nao descreve nenhum estado possivel");
+        assert!(
+            erro.to_string().contains("CHECK constraint failed"),
+            "reprovou pelo motivo errado: {erro}"
+        );
 
         std::fs::remove_file(path).ok();
     }
