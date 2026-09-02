@@ -7,6 +7,7 @@ pub mod entity_repository;
 pub mod knowledge_repository;
 pub mod manuscript_repository;
 pub mod planning_repository;
+pub mod sync_repository;
 #[cfg(test)]
 pub mod test_support;
 pub mod universe_repository;

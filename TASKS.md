@@ -845,6 +845,79 @@ Suíte: 195 testes Rust, 0 falhas.
 
 ---
 
+### NH-046 — Sync V2, etapa 2: event log, `seq` e revisões
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4  (etapa 2 de 14)
+```
+
+Primeira vez que o schema 16 ganha comportamento. Entrega o log com `seq`, a cadeia
+`base_rev`/`new_rev` e a classificação de causalidade. **Não** liga o log aos caminhos de
+escrita do domínio (etapa 3) nem aplica evento recebido (etapa 4).
+
+**`domain/sync.rs`** — puro, sem `rusqlite` e sem `tauri`. A regra de causalidade precisa ser
+testável sem banco, porque é ela que decide se duas edições são sequenciais ou concorrentes, e
+errar isso apaga trabalho do escritor.
+
+Duas correções ao texto do ADR, feitas na implementação:
+
+- **Concatenação nua colide.** O ADR escreve `SHA-256(base_rev ‖ aggregate_id ‖ operation ‖
+  payload)`, e `"ab" + "c"` produz os mesmos bytes que `"a" + "bc"`. Cada campo entra precedido
+  do tamanho, o que torna a decomposição única. Coberto por teste.
+- **Separador de domínio.** Sem ele, outra estrutura do sistema que por acaso concatenasse os
+  mesmos bytes produziria o mesmo hash.
+
+A classificação tem **quatro** saídas, e a quarta é a que evita inventar problema:
+
+| Saída | Quando |
+| --- | --- |
+| `Sequential` | a origem partiu de onde estamos |
+| `AlreadyPresent` | já conhecemos essa revisão — repetição é normal em rede |
+| `Concurrent` | partiu de uma base nossa já superada: os dois editaram do mesmo ponto |
+| `Unknown` | `base_rev` que não conhecemos. **Não é conflito** — é pedido de reconciliação |
+
+Tratar `Unknown` como conflito inventaria uma divergência que provavelmente não existe: o mais
+provável é que faltem eventos intermediários que ainda não chegaram.
+
+**`infrastructure/sqlite/sync_repository.rs`** — grava e lê o log. O outbox não é tabela: é
+`outbox_since`, o recorte da própria origem.
+
+#### O gate de concorrência, e o que a mutação revelou
+
+A `UNIQUE(device_id, seq)` transforma corrida em erro, e um erro aqui é **escrita local sem
+evento**: o dado existe no aparelho e nunca sai dele. Duas medidas — `BEGIN IMMEDIATE` e retry
+— e a mutação mostrou que **elas não são intercambiáveis**:
+
+| Mutação | Resultado |
+| --- | --- |
+| `DEFERRED`, sem retry | 7 de 8 threads morrem em "toda escrita local precisa virar evento" |
+| `DEFERRED`, **com** os 5 retries | continua reprovando |
+
+O segundo caso é o informativo. O erro é corretamente classificado como contenção (`database is
+locked`) e o retry roda as cinco vezes — e perde as cinco, porque cada tentativa disputa de
+novo com a mesma probabilidade. **Retry não substitui modo de transação.** Com `DEFERRED`, o
+`MAX(seq)` é lido antes de o lock de escrita existir; `IMMEDIATE` pega o lock antes da leitura.
+
+Não há backoff, de propósito: sob `IMMEDIATE`, chegar ao retry significa que o `busy_timeout` de
+oito segundos já expirou e a espera já aconteceu dentro do SQLite. Esse caminho **não é
+exercitado pela suíte**, e está dito no código — testá-lo exigiria segurar o lock por mais de
+oito segundos, e o custo não paga o que provaria.
+
+O gate roda 8 threads × 6 escritas contra banco em arquivo, com barreira para largarem juntas.
+Sem a barreira as escritas se enfileirariam sozinhas e o teste não exercitaria nada.
+
+#### O payload atravessa o log byte a byte
+
+`new_rev` é o hash do payload, e quem recebe recalcula sobre os bytes que chegaram. Um
+`serde_json` reserializando no meio — reordenando chaves, normalizando espaço — produziria hash
+diferente do mesmo conteúdo, e o evento seria recusado **como se tivesse sido adulterado**. O
+teste usa JSON com chaves fora de ordem e espaço irregular, exatamente o que um reserializador
+"arrumaria".
+
+---
+
 ### NH-043 — Reconciliação: "fonte da verdade" não é o último aparelho
 
 ```text

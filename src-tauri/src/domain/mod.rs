@@ -18,5 +18,6 @@ pub mod invariant_coverage;
 pub mod knowledge;
 pub mod manuscript;
 pub mod planning;
+pub mod sync;
 pub mod universe;
 pub mod workspace;
