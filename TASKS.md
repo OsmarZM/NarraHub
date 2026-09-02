@@ -689,13 +689,48 @@ passando — nenhum teste substitui reler o documento ao fechar uma fase.
 
 ---
 
+### NH-040 — ADR do Sync V2
+
+```text
+Owner:  Claude
+Status: REVIEW — aguardando decisão humana
+Fase:   4
+ADR:    0009 (Proposed)
+```
+
+**Nenhuma linha de código de sync foi escrita.** O roadmap exige o ADR antes, e o autor
+reforçou o pedido.
+
+O escopo pedido era mais amplo que "Noise vs TLS", e o ADR decide ou documenta os catorze
+pontos: threat model, identidade e ciclo de vida das chaves, pairing, transporte, replay,
+versionamento e handshake, envelope do evento, outbox transacional, cursores por peer,
+idempotência, tombstones e retenção, matriz de conflitos por agregado, compatibilidade e
+attachments por hash.
+
+**A decisão central é a causalidade.** `updated_at` está proibido como mecanismo principal:
+ele não distingue o caso que interessa — duas edições offline a partir da mesma versão. Em
+seu lugar, revisão encadeada por agregado (`new_rev = H(base_rev ‖ …)`), no modelo do Git.
+Dois eventos com o mesmo `base_rev` e `new_rev` diferentes **são** concorrência, e isso é
+detectável sem relógio.
+
+**Achado que reduz a fase:** `devices`, `sync_peers` e `sync_events` já existem no schema
+desde as primeiras migrations e **nunca foram usadas**. A forma do outbox foi antecipada e
+ficou dormindo — a migration é aditiva. O que falta nelas é justamente a causalidade.
+
+**Sem CRDT**, e o motivo completo está no ADR: só texto de capítulo em edição simultânea é
+candidato legítimo, e a autoria canônica sob controle do escritor reduz a pressão por
+convergência automática.
+
+**Só implementar depois de o ADR sair de `Proposed`.**
+
+---
+
 ## BACKLOG
 
 Registrado, **não implementar** antes de a fase correspondente abrir.
 
 | ID | Tarefa | Fase |
 | --- | --- | --- |
-| NH-040 | ADR do transporte do Sync V2 (threat model + Noise vs TLS) | 4 |
 | NH-050 | Teste de tokens de design (`var(--*)` sem definição reprova o CI) | 5 |
 | NH-051 | Escala de breakpoints e responsividade em telas menores | 5 |
 | NH-060 | Contrato `AIContext v1` e orçamento de contexto | 6 |
