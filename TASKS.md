@@ -693,7 +693,7 @@ passando — nenhum teste substitui reler o documento ao fechar uma fase.
 
 ```text
 Owner:  Claude
-Status: REVIEW — aguardando decisão humana
+Status: REVIEW — segunda revisão, aguardando decisão humana
 Fase:   4
 ADR:    0009 (Proposed)
 ```
@@ -707,11 +707,36 @@ versionamento e handshake, envelope do evento, outbox transacional, cursores por
 idempotência, tombstones e retenção, matriz de conflitos por agregado, compatibilidade e
 attachments por hash.
 
-**A decisão central é a causalidade.** `updated_at` está proibido como mecanismo principal:
-ele não distingue o caso que interessa — duas edições offline a partir da mesma versão. Em
-seu lugar, revisão encadeada por agregado (`new_rev = H(base_rev ‖ …)`), no modelo do Git.
-Dois eventos com o mesmo `base_rev` e `new_rev` diferentes **são** concorrência, e isso é
-detectável sem relógio.
+**Revisão 2, 2026-09-01 — premissa de produto corrigida pelo autor.** O Sync V2 não é
+desktop → aparelho secundário: o caso principal é **bidirecional entre instalações,
+especialmente Windows ↔ Android**, num conjunto de aparelhos confiáveis do mesmo acervo
+(`Desktop ↔ Notebook ↔ Android ↔ Tablet`).
+
+A correção não foi de redação, foi de modelo. A primeira versão dizia *"B pede a A: me mande
+tudo com `seq > 1802` do seu `device_id`"* — o que funciona para dois aparelhos e **quebra em
+três**: se cada peer só enviasse os próprios eventos, o Desktop e o Android precisariam se
+encontrar diretamente, e o conteúdo se perderia em silêncio quando não se encontrassem.
+
+O ADR agora separa explicitamente:
+
+- **papel de transporte**, assimétrico por sessão — um abre a porta, o outro conecta;
+- **papel de replicação**, sempre simétrico — quem abriu a porta não é servidor, não é
+  autoritativo e não é dono do dado.
+
+E o cursor virou **vetor de sequências por origem**, com store-and-forward: o Notebook carrega
+para o Android o que recebeu do Desktop. Isso dá propagação transitiva.
+
+**A decisão central continua sendo a causalidade.** `updated_at` está proibido como mecanismo
+principal: ele não distingue o caso que interessa — duas edições offline a partir da mesma
+versão, uma no Windows e outra no Android. Em seu lugar, revisão encadeada por agregado
+(`new_rev = H(base_rev ‖ …)`), no modelo do Git.
+
+**Snapshot vira semente, não mecanismo.** Um aparelho vazio pode ser inicializado por snapshot
+acompanhado do vetor de sequências daquele instante; depois disso, só incremental. Snapshot com
+cursor existente é regressão ao V1, e é gate.
+
+**Android: interrupção é o caso normal**, não exceção. Processo morto no meio da sessão não
+pode deixar evento aplicado pela metade, e reconexão retoma do cursor.
 
 **Achado que reduz a fase:** `devices`, `sync_peers` e `sync_events` já existem no schema
 desde as primeiras migrations e **nunca foram usadas**. A forma do outbox foi antecipada e
