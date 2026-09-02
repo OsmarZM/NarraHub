@@ -108,7 +108,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | --- | --- |
 | SQL no frontend | **Eliminado** — proibido por `tests/frontend-boundaries.test.mjs` |
 | Migração de Router | **Concluída** |
-| Rust Application Core | **Concluído** — resta limpar `src-tauri/src/commands/` legado |
+| Rust Application Core | **Concluído.** Comando de domínio só em `interface/tauri`, com gate |
 | Validador de versão | Roda no CI comum; cobre os 3 manifests + README + CHANGELOG |
 | CI | `ci.yml` cobre Angular + Rust em PR e push |
 | `WorkspaceLayout` | **Resolvido** na Fase 2, com gate executável |
@@ -159,10 +159,9 @@ disco antes de suspeitar do código.
   voltar para ela seguirá com um app que não abre. O portão só protege downgrades feitos a
   partir da primeira versão que o contiver.
 
-- `src-tauri/src/commands/` legado coexiste com `interface/tauri/` — **9 arquivos de comando
-  de cada lado**, ou seja, dois caminhos completos até o banco, não uma sobra pequena.
 - Sync V1 não tem transporte criptografado, identidade de dispositivo, outbox nem
-  tombstones.
+  tombstones, e usa `updated_at` para decidir concorrência. É o escopo da Fase 4, e a
+  primeira tarefa é o ADR — não código.
 - Sem teste de tokens de design — foi a causa do bug 0.9.0/0.9.1 (`var(--nh-glass-panel)`
   usado sem definição). Checagem ad hoc em 2026-08-31: 34 tokens definidos, 22 usados sem
   valor de reserva, **zero** usados sem definição. O estado hoje está são; nada impede a
@@ -178,13 +177,15 @@ disco antes de suspeitar do código.
 ## Não trabalhar ainda
 
 ```text
-Sync V2
 Context Engine / embeddings
 decomposição de features (Planning, Writing, Entities)
-design system hardening
-remoção do commands/ legado
+design system hardening e escala de breakpoints
+colaboração em tempo real / CRDT
 ```
 
-A Fase 1 fechou, então a rede de segurança existe: mudanças agora são provadas contra
-migration, backup e restauração automaticamente. O que continua bloqueado está bloqueado
-pela ordem do roadmap, não por falta de rede.
+O Sync V2 **saiu desta lista**: ele é a fase ativa. Mas há uma ordem dentro dele que continua
+valendo — **o ADR vem antes do código**, com threat model, causalidade e matriz de conflitos
+decididos primeiro.
+
+O que segue bloqueado está bloqueado pela ordem do roadmap, não por falta de rede: a Fase 1
+fechou, e mudança nova já é provada contra migration, backup e restauração automaticamente.
