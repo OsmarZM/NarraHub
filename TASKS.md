@@ -845,6 +845,71 @@ Suíte: 195 testes Rust, 0 falhas.
 
 ---
 
+### NH-043 — Reconciliação: "fonte da verdade" não é o último aparelho
+
+```text
+Owner:  Claude
+Status: DONE — só ADR, sem código
+Fase:   4  (afeta as etapas 2, 4 e principalmente 16)
+```
+
+Correção de filosofia trazida pelo autor. **Não muda o schema 16**; muda como a causalidade e a
+matriz de conflitos devem ser implementadas.
+
+A regra anterior do ADR — *"texto de capítulo: conflito explícito, nunca resolve sozinho"* —
+protegia contra `last-write-wins` e acertava nisso, mas errava para o outro lado: interrompia o
+escritor por qualquer vírgula divergente.
+
+A regra nova:
+
+> Texto de capítulo nunca perde uma revisão em silêncio. Alterações não sobrepostas são
+> mescladas automaticamente por **três vias**; sobrepostas exigem decisão humana. As duas
+> revisões originais permanecem preservadas.
+
+O que mudou no ADR:
+
+- **§16 reescrito.** Se PC e celular ficaram offline e os dois receberam alterações legítimas,
+  **os dois são verdade**. O sistema reconcilia revisões, não escolhe aparelho.
+- **Granularidade por bloco**, não pelo capítulo inteiro. "PC mexeu no bloco B, Android no
+  bloco E" não é conflito.
+- **Nenhuma revisão perdedora é apagada**, nem depois de merge automático: `A0`, `A1`, `A2` e
+  `A3` ficam recuperáveis. Para texto, armazenamento é barato perto do valor do conteúdo.
+- **Degrau por importância mantido e explicitado**: capítulo ganha três vias e preservação;
+  nome de personagem cai numa central de conflitos simples; posição de card se resolve por
+  desempate e ninguém precisa saber.
+- **§21 reforçado, não enfraquecido.** Poderia parecer que reconciliar texto exige CRDT. CRDT
+  resolve edição concorrente **em tempo real**, sem ponto de decisão; o NarraHub tem edição
+  alternada offline, que possui justamente o que falta ao caso do CRDT — uma **base comum
+  identificável**. `base_rev` + grafo + três vias + preservação resolve, com muito menos
+  maquinaria.
+- Cinco gates novos de reconciliação, mais um de fronteira: `last-write-wins` em texto de
+  capítulo **reprova**.
+
+---
+
+### NH-044 — Três armadilhas registradas nas etapas certas
+
+```text
+Owner:  Claude
+Status: DONE — só ADR, sem código
+Fase:   4  (etapas 2, 7 e 12)
+```
+
+Levantadas pelo autor ao revisar a etapa 1. Nenhuma é problema da migration — duas existem
+justamente porque o schema está obrigando a fazer certo.
+
+| Etapa | Armadilha | Gate |
+| --- | --- | --- |
+| 2 | `SELECT MAX(seq)+1` seguido de `INSERT` deixa duas threads escolherem 101. A `UNIQUE` transforma corrupção em erro, mas sem serialização ou retry o resultado é **escrita local sem evento** — o dado existe aqui e nunca sai daqui | duas escritas concorrentes produzem `seq` diferentes e nenhuma alteração fica sem evento |
+| 12 | a FK `sync_cursors → sync_devices` obriga o roster a chegar **antes** do vetor. Bootstrap é roster + snapshot + vetor, na mesma transação | vetor citando origem ausente do roster reprova, por integridade referencial |
+| 7 | chave privada fica fora do backup, `sync_devices` fica dentro: um backup restaurado afirma ser um dispositivo cuja chave não existe mais ali | restore rebaixa o `self` antigo, registra a identidade nova, e o primeiro evento local nasce com `seq = 1` |
+
+A terceira fecha o argumento de por que `seq` é **derivado** de `MAX(seq)` e não guardado num
+contador: um contador restaurado continuaria de onde o aparelho antigo parou, assinando com
+uma chave diferente sob um `device_id` que não é o seu.
+
+---
+
 ### NH-042 — Gate contra caractere de controle literal
 
 ```text
