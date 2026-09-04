@@ -72,7 +72,7 @@ O gate `o andaime superado não volta para o repositório` reprova se `angular-s
 ## Fase ativa
 
 ```text
-FASE 4 — Sync V2   (etapas 1, 2 e 2.5 de 14 concluídas)
+FASE 4 — Sync V2   (etapas 1, 2, 2.5 e 3 de 14 concluídas)
 ```
 
 As fases **3 e 3.5 fecharam em 2026-09-01**, com gates executáveis:
@@ -97,6 +97,7 @@ diretório não o pegaria; o gate contra **colocação** pega.
 > **Etapa 1:** schema 16, estruturas e invariantes de banco.
 > **Etapa 2:** log de eventos, `seq` atômico e cadeia de revisões.
 > **Etapa 2.5:** identidade Ed25519 local, privada fora do banco, evento assinado no nascimento.
+> **Etapa 3:** outbox transacional — salvar capítulo grava dado e evento na mesma transação.
 >
 > Reconciliação fina de capítulo por bloco depende da **NH-045** e não faz parte das 14
 > etapas. O Sync V2 pode fechar com conflito seguro de capítulo inteiro.
@@ -127,7 +128,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | `commands/` legado | **Removido** na Fase 3 |
 | Fronteira nativa do frontend | **Formalizada** — ADR 0008 |
 | Sync V1 sem criptografia | **Foco atual** — Fase 4 |
-| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1, 2 e 2.5 concluídas — schema 16, log com causalidade e eventos assinados |
+| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1–3 concluídas — o salvamento de capítulo já produz evento assinado |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
 | Ciclo de atualização empacotado | **Concluído.** Roteiro, checklist de release e três execuções reais |

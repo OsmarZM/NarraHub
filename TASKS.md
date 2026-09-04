@@ -1119,9 +1119,86 @@ Registrado, **não implementar** antes de a fase correspondente abrir.
 | ID | Tarefa | Fase |
 | --- | --- | --- |
 | NH-045 | Identidade persistente de blocos do editor (detalhado abaixo) | 4, fora das etapas 1–14 |
+| NH-048 | Gravação atômica do arquivo de identidade (detalhado abaixo) | 4, hardening antes do Sync V2 sair |
 | NH-050 | Teste de tokens de design (`var(--*)` sem definição reprova o CI) | 5 |
 | NH-051 | Escala de breakpoints e responsividade em telas menores | 5 |
 | NH-060 | Contrato `AIContext v1` e orçamento de contexto | 6 |
+
+---
+
+### NH-049 — Sync V2, etapa 3: outbox transacional
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4  (etapa 3 de 14)
+```
+
+A etapa que tira o Sync V2 do estado de infraestrutura sem chamador. A revisão da 2.5 apontou
+a lacuna com precisão: `load_or_create`, `reconcile_self` e `append_local_event` só apareciam
+dentro dos próprios módulos.
+
+#### A transação é uma só, e é a do domínio
+
+`append_event_in_transaction` opera sobre uma `&Transaction` recebida de fora;
+`append_local_event` virou a casca fina que abre a transação e chama a outra.
+
+```text
+ERRADO                             CERTO
+------                             -----
+BEGIN; UPDATE chapter; COMMIT      BEGIN IMMEDIATE
+append_local_event()                 UPDATE chapter
+   ← duas transações                 append_event_in_transaction()
+   ← queda no meio deixa o         COMMIT
+     dado salvo e sem evento
+```
+
+O primeiro caminho real ligado é o **salvamento de capítulo** — o do autosave, que é onde uma
+perda dói mais.
+
+Duas decisões dentro dele:
+
+- **O payload é o estado novo do agregado**, lido depois da escrita e dentro da mesma
+  transação. Montá-lo a partir do patch descreveria só o que a tela mexeu, e quem recebe
+  precisa do capítulo inteiro para convergir.
+- **Patch vazio não gera evento.** A tela chama o salvamento mesmo quando nada mudou; um evento
+  por foco no editor encheria o log e faria os outros aparelhos reaplicarem o mesmo estado sem
+  parar.
+
+#### O gate dos dois sentidos
+
+| Sentido | Teste | Mutação que o derruba |
+| --- | --- | --- |
+| falhou o dado → sem evento | `dado_recusado_nao_deixa_evento_para_tras` | — |
+| falhou o evento → dado volta | `evento_recusado_desfaz_a_alteracao_do_dado` | **duas transações** |
+
+O segundo é o que só a transação compartilhada garante, e o mais fácil de perder: `UPDATE
+chapter; COMMIT` seguido de gravar o evento passa em todo teste feliz, e deixa o capítulo salvo
+e invisível para os outros aparelhos no dia em que o evento falhar. Verificado — a mutação
+derruba **só** esse teste, o que também prova que os outros oito não o estavam cobrindo.
+
+A falha é forçada de forma realista: a identidade deixa de ser o `self` do roster, que é
+exatamente o estado que um banco restaurado de outro aparelho produz antes da reconciliação.
+
+#### A sequência de arranque virou gate
+
+Pedida pelo autor, e cobrada passo a passo:
+
+```text
+identidade existe no disco  →  foi carregada  →  reconcile_self rodou
+   →  exatamente um `self`  →  o `self` corresponde à chave
+   →  e só então a transação de domínio produz evento
+```
+
+Com o outro lado junto: **sem o arranque, a escrita falha** em vez de gravar sem evento. A
+ordem não é convenção que alguém precisa lembrar — é pré-condição que o banco cobra. Removendo
+`reconcile_self` do arranque, três dos quatro testes reprovam.
+
+**`sync_identity` não guarda estado**, pelo mesmo motivo de `database`: a restauração de backup
+troca o banco debaixo do app, e uma identidade memorizada deixaria o `self` do roster apontando
+para o aparelho de onde o backup veio. Rodar o arranque a cada comando de escrita é barato — a
+reconciliação é uma consulta indexada quando não há nada a mudar — e dispensa invalidação de
+cache num caminho onde errar significa assinar eventos com a origem de outro aparelho.
 
 ---
 
@@ -1203,6 +1280,37 @@ Mais dois gates de fronteira: a chave privada **não aparece em nenhuma tabela**
 arquivos por "copie o diretório de dados inteiro" — a mudança mais natural do mundo, e a mais
 cara aqui: dois aparelhos com o mesmo `device_id` fazem o cursor de todos os outros peers
 significar duas coisas ao mesmo tempo.
+
+---
+
+### NH-048 — Gravação atômica do arquivo de identidade
+
+```text
+Owner:  —
+Status: BACKLOG
+Fase:   4, hardening antes de o Sync V2 sair de verdade
+```
+
+Levantado pelo autor ao revisar a etapa 2.5, e ele mesmo decidiu não reabrir a etapa por isso.
+
+`identity_store::gravar` usa `std::fs::write`. Uma queda de energia no meio da **primeira**
+gravação pode deixar um `sync-identity.json` truncado — e um arquivo truncado não é uma
+identidade parcial, é um aparelho que perdeu a identidade e precisa parear tudo de novo.
+
+```text
+write temp
+   ↓
+fsync temp
+   ↓
+rename atômico
+   ↓
+fsync do diretório
+```
+
+**Fica mais urgente na etapa 8**, e é por isso que está datado: hoje o arquivo é escrito uma vez
+e nunca mais. Quando a X25519 do Noise entrar no mesmo formato, ele passa a ser **atualizado** —
+e reescrever um arquivo existente é onde a janela de truncamento realmente machuca, porque o
+conteúdo anterior era válido.
 
 ---
 

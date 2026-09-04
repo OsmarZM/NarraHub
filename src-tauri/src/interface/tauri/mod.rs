@@ -14,6 +14,7 @@ pub mod universe_commands;
 pub mod workspace_commands;
 
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
+use crate::domain::identity::DeviceIdentity;
 use crate::infrastructure::sqlite::SqliteDatabase;
 use ::tauri::AppHandle;
 
@@ -23,4 +24,18 @@ use ::tauri::AppHandle;
 pub fn database(app: &AppHandle) -> DatabaseCommandResult<SqliteDatabase> {
     let path = crate::database::app_database_path(app).map_err(DatabaseCommandError::storage)?;
     Ok(SqliteDatabase::new(path))
+}
+
+/// A identidade de sincronização deste aparelho, pronta para assinar.
+///
+/// Não guarda estado, pelo mesmo motivo de `database`: a restauração de
+/// backup troca o banco debaixo do app, e uma identidade memorizada deixaria
+/// o `self` do roster apontando para o aparelho de onde o backup veio. Rodar
+/// o arranque a cada comando de escrita é barato — `reconcile_self` é uma
+/// consulta indexada quando não há nada a mudar — e é o que dispensa
+/// invalidação de cache num caminho onde errar significa assinar eventos com
+/// a origem de outro aparelho.
+pub fn sync_identity(app: &AppHandle) -> DatabaseCommandResult<DeviceIdentity> {
+    let app_data = crate::database::app_data_path(app).map_err(DatabaseCommandError::storage)?;
+    crate::application::sync_bootstrap::prepare(&app_data, &database(app)?)
 }

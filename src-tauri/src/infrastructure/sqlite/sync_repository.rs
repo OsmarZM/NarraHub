@@ -82,7 +82,7 @@ use crate::domain::sync::{
     compute_revision, AggregateHistory, AggregateRef, EventEnvelope, Operation,
 };
 use crate::infrastructure::sqlite::connection::BUSY_TIMEOUT;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::time::{Duration, Instant};
 
 /// Quanto o SQLite segura a PRIMEIRA tentativa antes de devolver "locked".
@@ -209,7 +209,37 @@ fn tentar_append(
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    let envelope = append_event_in_transaction(&tx, identidade, change)?;
+    tx.commit()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Ok(envelope)
+}
 
+/// Registra o evento **dentro de uma transação que já existe**.
+///
+/// Esta é a forma que a etapa 3 usa, e a razão de ela existir separada:
+///
+/// ```text
+/// ERRADO                             CERTO
+/// ------                             -----
+/// BEGIN; UPDATE chapter; COMMIT      BEGIN IMMEDIATE
+/// append_local_event()                 UPDATE chapter
+///    ← duas transações                 append_event_in_transaction()
+///    ← queda no meio deixa o         COMMIT
+///      dado salvo e sem evento
+/// ```
+///
+/// Duas transações reconstroem exatamente o buraco que o outbox existe para
+/// fechar: um dado gravado que nenhuma sincronização vai carregar, e nada
+/// registrando que faltou.
+///
+/// Quem chama é responsável pelo `BEGIN IMMEDIATE` — pelo motivo do cabeçalho
+/// deste módulo, `DEFERRED` leria `MAX(seq)` antes de o lock existir.
+pub fn append_event_in_transaction(
+    tx: &Transaction<'_>,
+    identidade: &DeviceIdentity,
+    change: &LocalChange<'_>,
+) -> DatabaseCommandResult<EventEnvelope> {
     // A origem é a identidade do ARQUIVO, não o que o banco diz ser o
     // `self`. Um banco restaurado de outro aparelho afirma ser ele; assinar
     // com esta chave sob aquele `device_id` embaralharia duas sequências na
@@ -378,9 +408,6 @@ fn tentar_append(
         rusqlite::params![&envelope.device_id, envelope.seq],
     )
     .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-
-    tx.commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
 
     Ok(envelope)
 }

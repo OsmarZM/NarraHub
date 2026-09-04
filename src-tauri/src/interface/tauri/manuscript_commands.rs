@@ -93,7 +93,12 @@ pub fn chapter_update(
     id: String,
     patch: ChapterUpdate,
 ) -> DatabaseCommandResult<()> {
-    manuscript_service::update_chapter(&super::database(&app)?, &id, patch)
+    manuscript_service::update_chapter(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        &id,
+        patch,
+    )
 }
 
 #[tauri::command]
