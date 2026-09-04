@@ -1202,6 +1202,54 @@ cache num caminho onde errar significa assinar eventos com a origem de outro apa
 
 ---
 
+### NH-051 — Sync V2, etapa 5: cursor contíguo e pendentes
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4  (etapa 5 de 14)
+```
+
+A etapa 4 sabe aplicar **um** evento. Esta sabe em que ordem, o que fazer com o que chegou
+adiantado, e quando o cursor pode andar — o quarto efeito da seção 12, na mesma transação.
+
+**Pendente não é tabela.** É estar no log e não estar em `sync_applied_events`. Por isso ele
+sobrevive ao processo de graça: mora em disco desde o instante em que o envelope foi guardado.
+No Android, onde o sistema mata o aplicativo sem avisar, um buffer em memória perderia
+exatamente o que estava esperando a lacuna fechar.
+
+O laço guarda **tudo primeiro**, sem aplicar nada, e só então drena o que estiver contíguo. Um
+evento adiantado precisa estar no log antes de a lacuna fechar; descartá-lo significaria pedir
+de novo, e "de novo" pode ser daqui a semanas.
+
+Cada sessão também revisita as origens que já tinham pendentes — a lacuna pode ter fechado com
+o que acabou de chegar, e é assim que o `2` e o `3` entram na mesma passada.
+
+| Cenário | Comportamento |
+| --- | --- |
+| lote em ordem | aplica tudo, cursor avança |
+| chega 1 e 3, falta o 2 | aplica só o 1; o 3 fica no log, cursor em 1 |
+| chega o 2 depois | **2 e 3 entram juntos**, cursor vai a 3 |
+| lacuna numa origem | **não trava** as outras — é a razão de o cursor ser um vetor |
+| lote embaralhado | ordenado antes de aplicar; a rede não garante ordem |
+| mesmo lote duas vezes | nada muda |
+
+#### O que trava o avanço além da lacuna
+
+Um evento pode ser contíguo por `seq` e ainda assim não aplicável: `base_rev` desconhecido. Aí
+o cursor **para** e o relatório diz qual agregado precisa de reconciliação. Aplicar escreveria
+sobre uma história que não temos; pular deixaria o cursor mentir.
+
+#### Uma inconsistência minha, encontrada na revisão
+
+`evento_de` lia a operação com `unwrap_or(Upsert)` — exatamente o *fail-open* que a etapa 2
+corrigiu no `outbox_since`, reintroduzido por eu ter copiado a forma antiga. Um `delete`
+ilegível viraria ressurreição silenciosa do agregado. Corrigido para falhar fechado nos dois
+lugares.
+
+A mutação que faz o cursor pular a lacuna derruba quatro dos oito testes.
+
+
 ### NH-050 — Sync V2, etapa 4: aplicação remota e idempotência
 
 ```text
