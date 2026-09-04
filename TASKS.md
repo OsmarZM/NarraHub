@@ -1202,6 +1202,56 @@ cache num caminho onde errar significa assinar eventos com a origem de outro apa
 
 ---
 
+### NH-050 — Sync V2, etapa 4: aplicação remota e idempotência
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4  (etapa 4 de 14)
+```
+
+Os efeitos da seção 12 do ADR, numa transação só. O quarto — avançar o cursor — fica para a
+etapa 5, e por um motivo: decidir se o cursor pode avançar depende de a sequência ter ficado
+contígua, o que é decisão da **sessão**, não de um evento isolado.
+
+**O envelope entra no log antes de qualquer decisão sobre aplicar.** Mesmo um evento que vira
+divergência precisa ficar guardado: é ele que o relay retransmite, e é dele que a resolução do
+conflito lê a outra versão. Guardar só o que foi aplicado perderia metade da história.
+
+| Causalidade | O que acontece |
+| --- | --- |
+| `Sequential` | aplica, registra revisão, marca aplicado |
+| `AlreadyPresent` | marca aplicado e para — repetição é normal em rede |
+| `Concurrent` | **nada é sobrescrito**: registra a revisão remota e abre divergência |
+| `Unknown` | **não marca aplicado** — quando a história chegar, precisa ser reavaliado |
+
+O `Unknown` é o que mais fácil se erraria: marcar como aplicado impediria a reavaliação, e o
+evento ficaria guardado para sempre sem nunca entrar.
+
+#### Falha fechada em agregado sem aplicação
+
+Hoje só `chapter` tem aplicação — é o único que a etapa 3 produz. Qualquer outro tipo **para a
+sessão**. Ignorar produziria o pior estado possível: o evento constaria como aplicado, o cursor
+avançaria, e o dado nunca chegaria, sem nada registrando a falta.
+
+#### O que a mutação encontrou
+
+Removendo a checagem de `event_id`, **todos os testes continuavam verdes** — `classify`
+devolvia `AlreadyPresent` ao reconhecer a `new_rev` em `sync_revision_history`. A checagem
+parecia redundante.
+
+Não é. O ADR §11 diz que essa tabela guarda **as últimas** revisões por agregado — ela pode ser
+podada. Depois da poda, quem impede a reaplicação é o registro de `event_id`, e mais nada; sem
+ele, um evento antigo reaparecendo numa reconexão sobrescreveria edições posteriores. O teste
+novo poda a história e prova exatamente isso, e reprova sob a mutação.
+
+Entrou junto um caso que ninguém cobria: **dois aparelhos fazendo a mesma edição a partir da
+mesma base convergem sem divergência.** A revisão é `H(base ‖ agregado ‖ operação ‖ payload)`,
+então conteúdo igual produz `new_rev` igual mesmo vindo de origens diferentes — e tratar isso
+como conflito faria o escritor escolher entre dois textos idênticos.
+
+---
+
 ### NH-047 — Sync V2, etapa 2.5: identidade local e assinatura no nascimento
 
 ```text
