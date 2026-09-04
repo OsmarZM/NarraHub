@@ -9,6 +9,7 @@ pub mod manuscript_repository;
 pub mod planning_repository;
 pub mod sync_apply;
 pub mod sync_repository;
+pub mod sync_session;
 #[cfg(test)]
 pub mod test_support;
 pub mod universe_repository;
