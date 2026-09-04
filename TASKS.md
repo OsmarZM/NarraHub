@@ -1125,6 +1125,87 @@ Registrado, **não implementar** antes de a fase correspondente abrir.
 
 ---
 
+### NH-047 — Sync V2, etapa 2.5: identidade local e assinatura no nascimento
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4  (etapa 2.5 de 14)
+```
+
+Etapa criada pelo autor ao revisar a etapa 2, e ela tinha prazo: a etapa 3 liga o log às
+escritas reais, e `sync_events` é append-only por trigger.
+
+```text
+evento nascido sem assinatura  →  não pode ser assinado depois
+                               →  começo do log inverificável para sempre
+                               →  exceção eterna no caminho de verificação
+```
+
+Uma exceção no caminho que decide se um evento é autêntico é o pior lugar possível para ter
+uma.
+
+**`domain/identity.rs`** — puro. Ed25519 para assinar, `device_id` = SHA-256 truncado da
+pública em base32, e a representação canônica do envelope: ordem fixa, cada campo precedido do
+tamanho, **menos a assinatura**. O `payload` entra como bytes opacos — reserializar mudaria os
+bytes do mesmo conteúdo e o outro aparelho recusaria o evento como adulterado.
+
+Três decisões que valem registro:
+
+- **Separador de domínio próprio**, diferente do usado em `new_rev`. Os dois hashes cobrem
+  coisas diferentes; um prefixo comum permitiria que bytes preparados para um valessem no
+  outro.
+- **`Debug` escrito à mão.** `#[derive(Debug)]` imprimiria a chave privada em qualquer pânico
+  ou log — e chave que vaza em log deixa de ser privada mesmo estando fora do backup e fora do
+  banco.
+- **Base32 escrito aqui**, em vez de dependência: vinte linhas, formato fixo, e o alfabeto sem
+  `0`, `1` e `8` é o que faz um fingerprint sobreviver a alguém lendo em voz alta.
+
+**`infrastructure/identity_store.rs`** — a privada mora em arquivo, fora do banco (§5), com
+`0600` no Unix. Formato versionado desde a primeira gravação, porque a chave X25519 do Noise
+(etapa 8) vai morar no mesmo arquivo.
+
+#### O restore de backup, resolvido aqui em vez de na etapa 7
+
+O autor tinha datado isto para "etapa 7, ou onde identidade e restore se encontrarem". É aqui.
+
+```text
+chave privada   fora do backup
+sync_devices    dentro do backup   →  o banco restaurado carrega
+                                      old-desktop com is_self = 1
+```
+
+O banco afirma ser um dispositivo cuja chave não existe mais ali. `reconcile_self` rebaixa o
+`self` antigo para `retired` e registra a identidade nova. **Rebaixa, não apaga** — os eventos
+daquela origem continuam no log, a FK depende da linha, e apagar reescreveria a história de um
+aparelho que existiu de verdade.
+
+E a decisão que fecha o argumento do `seq` derivado: **a origem do evento vem da chave, não do
+banco.** Se viesse do banco, o aparelho novo assinaria com a própria chave sob o `device_id` de
+outro, e o `seq` continuaria de onde o antigo parou — duas sequências embaralhadas na mesma
+origem.
+
+#### Gates, todos verificados por mutação
+
+| Mecanismo removido | Reprova |
+| --- | --- |
+| assinatura no nascimento | `o_evento_nasce_assinado`, `o_que_sai_pelo_outbox_verifica` |
+| origem vinda da chave | `a_origem_vem_da_chave_e_nao_do_banco` |
+| rebaixamento do `self` antigo | `banco_restaurado_de_outro_aparelho_rebinda_o_self` |
+| `payload` na canonicalização | `alterar_qualquer_campo_invalida_a_assinatura` |
+
+O de canonicalização cobre os **dez** campos do envelope, um a um. Campo de fora da assinatura
+é campo que um relay pode alterar sem que ninguém perceba — e mudar `device_id` ou `seq` em
+trânsito reescreve a origem do evento.
+
+Mais dois gates de fronteira: a chave privada **não aparece em nenhuma tabela** do banco, e
+**não entra no backup**. O segundo existe para o dia em que alguém trocar a lista explícita de
+arquivos por "copie o diretório de dados inteiro" — a mudança mais natural do mundo, e a mais
+cara aqui: dois aparelhos com o mesmo `device_id` fazem o cursor de todos os outros peers
+significar duas coisas ao mesmo tempo.
+
+---
+
 ### NH-045 — Identidade persistente de blocos do editor
 
 ```text

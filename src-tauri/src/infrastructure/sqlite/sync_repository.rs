@@ -76,6 +76,7 @@
 //! valor de origem no fim, inclusive quando a operação falha.
 
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
+use crate::domain::identity::DeviceIdentity;
 use crate::domain::ids::new_id;
 use crate::domain::sync::{
     compute_revision, AggregateHistory, AggregateRef, EventEnvelope, Operation,
@@ -137,19 +138,21 @@ pub fn self_device_id(connection: &Connection) -> DatabaseCommandResult<Option<S
 /// história de revisões e o estado do agregado — os quatro ou nada.
 pub fn append_local_event(
     connection: &mut Connection,
+    identidade: &DeviceIdentity,
     change: &LocalChange<'_>,
 ) -> DatabaseCommandResult<EventEnvelope> {
     // Quem ajusta o `busy_timeout` é o laço, por tentativa. Aqui só se
     // garante a devolução ao valor de origem nas duas saídas: sem isso, uma
     // saída por erro deixaria a conexão com a fatia do append, e todo o resto
     // do aplicativo passaria a desistir cedo.
-    let resultado = append_dentro_do_orcamento(connection, change);
+    let resultado = append_dentro_do_orcamento(connection, identidade, change);
     let _ = connection.busy_timeout(BUSY_TIMEOUT);
     resultado
 }
 
 fn append_dentro_do_orcamento(
     connection: &mut Connection,
+    identidade: &DeviceIdentity,
     change: &LocalChange<'_>,
 ) -> DatabaseCommandResult<EventEnvelope> {
     let inicio = Instant::now();
@@ -169,7 +172,7 @@ fn append_dentro_do_orcamento(
             .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
 
         tentativas += 1;
-        match tentar_append(connection, change) {
+        match tentar_append(connection, identidade, change) {
             Ok(envelope) => return Ok(envelope),
             Err(erro) if e_contencao(&erro) => {
                 if inicio.elapsed() >= ORCAMENTO_TOTAL {
@@ -200,25 +203,33 @@ fn e_contencao(erro: &DatabaseCommandError) -> bool {
 
 fn tentar_append(
     connection: &mut Connection,
+    identidade: &DeviceIdentity,
     change: &LocalChange<'_>,
 ) -> DatabaseCommandResult<EventEnvelope> {
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
 
-    let device_id: String = tx
+    // A origem é a identidade do ARQUIVO, não o que o banco diz ser o
+    // `self`. Um banco restaurado de outro aparelho afirma ser ele; assinar
+    // com esta chave sob aquele `device_id` embaralharia duas sequências na
+    // mesma origem. `reconcile_self` corrige o banco no arranque, e aqui a
+    // fonte da verdade é quem tem a chave.
+    let device_id = identidade.device_id().to_string();
+    let registrada: bool = tx
         .query_row(
-            "SELECT device_id FROM sync_devices WHERE is_self = 1",
-            [],
-            |row| row.get(0),
+            "SELECT 1 FROM sync_devices WHERE device_id = ?1 AND is_self = 1",
+            [&device_id],
+            |_| Ok(true),
         )
         .optional()
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?
-        .ok_or_else(|| {
-            DatabaseCommandError::unavailable(
-                "Este aparelho ainda não tem identidade de sincronização registrada.",
-            )
-        })?;
+        .unwrap_or(false);
+    if !registrada {
+        return Err(DatabaseCommandError::unavailable(
+            "Este aparelho ainda não tem identidade de sincronização registrada.",
+        ));
+    }
 
     // Derivado, e não guardado num contador. O motivo está no comentário da
     // migration v16: um backup restaurado em outra máquina vira um
@@ -255,22 +266,41 @@ fn tentar_append(
     );
     let event_id = new_id();
 
+    // O envelope é montado inteiro ANTES de ir para o banco, porque a
+    // assinatura cobre os campos dele. Assinar depois de gravar seria
+    // impossível: `sync_events` é append-only por trigger.
+    let mut envelope = EventEnvelope {
+        event_id,
+        device_id,
+        seq: proximo_seq,
+        universe_id: change.universe_id.to_string(),
+        aggregate_type: change.aggregate.aggregate_type.clone(),
+        aggregate_id: change.aggregate.aggregate_id.clone(),
+        operation: change.operation,
+        payload: change.payload.to_string(),
+        base_rev,
+        new_rev,
+        signature: String::new(),
+    };
+    envelope.signature = identidade.sign(&envelope);
+
     tx.execute(
         "INSERT INTO sync_events
             (event_id, device_id, seq, universe_id, aggregate_type, aggregate_id,
              operation, payload, base_rev, new_rev, signature)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, '')",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         rusqlite::params![
-            &event_id,
-            &device_id,
-            proximo_seq,
-            change.universe_id,
-            &change.aggregate.aggregate_type,
-            &change.aggregate.aggregate_id,
-            change.operation.as_str(),
-            change.payload,
-            &base_rev,
-            &new_rev,
+            &envelope.event_id,
+            &envelope.device_id,
+            envelope.seq,
+            &envelope.universe_id,
+            &envelope.aggregate_type,
+            &envelope.aggregate_id,
+            envelope.operation.as_str(),
+            &envelope.payload,
+            &envelope.base_rev,
+            &envelope.new_rev,
+            &envelope.signature,
         ],
     )
     .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
@@ -280,7 +310,7 @@ fn tentar_append(
     // construção. Sem isto, todo evento local pareceria pendente.
     tx.execute(
         "INSERT INTO sync_applied_events (event_id) VALUES (?1)",
-        [&event_id],
+        [&envelope.event_id],
     )
     .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
 
@@ -289,11 +319,11 @@ fn tentar_append(
             (aggregate_type, aggregate_id, rev, base_rev, event_id)
          VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![
-            &change.aggregate.aggregate_type,
-            &change.aggregate.aggregate_id,
-            &new_rev,
-            &base_rev,
-            &event_id,
+            &envelope.aggregate_type,
+            &envelope.aggregate_id,
+            &envelope.new_rev,
+            &envelope.base_rev,
+            &envelope.event_id,
         ],
     )
     .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
@@ -306,9 +336,9 @@ fn tentar_append(
                  ON CONFLICT(aggregate_type, aggregate_id)
                  DO UPDATE SET current_rev = excluded.current_rev",
                 rusqlite::params![
-                    &change.aggregate.aggregate_type,
-                    &change.aggregate.aggregate_id,
-                    &new_rev,
+                    &envelope.aggregate_type,
+                    &envelope.aggregate_id,
+                    &envelope.new_rev,
                 ],
             )
             .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
@@ -320,10 +350,7 @@ fn tentar_append(
             tx.execute(
                 "DELETE FROM sync_aggregate_state
                   WHERE aggregate_type = ?1 AND aggregate_id = ?2",
-                [
-                    &change.aggregate.aggregate_type,
-                    &change.aggregate.aggregate_id,
-                ],
+                [&envelope.aggregate_type, &envelope.aggregate_id],
             )
             .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
             tx.execute(
@@ -332,9 +359,9 @@ fn tentar_append(
                  ON CONFLICT(aggregate_type, aggregate_id)
                  DO UPDATE SET deleted_rev = excluded.deleted_rev",
                 rusqlite::params![
-                    &change.aggregate.aggregate_type,
-                    &change.aggregate.aggregate_id,
-                    &new_rev,
+                    &envelope.aggregate_type,
+                    &envelope.aggregate_id,
+                    &envelope.new_rev,
                 ],
             )
             .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
@@ -348,26 +375,14 @@ fn tentar_append(
          VALUES (?1, 0, ?2)
          ON CONFLICT(origin_device_id)
          DO UPDATE SET last_seq_applied = excluded.last_seq_applied",
-        rusqlite::params![&device_id, proximo_seq],
+        rusqlite::params![&envelope.device_id, envelope.seq],
     )
     .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
 
     tx.commit()
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
 
-    Ok(EventEnvelope {
-        event_id,
-        device_id,
-        seq: proximo_seq,
-        universe_id: change.universe_id.to_string(),
-        aggregate_type: change.aggregate.aggregate_type.clone(),
-        aggregate_id: change.aggregate.aggregate_id.clone(),
-        operation: change.operation,
-        payload: change.payload.to_string(),
-        base_rev,
-        new_rev,
-        signature: String::new(),
-    })
+    Ok(envelope)
 }
 
 /// A história local de um agregado, para a classificação da seção 11.
@@ -457,19 +472,38 @@ pub fn outbox_since(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::identity::{verify, DeviceIdentity};
     use crate::infrastructure::sqlite::test_support::TemporaryDatabase;
     use std::collections::HashSet;
     use std::sync::{Arc, Barrier};
     use std::time::{Duration, Instant};
 
-    fn registrar_identidade(connection: &Connection, device_id: &str, is_self: i64) {
+    /// Gera uma identidade de verdade e registra o `self` no roster.
+    ///
+    /// Não há atalho com chave falsa: desde a etapa 2.5 todo evento nasce
+    /// assinado, e um teste que usasse chave inventada não exercitaria o
+    /// caminho que a produção percorre.
+    fn registrar_self(connection: &Connection) -> DeviceIdentity {
+        let identidade = DeviceIdentity::generate();
         connection
             .execute(
                 "INSERT INTO sync_devices (device_id, name, ed25519_public, is_self)
-                 VALUES (?1, ?1, 'chave-de-teste', ?2)",
-                rusqlite::params![device_id, is_self],
+                 VALUES (?1, 'Este aparelho', ?2, 1)",
+                rusqlite::params![identidade.device_id(), identidade.public_base32()],
             )
-            .expect("registrar dispositivo");
+            .expect("registrar self");
+        identidade
+    }
+
+    /// Um peer qualquer no roster, sem chave própria neste teste.
+    fn registrar_peer(connection: &Connection, device_id: &str) {
+        connection
+            .execute(
+                "INSERT INTO sync_devices (device_id, name, ed25519_public, is_self)
+                 VALUES (?1, ?1, 'CHAVEDEPEER', 0)",
+                [device_id],
+            )
+            .expect("registrar peer");
     }
 
     fn mudanca<'a>(id: &'a str, payload: &'a str) -> LocalChange<'a> {
@@ -507,10 +541,10 @@ mod tests {
     #[test]
     fn escritas_locais_concorrentes_recebem_sequencias_distintas() {
         let temporario = TemporaryDatabase::new();
-        {
+        let identidade = {
             let connection = temporario.database.write().expect("abrir para escrita");
-            registrar_identidade(&connection, "dev-local", 1);
-        }
+            Arc::new(registrar_self(&connection))
+        };
 
         // Quatro escritores já produzem a corrida — o defeito que este gate
         // pega aparece com dois. Oito só aumentavam a chance de o orçamento
@@ -524,6 +558,7 @@ mod tests {
         let mut linhas = Vec::new();
         for escritor in 0..ESCRITORES {
             let barreira = Arc::clone(&barreira);
+            let identidade = Arc::clone(&identidade);
             let banco = caminho.clone();
             linhas.push(std::thread::spawn(move || {
                 let mut connection = banco.write().expect("abrir para escrita");
@@ -534,7 +569,8 @@ mod tests {
                 for indice in 0..POR_ESCRITOR {
                     let id = format!("cap-{escritor}-{indice}");
                     let payload = format!("{{\"titulo\":\"{id}\"}}");
-                    match append_local_event(&mut connection, &mudanca(&id, &payload)) {
+                    match append_local_event(&mut connection, &identidade, &mudanca(&id, &payload))
+                    {
                         Ok(envelope) => sequencias.push(envelope.seq),
                         // Falhar aqui é o sintoma do defeito, contenção
                         // inclusive: com `IMMEDIATE` a disputa vira espera, e
@@ -602,8 +638,8 @@ mod tests {
 
         let cursor: i64 = connection
             .query_row(
-                "SELECT last_seq_applied FROM sync_cursors WHERE origin_device_id = 'dev-local'",
-                [],
+                "SELECT last_seq_applied FROM sync_cursors WHERE origin_device_id = ?1",
+                [identidade.device_id()],
                 |row| row.get(0),
             )
             .expect("ler cursor da própria origem");
@@ -634,10 +670,10 @@ mod tests {
     #[test]
     fn uma_tentativa_sozinha_nao_perde_a_corrida() {
         let temporario = TemporaryDatabase::new();
-        {
+        let identidade = {
             let connection = temporario.database.write().expect("abrir para escrita");
-            registrar_identidade(&connection, "dev-local", 1);
-        }
+            Arc::new(registrar_self(&connection))
+        };
 
         const ESCRITORES: usize = 8;
         let barreira = Arc::new(Barrier::new(ESCRITORES));
@@ -646,6 +682,7 @@ mod tests {
         let mut linhas = Vec::new();
         for escritor in 0..ESCRITORES {
             let barreira = Arc::clone(&barreira);
+            let identidade = Arc::clone(&identidade);
             let banco = caminho.clone();
             linhas.push(std::thread::spawn(move || {
                 let mut connection = banco.write().expect("abrir para escrita");
@@ -653,7 +690,8 @@ mod tests {
                 let id = format!("cap-{escritor}");
                 let payload = format!("{{\"titulo\":\"{id}\"}}");
                 // Sem retry: é o modo de transação que tem que segurar.
-                tentar_append(&mut connection, &mudanca(&id, &payload)).map(|envelope| envelope.seq)
+                tentar_append(&mut connection, &identidade, &mudanca(&id, &payload))
+                    .map(|envelope| envelope.seq)
             }));
         }
 
@@ -669,6 +707,136 @@ mod tests {
 
         let distintas: HashSet<i64> = sequencias.iter().copied().collect();
         assert_eq!(distintas.len(), ESCRITORES, "seq repetido: {sequencias:?}");
+    }
+
+    /// GATE DA ETAPA 2.5: o evento nasce assinado, e a assinatura confere.
+    ///
+    /// `sync_events` é append-only por trigger. Um evento gravado sem
+    /// assinatura **não pode ser assinado depois** — a linha não se edita. Se
+    /// a etapa 3 começar a produzir eventos reais sem isto, o começo do log
+    /// fica permanentemente inverificável, e o caminho de verificação da
+    /// etapa 7 precisaria de uma exceção eterna.
+    #[test]
+    fn o_evento_nasce_assinado() {
+        let temporario = TemporaryDatabase::new();
+        let mut connection = temporario.database.write().expect("abrir para escrita");
+        let identidade = registrar_self(&connection);
+
+        let envelope = append_local_event(
+            &mut connection,
+            &identidade,
+            &mudanca("cap-1", r#"{"t":"a"}"#),
+        )
+        .expect("gravar");
+
+        assert!(
+            !envelope.signature.is_empty(),
+            "o evento saiu sem assinatura"
+        );
+        assert!(
+            verify(&envelope, &identidade.public_base32()),
+            "a assinatura do próprio aparelho não confere"
+        );
+
+        // E a assinatura que está NO BANCO é a mesma: quem retransmite lê
+        // daqui, não do que ficou em memória.
+        let guardada: String = connection
+            .query_row(
+                "SELECT signature FROM sync_events WHERE event_id = ?1",
+                [&envelope.event_id],
+                |row| row.get(0),
+            )
+            .expect("ler assinatura gravada");
+        assert_eq!(guardada, envelope.signature);
+    }
+
+    /// E o que sai pelo outbox continua verificável.
+    ///
+    /// É o caminho que a etapa 6 vai usar para retransmitir. Um evento que
+    /// verifica em memória e não verifica depois de dar uma volta pelo SQLite
+    /// quebraria a propagação transitiva sem que nada acusasse.
+    #[test]
+    fn o_que_sai_pelo_outbox_verifica() {
+        let temporario = TemporaryDatabase::new();
+        let mut connection = temporario.database.write().expect("abrir para escrita");
+        let identidade = registrar_self(&connection);
+
+        // Payload com chaves fora de ordem e espaço irregular: se algo
+        // reserializasse no caminho, a assinatura deixaria de conferir.
+        append_local_event(
+            &mut connection,
+            &identidade,
+            &mudanca("cap-1", r#"{"zeta":1,  "alfa" : 2.50}"#),
+        )
+        .expect("primeira");
+        append_local_event(
+            &mut connection,
+            &identidade,
+            &LocalChange {
+                universe_id: "u1",
+                aggregate: AggregateRef::new("chapter", "cap-1"),
+                operation: Operation::Delete,
+                payload: "",
+            },
+        )
+        .expect("delete");
+
+        let saida = outbox_since(&connection, identidade.device_id(), 0).expect("ler outbox");
+        assert_eq!(saida.len(), 2);
+        for evento in &saida {
+            assert!(
+                verify(evento, &identidade.public_base32()),
+                "evento {} não verifica depois de passar pelo banco",
+                evento.event_id
+            );
+        }
+    }
+
+    /// A origem do evento é a identidade do ARQUIVO, não o que o banco diz.
+    ///
+    /// Um banco restaurado de outro aparelho afirma ser ele. Assinar com esta
+    /// chave sob aquele `device_id` produziria eventos que ninguém consegue
+    /// verificar — e embaralharia duas sequências na mesma origem.
+    #[test]
+    fn a_origem_vem_da_chave_e_nao_do_banco() {
+        let temporario = TemporaryDatabase::new();
+        let mut connection = temporario.database.write().expect("abrir para escrita");
+        let identidade = registrar_self(&connection);
+
+        // Um segundo aparelho, marcado como self à força — o estado que um
+        // backup restaurado produz antes da reconciliação.
+        connection
+            .execute(
+                "UPDATE sync_devices SET is_self = 0 WHERE device_id = ?1",
+                [identidade.device_id()],
+            )
+            .expect("rebaixar");
+        connection
+            .execute(
+                "INSERT INTO sync_devices (device_id, name, ed25519_public, is_self)
+                 VALUES ('old-desktop', 'Antigo', 'CHAVEANTIGA', 1)",
+                [],
+            )
+            .expect("semear self de outro aparelho");
+
+        let erro = append_local_event(
+            &mut connection,
+            &identidade,
+            &mudanca("cap-1", r#"{"t":"a"}"#),
+        )
+        .expect_err("a chave local não é o self que o banco declara");
+        assert!(
+            erro.to_string().contains("identidade"),
+            "recusou pelo motivo errado: {erro}"
+        );
+
+        let gravados: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sync_events", [], |row| row.get(0))
+            .expect("contar");
+        assert_eq!(
+            gravados, 0,
+            "gravou evento com origem que não bate com a chave"
+        );
     }
 
     /// O retry deixa de ser caminho não exercitado.
@@ -688,10 +856,10 @@ mod tests {
     #[test]
     fn o_retry_atravessa_um_lock_temporario() {
         let temporario = TemporaryDatabase::new();
-        {
+        let identidade = {
             let connection = temporario.database.write().expect("abrir para escrita");
-            registrar_identidade(&connection, "dev-local", 1);
-        }
+            Arc::new(registrar_self(&connection))
+        };
 
         const SEGURAR_POR: Duration = Duration::from_millis(600);
         let liberado = Arc::new(Barrier::new(2));
@@ -713,8 +881,12 @@ mod tests {
         let mut connection = temporario.database.write().expect("abrir para escrita");
         liberado.wait();
         let comeco = Instant::now();
-        let envelope = append_local_event(&mut connection, &mudanca("cap-1", r#"{"t":"a"}"#))
-            .expect("o retry precisa atravessar um lock temporário");
+        let envelope = append_local_event(
+            &mut connection,
+            &identidade,
+            &mudanca("cap-1", r#"{"t":"a"}"#),
+        )
+        .expect("o retry precisa atravessar um lock temporário");
         let decorrido = comeco.elapsed();
 
         bloqueador.join().expect("thread do lock");
@@ -741,8 +913,9 @@ mod tests {
         let temporario = TemporaryDatabase::new();
         let mut connection = temporario.database.write().expect("abrir para escrita");
 
-        // Sem identidade: caminho de erro.
-        append_local_event(&mut connection, &mudanca("cap-1", "{}"))
+        // Identidade que existe no arquivo e não no roster: caminho de erro.
+        let sem_registro = DeviceIdentity::generate();
+        append_local_event(&mut connection, &sem_registro, &mudanca("cap-1", "{}"))
             .expect_err("sem is_self a escrita falha");
 
         // `busy_timeout` não tem getter; medimos o efeito. Com 250ms residual,
@@ -787,7 +960,8 @@ mod tests {
     fn sem_identidade_a_escrita_nao_acontece() {
         let temporario = TemporaryDatabase::new();
         let mut connection = temporario.database.write().expect("abrir para escrita");
-        let erro = append_local_event(&mut connection, &mudanca("cap-1", "{}"))
+        let sem_registro = DeviceIdentity::generate();
+        let erro = append_local_event(&mut connection, &sem_registro, &mudanca("cap-1", "{}"))
             .expect_err("sem is_self não há origem para o evento");
         assert!(
             erro.to_string().contains("identidade"),
@@ -805,14 +979,22 @@ mod tests {
     fn escritas_seguidas_encadeiam_as_revisoes() {
         let temporario = TemporaryDatabase::new();
         let mut connection = temporario.database.write().expect("abrir para escrita");
-        registrar_identidade(&connection, "dev-local", 1);
+        let identidade = registrar_self(&connection);
 
-        let primeiro = append_local_event(&mut connection, &mudanca("cap-1", r#"{"t":"a"}"#))
-            .expect("primeira escrita");
+        let primeiro = append_local_event(
+            &mut connection,
+            &identidade,
+            &mudanca("cap-1", r#"{"t":"a"}"#),
+        )
+        .expect("primeira escrita");
         assert_eq!(primeiro.base_rev, "", "a primeira revisão parte da raiz");
 
-        let segundo = append_local_event(&mut connection, &mudanca("cap-1", r#"{"t":"b"}"#))
-            .expect("segunda escrita");
+        let segundo = append_local_event(
+            &mut connection,
+            &identidade,
+            &mudanca("cap-1", r#"{"t":"b"}"#),
+        )
+        .expect("segunda escrita");
         assert_eq!(
             segundo.base_rev, primeiro.new_rev,
             "a segunda escrita precisa declarar de onde partiu"
@@ -843,13 +1025,14 @@ mod tests {
     fn payload_atravessa_o_log_sem_reserializacao() {
         let temporario = TemporaryDatabase::new();
         let mut connection = temporario.database.write().expect("abrir para escrita");
-        registrar_identidade(&connection, "dev-local", 1);
+        let identidade = registrar_self(&connection);
 
         // Chaves fora de ordem alfabética, espaço irregular e número com
         // notação incomum: tudo que um reserializador "arrumaria".
         let original = r#"{"zeta":1,  "alfa" : 2.50, "texto":"linha\ncom quebra"}"#;
         let envelope =
-            append_local_event(&mut connection, &mudanca("cap-1", original)).expect("gravar");
+            append_local_event(&mut connection, &identidade, &mudanca("cap-1", original))
+                .expect("gravar");
 
         let guardado: String = connection
             .query_row(
@@ -876,11 +1059,17 @@ mod tests {
     fn delete_deixa_tombstone_e_tira_o_agregado_do_estado_corrente() {
         let temporario = TemporaryDatabase::new();
         let mut connection = temporario.database.write().expect("abrir para escrita");
-        registrar_identidade(&connection, "dev-local", 1);
+        let identidade = registrar_self(&connection);
 
-        append_local_event(&mut connection, &mudanca("cap-1", r#"{"t":"a"}"#)).expect("criar");
+        append_local_event(
+            &mut connection,
+            &identidade,
+            &mudanca("cap-1", r#"{"t":"a"}"#),
+        )
+        .expect("criar");
         let apagado = append_local_event(
             &mut connection,
+            &identidade,
             &LocalChange {
                 universe_id: "u1",
                 aggregate: AggregateRef::new("chapter", "cap-1"),
@@ -918,11 +1107,21 @@ mod tests {
     fn o_outbox_e_o_recorte_da_propria_origem() {
         let temporario = TemporaryDatabase::new();
         let mut connection = temporario.database.write().expect("abrir para escrita");
-        registrar_identidade(&connection, "dev-local", 1);
-        registrar_identidade(&connection, "dev-remoto", 0);
+        let identidade = registrar_self(&connection);
+        registrar_peer(&connection, "dev-remoto");
 
-        append_local_event(&mut connection, &mudanca("cap-1", r#"{"t":"a"}"#)).expect("local 1");
-        append_local_event(&mut connection, &mudanca("cap-2", r#"{"t":"b"}"#)).expect("local 2");
+        append_local_event(
+            &mut connection,
+            &identidade,
+            &mudanca("cap-1", r#"{"t":"a"}"#),
+        )
+        .expect("local 1");
+        append_local_event(
+            &mut connection,
+            &identidade,
+            &mudanca("cap-2", r#"{"t":"b"}"#),
+        )
+        .expect("local 2");
 
         // Um evento recebido de outra origem, gravado direto no log como a
         // etapa 4 fará. Ele não pode aparecer no outbox deste aparelho.
@@ -937,14 +1136,17 @@ mod tests {
             )
             .expect("gravar evento remoto");
 
-        let saida = outbox_since(&connection, "dev-local", 0).expect("ler outbox");
+        let saida = outbox_since(&connection, identidade.device_id(), 0).expect("ler outbox");
         assert_eq!(saida.len(), 2);
         assert!(
-            saida.iter().all(|evento| evento.device_id == "dev-local"),
+            saida
+                .iter()
+                .all(|evento| evento.device_id == identidade.device_id()),
             "o outbox devolveu evento de outra origem"
         );
 
-        let depois = outbox_since(&connection, "dev-local", 1).expect("ler outbox parcial");
+        let depois =
+            outbox_since(&connection, identidade.device_id(), 1).expect("ler outbox parcial");
         assert_eq!(depois.len(), 1);
         assert_eq!(depois[0].seq, 2);
     }

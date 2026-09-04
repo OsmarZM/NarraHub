@@ -13,6 +13,7 @@
 pub mod canvas;
 pub mod collaboration;
 pub mod entity;
+pub mod identity;
 pub mod ids;
 pub mod invariant_coverage;
 pub mod knowledge;
