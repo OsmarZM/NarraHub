@@ -72,7 +72,7 @@ O gate `o andaime superado não volta para o repositório` reprova se `angular-s
 ## Fase ativa
 
 ```text
-FASE 4 — Sync V2   (etapa 1 de 14 concluída)
+FASE 4 — Sync V2   (etapas 1 e 2 de 14 concluídas)
 ```
 
 As fases **3 e 3.5 fecharam em 2026-09-01**, com gates executáveis:
@@ -94,7 +94,11 @@ diretório não o pegaria; o gate contra **colocação** pega.
 > sugestão — cada etapa só pode ser provada depois da anterior, e nenhuma fecha apoiada no
 > gate da seguinte.
 >
-> **Etapa 1 concluída:** schema 16, estruturas e invariantes de banco.
+> **Etapa 1:** schema 16, estruturas e invariantes de banco.
+> **Etapa 2:** log de eventos, `seq` atômico e cadeia de revisões.
+>
+> Reconciliação fina de capítulo por bloco depende da **NH-045** e não faz parte das 14
+> etapas. O Sync V2 pode fechar com conflito seguro de capítulo inteiro.
 
 O roadmap é explícito: **ADR e threat model primeiro**. O que precisa estar decidido antes:
 
@@ -122,7 +126,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | `commands/` legado | **Removido** na Fase 3 |
 | Fronteira nativa do frontend | **Formalizada** — ADR 0008 |
 | Sync V1 sem criptografia | **Foco atual** — Fase 4 |
-| Sync V2 | **ADR 0009 `Accepted`.** Etapa 1 de 14 concluída — schema 16, estruturas e invariantes de banco |
+| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1 e 2 de 14 concluídas — schema 16 e log de eventos com causalidade |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
 | Ciclo de atualização empacotado | **Concluído.** Roteiro, checklist de release e três execuções reais |
@@ -137,11 +141,16 @@ migration — não pegar a versão mais recente:
 | 0.7.6 | 14 |
 | 0.8.0 | 14 |
 | 0.9.0 e 0.9.1 | 15 |
-| `main` hoje | 15 |
+| 0.9.2 (publicada) | 15 |
+| `main` hoje | **16** — estruturas do Sync V2 |
 
-Consequência prática: **uma 0.9.2 publicada hoje não exercitaria migration nenhuma** num
-upgrade a partir da 0.9.1. O par útil hoje é `0.8.0 → 0.9.1`, e as duas já estão publicadas
-com instalador e assinatura.
+Consequência prática, e ela **mudou** com a migration 16: a próxima versão publicada será a
+primeira desde a 0.9.2 a carregar migration de verdade. O par `0.9.2 → próxima` deixa de ser
+inerte e passa a exercitar o upgrade — inclusive a substituição do formato antigo de
+`sync_events`, que nunca foi povoado mas existe no banco de todo usuário desde a v1.
+
+O par `0.8.0 → 0.9.1` continua servindo para testar upgrade de duas migrations, e as duas já
+estão publicadas com instalador e assinatura.
 
 ## Ambiente de desenvolvimento
 

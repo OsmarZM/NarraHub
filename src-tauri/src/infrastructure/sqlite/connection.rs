@@ -6,7 +6,7 @@ use std::time::Duration;
 /// O plano da Fase 4 exige `foreign_keys` e `busy_timeout` em toda conexão.
 /// Estão aqui, num lugar só, porque pragma esquecido não falha na hora: falha
 /// depois, como FK não aplicada ou `database is locked` sob autosave.
-const BUSY_TIMEOUT: Duration = Duration::from_secs(8);
+pub const BUSY_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Ponto único de abertura de conexão do core.
 ///

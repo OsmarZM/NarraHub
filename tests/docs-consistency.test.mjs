@@ -159,3 +159,34 @@ test('nenhum documento carrega caractere de controle invisivel', () => {
       `Escreva o arquivo por um script em disco, sem passar por aspas de shell: ${sujos.join(', ')}`,
   );
 });
+
+/**
+ * O schema que o `PROJECT_STATE` atribui à `main` tem que ser o que a `main` cria.
+ *
+ * A tabela ficou dizendo 15 depois de a migration 16 entrar, e ninguém reprovou — o autor
+ * encontrou lendo. Esse número não é decorativo: dele sai a escolha do par de versões de
+ * qualquer teste de upgrade, e errá-lo faz a equipe testar uma migração que não existe.
+ *
+ * É o mesmo padrão da versão do aplicativo, que já tem gate desde a NH-039: a linha existe
+ * para ser lida por outro agente, e um número velho é pior que número nenhum, porque parece
+ * verificado.
+ */
+test('o schema atribuído à main é o que a main cria', () => {
+  const migrations = ler('../src-tauri/src/database/migrations.rs');
+  const declarado = migrations.match(/LATEST_SCHEMA_VERSION:\s*i64\s*=\s*(\d+)/u);
+  assert.ok(declarado, 'não achei LATEST_SCHEMA_VERSION em migrations.rs; a varredura quebrou');
+
+  const estado = ler('../docs/ai/PROJECT_STATE.md');
+  const documentado = estado.match(/\|\s*`main` hoje\s*\|\s*\*{0,2}(\d+)/u);
+  assert.ok(
+    documentado,
+    'não achei a linha "`main` hoje" na tabela de versões do PROJECT_STATE.md',
+  );
+
+  assert.equal(
+    documentado[1],
+    declarado[1],
+    `PROJECT_STATE.md diz que a main está no schema ${documentado[1]}, e migrations.rs cria o ` +
+      `${declarado[1]}. Desse número sai a escolha do par de versões de todo teste de upgrade.`,
+  );
+});
