@@ -1120,6 +1120,7 @@ Registrado, **não implementar** antes de a fase correspondente abrir.
 | --- | --- | --- |
 | NH-045 | Identidade persistente de blocos do editor (detalhado abaixo) | 4, fora das etapas 1–14 |
 | NH-048 | Gravação atômica do arquivo de identidade (detalhado abaixo) | 4, hardening antes do Sync V2 sair |
+| NH-053 | Todo caminho de escrita precisa produzir evento (detalhado abaixo) | 4, antes de o Sync V2 sair |
 | NH-050 | Teste de tokens de design (`var(--*)` sem definição reprova o CI) | 5 |
 | NH-051 | Escala de breakpoints e responsividade em telas menores | 5 |
 | NH-060 | Contrato `AIContext v1` e orçamento de contexto | 6 |
@@ -1201,6 +1202,69 @@ reconciliação é uma consulta indexada quando não há nada a mudar — e disp
 cache num caminho onde errar significa assinar eventos com a origem de outro aparelho.
 
 ---
+
+### NH-052 — Sync V2, etapa 6: replicação com três peers e store-and-forward
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4  (etapa 6 de 14)
+```
+
+Aqui a replicação deixa de ser "aplicar o que me deram" e vira uma conversa entre dois pares
+simétricos. Os testes usam **três aparelhos de verdade**: banco próprio, identidade própria,
+chave própria, nada compartilhado além dos eventos que trocam.
+
+| Gate | O que prova |
+| --- | --- |
+| propagação transitiva | Desktop e Android **nunca se encontram**, e o conteúdo chega pelo Notebook |
+| origem preservada | o Android vê o `device_id` do **Desktop**, não o do relay |
+| relay não reassina | a assinatura que chega ao Android é a do Desktop, e **verifica** contra a chave dele |
+| simetria | os dois lados recebem na mesma sessão; nenhum é servidor |
+| agregados diferentes | convergem sem abrir divergência nenhuma |
+| sessão repetida | não move nada |
+| pendente não é retransmitido | o relay não passa adiante o que ele mesmo não conseguiu aplicar |
+
+O último merece explicação: repassar um pendente enviaria ao outro lado um evento cuja lacuna
+anterior este aparelho ainda não fechou, e ele o guardaria como pendente também. Ruído em vez
+de progresso.
+
+**`registrar_origem_conhecida` só anota que a origem existe.** Sem isso a FK de `sync_events`
+recusaria os eventos dela e a propagação transitiva pararia na primeira origem nova. A decisão
+de **confiar** é da etapa 7 — e é por isso que o roster ainda não filtra nada.
+
+#### O que escrever o teste revelou
+
+O harness gravava o evento e não gravava a linha do capítulo, e um teste falhou com *"faltou
+`cap-a` no Desktop"* — o aparelho sem o próprio conteúdo. Corrigido no harness, mas o motivo
+de ter passado despercebido é real: **a etapa 3 ligou só o `update_chapter`.** Está registrado
+como NH-053.
+
+---
+
+### NH-053 — Todo caminho de escrita precisa produzir evento
+
+```text
+Owner:  —
+Status: BACKLOG
+Fase:   4, antes de o Sync V2 sair
+Bloqueia: nada das etapas 7–14; bloqueia a utilidade do Sync V2 em produção
+```
+
+A etapa 3 ligou o `update_chapter`, que era o caminho representativo. Continuam gravando **sem
+evento**: `create_chapter`, `delete_chapter`, `create_story`, `update_story`, `delete_story`,
+`create_book`, `update_book`, `delete_book`, `reorder_chapters`, e os serviços de entidade,
+planejamento, timeline, canvas e conhecimento.
+
+Enquanto for assim, o Sync V2 replica edição de capítulo e mais nada — um capítulo criado num
+aparelho nunca aparece no outro.
+
+**Isto precisa de um gate estrutural, não de disciplina.** Ligar caminho por caminho e confiar
+que ninguém esquece é o mesmo padrão que esta sessão já pegou várias vezes. O gate certo é o
+inverso do que parece: em vez de listar o que emite evento, listar o que **pode** escrever sem
+emitir, com justificativa escrita — como o `INFRAESTRUTURA` do gate de colocação de comandos da
+Fase 3.
+
 
 ### NH-051 — Sync V2, etapa 5: cursor contíguo e pendentes
 
