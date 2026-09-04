@@ -5,9 +5,11 @@
 //! decide se duas edições são sequenciais ou concorrentes — e errar isso
 //! apaga trabalho do escritor.
 //!
-//! O que **não** está aqui: alocação de `seq` (depende do log, e portanto do
-//! banco) e assinatura Ed25519 (etapa 7). O campo existe no envelope desde
-//! agora, pelo motivo registrado na seção 23 do ADR.
+//! O que **não** está aqui: alocação de `seq`, que depende do log e portanto
+//! do banco; e a geração da assinatura Ed25519, que é a etapa 2.5. O campo já
+//! existe no envelope, e a etapa 2.5 vem antes da 3 pelo motivo registrado na
+//! seção 23 do ADR: `sync_events` é append-only, e a etapa 3 é a que começa a
+//! gerar eventos reais.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -82,8 +84,11 @@ pub struct EventEnvelope {
     pub payload: String,
     pub base_rev: String,
     pub new_rev: String,
-    /// Ed25519 da origem. Vazio até a etapa 7; o campo existe desde já para
-    /// que o formato do envelope não mude depois de haver eventos gravados.
+    /// Ed25519 da origem. Vazio **apenas durante a etapa 2**: a partir da
+    /// etapa 2.5 todo evento local nasce assinado, e a etapa 3 — que liga o
+    /// log às escritas reais — não pode chegar antes disso. `sync_events` é
+    /// append-only, então evento nascido sem assinatura não pode ser assinado
+    /// depois. A etapa 7 cuida da **verificação** de origem de terceiros.
     pub signature: String,
 }
 

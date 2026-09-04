@@ -141,11 +141,16 @@ migration — não pegar a versão mais recente:
 | 0.7.6 | 14 |
 | 0.8.0 | 14 |
 | 0.9.0 e 0.9.1 | 15 |
-| `main` hoje | 15 |
+| 0.9.2 (publicada) | 15 |
+| `main` hoje | **16** — estruturas do Sync V2 |
 
-Consequência prática: **uma 0.9.2 publicada hoje não exercitaria migration nenhuma** num
-upgrade a partir da 0.9.1. O par útil hoje é `0.8.0 → 0.9.1`, e as duas já estão publicadas
-com instalador e assinatura.
+Consequência prática, e ela **mudou** com a migration 16: a próxima versão publicada será a
+primeira desde a 0.9.2 a carregar migration de verdade. O par `0.9.2 → próxima` deixa de ser
+inerte e passa a exercitar o upgrade — inclusive a substituição do formato antigo de
+`sync_events`, que nunca foi povoado mas existe no banco de todo usuário desde a v1.
+
+O par `0.8.0 → 0.9.1` continua servindo para testar upgrade de duas migrations, e as duas já
+estão publicadas com instalador e assinatura.
 
 ## Ambiente de desenvolvimento
 
