@@ -677,6 +677,84 @@ mod tests {
         connection
     }
 
+    /// GATE DO ADR 0009 §5: a identidade de sincronização não entra no backup.
+    ///
+    /// A decisão é explícita e tem consequência prática forte — restaurar um
+    /// backup em outro aparelho cria um dispositivo **novo**, que precisa
+    /// parear de novo. Se a chave viajasse junto:
+    ///
+    /// ```text
+    /// dois aparelhos com o mesmo device_id
+    ///   →  duas sequências diferentes sob a mesma origem
+    ///   →  o cursor de TODOS os outros peers passa a significar duas coisas
+    ///   →  perda silenciosa, do tipo que ninguém descobre no dia
+    /// ```
+    ///
+    /// O backup empacota `narrahub.db` e `assets/` por lista explícita, então
+    /// hoje o arquivo já fica de fora. Este gate existe para o dia em que
+    /// alguém trocar a lista por "copie o diretório de dados inteiro", que é
+    /// a mudança mais natural do mundo e a mais cara aqui.
+    #[test]
+    fn o_backup_nao_leva_a_identidade_de_sincronizacao() {
+        let paths = TestPaths::new();
+        let connection = open_database(&paths);
+        drop(connection);
+
+        // O arquivo de identidade mora ao lado do banco, no diretório de
+        // dados do app — exatamente onde um backup descuidado o pegaria.
+        let identidade = paths
+            .root
+            .join(crate::infrastructure::identity_store::IDENTITY_FILE_NAME);
+        fs::write(
+            &identidade,
+            r#"{"ed25519_secret":"SEGREDOQUENAOPODEVIAJAR"}"#,
+        )
+        .expect("semear identidade");
+
+        let manifest = create_backup_at(
+            &paths.database,
+            Some(paths.assets.as_path()),
+            &paths.backups,
+            "0.0.0-test",
+            BackupReason::Manual,
+        )
+        .expect("criar backup");
+
+        let destino = paths.backups.join(&manifest.backup_id);
+
+        // Varre a árvore inteira do backup: nome de arquivo e conteúdo. Não
+        // basta conferir a lista de arquivos que o código diz empacotar — é
+        // exatamente essa lista que a mudança perigosa trocaria.
+        let mut visitados = Vec::new();
+        let mut pilha = vec![destino.clone()];
+        while let Some(atual) = pilha.pop() {
+            for entrada in fs::read_dir(&atual).expect("ler diretório do backup") {
+                let entrada = entrada.expect("entrada do diretório");
+                let caminho = entrada.path();
+                if caminho.is_dir() {
+                    pilha.push(caminho);
+                    continue;
+                }
+                let nome = caminho.to_string_lossy().to_string();
+                assert!(
+                    !nome.contains("sync-identity"),
+                    "o backup levou a identidade de sincronização: {nome}"
+                );
+                let conteudo = fs::read(&caminho).expect("ler arquivo do backup");
+                assert!(
+                    !String::from_utf8_lossy(&conteudo).contains("SEGREDOQUENAOPODEVIAJAR"),
+                    "a chave privada apareceu dentro de {nome}"
+                );
+                visitados.push(nome);
+            }
+        }
+
+        assert!(
+            !visitados.is_empty(),
+            "a varredura não encontrou arquivo nenhum; ela quebrou e passaria vazia"
+        );
+    }
+
     #[test]
     fn online_backup_captures_confirmed_wal_write_and_assets() {
         let paths = TestPaths::new();
