@@ -55,27 +55,42 @@ pub struct Relatorio {
     /// entrou no log**: um evento que não passou pela verificação não pode ser
     /// retransmitido nem aplicado, e guardá-lo daria a ele a aparência de
     /// legítimo na próxima sessão.
+    ///
+    /// Recusas descartáveis entram aqui **até um teto** — ver
+    /// `TETO_DE_DESCARTES_REGISTRADOS`.
     pub recusados: Vec<Recusa>,
+    /// Quantos envelopes foram descartados por origem desconhecida, contando
+    /// inclusive os que não couberam em `recusados`.
+    descartes: usize,
 }
 
-impl Relatorio {
-    /// Aparelhos pedindo para entrar no conjunto. É rotina, e é diferente de
-    /// incidente — misturar as duas coisas na tela treinaria o escritor a
-    /// ignorar as duas.
-    pub fn pedidos_de_entrada(&self) -> Vec<&Recusa> {
-        self.recusados
-            .iter()
-            .filter(|recusa| recusa.e_pedido_de_entrada())
-            .collect()
-    }
+/// Quantas recusas descartáveis a sessão registra antes de parar de anotar.
+///
+/// O que importa saber é "aconteceu, e nesta ordem de grandeza" — não a lista
+/// inteira. Guardar todas deixaria um peer hostil escolher quanta memória
+/// desta sessão ele ocupa.
+const TETO_DE_DESCARTES_REGISTRADOS: usize = 16;
 
-    /// Recusas que merecem atenção: assinatura inválida, roster inconsistente,
-    /// origem revogada.
+impl Relatorio {
+    /// Recusas que merecem atenção. **Não inclui origem desconhecida.**
+    ///
+    /// Um envelope solto de origem desconhecida é descartado sem virar tela
+    /// (NH-057). Pedido de entrada visível nasce do pareamento autenticado, em
+    /// `sync_pairing::PedidoDeEntrada`, onde houve intenção humana dos dois
+    /// lados.
     pub fn incidentes(&self) -> Vec<&Recusa> {
         self.recusados
             .iter()
-            .filter(|recusa| !recusa.e_pedido_de_entrada())
+            .filter(|recusa| recusa.e_incidente())
             .collect()
+    }
+
+    /// Quantos envelopes foram descartados por origem desconhecida.
+    ///
+    /// Um número, não uma lista de aparelhos para o escritor conferir. Serve
+    /// para diagnóstico e para a decisão de cortar a sessão — não para a tela.
+    pub fn descartados(&self) -> usize {
+        self.descartes
     }
 }
 
@@ -104,7 +119,16 @@ pub fn receber_eventos(
         match verificar_origem(&tx, envelope)? {
             Ok(()) => {}
             Err(recusa) => {
-                relatorio.recusados.push(recusa);
+                if recusa.e_descartavel() {
+                    // Descarta, conta, e não deixa um peer hostil escolher
+                    // quanta memória desta sessão ele ocupa.
+                    relatorio.descartes += 1;
+                    if relatorio.recusados.len() < TETO_DE_DESCARTES_REGISTRADOS {
+                        relatorio.recusados.push(recusa);
+                    }
+                } else {
+                    relatorio.recusados.push(recusa);
+                }
                 continue;
             }
         }

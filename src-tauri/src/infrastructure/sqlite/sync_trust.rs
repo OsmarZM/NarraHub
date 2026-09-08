@@ -76,11 +76,35 @@ pub enum Recusa {
 }
 
 impl Recusa {
-    /// Se isto merece aparecer para o escritor como pedido de entrada, e não
-    /// como incidente. Distinguir importa: um aparelho novo é rotina, uma
-    /// assinatura inválida não é.
-    pub fn e_pedido_de_entrada(&self) -> bool {
+    /// Se isto pode ser descartado sem incomodar ninguém.
+    ///
+    /// # A rede não cria intenção de usuário
+    ///
+    /// A etapa 7 tratava origem desconhecida como "pedido de entrada" e
+    /// mostrava na tela. Dentro do harness, razoável. **Com rede, explorável:**
+    ///
+    /// ```text
+    /// device-000001, device-000002, device-000003, ...
+    ///                     ↓
+    ///         "14.392 aparelhos querem entrar"
+    /// ```
+    ///
+    /// Uma tela assim treina o escritor a ignorar a tela — o oposto do que ela
+    /// existe para fazer. Um envelope solto de origem desconhecida é
+    /// **descartado**, e ponto.
+    ///
+    /// Pedido de entrada visível nasce só do pareamento autenticado
+    /// (`sync_pairing::PedidoDeEntrada`), onde alguém do outro lado leu um QR
+    /// que este aparelho mostrou. Aí houve intenção humana dos dois lados.
+    pub fn e_descartavel(&self) -> bool {
         matches!(self, Recusa::OrigemDesconhecida { .. })
+    }
+
+    /// Recusas que merecem atenção: assinatura inválida, roster inconsistente,
+    /// origem revogada. Todas dizem que **algo está errado**, não que alguém
+    /// novo apareceu.
+    pub fn e_incidente(&self) -> bool {
+        !self.e_descartavel()
     }
 }
 
@@ -375,12 +399,17 @@ mod tests {
         assert_eq!(guardados, 0, "um envelope não verificado entrou no log");
     }
 
-    /// E aparece como **pedido de entrada**, não como incidente.
+    /// GATE DA NH-057: origem desconhecida é **descartada**, não vira tela.
     ///
-    /// Um aparelho novo é rotina; assinatura inválida não é. Misturar as duas
-    /// coisas na tela treinaria o escritor a ignorar as duas.
+    /// Com rede, tratar todo envelope de origem nova como pedido de entrada
+    /// deixaria um atacante mandar `device-000001`, `device-000002`, … e
+    /// transformar a interface em "14.392 aparelhos querem entrar" — uma tela
+    /// que treina o escritor a ignorar a tela.
+    ///
+    /// Pedido visível nasce só do pareamento autenticado, onde alguém leu um
+    /// QR que este aparelho mostrou.
     #[test]
-    fn origem_desconhecida_e_pedido_de_entrada_e_nao_incidente() {
+    fn origem_desconhecida_e_descartada_e_nao_gera_incidente() {
         let cenario = cenario();
         let forasteiro = DeviceIdentity::generate();
         let evento = evento_assinado(&forasteiro, "cap-1");
@@ -388,8 +417,43 @@ mod tests {
         let mut connection = cenario.fixture.database.write().expect("escrita");
         let relatorio = receber_eventos(&mut connection, &[evento]).expect("receber");
 
-        assert_eq!(relatorio.pedidos_de_entrada().len(), 1);
+        assert_eq!(relatorio.descartados(), 1);
+        assert_eq!(
+            relatorio.incidentes().len(),
+            0,
+            "um aparelho desconhecido não é incidente de segurança"
+        );
+    }
+
+    /// E uma enxurrada não ocupa memória proporcional.
+    ///
+    /// O relatório conta tudo, mas só guarda os primeiros — senão um peer
+    /// hostil escolheria quanta memória desta sessão ele consome.
+    #[test]
+    fn enxurrada_de_origens_desconhecidas_e_contada_sem_ser_guardada_inteira() {
+        let cenario = cenario();
+        let enxurrada: Vec<EventEnvelope> = (0..200)
+            .map(|indice| {
+                let forasteiro = DeviceIdentity::generate();
+                evento_assinado(&forasteiro, &format!("cap-{indice}"))
+            })
+            .collect();
+
+        let mut connection = cenario.fixture.database.write().expect("escrita");
+        let relatorio = receber_eventos(&mut connection, &enxurrada).expect("receber");
+
+        assert_eq!(relatorio.descartados(), 200, "a contagem precisa ser exata");
+        assert!(
+            relatorio.recusados.len() <= 16,
+            "guardou {} recusas: um peer hostil dita o consumo de memória",
+            relatorio.recusados.len()
+        );
         assert_eq!(relatorio.incidentes().len(), 0);
+
+        let guardados: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sync_events", [], |row| row.get(0))
+            .expect("contar");
+        assert_eq!(guardados, 0, "a enxurrada entrou no log");
     }
 
     // ── ponto 2 da cadeia: estado do dispositivo ────────────────────────────
