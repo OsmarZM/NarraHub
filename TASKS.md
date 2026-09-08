@@ -1206,6 +1206,84 @@ cache num caminho onde errar significa assinar eventos com a origem de outro apa
 
 ---
 
+### NH-060 — Sync V2, etapa 10: PIN por PAKE
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4  (etapa 10 de 14)
+```
+
+Duas instruções do autor organizaram a etapa: **não inventar PAKE caseiro**, e o teste
+principal não pode ser "PIN certo funciona / errado falha".
+
+#### Implementação consolidada
+
+SPAKE2 pelo crate [`spake2`], que é o mesmo do `magic-wormhole` — e o caso de uso é
+literalmente igual: dois pares com um código humano curto, sem servidor no meio. Criptografia
+caseira falha em silêncio: passa nos testes felizes e quebra contra quem sabe o que faz.
+
+```text
+PIN (26 bits)  ──SPAKE2──▶  32 bytes fortes  ──▶  psk do Noise XXpsk0
+```
+
+Daí em diante o pareamento é o da etapa 9. **O PIN autoriza o encontro; ele não diz quem
+chegou** — mesma regra do QR.
+
+#### O gate que carrega a garantia
+
+O ponto do PAKE não é "PIN errado falha". É:
+
+```text
+capturar todo o tráfego  →  NÃO permite testar PINs em casa
+```
+
+O teste dá ao atacante **mais do que ele teria**: o transcript inteiro e o **PIN correto**.
+Mesmo assim ele não chega à chave da sessão, porque ela depende também do escalar efêmero, que
+nunca vai para a rede. Sem uma função `(transcript, palpite) → resposta`, não existe
+verificador — e sem verificador, não existe dicionário offline.
+
+O corolário tem teste próprio: **nenhum palpite se distingue de outro** pelo transcript, o
+certo inclusive.
+
+E há o contraste explícito: um teste demonstra que com `psk = hash(PIN)` o ataque offline
+**funciona** — encontra o PIN varrendo candidatos sem falar com ninguém. É a função que ali
+existe e aqui não.
+
+#### A mutação prova que o gate é o certo
+
+Trocando SPAKE2 por `hash(PIN)`:
+
+| | |
+| --- | --- |
+| Reprovam | `o_transcript_nao_permite_testar_pins_offline`, `o_palpite_certo_nao_se_distingue_do_errado` |
+| Continuam verdes | os outros **treze** |
+
+Ou seja: um desenho quebrado passaria em treze de quinze testes, incluindo "PIN certo funciona"
+e "PIN errado falha". Os dois gates de dicionário offline são os únicos que o pegam.
+
+#### A outra metade: o limite de tentativas
+
+O PAKE torna cada palpite uma **interação**; o limite de três torna o número de interações
+finito. Um sem o outro não protege.
+
+E a tentativa é contada **ao abrir**, não ao falhar — contar no fim permitiria abandonar a
+conexão antes do resultado e tentar de novo à vontade, o que tornaria o limite decorativo e
+derrubaria a única barreira que o PAKE deixa de pé. Tem teste.
+
+#### Viés de módulo no sorteio do PIN
+
+`byte % 10` faria os dígitos 0 a 5 saírem ~1,2% mais que 6 a 9, porque 256 não divide por 10.
+Num código de 26 bits não há entropia sobrando para desperdiçar. Trocado por amostragem por
+rejeição, com teste estatístico de margem folgada — ele existe para pegar viés estrutural, não
+para julgar o gerador do sistema.
+
+#### O que falta
+
+Nada de criptografia. Falta a **tela**: onde o PIN aparece, onde é digitado, e o aviso das três
+tentativas. E o socket, como nas etapas 8 e 9.
+
+
 ### NH-059 — Sync V2, etapa 9: pareamento por QR
 
 ```text

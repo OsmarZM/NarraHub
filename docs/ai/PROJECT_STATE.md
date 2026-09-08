@@ -72,7 +72,7 @@ O gate `o andaime superado não volta para o repositório` reprova se `angular-s
 ## Fase ativa
 
 ```text
-FASE 4 — Sync V2   (etapas 1 a 9 de 14 concluídas)
+FASE 4 — Sync V2   (etapas 1 a 10 de 14 concluídas)
 ```
 
 As fases **3 e 3.5 fecharam em 2026-09-01**, com gates executáveis:
@@ -104,6 +104,7 @@ diretório não o pegaria; o gate contra **colocação** pega.
 > **Etapa 7:** cadeia de confiança — roster, estado, coerência da chave e verificação Ed25519.
 > **Etapa 8:** Noise `XX` e o vínculo entre a sessão e a identidade Ed25519. **Sem rede real ainda.**
 > **Etapa 9:** pareamento por QR — convite aleatório, expirável e de uso único. **Sem câmera nem socket.**
+> **Etapa 10:** PIN por SPAKE2 — sem dicionário offline, com limite de três tentativas.
 >
 > Reconciliação fina de capítulo por bloco depende da **NH-045** e não faz parte das 14
 > etapas. O Sync V2 pode fechar com conflito seguro de capítulo inteiro.
@@ -134,7 +135,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | `commands/` legado | **Removido** na Fase 3 |
 | Fronteira nativa do frontend | **Formalizada** — ADR 0008 |
 | Sync V1 sem criptografia | **Foco atual** — Fase 4 |
-| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1–9 concluídas — protocolo, handshake e pareamento prontos; falta rede real, PAKE e o gate de saída **NH-053** |
+| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1–10 concluídas — protocolo, handshake e os dois pareamentos prontos; falta rede real e o gate de saída **NH-053** |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
 | Ciclo de atualização empacotado | **Concluído.** Roteiro, checklist de release e três execuções reais |

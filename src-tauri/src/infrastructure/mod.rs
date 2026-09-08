@@ -4,4 +4,5 @@
 pub mod identity_store;
 pub mod sqlite;
 pub mod sync_pairing;
+pub mod sync_pake;
 pub mod sync_transport;
