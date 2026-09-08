@@ -1206,6 +1206,58 @@ cache num caminho onde errar significa assinar eventos com a origem de outro apa
 
 ---
 
+### NH-061 — Separação de domínio da saída do PAKE
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4  (correção de segurança, entre as etapas 10 e 11)
+```
+
+Levantada pelo autor logo após a etapa 10. Não é correção de vulnerabilidade — o SPAKE2 não
+ficou inseguro. É de **higiene de chave**, e do tipo que fica cara depois.
+
+```text
+ANTES                          DEPOIS
+PIN                            PIN
+ ↓ SPAKE2                       ↓ SPAKE2
+32 bytes ──▶ psk do Noise      segredo mestre
+                                ├─ HKDF("…noise-psk")     → psk do Noise
+                                ├─ HKDF("…confirmation")  → confirmação
+                                └─ HKDF("…futuro")        → o que vier
+```
+
+Não é questão de entropia — o SPAKE2 já resolveu isso. É que hoje o segredo tem um uso só;
+amanhã alguém vai querer confirmação de chave, identificador de sessão, um MAC. Se todos
+saírem do mesmo material, a mesma chave passa a viver em protocolos diferentes — e é assim que
+uma construção que valia num contexto passa a valer noutro.
+
+É o que o `magic-wormhole` faz no Dilation, e o que a documentação do SPAKE2 recomenda: tratar
+a saída como material para HKDF, não como chave pronta.
+
+`concluir` passou a devolver `SegredoMestre`, um tipo que **não é uma chave de uso**. Quem quer
+`psk` chama `psk_do_noise()`. O `Debug` é escrito à mão, pelo mesmo motivo da `DeviceIdentity`.
+
+| Mutação | Reprova |
+| --- | --- |
+| os dois rótulos ficam iguais | `cada_finalidade_recebe_uma_chave_propria` |
+| `psk_do_noise` devolve o mestre cru | `nenhuma_chave_de_uso_e_o_segredo_mestre_cru` |
+
+#### Uma frase minha que estava larga demais
+
+A documentação dizia *"damos ao atacante o transcript e o PIN correto, e ainda assim ele não
+chega à chave"*. Verdade para um atacante **passivo**, com só a captura na mão — e uma leitura
+larga faria alguém concluir daqui a seis meses que **vazar o PIN é inofensivo**.
+
+Não é. Quem sabe o PIN enquanto ele vale e consegue falar com o aparelho **se autentica** — é
+para isso que o PIN existe. A propriedade correta é mais estreita:
+
+> Uma **captura do tráfego** não permite verificar palpites de PIN localmente. Toda tentativa
+> útil contra o aparelho precisa ser online, e por isso é contável e limitável.
+
+Corrigido no módulo e no teste.
+
+
 ### NH-060 — Sync V2, etapa 10: PIN por PAKE
 
 ```text

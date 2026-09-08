@@ -2630,6 +2630,7 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "futures-util",
+ "hkdf",
  "rand_core 0.6.4",
  "reqwest 0.13.4",
  "rusqlite",

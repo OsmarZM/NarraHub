@@ -16,6 +16,19 @@
 //! **interação** com o outro aparelho — e aí o limite de três tentativas volta
 //! a valer.
 //!
+//! ### O que o PAKE NÃO garante
+//!
+//! Ele não protege contra o vazamento do próprio segredo. Quem **sabe** o PIN
+//! enquanto ele ainda vale e consegue falar com o aparelho **se autentica** —
+//! é exatamente para isso que o PIN serve.
+//!
+//! A propriedade é mais estreita, e escrevê-la torta faria alguém concluir daqui
+//! a seis meses que vazar o PIN é inofensivo:
+//!
+//! > Uma **captura do tráfego** não permite verificar palpites de PIN
+//! > localmente. Toda tentativa útil contra o aparelho precisa ser online, e
+//! > por isso é contável e limitável.
+//!
 //! ## Nada de PAKE caseiro
 //!
 //! Usamos a implementação de SPAKE2 do crate [`spake2`], que é a mesma que o
@@ -192,17 +205,90 @@ impl TrocaPendente {
         Self { estado, mensagem }
     }
 
-    /// Conclui com a mensagem do outro lado e devolve os 32 bytes fortes.
+    /// Conclui com a mensagem do outro lado e devolve o **segredo mestre**.
     ///
-    /// **Isto é o que o PAKE entrega**: uma chave que só existe se os dois
-    /// lados tinham o mesmo PIN, e que não pode ser derivada de fora nem
+    /// **Isto é o que o PAKE entrega**: um segredo que só existe se os dois
+    /// lados tinham o mesmo PIN, e que não pode ser derivado de fora nem
     /// tendo o transcript inteiro.
-    pub fn concluir(self, do_outro: &[u8]) -> Result<[u8; 32], FalhaDeCodigo> {
+    ///
+    /// Repare que ele **não é uma chave de uso**. Ver [`SegredoMestre`].
+    pub fn concluir(self, do_outro: &[u8]) -> Result<SegredoMestre, FalhaDeCodigo> {
         let material = self
             .estado
             .finish(do_outro)
             .map_err(|_| FalhaDeCodigo::NaoCombinou)?;
-        <[u8; 32]>::try_from(material.as_slice()).map_err(|_| FalhaDeCodigo::NaoCombinou)
+        let bytes =
+            <[u8; 32]>::try_from(material.as_slice()).map_err(|_| FalhaDeCodigo::NaoCombinou)?;
+        Ok(SegredoMestre(bytes))
+    }
+}
+
+/// O que o SPAKE2 produz: material mestre, **não** uma chave de uso.
+///
+/// # Por que não usar isto direto como `psk`
+///
+/// Não é questão de entropia — o SPAKE2 já resolveu isso. É **separação de
+/// domínio**. Hoje o segredo tem um uso só; amanhã alguém vai querer
+/// confirmação de chave, identificador de sessão, um MAC. Se todos saírem do
+/// mesmo material, a mesma chave passa a viver em protocolos diferentes, e é
+/// assim que uma construção que valia num contexto passa a valer noutro.
+///
+/// ```text
+/// segredo mestre do SPAKE2
+///     ├─ HKDF("…noise-psk")      →  psk do Noise
+///     ├─ HKDF("…confirmation")   →  confirmação de chave (quando existir)
+///     └─ HKDF("…outra")          →  o que vier depois
+/// ```
+///
+/// Cada finalidade fica criptograficamente separada, e nenhuma consegue
+/// produzir a chave da outra. É o que o `magic-wormhole` faz no Dilation, e o
+/// que a documentação do SPAKE2 recomenda: tratar a saída como material para
+/// HKDF, não como chave pronta.
+///
+/// `Debug` escrito à mão, pelo mesmo motivo da `DeviceIdentity`: material
+/// criptográfico não vaza em log de pânico.
+pub struct SegredoMestre([u8; 32]);
+
+impl std::fmt::Debug for SegredoMestre {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SegredoMestre(<redigido>)")
+    }
+}
+
+/// Rótulo do `psk` do Noise. Cada finalidade tem o seu, e eles não se repetem.
+const INFO_NOISE_PSK: &[u8] = b"narrahub.sync.v2.pake.noise-psk";
+
+/// Rótulo da confirmação de chave. Ainda sem uso — existe aqui para o teste
+/// poder provar que dois rótulos produzem chaves diferentes, que é a
+/// propriedade inteira.
+const INFO_CONFIRMACAO: &[u8] = b"narrahub.sync.v2.pake.confirmation";
+
+impl SegredoMestre {
+    /// Deriva a chave de uma finalidade específica.
+    fn derivar(&self, info: &[u8]) -> [u8; 32] {
+        // Sem `salt`: os dois lados precisam chegar ao mesmo valor sem trocar
+        // mais nada, e a separação vem do `info`. O segredo já é uniforme —
+        // é saída de SPAKE2, não uma senha.
+        let hkdf = hkdf::Hkdf::<sha2::Sha256>::new(None, &self.0);
+        let mut saida = [0_u8; 32];
+        hkdf.expand(info, &mut saida)
+            .expect("32 bytes cabem numa expansão HKDF-SHA256");
+        saida
+    }
+
+    /// O `psk` do `XXpsk0`.
+    pub fn psk_do_noise(&self) -> [u8; 32] {
+        self.derivar(INFO_NOISE_PSK)
+    }
+
+    /// Chave de confirmação. Sem uso ainda; ver `INFO_CONFIRMACAO`.
+    pub fn chave_de_confirmacao(&self) -> [u8; 32] {
+        self.derivar(INFO_CONFIRMACAO)
+    }
+
+    #[cfg(test)]
+    fn bytes_do_mestre(&self) -> [u8; 32] {
+        self.0
     }
 }
 
@@ -275,11 +361,13 @@ mod tests {
         let msg_a = anfitriao.mensagem.clone();
         let msg_v = visitante.mensagem.clone();
 
+        // O que se compara é o `psk` derivado, não o mestre: é ele que vai
+        // para o Noise, e é nele que uma falha apareceria.
         let chave_a = anfitriao.concluir(&msg_v);
         let chave_v = visitante.concluir(&msg_a);
 
         let chaves = match (chave_a, chave_v) {
-            (Ok(a), Ok(v)) => Some((a, v)),
+            (Ok(a), Ok(v)) => Some((a.psk_do_noise(), v.psk_do_noise())),
             _ => None,
         };
         ((msg_a, msg_v), chaves)
@@ -355,8 +443,13 @@ mod tests {
     /// **não** passaria.
     ///
     /// O atacante recebe tudo que passou pela rede — as duas mensagens — e
-    /// ainda por cima o **PIN correto**, que é mais do que ele teria. Mesmo
-    /// assim ele não consegue chegar à chave da sessão:
+    /// ainda por cima o **PIN correto**, que é mais do que ele teria.
+    ///
+    /// Cuidado com a leitura larga: isto **não** diz que vazar o PIN é
+    /// inofensivo. Quem sabe o PIN e consegue falar com o aparelho se
+    /// autentica, e é para isso que o PIN existe. O que o teste demonstra é
+    /// que a **captura** não vira verificador — nem com o PIN na mão dá para
+    /// reconstruir a sessão gravada:
     ///
     /// ```text
     /// transcript + PIN correto  ──▶  chave da sessão ?
@@ -377,10 +470,12 @@ mod tests {
         // O atacante gravou tudo E sabe o PIN. Ele tenta reproduzir a chave.
         let tentativa_como_anfitriao = TrocaPendente::anfitriao(pin)
             .concluir(&msg_v)
-            .expect("o SPAKE2 do atacante roda");
+            .expect("o SPAKE2 do atacante roda")
+            .psk_do_noise();
         let tentativa_como_visitante = TrocaPendente::visitante(pin)
             .concluir(&msg_a)
-            .expect("o SPAKE2 do atacante roda");
+            .expect("o SPAKE2 do atacante roda")
+            .psk_do_noise();
 
         assert_ne!(
             tentativa_como_anfitriao, chave_real,
@@ -408,7 +503,8 @@ mod tests {
         for palpite in palpites {
             let derivada = TrocaPendente::anfitriao(&palpite)
                 .concluir(&msg_v)
-                .expect("o SPAKE2 roda com qualquer palpite");
+                .expect("o SPAKE2 roda com qualquer palpite")
+                .psk_do_noise();
             assert_ne!(
                 derivada, chave_real,
                 "o palpite {palpite} reproduziu a chave: o transcript virou verificador"
@@ -487,6 +583,66 @@ mod tests {
                 "os dígitos do PIN aparecem nos bytes que trafegam"
             );
         }
+    }
+
+    // ── separação de domínio (NH-061) ──────────────────────────────────────
+
+    /// GATE DA NH-061: rótulos diferentes produzem chaves diferentes.
+    ///
+    /// É a propriedade inteira. Sem ela, a chave do Noise e a de confirmação
+    /// seriam o mesmo valor, e uma construção que vale num contexto passaria a
+    /// valer no outro.
+    #[test]
+    fn cada_finalidade_recebe_uma_chave_propria() {
+        let ((_, msg_v), _) = trocar("13572468", "13572468");
+        let mestre = TrocaPendente::anfitriao("13572468")
+            .concluir(&msg_v)
+            .expect("derivar");
+
+        let psk = mestre.psk_do_noise();
+        let confirmacao = mestre.chave_de_confirmacao();
+
+        assert_ne!(
+            psk, confirmacao,
+            "duas finalidades receberam a mesma chave: a separação não existe"
+        );
+    }
+
+    /// E nenhuma delas é o segredo mestre cru.
+    ///
+    /// Entregar o mestre direto como `psk` é o que a NH-061 corrigiu: o
+    /// primeiro uso amarraria o material a um protocolo, e o segundo herdaria
+    /// a chave do primeiro.
+    #[test]
+    fn nenhuma_chave_de_uso_e_o_segredo_mestre_cru() {
+        let ((_, msg_v), _) = trocar("13572468", "13572468");
+        let mestre = TrocaPendente::anfitriao("13572468")
+            .concluir(&msg_v)
+            .expect("derivar");
+
+        let cru = mestre.bytes_do_mestre();
+        assert_ne!(mestre.psk_do_noise(), cru);
+        assert_ne!(mestre.chave_de_confirmacao(), cru);
+    }
+
+    /// A derivação é determinística: os dois lados chegam ao mesmo `psk` sem
+    /// trocar mais nada.
+    #[test]
+    fn os_dois_lados_derivam_o_mesmo_psk() {
+        let pin = "13572468";
+        let anfitriao = TrocaPendente::anfitriao(pin);
+        let visitante = TrocaPendente::visitante(pin);
+        let msg_a = anfitriao.mensagem.clone();
+        let msg_v = visitante.mensagem.clone();
+
+        let mestre_a = anfitriao.concluir(&msg_v).expect("anfitrião");
+        let mestre_v = visitante.concluir(&msg_a).expect("visitante");
+
+        assert_eq!(mestre_a.psk_do_noise(), mestre_v.psk_do_noise());
+        assert_eq!(
+            mestre_a.chave_de_confirmacao(),
+            mestre_v.chave_de_confirmacao()
+        );
     }
 
     // ── limite de tentativas, que é a outra metade ─────────────────────────
@@ -583,8 +739,14 @@ mod tests {
         let msg_a = anfitriao.mensagem.clone();
         let msg_v = visitante.mensagem.clone();
 
-        let psk_a = anfitriao.concluir(&msg_v).expect("anfitrião");
-        let psk_v = visitante.concluir(&msg_a).expect("visitante");
+        let psk_a = anfitriao
+            .concluir(&msg_v)
+            .expect("anfitrião")
+            .psk_do_noise();
+        let psk_v = visitante
+            .concluir(&msg_a)
+            .expect("visitante")
+            .psk_do_noise();
         assert_eq!(psk_a, psk_v);
 
         // E os 32 bytes têm a forma que o `psk` do Noise espera.
