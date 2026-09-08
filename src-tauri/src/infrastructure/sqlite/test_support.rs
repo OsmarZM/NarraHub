@@ -93,12 +93,14 @@ impl Drop for TemporaryDatabase {
 /// seria recusado, e com razão.
 pub fn origem_remota_confiavel(
     connection: &Connection,
-    quem_introduz: &str,
+    quem_introduz: &crate::domain::identity::DeviceIdentity,
 ) -> crate::domain::identity::DeviceIdentity {
     let identidade = crate::domain::identity::DeviceIdentity::generate();
+    let sessao =
+        crate::infrastructure::sync_transport::SessaoAutenticada::deste_aparelho(quem_introduz);
     crate::infrastructure::sqlite::sync_trust::introduzir_dispositivo(
         connection,
-        quem_introduz,
+        &sessao,
         identidade.device_id(),
         &identidade.public_base32(),
     )
