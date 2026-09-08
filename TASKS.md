@@ -1121,6 +1121,9 @@ Registrado, **não implementar** antes de a fase correspondente abrir.
 | NH-045 | Identidade persistente de blocos do editor (detalhado abaixo) | 4, fora das etapas 1–14 |
 | NH-048 | Gravação atômica do arquivo de identidade (detalhado abaixo) | 4, hardening antes do Sync V2 sair |
 | NH-053 | **GATE DE SAÍDA DA FASE 4** — todo caminho de escrita produz evento (detalhado abaixo) | 4 |
+| NH-056 | ~~Autoridade vem da sessão autenticada~~ — **fechada na etapa 8** | 4 |
+| NH-057 | Origem desconhecida da rede não vira pedido visível (detalhado abaixo) | 4, gate da etapa 9/10 |
+| NH-058 | Aposentadoria exige sincronização final (detalhado abaixo) | 4, gate da etapa 11/12 |
 | NH-050 | Teste de tokens de design (`var(--*)` sem definição reprova o CI) | 5 |
 | NH-051 | Escala de breakpoints e responsividade em telas menores | 5 |
 | NH-060 | Contrato `AIContext v1` e orçamento de contexto | 6 |
@@ -1202,6 +1205,195 @@ reconciliação é uma consulta indexada quando não há nada a mudar — e disp
 cache num caminho onde errar significa assinar eventos com a origem de outro aparelho.
 
 ---
+
+### NH-055 — Sync V2, etapa 8: Noise, X25519 e o vínculo com a identidade
+
+```text
+Owner:  Claude
+Status: DONE  (com limite físico declarado)
+Fase:   4  (etapa 8 de 14)
+```
+
+O critério desta etapa foi dado pelo autor, e não é "o canal é cifrado":
+
+> A identidade autenticada pelo Noise tem que ser **a mesma** que o Sync V2 usa para
+> autorizar. Nenhum `device_id` declarado pela camada de aplicação vale como prova de
+> identidade.
+
+#### Por que o Noise sozinho não basta
+
+O Noise autentica a **X25519 estática** do outro lado. O Sync V2 autoriza pela identidade
+**Ed25519**, de onde o `device_id` deriva. São duas chaves diferentes de propósito (ADR §5), e
+nada, sozinho, liga uma à outra:
+
+```text
+Noise diz:     "quem está do outro lado controla a X25519 estática K"
+Sync V2 quer:  "quem está do outro lado É o device_id D"
+```
+
+Um peer com X25519 legítima poderia anunciar qualquer `device_id`.
+
+#### O vínculo: assinar o hash do handshake
+
+Depois do `Noise_XX_25519_ChaChaPoly_BLAKE2s`, os dois lados têm o mesmo `h` — o hash do
+transcript, que inclui as estáticas. Cada lado assina esse `h` com a Ed25519:
+
+| O que a prova garante | Por quê |
+| --- | --- |
+| controla aquela Ed25519 | a assinatura confere |
+| **é esta conexão** | `h` depende dos efêmeros, que mudam a cada handshake |
+| liga as duas chaves | `h` inclui a X25519 estática do Noise |
+
+O segundo item é o que impede replay de uma prova capturada — e tem teste: duas conexões entre
+os mesmos aparelhos produzem `h` diferentes, e a prova da primeira não vale na segunda.
+
+#### `SessaoAutenticada`: um tipo que não se falsifica
+
+O `device_id` sai do fingerprint da chave que assinou o `h`. **Não existe construtor a partir de
+um `device_id` recebido pela rede** — é essa ausência que carrega a garantia.
+
+E foi isso que fechou a **NH-056**: `introduzir_dispositivo` deixou de receber
+`quem_introduz: &str` e passou a exigir `&SessaoAutenticada`. O único outro construtor,
+`deste_aparelho`, pede uma `DeviceIdentity`, que só existe com a privada carregada do disco.
+
+O teste demonstra a diferença: quem tem a chave apresenta; quem só conhece o id — informação
+pública, que viaja no vetor de sequências — não tem por onde montar a autoridade.
+
+#### Separadores de domínio distintos
+
+A prova do handshake e a assinatura de evento usam prefixos diferentes. Sem isso, uma prova de
+handshake capturada poderia ser apresentada como assinatura de um evento forjado. Tem teste.
+
+#### O que falta, e eu não posso fazer
+
+Esta etapa entrega o **handshake e o vínculo**, com chaves reais e testes ponta a ponta em
+memória. Ela **não** entrega:
+
+- descoberta de peers na rede (mDNS ou IP digitado) — fora do escopo do ADR, §22;
+- socket, reconexão, timeout — a camada que carrega os bytes entre dois processos;
+- prova de que dois aparelhos **físicos** se encontram.
+
+> **Verificação humana necessária:** o handshake nunca atravessou uma rede de verdade. O que
+> está provado é que o protocolo e o vínculo criptográfico estão corretos entre dois lados no
+> mesmo processo.
+
+
+### NH-056 — Autoridade vem da sessão autenticada, não de um argumento
+
+```text
+Owner:  Claude
+Status: FECHADA na etapa 8 — `introduzir_dispositivo` exige `&SessaoAutenticada`
+Fase:   4
+```
+
+`introduzir_dispositivo(connection, quem_introduz: &str, ...)` confere que `quem_introduz`
+existe e está `active`. Local e em teste, correto. **Com rede, não.**
+
+```text
+peer remoto:  "quem introduziu este aparelho foi DESKTOP-ABC"
+                          ↓
+        SELECT state FROM sync_devices WHERE device_id = 'DESKTOP-ABC'
+                          ↓
+                     active → aceita
+```
+
+Qualquer peer pode **mencionar** o id de um aparelho ativo. Um `&str` não prova nada sobre
+quem está falando.
+
+A autoridade precisa vir da identidade criptográfica da sessão:
+
+```text
+sessão Noise autenticada
+        ↓
+chave estática remota
+        ↓
+identidade do peer, provada
+        ↓
+device_id autenticado
+        ↓
+introduzir_dispositivo(peer_autenticado, novo)
+```
+
+> **Regra para a etapa 8:** não basta provar que o canal é criptografado. É preciso provar que
+> a identidade autenticada pelo Noise **é a mesma** que o Sync V2 usa para autorizar. Nenhum
+> `device_id` declarado pela camada de aplicação vale como prova de identidade.
+
+---
+
+### NH-057 — Origem desconhecida da rede não vira pedido visível
+
+```text
+Owner:  —
+Status: GATE DA ETAPA 9/10
+Fase:   4
+```
+
+Hoje toda origem fora do roster vira `Recusa::OrigemDesconhecida` e aparece em
+`pedidos_de_entrada()`. Conceitualmente certo, e **explorável**:
+
+```text
+device-000001, device-000002, device-000003, ...
+                    ↓
+        "14.392 aparelhos querem entrar"
+```
+
+Uma tela assim treina o escritor a ignorar a tela — que é o oposto do que ela existe para
+fazer.
+
+A separação certa:
+
+```text
+envelope de origem desconhecida    →  descarta, com limite de taxa
+fluxo de pareamento autenticado    →  pedido de entrada visível
+```
+
+Um pedido só aparece quando alguém do outro lado **participou de um pareamento**, não quando um
+pacote qualquer cita um id novo.
+
+---
+
+### NH-058 — Aposentadoria exige sincronização final
+
+```text
+Owner:  —
+Status: GATE DA ETAPA 11/12 e da UX
+Fase:   4
+```
+
+Decisão do autor, preferida ao `cutoff_seq` por ser mais simples de explicar, testar e manter.
+
+O problema: eventos legítimos criados antes de o aparelho ser aposentado, e que ainda não
+chegaram a ninguém.
+
+```text
+1. Desktop antigo tem eventos até seq 918
+2. Sincroniza com o celular; o celular confirma que recebeu até 918
+3. Só então o Desktop antigo vira `retired`
+4. Depois disso ele não produz nem envia mais nada
+5. Desktop novo entra no conjunto
+6. O celular repassa tudo
+```
+
+O Desktop antigo **nunca precisa encontrar o Desktop novo** — o celular é a ponte. É a vantagem
+direta de peers simétricos com propagação transitiva, em vez de "PC principal e secundários".
+
+E `retired` passa a significar uma coisa só: **acabou**. Sem o caso estranho de um aparelho
+aposentado ainda mandando evento atrasado depois.
+
+#### O caso do aparelho que morreu
+
+HD queimado, não liga. Não há como fazer a sincronização final, e a UX precisa dizer isso sem
+eufemismo:
+
+| Ação | Significado |
+| --- | --- |
+| **Aposentar** | exige sincronização final confirmada com pelo menos um dispositivo ativo |
+| **Abandonar** | aceita que o que existia só naquele aparelho **foi perdido** |
+
+Não precisa de estado novo no banco — é semântica da ação. Mas precisa aparecer com clareza,
+porque é decisão de perda potencial de dados, e o [ADR 0001](docs/ADR/0001-local-ownership.md)
+diz que essas decisões são do escritor.
+
 
 ### NH-054 — Sync V2, etapa 7: verificação de origem e roster
 

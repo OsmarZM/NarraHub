@@ -316,9 +316,12 @@ mod tests {
             // Introdução autorizada: quem apresenta é o `self` do destino, que
             // é `active` por construção. É o caminho da seção 5.2 do ADR — e
             // o que impede um relay comprometido de trazer origens inventadas.
+            let sessao = crate::infrastructure::sync_transport::SessaoAutenticada::deste_aparelho(
+                &destino.identidade,
+            );
             crate::infrastructure::sqlite::sync_trust::introduzir_dispositivo(
                 &connection,
-                destino.identidade.device_id(),
+                &sessao,
                 &device_id,
                 &publica,
             )

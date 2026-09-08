@@ -57,6 +57,7 @@
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::identity::{decode_base32, fingerprint, verify};
 use crate::domain::sync::EventEnvelope;
+use crate::infrastructure::sync_transport::SessaoAutenticada;
 use ed25519_dalek::VerifyingKey;
 use rusqlite::{Connection, OptionalExtension};
 
@@ -163,18 +164,39 @@ pub fn a_chave_deriva_o_id(publica_base32: &str, device_id: &str) -> bool {
 
 /// Admite um dispositivo no roster por **introdução autorizada**.
 ///
-/// Quem introduz precisa estar `active`. É o que impede o pareamento de virar
-/// transitivo por acidente: um relay comprometido não pode se apresentar
-/// trazendo origens inventadas junto.
+/// # A autoridade vem da sessão, não de um argumento
+///
+/// A primeira versão desta função recebia `quem_introduz: &str` e consultava
+/// o roster com ele. Local e em teste, correto. **Com rede, não:**
+///
+/// ```text
+/// peer remoto:  "quem introduziu este aparelho foi DESKTOP-ABC"
+///                           ↓
+///         SELECT state FROM sync_devices WHERE device_id = 'DESKTOP-ABC'
+///                           ↓
+///                      active → aceita
+/// ```
+///
+/// Qualquer peer pode **mencionar** o id de um aparelho ativo. Um `&str` não
+/// prova nada sobre quem está falando.
+///
+/// Por isso o parâmetro é [`SessaoAutenticada`] — um tipo que só existe depois
+/// de alguém ter assinado o hash do handshake com a Ed25519 correspondente.
+/// Não há construtor a partir de um `device_id` recebido pela rede, e é essa
+/// ausência que carrega a garantia.
+///
+/// Quem introduz ainda precisa estar `active`: senão parear com um aparelho
+/// passaria a significar aceitar tudo que ele repassar, de qualquer origem.
 ///
 /// A chave também precisa derivar o `device_id` — senão o roster passaria a
 /// conter uma linha que a etapa de verificação usaria contra a chave errada.
 pub fn introduzir_dispositivo(
     connection: &Connection,
-    quem_introduz: &str,
+    sessao: &SessaoAutenticada,
     device_id: &str,
     ed25519_public: &str,
 ) -> DatabaseCommandResult<()> {
+    let quem_introduz = sessao.device_id();
     let estado_do_introdutor: Option<String> = connection
         .query_row(
             "SELECT state FROM sync_devices WHERE device_id = ?1",
@@ -273,6 +295,7 @@ mod tests {
     use crate::infrastructure::sqlite::test_support::{
         origem_remota_confiavel, seed_universe, self_de_teste, TemporaryDatabase,
     };
+    use crate::infrastructure::sync_transport::SessaoAutenticada;
 
     struct Cenario {
         fixture: TemporaryDatabase,
@@ -292,7 +315,7 @@ mod tests {
                 )
                 .expect("semear");
             let eu = self_de_teste(&connection);
-            let remota = origem_remota_confiavel(&connection, eu.device_id());
+            let remota = origem_remota_confiavel(&connection, &eu);
             (eu, remota)
         };
         Cenario {
@@ -561,6 +584,58 @@ mod tests {
     ///
     /// É o que impede o pareamento de virar transitivo por acidente: um relay
     /// comprometido não pode se apresentar trazendo origens inventadas junto.
+    /// GATE DA NH-056: a autoridade para introduzir vem da **sessão
+    /// autenticada**, e um peer não consegue fabricá-la citando um id ativo.
+    ///
+    /// Antes desta etapa, `introduzir_dispositivo` recebia `quem_introduz:
+    /// &str`. Com rede, qualquer peer poderia mandar o id de um aparelho ativo
+    /// e a consulta ao roster diria "active → aceita".
+    ///
+    /// Agora o parâmetro é `SessaoAutenticada`, e o único construtor pede uma
+    /// `DeviceIdentity` — que só existe com a chave privada em mãos. O teste
+    /// demonstra a diferença: quem tem a chave consegue; quem só sabe o id,
+    /// não tem por onde construir a autoridade.
+    #[test]
+    fn a_autoridade_para_introduzir_exige_a_chave_e_nao_o_id() {
+        let cenario = cenario();
+        let connection = cenario.fixture.database.write().expect("escrita");
+        let novo = DeviceIdentity::generate();
+
+        // Quem tem a chave do aparelho ativo consegue apresentar.
+        let com_a_chave = SessaoAutenticada::deste_aparelho(&cenario.remota);
+        introduzir_dispositivo(
+            &connection,
+            &com_a_chave,
+            novo.device_id(),
+            &novo.public_base32(),
+        )
+        .expect("quem controla a identidade ativa apresenta");
+
+        // E o `device_id` da sessão é o da chave, não algo escolhido: não há
+        // caminho para dizer "sou o DESKTOP-ABC" sem ter a privada dele.
+        assert_eq!(com_a_chave.device_id(), cenario.remota.device_id());
+
+        // Um impostor que conheça o id do aparelho ativo — informação pública,
+        // que viaja no vetor de sequências — só consegue montar uma sessão com
+        // a própria identidade.
+        let impostor = DeviceIdentity::generate();
+        let sessao_do_impostor = SessaoAutenticada::deste_aparelho(&impostor);
+        assert_ne!(
+            sessao_do_impostor.device_id(),
+            cenario.remota.device_id(),
+            "um impostor conseguiu montar uma sessão com o device_id alheio"
+        );
+
+        let outro = DeviceIdentity::generate();
+        introduzir_dispositivo(
+            &connection,
+            &sessao_do_impostor,
+            outro.device_id(),
+            &outro.public_base32(),
+        )
+        .expect_err("o impostor não está no roster e não pode apresentar ninguém");
+    }
+
     #[test]
     fn dispositivo_revogado_nao_apresenta_outros() {
         let cenario = cenario();
@@ -568,9 +643,10 @@ mod tests {
         mudar_estado(&connection, cenario.remota.device_id(), "revoked").expect("revogar");
 
         let novo = DeviceIdentity::generate();
+        let sessao = SessaoAutenticada::deste_aparelho(&cenario.remota);
         introduzir_dispositivo(
             &connection,
-            cenario.remota.device_id(),
+            &sessao,
             novo.device_id(),
             &novo.public_base32(),
         )
@@ -584,9 +660,10 @@ mod tests {
         let estranho = DeviceIdentity::generate();
         let novo = DeviceIdentity::generate();
 
+        let sessao = SessaoAutenticada::deste_aparelho(&estranho);
         introduzir_dispositivo(
             &connection,
-            estranho.device_id(),
+            &sessao,
             novo.device_id(),
             &novo.public_base32(),
         )
@@ -604,9 +681,10 @@ mod tests {
         let novo = DeviceIdentity::generate();
         let outra_chave = DeviceIdentity::generate();
 
+        let sessao = SessaoAutenticada::deste_aparelho(&cenario.eu);
         introduzir_dispositivo(
             &connection,
-            cenario.eu.device_id(),
+            &sessao,
             novo.device_id(),
             &outra_chave.public_base32(),
         )
@@ -619,9 +697,10 @@ mod tests {
         let connection = cenario.fixture.database.write().expect("escrita");
         let novo = DeviceIdentity::generate();
 
+        let sessao = SessaoAutenticada::deste_aparelho(&cenario.remota);
         introduzir_dispositivo(
             &connection,
-            cenario.remota.device_id(),
+            &sessao,
             novo.device_id(),
             &novo.public_base32(),
         )

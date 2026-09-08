@@ -28,6 +28,13 @@ use sha2::{Digest, Sha256};
 /// bytes preparados para um valessem no outro.
 const SIGNATURE_DOMAIN: &[u8] = b"narrahub.sync.v2.envelope\x00";
 
+/// Separador da prova de identidade do handshake Noise.
+///
+/// Distinto do de envelope para que uma assinatura feita num contexto não
+/// possa ser apresentada no outro — sem isso, uma prova de handshake
+/// capturada poderia ser oferecida como assinatura de evento, ou vice-versa.
+const HANDSHAKE_DOMAIN: &[u8] = b"narrahub.sync.v2.handshake\x00";
+
 /// Quantos bytes do SHA-256 da chave pública viram o `device_id`.
 ///
 /// 20 bytes = 160 bits, que em base32 dão 32 caracteres legíveis. Truncar
@@ -94,9 +101,31 @@ impl DeviceIdentity {
         base32(&self.public_bytes())
     }
 
+    /// Assina bytes arbitrários — hoje, o hash do handshake Noise.
+    ///
+    /// Separado de `sign` de propósito: aquele cobre a representação canônica
+    /// de um envelope, com separador de domínio próprio. Usar a mesma função
+    /// para as duas coisas permitiria que bytes preparados para uma valessem
+    /// na outra.
+    pub fn assinar_bytes(&self, bytes: &[u8]) -> [u8; 64] {
+        self.signing_key.sign(&bytes_do_handshake(bytes)).to_bytes()
+    }
+
     pub fn sign(&self, envelope: &EventEnvelope) -> String {
         base32(&self.signing_key.sign(&canonical_bytes(envelope)).to_bytes())
     }
+}
+
+/// Os bytes que a prova de identidade do handshake cobre.
+///
+/// Exposta porque quem verifica precisa montar exatamente os mesmos bytes que
+/// quem assinou — e deixar cada lado montar por conta própria é como as duas
+/// pontas divergem sem ninguém notar.
+pub fn bytes_do_handshake(hash: &[u8]) -> Vec<u8> {
+    let mut prefixado = Vec::with_capacity(HANDSHAKE_DOMAIN.len() + hash.len());
+    prefixado.extend_from_slice(HANDSHAKE_DOMAIN);
+    prefixado.extend_from_slice(hash);
+    prefixado
 }
 
 /// `device_id` a partir da chave pública: SHA-256 truncado, em base32.

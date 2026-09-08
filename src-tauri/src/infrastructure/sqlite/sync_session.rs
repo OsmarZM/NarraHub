@@ -312,7 +312,7 @@ mod tests {
     ///
     /// Desde a etapa 7 não existe atalho: uma origem com chave inventada é
     /// recusada na cadeia de confiança, e com razão.
-    fn preparar(fixture: &TemporaryDatabase) -> (Connection, DeviceIdentity) {
+    fn preparar(fixture: &TemporaryDatabase) -> (Connection, DeviceIdentity, DeviceIdentity) {
         let connection = fixture.database.write().expect("abrir escrita");
         seed_universe(&connection, "u1");
         connection
@@ -322,8 +322,8 @@ mod tests {
             )
             .expect("semear");
         let eu = self_de_teste(&connection);
-        let remota = origem_remota_confiavel(&connection, eu.device_id());
-        (connection, remota)
+        let remota = origem_remota_confiavel(&connection, &eu);
+        (connection, eu, remota)
     }
 
     fn capitulo(id: &str, titulo: &str) -> String {
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn lote_em_ordem_aplica_tudo_e_avanca_o_cursor() {
         let fixture = TemporaryDatabase::new();
-        let (mut connection, remota) = preparar(&fixture);
+        let (mut connection, _eu, remota) = preparar(&fixture);
 
         let relatorio = receber_eventos(&mut connection, &cadeia(&remota, 3)).expect("receber");
         assert_eq!(relatorio.aplicados, 3);
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn evento_adiantado_fica_pendente_e_o_cursor_para_antes_da_lacuna() {
         let fixture = TemporaryDatabase::new();
-        let (mut connection, remota) = preparar(&fixture);
+        let (mut connection, _eu, remota) = preparar(&fixture);
 
         let todos = cadeia(&remota, 3);
         // Chegam o 1 e o 3. O 2 se perdeu no caminho.
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn quando_a_lacuna_fecha_o_pendente_entra_junto() {
         let fixture = TemporaryDatabase::new();
-        let (mut connection, remota) = preparar(&fixture);
+        let (mut connection, _eu, remota) = preparar(&fixture);
 
         let todos = cadeia(&remota, 3);
         receber_eventos(&mut connection, &[todos[0].clone(), todos[2].clone()])
@@ -456,7 +456,7 @@ mod tests {
     fn o_pendente_sobrevive_ao_processo() {
         let fixture = TemporaryDatabase::new();
         let (todos, remota) = {
-            let (mut connection, remota) = preparar(&fixture);
+            let (mut connection, _eu, remota) = preparar(&fixture);
             let todos = cadeia(&remota, 3);
             receber_eventos(&mut connection, &[todos[0].clone(), todos[2].clone()])
                 .expect("primeiro lote");
@@ -481,14 +481,7 @@ mod tests {
     #[test]
     fn a_lacuna_de_uma_origem_nao_trava_a_outra() {
         let fixture = TemporaryDatabase::new();
-        let (mut connection, remota) = preparar(&fixture);
-        let eu: String = connection
-            .query_row(
-                "SELECT device_id FROM sync_devices WHERE is_self = 1",
-                [],
-                |row| row.get(0),
-            )
-            .expect("ler self");
+        let (mut connection, eu, remota) = preparar(&fixture);
         let outra = origem_remota_confiavel(&connection, &eu);
 
         let da_origem = cadeia(&remota, 3);
@@ -523,7 +516,7 @@ mod tests {
     #[test]
     fn base_desconhecida_trava_o_cursor_e_aparece_no_relatorio() {
         let fixture = TemporaryDatabase::new();
-        let (mut connection, remota) = preparar(&fixture);
+        let (mut connection, _eu, remota) = preparar(&fixture);
 
         let mut orfao = envelope_de_origem(
             remota.device_id(),
@@ -550,7 +543,7 @@ mod tests {
     #[test]
     fn reenviar_o_mesmo_lote_e_inofensivo() {
         let fixture = TemporaryDatabase::new();
-        let (mut connection, remota) = preparar(&fixture);
+        let (mut connection, _eu, remota) = preparar(&fixture);
         let lote = cadeia(&remota, 3);
 
         receber_eventos(&mut connection, &lote).expect("primeira vez");
@@ -572,7 +565,7 @@ mod tests {
     #[test]
     fn lote_embaralhado_e_aplicado_na_ordem_certa() {
         let fixture = TemporaryDatabase::new();
-        let (mut connection, remota) = preparar(&fixture);
+        let (mut connection, _eu, remota) = preparar(&fixture);
 
         let todos = cadeia(&remota, 3);
         let embaralhado = vec![todos[2].clone(), todos[0].clone(), todos[1].clone()];
