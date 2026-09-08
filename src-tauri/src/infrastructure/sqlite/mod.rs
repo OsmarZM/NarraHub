@@ -9,6 +9,7 @@ pub mod manuscript_repository;
 pub mod planning_repository;
 pub mod sync_apply;
 pub mod sync_exchange;
+pub mod sync_gc;
 pub mod sync_repository;
 pub mod sync_session;
 pub mod sync_trust;

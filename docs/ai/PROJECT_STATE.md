@@ -72,7 +72,7 @@ O gate `o andaime superado não volta para o repositório` reprova se `angular-s
 ## Fase ativa
 
 ```text
-FASE 4 — Sync V2   (etapas 1 a 10 de 14 concluídas)
+FASE 4 — Sync V2   (etapas 1 a 11 de 14 concluídas)
 ```
 
 As fases **3 e 3.5 fecharam em 2026-09-01**, com gates executáveis:
@@ -105,6 +105,7 @@ diretório não o pegaria; o gate contra **colocação** pega.
 > **Etapa 8:** Noise `XX` e o vínculo entre a sessão e a identidade Ed25519. **Sem rede real ainda.**
 > **Etapa 9:** pareamento por QR — convite aleatório, expirável e de uso único. **Sem câmera nem socket.**
 > **Etapa 10:** PIN por SPAKE2 — sem dicionário offline, com limite de três tentativas.
+> **Etapa 11:** tombstones causais, coleta só com prova, e as duas saídas do conjunto. **Schema 17.**
 >
 > Reconciliação fina de capítulo por bloco depende da **NH-045** e não faz parte das 14
 > etapas. O Sync V2 pode fechar com conflito seguro de capítulo inteiro.
@@ -135,7 +136,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | `commands/` legado | **Removido** na Fase 3 |
 | Fronteira nativa do frontend | **Formalizada** — ADR 0008 |
 | Sync V1 sem criptografia | **Foco atual** — Fase 4 |
-| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1–10 concluídas — protocolo, handshake e os dois pareamentos prontos; falta rede real e o gate de saída **NH-053** |
+| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1–11 concluídas; falta bootstrap, attachments, rede real e o gate de saída **NH-053** |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
 | Ciclo de atualização empacotado | **Concluído.** Roteiro, checklist de release e três execuções reais |
@@ -151,7 +152,7 @@ migration — não pegar a versão mais recente:
 | 0.8.0 | 14 |
 | 0.9.0 e 0.9.1 | 15 |
 | 0.9.2 (publicada) | 15 |
-| `main` hoje | **16** — estruturas do Sync V2 |
+| `main` hoje | **17** — coordenadas causais dos tombstones |
 
 Consequência prática, e ela **mudou** com a migration 16: a próxima versão publicada será a
 primeira desde a 0.9.2 a carregar migration de verdade. O par `0.9.2 → próxima` deixa de ser

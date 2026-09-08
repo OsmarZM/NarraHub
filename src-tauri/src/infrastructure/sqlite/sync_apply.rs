@@ -40,6 +40,12 @@ use rusqlite::{OptionalExtension, Transaction};
 /// O que aconteceu com o evento que chegou.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Applied {
+    /// Exclusão e edição partiram da mesma base. **Nenhuma das duas venceu.**
+    ///
+    /// "Delete vence" apaga uma edição feita de propósito; "edit ressuscita"
+    /// desfaz uma exclusão feita de propósito. As duas são perda silenciosa,
+    /// em direções opostas.
+    DivergenteComExclusao { id_divergencia: String },
     /// Aplicado: o agregado mudou e o evento entrou no log.
     Aplicado,
     /// Já conhecíamos este evento. Repetição é normal em rede, e não é erro.
@@ -108,6 +114,15 @@ pub fn apply_remote_event(
             marcar_aplicado(tx, &envelope.event_id)?;
             let id = registrar_divergencia(tx, envelope, &base_rev, &historia)?;
             Ok(Applied::Divergente { id_divergencia: id })
+        }
+        Causality::ConcurrentComExclusao { base_rev } => {
+            // Registra as duas versões e para. O agregado **continua
+            // excluído** até o humano decidir: manter a exclusão ou restaurar
+            // a versão editada. Restaurar sozinho seria ressurreição.
+            registrar_revisao(tx, envelope)?;
+            marcar_aplicado(tx, &envelope.event_id)?;
+            let id = registrar_divergencia(tx, envelope, &base_rev, &historia)?;
+            Ok(Applied::DivergenteComExclusao { id_divergencia: id })
         }
         Causality::Unknown { .. } => {
             // NÃO marca como aplicado: quando a história intermediária
@@ -221,14 +236,19 @@ fn aplicar_capitulo(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseC
         )
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
         tx.execute(
-            "INSERT INTO sync_tombstones (aggregate_type, aggregate_id, deleted_rev)
-             VALUES (?1, ?2, ?3)
+            "INSERT INTO sync_tombstones
+                (aggregate_type, aggregate_id, deleted_rev, origin_device_id, origin_seq)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(aggregate_type, aggregate_id)
-             DO UPDATE SET deleted_rev = excluded.deleted_rev",
+             DO UPDATE SET deleted_rev = excluded.deleted_rev,
+                           origin_device_id = excluded.origin_device_id,
+                           origin_seq = excluded.origin_seq",
             rusqlite::params![
                 &envelope.aggregate_type,
                 &envelope.aggregate_id,
                 &envelope.new_rev,
+                &envelope.device_id,
+                envelope.seq,
             ],
         )
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;

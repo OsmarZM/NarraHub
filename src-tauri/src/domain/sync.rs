@@ -140,15 +140,38 @@ pub enum Causality {
     /// reconciliação daquele agregado. Tratar como concorrente inventaria uma
     /// divergência que talvez não exista.
     Unknown { base_rev: String },
+    /// **O agregado foi excluído aqui, e chega uma edição da mesma base.**
+    ///
+    /// É o pior caso da seção 15, e ele não pode ter vencedor automático:
+    ///
+    /// ```text
+    ///      rev A0   personagem existe nos dois
+    ///       ├──────▶ D1   Desktop APAGA
+    ///       └──────▶ A1   Android EDITA, offline
+    /// ```
+    ///
+    /// "Delete vence" apaga uma edição que o escritor fez de propósito.
+    /// "Edit ressuscita" desfaz uma exclusão que ele fez de propósito. As duas
+    /// são perda silenciosa, só em direções opostas — quem decide é o humano.
+    ConcurrentComExclusao { base_rev: String },
 }
 
 /// O que sabemos localmente sobre um agregado.
 #[derive(Debug, Clone, Default)]
 pub struct AggregateHistory {
-    /// Revisão atual. `None` quando o agregado ainda não existe aqui.
+    /// Revisão atual. `None` quando o agregado não existe aqui — e existem
+    /// **duas** razões para isso: nunca existiu, ou foi excluído. O
+    /// `deleted_rev` é o que separa as duas.
     pub current_rev: Option<String>,
     /// Revisões conhecidas daquele agregado, atual inclusive.
     pub known_revs: Vec<String>,
+    /// A revisão que a exclusão produziu, quando houve exclusão.
+    ///
+    /// Sem isto, um delete local seguido de uma edição remota concorrente cairia
+    /// em `Unknown` — porque `current_rev` some junto com o agregado — e o
+    /// cursor daquela origem **travaria para sempre**, esperando uma história
+    /// intermediária que já temos. Foi assim no primeiro desenho.
+    pub deleted_rev: Option<String>,
 }
 
 impl AggregateHistory {
@@ -168,7 +191,19 @@ pub fn classify(historia: &AggregateHistory, base_rev: &str, new_rev: &str) -> C
         // sequencial; qualquer outra base descreve uma história que não temos.
         None => {
             if base_rev == ROOT_REVISION {
+                // Criação a partir da raiz. Se já houve exclusão, ver abaixo.
+                if historia.deleted_rev.is_some() {
+                    return Causality::ConcurrentComExclusao {
+                        base_rev: base_rev.to_string(),
+                    };
+                }
                 Causality::Sequential
+            } else if historia.deleted_rev.is_some() && historia.knows(base_rev) {
+                // Excluído aqui, editado lá, a partir de uma base que
+                // conhecemos. Concorrência entre exclusão e edição.
+                Causality::ConcurrentComExclusao {
+                    base_rev: base_rev.to_string(),
+                }
             } else {
                 Causality::Unknown {
                     base_rev: base_rev.to_string(),
@@ -277,6 +312,7 @@ mod tests {
         let historia = AggregateHistory {
             current_rev: Some("r1".into()),
             known_revs: vec!["r0".into(), "r1".into()],
+            deleted_rev: None,
         };
         assert_eq!(classify(&historia, "r1", "r2"), Causality::Sequential);
     }
@@ -288,6 +324,7 @@ mod tests {
         let historia = AggregateHistory {
             current_rev: Some("r1-windows".into()),
             known_revs: vec!["r0".into(), "r1-windows".into()],
+            deleted_rev: None,
         };
         assert_eq!(
             classify(&historia, "r0", "r1-android"),
@@ -302,6 +339,7 @@ mod tests {
         let historia = AggregateHistory {
             current_rev: Some("r2".into()),
             known_revs: vec!["r0".into(), "r1".into(), "r2".into()],
+            deleted_rev: None,
         };
         assert_eq!(classify(&historia, "r1", "r2"), Causality::AlreadyPresent);
         // Inclusive uma revisão antiga que já passou por aqui.
@@ -316,6 +354,7 @@ mod tests {
         let historia = AggregateHistory {
             current_rev: Some("r1".into()),
             known_revs: vec!["r0".into(), "r1".into()],
+            deleted_rev: None,
         };
         assert_eq!(
             classify(&historia, "r-de-outro-aparelho", "r9"),

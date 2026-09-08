@@ -252,6 +252,36 @@ pub fn introduzir_dispositivo(
         )));
     }
 
+    // Um dispositivo que já saiu do conjunto não volta por esta porta.
+    //
+    // O `DO NOTHING` sozinho o manteria fora — mas em silêncio, e silêncio aqui
+    // é ruim de duas maneiras. Quem aposentou um aparelho e tenta reparear
+    // merece saber por que não funciona; e um aparelho **abandonado** que
+    // reaparece seis meses depois é justamente o cenário que a poda pressupôs
+    // impossível: ele traria de volta o estado anterior às exclusões já
+    // coletadas.
+    //
+    // Voltar exige identidade nova — que é o que uma reinstalação produz.
+    let saida: Option<String> = connection
+        .query_row(
+            "SELECT exit_reason FROM sync_devices WHERE device_id = ?1",
+            [device_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+
+    if let Some(motivo) = saida.filter(|texto| !texto.is_empty()) {
+        return Err(DatabaseCommandError::validation(match motivo.as_str() {
+            "abandoned" => format!(
+                "O dispositivo {device_id} foi abandonado e não pode voltar ao conjunto com a                  mesma identidade. A poda de exclusões já assumiu que ele não voltaria;                  readmiti-lo traria de volta conteúdo que foi apagado de propósito. Reinstale o                  aplicativo naquele aparelho para ele entrar como um dispositivo novo."
+            ),
+            _ => format!(
+                "O dispositivo {device_id} foi aposentado e saiu do conjunto. Para voltar, ele                  precisa entrar como um dispositivo novo."
+            ),
+        }));
+    }
+
     connection
         .execute(
             "INSERT INTO sync_devices (device_id, name, ed25519_public, introduced_by, is_self)
