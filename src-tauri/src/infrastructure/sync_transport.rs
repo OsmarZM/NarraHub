@@ -198,6 +198,38 @@ impl Handshake {
         Self::novo(estatica, true)
     }
 
+    /// Handshake com `psk` e prólogo — o do pareamento (etapa 9).
+    ///
+    /// O prólogo entra no hash do transcript, então dois lados com o mesmo
+    /// `psk` e prólogos diferentes **não fecham**. É o que amarra o handshake
+    /// a uma tentativa de pareamento específica.
+    pub fn com_psk(
+        padrao: &str,
+        estatica: &[u8; 32],
+        psk: &[u8; 32],
+        prologo: &[u8],
+        inicia: bool,
+    ) -> DatabaseCommandResult<Self> {
+        let estado = snow::Builder::new(
+            padrao
+                .parse()
+                .map_err(|_| DatabaseCommandError::storage("padrão Noise inválido"))?,
+        )
+        .local_private_key(estatica)
+        .psk(0, psk)
+        .prologue(prologo);
+
+        let estado = if inicia {
+            estado.build_initiator()
+        } else {
+            estado.build_responder()
+        }
+        .map_err(|error| {
+            DatabaseCommandError::storage(format!("não foi possível iniciar o Noise: {error}"))
+        })?;
+        Ok(Self { estado })
+    }
+
     fn novo(estatica: &[u8; 32], inicia: bool) -> DatabaseCommandResult<Self> {
         let construtor = snow::Builder::new(
             PADRAO

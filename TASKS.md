@@ -1122,7 +1122,7 @@ Registrado, **não implementar** antes de a fase correspondente abrir.
 | NH-048 | Gravação atômica do arquivo de identidade (detalhado abaixo) | 4, hardening antes do Sync V2 sair |
 | NH-053 | **GATE DE SAÍDA DA FASE 4** — todo caminho de escrita produz evento (detalhado abaixo) | 4 |
 | NH-056 | ~~Autoridade vem da sessão autenticada~~ — **fechada na etapa 8** | 4 |
-| NH-057 | Origem desconhecida da rede não vira pedido visível (detalhado abaixo) | 4, gate da etapa 9/10 |
+| NH-057 | ~~Origem desconhecida da rede não vira pedido visível~~ — **fechada na etapa 9** | 4 |
 | NH-058 | Aposentadoria exige sincronização final (detalhado abaixo) | 4, gate da etapa 11/12 |
 | NH-050 | Teste de tokens de design (`var(--*)` sem definição reprova o CI) | 5 |
 | NH-051 | Escala de breakpoints e responsividade em telas menores | 5 |
@@ -1205,6 +1205,96 @@ reconciliação é uma consulta indexada quando não há nada a mudar — e disp
 cache num caminho onde errar significa assinar eventos com a origem de outro aparelho.
 
 ---
+
+### NH-059 — Sync V2, etapa 9: pareamento por QR
+
+```text
+Owner:  Claude
+Status: DONE  (com limite físico declarado)
+Fase:   4  (etapa 9 de 14)
+```
+
+A regra que o autor deu, e que organiza a etapa inteira:
+
+```text
+O QR prova que ESTA CONEXÃO FOI CONVIDADA.
+A Ed25519 prova QUEM CHEGOU pela conexão.
+```
+
+#### O QR não carrega identidade — e isso mudou o ADR
+
+O texto aceito, na §6.1, listava `fingerprint` como campo do código. Foi **removido**, e o ADR
+atualizado com a divergência marcada.
+
+Com `XXpsk0` e segredo de 32 bytes, um intermediário não completa o handshake sem o segredo — o
+`fingerprint` acrescentava pouco. E acrescentava risco: um campo de identidade dentro do QR
+convida ao passo seguinte *"conectou e disse que é o ABC do código, então é o ABC"*, que é
+exatamente a confiança declarativa que a etapa 8 gastou uma PR inteira para eliminar.
+
+Tem gate: o texto do QR não pode conter nem o `device_id` nem a chave de quem convidou.
+
+#### Uso único, curto, e só em memória
+
+```text
+CSPRNG 256 bits  →  TTL de 3 min  →  primeiro pareamento  →  CONSUMIDO
+```
+
+Os convites **não vão para o banco**, e a razão é a mesma da chave privada: o segredo é
+material criptográfico e o banco vai para backup (§5). O efeito colateral é bom — fechar o
+aplicativo invalida os convites abertos, e errar para o lado de invalidar é o lado certo.
+
+O `invitation_id` entra como **prólogo** do Noise, além de identificar o convite. Dois lados
+com o segredo certo e ids diferentes **não fecham** — o que impede completar um convite no
+contexto de outro.
+
+#### Os seis casos que o autor pediu, mais dois
+
+| Caso | Comportamento |
+| --- | --- |
+| expirado | recusado **antes** de qualquer criptografia |
+| consumido | a foto do QR de três dias atrás não vale |
+| segredo errado | o handshake não fecha — por criptografia, não por comparação de string |
+| replay | mensagem de um pareamento não é aceita em outro |
+| QR alterado | prefixo, versão e segredo truncado, todos recusados |
+| convite diferente com segredo certo | não fecha, por causa do prólogo |
+| entropia insuficiente | segredo com menos de 32 bytes é recusado na leitura |
+| tentativa malfeita | **não consome** o convite legítimo |
+
+O último importa para o produto: consumir antes de verificar queimaria o código por ruído de
+rede, e o escritor teria que gerar outro sem entender por quê.
+
+#### Um bug real que o teste pegou na primeira execução
+
+`Convite::ler_qr` dividia o texto em exatamente cinco partes por `:`. **Todo endereço tem
+porta**, e toda porta traz um `:` junto — o parser recusava qualquer convite com endereço de
+verdade. Corrigido com `splitn`.
+
+#### A NH-057 fechou junto
+
+Origem desconhecida deixou de ser "pedido de entrada" e passou a ser **descarte contado**:
+
+```text
+PACOTE ALEATÓRIO DA REDE          FLUXO DE PAREAMENTO
+origem desconhecida               QR válido → Noise → prova Ed25519
+       ↓                                       ↓
+descarta / limita taxa                  SessaoAutenticada
+       ↓                                       ↓
+   zero UI                            pedido explícito → UI
+```
+
+O relatório conta todas e guarda no máximo 16 — senão um peer hostil escolheria quanta memória
+da sessão ele ocupa. Gate com 200 envelopes de origens diferentes: contagem exata, memória
+limitada, nenhum incidente, log vazio.
+
+#### O que falta, e eu não posso fazer
+
+- **Gerar e ler o QR de verdade.** Esta etapa entrega o **conteúdo** do convite e o protocolo;
+  desenhar o bitmap e ler pela câmera do Android é trabalho de interface.
+- **Levar os bytes entre dois processos.** Continua sem socket, como na etapa 8.
+
+> **Verificação humana necessária:** ninguém apontou uma câmera para um código. O que está
+> provado é o protocolo de pareamento entre dois lados no mesmo processo.
+
 
 ### NH-055 — Sync V2, etapa 8: Noise, X25519 e o vínculo com a identidade
 
@@ -1323,8 +1413,8 @@ introduzir_dispositivo(peer_autenticado, novo)
 ### NH-057 — Origem desconhecida da rede não vira pedido visível
 
 ```text
-Owner:  —
-Status: GATE DA ETAPA 9/10
+Owner:  Claude
+Status: FECHADA na etapa 9 — descarte contado, com teto de memória
 Fase:   4
 ```
 
