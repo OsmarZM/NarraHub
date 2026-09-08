@@ -30,6 +30,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "s
 sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 snow = "0.9"
+spake2 = "0.4"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 sysinfo = "0.37"
