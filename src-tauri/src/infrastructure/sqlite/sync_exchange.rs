@@ -34,7 +34,7 @@
 
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::sync::{EventEnvelope, Operation};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use std::collections::BTreeMap;
 
 /// Até onde este aparelho viu, por origem. É o que os dois lados trocam no
@@ -169,39 +169,6 @@ fn eventos_da_origem(
     linhas
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))
-}
-
-/// Registra uma origem que apareceu no vetor do outro lado mas que este
-/// aparelho ainda não conhecia.
-///
-/// Sem isto, a FK de `sync_events` recusaria os eventos dela e a propagação
-/// transitiva pararia na primeira origem nova. A **decisão de confiar** é da
-/// etapa 7 — aqui só se anota que ela existe, para o vetor poder citá-la.
-pub fn registrar_origem_conhecida(
-    connection: &Connection,
-    device_id: &str,
-    chave_publica: &str,
-) -> DatabaseCommandResult<()> {
-    let existe: bool = connection
-        .query_row(
-            "SELECT 1 FROM sync_devices WHERE device_id = ?1",
-            [device_id],
-            |_| Ok(true),
-        )
-        .optional()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?
-        .unwrap_or(false);
-    if existe {
-        return Ok(());
-    }
-    connection
-        .execute(
-            "INSERT INTO sync_devices (device_id, name, ed25519_public, is_self)
-             VALUES (?1, '', ?2, 0)",
-            rusqlite::params![device_id, chave_publica],
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -343,7 +310,19 @@ mod tests {
         };
         let connection = destino.banco.database.write().expect("escrita");
         for (device_id, publica) in conhecidas {
-            registrar_origem_conhecida(&connection, &device_id, &publica).expect("registrar");
+            if device_id == destino.identidade.device_id() {
+                continue;
+            }
+            // Introdução autorizada: quem apresenta é o `self` do destino, que
+            // é `active` por construção. É o caminho da seção 5.2 do ADR — e
+            // o que impede um relay comprometido de trazer origens inventadas.
+            crate::infrastructure::sqlite::sync_trust::introduzir_dispositivo(
+                &connection,
+                destino.identidade.device_id(),
+                &device_id,
+                &publica,
+            )
+            .expect("introduzir");
         }
     }
 

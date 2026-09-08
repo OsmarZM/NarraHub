@@ -1120,7 +1120,7 @@ Registrado, **não implementar** antes de a fase correspondente abrir.
 | --- | --- | --- |
 | NH-045 | Identidade persistente de blocos do editor (detalhado abaixo) | 4, fora das etapas 1–14 |
 | NH-048 | Gravação atômica do arquivo de identidade (detalhado abaixo) | 4, hardening antes do Sync V2 sair |
-| NH-053 | Todo caminho de escrita precisa produzir evento (detalhado abaixo) | 4, antes de o Sync V2 sair |
+| NH-053 | **GATE DE SAÍDA DA FASE 4** — todo caminho de escrita produz evento (detalhado abaixo) | 4 |
 | NH-050 | Teste de tokens de design (`var(--*)` sem definição reprova o CI) | 5 |
 | NH-051 | Escala de breakpoints e responsividade em telas menores | 5 |
 | NH-060 | Contrato `AIContext v1` e orçamento de contexto | 6 |
@@ -1203,6 +1203,91 @@ cache num caminho onde errar significa assinar eventos com a origem de outro apa
 
 ---
 
+### NH-054 — Sync V2, etapa 7: verificação de origem e roster
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4  (etapa 7 de 14)
+```
+
+Até a etapa 6 valia uma coisa desconfortável e deliberada: **conhecida ≠ confiável**. O evento
+nascia assinado e a assinatura chegava intacta ao outro lado, mas ninguém perguntava *"devo
+confiar nesta chave?"*. Esta etapa faz a pergunta.
+
+```text
+Envelope chegou
+      │
+      ▼
+device_id no roster?  ── não ──▶  QUARENTENA  (não entra no log)
+      │
+      ▼
+estado do dispositivo ── revoked/retired ──▶  RECUSA
+      │
+      ▼
+a chave pública bate com o device_id?  ── não ──▶  RECUSA
+      │
+      ▼
+Ed25519.verify()      ── false ──▶  RECUSA
+      │
+      ▼
+causalidade (etapas 4 e 5)
+```
+
+**A verificação vem antes de guardar.** Um envelope que não passou pela cadeia não entra no
+log; se entrasse, o relay o repassaria adiante e a sessão seguinte o encontraria já lá dentro,
+com aparência de legítimo.
+
+A ordem dos passos não é arbitrária: verificar assinatura antes de saber de quem ela é gastaria
+criptografia com qualquer lixo que chegasse pela rede, e checar o estado antes da assinatura
+evita processar evento de aparelho revogado.
+
+#### O terceiro passo, que parece redundante e não é
+
+O `device_id` **é** o fingerprint da chave pública. Se a linha do roster tiver uma chave que não
+deriva daquele id, a verificação seguinte estaria validando contra a **chave errada** — e quem
+controlasse a chave plantada passaria a assinar eventos em nome de um `device_id` legítimo. O
+teste faz exatamente isso: assina com um impostor e planta a chave dele na linha da origem
+verdadeira.
+
+#### Entrar no roster deixou de ser automático
+
+A `registrar_origem_conhecida` da etapa 6 aceitava qualquer origem para satisfazer a FK. Foi
+**removida**. A admissão agora é `introduzir_dispositivo`, e cobra duas coisas: quem apresenta
+precisa estar `active`, e a chave precisa derivar o `device_id`. Sem a primeira, parear com um
+aparelho passaria a significar aceitar tudo que ele repassar; sem a segunda, a introdução
+gravaria justamente a linha que o terceiro passo existe para pegar.
+
+#### Pedido de entrada não é incidente
+
+`Relatorio` separa os dois. Um aparelho novo querendo entrar é rotina; assinatura inválida não
+é. Misturá-los na tela treinaria o escritor a ignorar os dois.
+
+#### Revogar não apaga
+
+`retired` é decisão administrativa; `revoked` diz que a chave caiu em mãos erradas. Nenhum dos
+dois apaga o que já foi aplicado: a chave vazou **agora**, e o trabalho legítimo feito antes
+continua legítimo. E o `self` não pode se revogar — ele deixaria de conseguir gravar as
+próprias alterações, e nenhuma sincronização consertaria isso depois.
+
+#### Mutação, elo por elo
+
+| Elo removido | Reprova |
+| --- | --- |
+| `device_id` no roster | `origem_fora_do_roster_...`, `origem_desconhecida_e_pedido_...` |
+| estado do dispositivo | `origem_revogada_...`, `origem_aposentada_...` |
+| chave deriva o `device_id` | `chave_que_nao_deriva_o_device_id_e_recusada` |
+| `Ed25519.verify()` | `assinatura_invalida_...`, `evento_sem_assinatura_...` |
+
+Nenhuma mutação derrubou teste fora do seu elo.
+
+#### Efeito nos testes anteriores, que vale registrar
+
+Os oito testes da etapa 5 **reprovaram** ao ligar a cadeia — eles usavam uma origem com chave
+inventada e eventos sem assinatura. Foi o gate funcionando, não regressão. O harness passou a
+usar identidade real e a assinar, o que é o caminho que a produção percorre.
+
+
 ### NH-052 — Sync V2, etapa 6: replicação com três peers e store-and-forward
 
 ```text
@@ -1246,10 +1331,25 @@ como NH-053.
 
 ```text
 Owner:  —
-Status: BACKLOG
-Fase:   4, antes de o Sync V2 sair
-Bloqueia: nada das etapas 7–14; bloqueia a utilidade do Sync V2 em produção
+Status: GATE DE SAÍDA DA FASE 4 — não é backlog
+Fase:   4
+Bloqueia: nada das etapas 7–14; bloqueia DECLARAR o Sync V2 utilizável
 ```
+
+> **A Fase 4 não fecha com a NH-053 aberta.** Decisão do autor ao revisar a etapa 6, e a
+> razão é de método: protocolo e produto são dois eixos, e misturá-los faria a implementação
+> pular da arquitetura do protocolo para vinte repositórios diferentes e voltar — mais
+> contexto, mais chance de erro.
+>
+> ```text
+> PROTOCOLO          PRODUTO
+> etapas 1 → 14      NH-053
+>       ↓                ↓
+> núcleo estável  →  instrumentar todas as mutações  →  gate estrutural  →  E2E real
+> ```
+>
+> O lugar natural é depois da etapa 12 e antes dos testes físicos: não adianta um E2E entre
+> Windows e Android provar que capítulo editado replica, se criar capítulo não replica.
 
 A etapa 3 ligou o `update_chapter`, que era o caminho representativo. Continuam gravando **sem
 evento**: `create_chapter`, `delete_chapter`, `create_story`, `update_story`, `delete_story`,
