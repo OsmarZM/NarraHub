@@ -173,6 +173,9 @@ fn drenar_origem(
             Applied::Aplicado => relatorio.aplicados += 1,
             Applied::JaAplicado => {}
             Applied::Divergente { .. } => relatorio.divergencias += 1,
+            // Exclusão contra edição também é divergência — e é a que mais
+            // assusta o escritor, porque um dos lados é "isto sumiu".
+            Applied::DivergenteComExclusao { .. } => relatorio.divergencias += 1,
             Applied::PrecisaReconciliar => {
                 // Contíguo por `seq` e sem história para se apoiar. Parar aqui
                 // é o certo: aplicar escreveria sobre uma história que não

@@ -384,14 +384,19 @@ pub fn append_event_in_transaction(
             )
             .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
             tx.execute(
-                "INSERT INTO sync_tombstones (aggregate_type, aggregate_id, deleted_rev)
-                 VALUES (?1, ?2, ?3)
+                "INSERT INTO sync_tombstones
+                    (aggregate_type, aggregate_id, deleted_rev, origin_device_id, origin_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(aggregate_type, aggregate_id)
-                 DO UPDATE SET deleted_rev = excluded.deleted_rev",
+                 DO UPDATE SET deleted_rev = excluded.deleted_rev,
+                               origin_device_id = excluded.origin_device_id,
+                               origin_seq = excluded.origin_seq",
                 rusqlite::params![
                     &envelope.aggregate_type,
                     &envelope.aggregate_id,
                     &envelope.new_rev,
+                    &envelope.device_id,
+                    envelope.seq,
                 ],
             )
             .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
@@ -442,9 +447,23 @@ pub fn aggregate_history(
         .collect::<Result<Vec<String>, _>>()
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
 
+    // A revisão da exclusão, quando houve. É o que separa "nunca existiu" de
+    // "foi apagado" — e sem essa distinção uma edição concorrente com um
+    // delete local cai em `Unknown` e trava o cursor da origem para sempre.
+    let deleted_rev: Option<String> = connection
+        .query_row(
+            "SELECT deleted_rev FROM sync_tombstones
+              WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+            [&aggregate.aggregate_type, &aggregate.aggregate_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+
     Ok(AggregateHistory {
         current_rev,
         known_revs,
+        deleted_rev,
     })
 }
 

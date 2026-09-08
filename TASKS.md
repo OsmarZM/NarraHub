@@ -1123,7 +1123,7 @@ Registrado, **não implementar** antes de a fase correspondente abrir.
 | NH-053 | **GATE DE SAÍDA DA FASE 4** — todo caminho de escrita produz evento (detalhado abaixo) | 4 |
 | NH-056 | ~~Autoridade vem da sessão autenticada~~ — **fechada na etapa 8** | 4 |
 | NH-057 | ~~Origem desconhecida da rede não vira pedido visível~~ — **fechada na etapa 9** | 4 |
-| NH-058 | Aposentadoria exige sincronização final (detalhado abaixo) | 4, gate da etapa 11/12 |
+| NH-058 | ~~Aposentadoria exige sincronização final~~ — **fechada na etapa 11** | 4 |
 | NH-050 | Teste de tokens de design (`var(--*)` sem definição reprova o CI) | 5 |
 | NH-051 | Escala de breakpoints e responsividade em telas menores | 5 |
 | NH-060 | Contrato `AIContext v1` e orçamento de contexto | 6 |
@@ -1205,6 +1205,81 @@ reconciliação é uma consulta indexada quando não há nada a mudar — e disp
 cache num caminho onde errar significa assinar eventos com a origem de outro aparelho.
 
 ---
+
+### NH-062 — Sync V2, etapa 11: tombstones causais, e as duas saídas do conjunto
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4  (etapa 11 de 14)  — schema 17
+```
+
+A instrução do autor, e o eixo da etapa: **delete não é ausência, é evento causal
+persistente.**
+
+#### O defeito que escrever o gate revelou
+
+O pior caso — Desktop apaga, Android edita offline, sincronizam — não ressuscitava nada, mas
+fazia algo pior de perceber: **travava o cursor da origem para sempre.**
+
+Depois de um delete local, `sync_aggregate_state` perde a linha; `current_rev` vira `None`; e
+uma edição concorrente com `base_rev` conhecido caía em `Unknown`. A etapa 5 para o cursor em
+`Unknown` — então o Android nunca mais entregaria nada, esperando uma história intermediária
+que já estava no banco.
+
+`AggregateHistory` ganhou `deleted_rev`. É ele que separa **"nunca existiu"** de **"foi
+apagado"**, e sem essa distinção o classificador não tem como acertar.
+
+Saída nova: `ConcurrentComExclusao`. Nem *delete vence* nem *edit ressuscita* — as duas são
+perda silenciosa, em direções opostas. As duas revisões ficam preservadas e quem decide é o
+escritor.
+
+#### Coleta: tempo nunca é prova
+
+```text
+delete X   origem = Desktop, seq = 918
+
+coletável quando, para CADA membro ainda válido:
+    confirmação daquele peer para a origem Desktop  >=  918
+```
+
+Nenhuma alternativa serve — `deleted_at < 90 dias` coletaria enquanto um tablet dorme na
+gaveta. `sync_peer_vectors` guarda o que cada peer nos disse que já viu: é o vetor da §13, mas
+do **outro lado**, e é a única evidência que existe.
+
+Um erro meu que os dois primeiros gates pegaram: eu cobrava confirmação **da própria origem**
+da exclusão. Um aparelho não nos manda vetor sobre si mesmo antes de conversarmos com ele —
+então toda poda ficaria travada para sempre.
+
+E tombstone sem coordenadas causais — os de bancos criados no schema 16 — **nunca** é
+coletável. Na dúvida, guardar.
+
+#### As duas saídas, e a NH-058 fechada
+
+```text
+ACTIVE
+  ├─ sincronização final confirmada  →  RETIRED / 'clean'
+  └─ aparelho perdido ou quebrado    →  RETIRED / 'abandoned'
+```
+
+Os dois deixam de contar para a retenção — senão um celular jogado fora travaria a poda para
+sempre. E os dois **cortam a identidade**: um aparelho esquecido que reaparecesse traria de
+volta o estado que a poda pressupôs morto, então `introduzir_dispositivo` o recusa **com
+mensagem**, não em silêncio. Voltar exige identidade nova, que é o que uma reinstalação produz.
+
+`abandonar` devolve **quantos** eventos se perdem, para a tela dizer o número em vez de "alguma
+coisa pode se perder". É decisão de perda de dados, e o [ADR 0001](docs/ADR/0001-local-ownership.md)
+diz que ela é do escritor — informado.
+
+#### Mutação, mecanismo por mecanismo
+
+| Removido | Reprova |
+| --- | --- |
+| coleta causal → por idade | `idade_do_tombstone_nao_autoriza_a_coleta` + 2 |
+| saída deixa de destravar a poda | `aparelho_abandonado_deixa_de_travar_a_poda` |
+| aposentar sem exigir sync final | `aposentar_exige_que_nada_tenha_ficado_para_tras` |
+| tombstone fora da causalidade | `edicao_concorrente_...` + `nao_trava_o_cursor` |
+
 
 ### NH-061 — Separação de domínio da saída do PAKE
 
@@ -1575,8 +1650,8 @@ pacote qualquer cita um id novo.
 ### NH-058 — Aposentadoria exige sincronização final
 
 ```text
-Owner:  —
-Status: GATE DA ETAPA 11/12 e da UX
+Owner:  Claude
+Status: FECHADA na etapa 11 — `retired`/`clean` e `retired`/`abandoned`, com corte de identidade
 Fase:   4
 ```
 

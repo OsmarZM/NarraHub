@@ -1,7 +1,7 @@
 //! NarraHub — Database Migrations
 //! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 16;
+pub const LATEST_SCHEMA_VERSION: i64 = 17;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -21,6 +21,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         14 => Some(MIGRATION_V14),
         15 => Some(MIGRATION_V15),
         16 => Some(MIGRATION_V16),
+        17 => Some(MIGRATION_V17),
         _ => None,
     }
 }
@@ -1096,6 +1097,93 @@ CREATE INDEX idx_sync_divergences_abertas
     WHERE resolved_at = '';
 "#;
 
+pub const MIGRATION_V17: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v17
+-- Sync V2 - tombstones com coordenadas causais (ADR 0009 secao 15)
+-- ============================================
+--
+-- A regra desta migration numa frase: exclusao nao e ausencia, e um evento
+-- causal persistente. E se e causal, ela precisa de coordenadas -- de onde
+-- veio e em que ponto da sequencia daquela origem -- porque sem isso nao ha
+-- como provar que um peer atravessou a exclusao.
+--
+-- E prova e o unico criterio aceitavel para podar um tombstone. Nao "faz
+-- noventa dias", nao "ninguem mexeu ha muito tempo", nao "parece que todos
+-- sincronizaram". Tempo nao e prova: um tablet pode ficar meses na gaveta e
+-- voltar com um snapshot anterior a exclusao.
+
+-- As coordenadas causais da exclusao.
+--
+-- Um tombstone sem elas -- os que existirem de bancos criados na v16 -- nunca
+-- e coletavel, e isso e a falha fechada certa: na duvida, guardar.
+ALTER TABLE sync_tombstones ADD COLUMN origin_device_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE sync_tombstones ADD COLUMN origin_seq INTEGER NOT NULL DEFAULT 0;
+
+-- O que cada peer nos disse que ja viu, por origem.
+--
+-- E o vetor de sequencias da secao 13, mas do OUTRO lado: nao "ate onde eu
+-- vi", e sim "ate onde ELE me disse que viu". E a unica evidencia que temos
+-- de que uma exclusao atravessou um peer, e e ela que autoriza a poda.
+--
+-- Sem esta tabela, a coleta de tombstone so poderia ser adivinhada.
+CREATE TABLE sync_peer_vectors (
+    peer_device_id TEXT NOT NULL REFERENCES sync_devices(device_id),
+    origin_device_id TEXT NOT NULL REFERENCES sync_devices(device_id),
+    last_seq_confirmed INTEGER NOT NULL DEFAULT 0 CHECK (last_seq_confirmed >= 0),
+    PRIMARY KEY (peer_device_id, origin_device_id)
+);
+
+-- Um peer nunca desconfirma o que ja confirmou.
+--
+-- Se pudesse, um peer comprometido -- ou um bug -- faria a evidencia
+-- retroceder, e um tombstone ja coletado passaria a parecer coletavel cedo
+-- demais na proxima vez. Pior: sem isto, um peer poderia anunciar zero e
+-- travar a poda do conjunto inteiro para sempre.
+CREATE TRIGGER trg_peer_vector_nao_retrocede
+BEFORE UPDATE OF last_seq_confirmed ON sync_peer_vectors
+BEGIN
+    SELECT RAISE(ABORT, 'A confirmacao de um peer nao retrocede.')
+     WHERE NEW.last_seq_confirmed < OLD.last_seq_confirmed;
+END;
+
+-- Como o dispositivo saiu do conjunto.
+--
+-- O estado continua sendo `retired` nos dois casos; o que muda e o
+-- significado, e o significado importa:
+--
+--   ''           ainda dentro do conjunto
+--   'clean'      saiu depois de uma sincronizacao final confirmada.
+--                Nada do que ele produziu ficou para tras.
+--   'abandoned'  o aparelho quebrou, sumiu ou foi perdido. O escritor
+--                ACEITOU que o que existia so ali se perdeu.
+--
+-- Os dois deixam de contar para a retencao -- senao um celular jogado fora em
+-- 2026 travaria a poda para sempre. A diferenca e o que se promete ao
+-- escritor, e o abandono e uma decisao de perda que precisa ser dele.
+ALTER TABLE sync_devices ADD COLUMN exit_reason TEXT NOT NULL DEFAULT ''
+    CHECK (exit_reason IN ('', 'clean', 'abandoned'));
+
+-- Um dispositivo dentro do conjunto nao tem motivo de saida, e um que saiu
+-- precisa ter. Sem isto, `active` com `exit_reason = 'abandoned'` seria um
+-- estado que nenhuma parte do codigo saberia ler.
+CREATE TRIGGER trg_exit_reason_coerente_insert
+BEFORE INSERT ON sync_devices
+BEGIN
+    SELECT RAISE(ABORT, 'Dispositivo ativo nao tem motivo de saida.')
+     WHERE NEW.state = 'active' AND NEW.exit_reason <> '';
+END;
+
+CREATE TRIGGER trg_exit_reason_coerente_update
+BEFORE UPDATE OF state, exit_reason ON sync_devices
+BEGIN
+    SELECT RAISE(ABORT, 'Dispositivo ativo nao tem motivo de saida.')
+     WHERE NEW.state = 'active' AND NEW.exit_reason <> '';
+END;
+
+CREATE INDEX idx_tombstones_origem ON sync_tombstones(origin_device_id, origin_seq);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1106,6 +1194,7 @@ mod tests {
         include_str!("../../fixtures/schema10_representative.sql");
     const NATIVE_SCHEMA_V15_FIXTURE: &str = include_str!("../../fixtures/schema15_native.sql");
     const NATIVE_SCHEMA_V16_FIXTURE: &str = include_str!("../../fixtures/schema16_native.sql");
+    const NATIVE_SCHEMA_V17_FIXTURE: &str = include_str!("../../fixtures/schema17_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -1228,8 +1317,8 @@ mod tests {
                 .expect("ligar foreign keys");
             apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
             connection
-                .execute_batch(NATIVE_SCHEMA_V16_FIXTURE)
-                .expect("carregar a fixture nativa de schema 16");
+                .execute_batch(NATIVE_SCHEMA_V17_FIXTURE)
+                .expect("carregar a fixture nativa de schema 17");
         }
         let db = Connection::open(&path).expect("reabrir");
         db.execute_batch("PRAGMA foreign_keys = ON;")
@@ -1723,6 +1812,56 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sync_devices", [], |row| row.get(0))
             .expect("contar dispositivos");
         assert_eq!(dispositivos, 0);
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Um banco **nascido no schema 16** chega ao 17 sem perder nada.
+    ///
+    /// A fixture nativa do 16 continua no repositório por isso: ela é o único
+    /// jeito de exercitar o formato que os usuários da versão anterior têm no
+    /// disco. E o caso mais interessante é o tombstone sem coordenadas causais
+    /// — ele sobrevive à migration e, de propósito, **nunca** vira coletável.
+    #[test]
+    fn banco_nascido_no_16_migra_para_o_17_com_tombstone_sem_coordenadas() {
+        let path = std::env::temp_dir().join(format!("narrahub-16-para-17-{}.db", Uuid::new_v4()));
+        {
+            let connection = Connection::open(&path).expect("criar banco v16");
+            connection
+                .execute_batch("PRAGMA foreign_keys = ON;")
+                .expect("ligar foreign keys");
+            apply_migrations(&connection, 1, 16);
+            connection
+                .execute_batch(NATIVE_SCHEMA_V16_FIXTURE)
+                .expect("carregar a fixture nativa de schema 16");
+            apply_migrations(&connection, 17, 17);
+        }
+
+        let db = Connection::open(&path).expect("reabrir");
+        db.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("ligar foreign keys");
+
+        let violacoes: i64 = db
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("foreign_key_check");
+        assert_eq!(violacoes, 0);
+
+        // O tombstone que veio do 16 não tem origem nem sequência.
+        let (origem, seq): (String, i64) = db
+            .query_row(
+                "SELECT origin_device_id, origin_seq FROM sync_tombstones
+                  WHERE aggregate_id = 'fx16-c9'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("ler tombstone migrado");
+        assert_eq!(
+            origem, "",
+            "a migration inventou uma origem que não existia"
+        );
+        assert_eq!(seq, 0);
 
         std::fs::remove_file(path).ok();
     }
