@@ -35,6 +35,7 @@
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::sync::{EventEnvelope, Operation};
 use crate::infrastructure::sqlite::sync_apply::{apply_remote_event, Applied};
+use crate::infrastructure::sqlite::sync_trust::{verificar_origem, Recusa};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::collections::BTreeMap;
 
@@ -50,6 +51,32 @@ pub struct Relatorio {
     pub divergencias: usize,
     /// Agregados cuja história não conhecemos. Não é conflito: falta o meio.
     pub precisam_reconciliar: Vec<String>,
+    /// Envelopes barrados na cadeia de confiança da etapa 7. **Nenhum deles
+    /// entrou no log**: um evento que não passou pela verificação não pode ser
+    /// retransmitido nem aplicado, e guardá-lo daria a ele a aparência de
+    /// legítimo na próxima sessão.
+    pub recusados: Vec<Recusa>,
+}
+
+impl Relatorio {
+    /// Aparelhos pedindo para entrar no conjunto. É rotina, e é diferente de
+    /// incidente — misturar as duas coisas na tela treinaria o escritor a
+    /// ignorar as duas.
+    pub fn pedidos_de_entrada(&self) -> Vec<&Recusa> {
+        self.recusados
+            .iter()
+            .filter(|recusa| recusa.e_pedido_de_entrada())
+            .collect()
+    }
+
+    /// Recusas que merecem atenção: assinatura inválida, roster inconsistente,
+    /// origem revogada.
+    pub fn incidentes(&self) -> Vec<&Recusa> {
+        self.recusados
+            .iter()
+            .filter(|recusa| !recusa.e_pedido_de_entrada())
+            .collect()
+    }
 }
 
 /// Recebe um lote de eventos e avança o que der.
@@ -67,8 +94,20 @@ pub fn receber_eventos(
     // Guarda tudo primeiro, sem aplicar nada. Um evento adiantado precisa
     // estar no log antes de a lacuna fechar — senão ele seria descartado e
     // pedido de novo, e "de novo" pode ser daqui a semanas.
+    let mut relatorio = Relatorio::default();
     let mut origens: BTreeMap<String, ()> = BTreeMap::new();
     for envelope in envelopes {
+        // A verificação vem ANTES de guardar. Um envelope que não passou pela
+        // cadeia de confiança não entra no log — se entrasse, o relay o
+        // repassaria adiante e a próxima sessão o encontraria já lá dentro,
+        // com aparência de legítimo.
+        match verificar_origem(&tx, envelope)? {
+            Ok(()) => {}
+            Err(recusa) => {
+                relatorio.recusados.push(recusa);
+                continue;
+            }
+        }
         guardar(&tx, envelope)?;
         origens.insert(envelope.device_id.clone(), ());
     }
@@ -79,7 +118,6 @@ pub fn receber_eventos(
         origens.insert(origem, ());
     }
 
-    let mut relatorio = Relatorio::default();
     for origem in origens.keys() {
         drenar_origem(&tx, origem, &mut relatorio)?;
     }
@@ -262,24 +300,30 @@ fn guardar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::identity::DeviceIdentity;
     use crate::domain::sync::AggregateRef;
     use crate::infrastructure::sqlite::sync_apply::envelope_de_origem;
-    use crate::infrastructure::sqlite::test_support::{seed_universe, TemporaryDatabase};
+    use crate::infrastructure::sqlite::test_support::{
+        origem_remota_confiavel, seed_universe, self_de_teste, TemporaryDatabase,
+    };
 
-    const ORIGEM: &str = "dev-remoto";
-
-    fn preparar(fixture: &TemporaryDatabase) -> Connection {
+    /// O banco pronto, com o `self` e uma origem remota **confiável de
+    /// verdade**: chave que deriva o `device_id`, introduzida pelo `self`.
+    ///
+    /// Desde a etapa 7 não existe atalho: uma origem com chave inventada é
+    /// recusada na cadeia de confiança, e com razão.
+    fn preparar(fixture: &TemporaryDatabase) -> (Connection, DeviceIdentity) {
         let connection = fixture.database.write().expect("abrir escrita");
         seed_universe(&connection, "u1");
         connection
             .execute_batch(
                 "INSERT INTO stories (id, universe_id, name) VALUES ('s1', 'u1', 'Historia');
-                 INSERT INTO books (id, story_id, name) VALUES ('b1', 's1', 'Livro');
-                 INSERT INTO sync_devices (device_id, name, ed25519_public, is_self)
-                   VALUES ('dev-remoto', 'Remoto', 'CHAVE', 0);",
+                 INSERT INTO books (id, story_id, name) VALUES ('b1', 's1', 'Livro');",
             )
             .expect("semear");
-        connection
+        let eu = self_de_teste(&connection);
+        let remota = origem_remota_confiavel(&connection, eu.device_id());
+        (connection, remota)
     }
 
     fn capitulo(id: &str, titulo: &str) -> String {
@@ -288,20 +332,23 @@ mod tests {
         )
     }
 
-    /// Uma cadeia de eventos independentes, cada um criando um capítulo.
-    fn cadeia(quantos: i64) -> Vec<EventEnvelope> {
+    /// Uma cadeia de eventos independentes, cada um criando um capítulo,
+    /// **assinados pela origem** — como chegariam pela rede.
+    fn cadeia(origem: &DeviceIdentity, quantos: i64) -> Vec<EventEnvelope> {
         (1..=quantos)
             .map(|seq| {
                 let id = format!("cap-{seq}");
-                envelope_de_origem(
-                    ORIGEM,
+                let mut envelope = envelope_de_origem(
+                    origem.device_id(),
                     seq,
                     "u1",
                     &AggregateRef::new("chapter", &id),
                     Operation::Upsert,
                     &capitulo(&id, &format!("Capitulo {seq}")),
                     "",
-                )
+                );
+                envelope.signature = origem.sign(&envelope);
+                envelope
             })
             .collect()
     }
@@ -319,21 +366,21 @@ mod tests {
     #[test]
     fn lote_em_ordem_aplica_tudo_e_avanca_o_cursor() {
         let fixture = TemporaryDatabase::new();
-        let mut connection = preparar(&fixture);
+        let (mut connection, remota) = preparar(&fixture);
 
-        let relatorio = receber_eventos(&mut connection, &cadeia(3)).expect("receber");
+        let relatorio = receber_eventos(&mut connection, &cadeia(&remota, 3)).expect("receber");
         assert_eq!(relatorio.aplicados, 3);
         assert_eq!(relatorio.pendentes, 0);
-        assert_eq!(cursor(&connection, ORIGEM), 3);
+        assert_eq!(cursor(&connection, remota.device_id()), 3);
     }
 
     /// GATE DA ETAPA 5: o cursor não atravessa a lacuna, e o adiantado espera.
     #[test]
     fn evento_adiantado_fica_pendente_e_o_cursor_para_antes_da_lacuna() {
         let fixture = TemporaryDatabase::new();
-        let mut connection = preparar(&fixture);
+        let (mut connection, remota) = preparar(&fixture);
 
-        let todos = cadeia(3);
+        let todos = cadeia(&remota, 3);
         // Chegam o 1 e o 3. O 2 se perdeu no caminho.
         let sem_o_dois = vec![todos[0].clone(), todos[2].clone()];
 
@@ -341,7 +388,7 @@ mod tests {
         assert_eq!(relatorio.aplicados, 1, "só o seq 1 podia entrar");
         assert_eq!(relatorio.pendentes, 1, "o seq 3 tem que ficar guardado");
         assert_eq!(
-            cursor(&connection, ORIGEM),
+            cursor(&connection, remota.device_id()),
             1,
             "avançar até 3 faria o 2 nunca mais ser pedido"
         );
@@ -360,7 +407,7 @@ mod tests {
         let guardado: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sync_events WHERE device_id = ?1 AND seq = 3",
-                [ORIGEM],
+                [remota.device_id()],
                 |row| row.get(0),
             )
             .expect("contar");
@@ -371,12 +418,12 @@ mod tests {
     #[test]
     fn quando_a_lacuna_fecha_o_pendente_entra_junto() {
         let fixture = TemporaryDatabase::new();
-        let mut connection = preparar(&fixture);
+        let (mut connection, remota) = preparar(&fixture);
 
-        let todos = cadeia(3);
+        let todos = cadeia(&remota, 3);
         receber_eventos(&mut connection, &[todos[0].clone(), todos[2].clone()])
             .expect("primeiro lote");
-        assert_eq!(cursor(&connection, ORIGEM), 1);
+        assert_eq!(cursor(&connection, remota.device_id()), 1);
 
         // Chega só o que faltava.
         let relatorio =
@@ -386,7 +433,7 @@ mod tests {
             "o 2 e o 3 precisam entrar na mesma passada"
         );
         assert_eq!(relatorio.pendentes, 0);
-        assert_eq!(cursor(&connection, ORIGEM), 3);
+        assert_eq!(cursor(&connection, remota.device_id()), 3);
 
         for id in ["cap-1", "cap-2", "cap-3"] {
             let existe: i64 = connection
@@ -408,12 +455,13 @@ mod tests {
     #[test]
     fn o_pendente_sobrevive_ao_processo() {
         let fixture = TemporaryDatabase::new();
-        let todos = cadeia(3);
-        {
-            let mut connection = preparar(&fixture);
+        let (todos, remota) = {
+            let (mut connection, remota) = preparar(&fixture);
+            let todos = cadeia(&remota, 3);
             receber_eventos(&mut connection, &[todos[0].clone(), todos[2].clone()])
                 .expect("primeiro lote");
-        }
+            (todos, remota)
+        };
 
         // Conexão nova, como se o app tivesse sido morto e reaberto.
         let mut connection = fixture.database.write().expect("reabrir");
@@ -423,7 +471,7 @@ mod tests {
             relatorio.aplicados, 2,
             "o pendente não sobreviveu ao fechamento do app"
         );
-        assert_eq!(cursor(&connection, ORIGEM), 3);
+        assert_eq!(cursor(&connection, remota.device_id()), 3);
     }
 
     /// Duas origens não interferem uma na outra.
@@ -433,28 +481,31 @@ mod tests {
     #[test]
     fn a_lacuna_de_uma_origem_nao_trava_a_outra() {
         let fixture = TemporaryDatabase::new();
-        let mut connection = preparar(&fixture);
-        connection
-            .execute(
-                "INSERT INTO sync_devices (device_id, name, ed25519_public, is_self)
-                 VALUES ('dev-outro', 'Outro', 'CHAVE', 0)",
+        let (mut connection, remota) = preparar(&fixture);
+        let eu: String = connection
+            .query_row(
+                "SELECT device_id FROM sync_devices WHERE is_self = 1",
                 [],
+                |row| row.get(0),
             )
-            .expect("registrar outra origem");
+            .expect("ler self");
+        let outra = origem_remota_confiavel(&connection, &eu);
 
-        let da_origem = cadeia(3);
+        let da_origem = cadeia(&remota, 3);
         let da_outra: Vec<EventEnvelope> = (1..=2)
             .map(|seq| {
                 let id = format!("out-{seq}");
-                envelope_de_origem(
-                    "dev-outro",
+                let mut envelope = envelope_de_origem(
+                    outra.device_id(),
                     seq,
                     "u1",
                     &AggregateRef::new("chapter", &id),
                     Operation::Upsert,
                     &capitulo(&id, &format!("Outro {seq}")),
                     "",
-                )
+                );
+                envelope.signature = outra.sign(&envelope);
+                envelope
             })
             .collect();
 
@@ -463,8 +514,8 @@ mod tests {
 
         let relatorio = receber_eventos(&mut connection, &lote).expect("receber");
         assert_eq!(relatorio.aplicados, 3, "1 da origem travada + 2 da outra");
-        assert_eq!(cursor(&connection, ORIGEM), 1);
-        assert_eq!(cursor(&connection, "dev-outro"), 2);
+        assert_eq!(cursor(&connection, remota.device_id()), 1);
+        assert_eq!(cursor(&connection, outra.device_id()), 2);
     }
 
     /// Contíguo por `seq` e sem história: o cursor para e o relatório diz por
@@ -472,10 +523,10 @@ mod tests {
     #[test]
     fn base_desconhecida_trava_o_cursor_e_aparece_no_relatorio() {
         let fixture = TemporaryDatabase::new();
-        let mut connection = preparar(&fixture);
+        let (mut connection, remota) = preparar(&fixture);
 
-        let orfao = envelope_de_origem(
-            ORIGEM,
+        let mut orfao = envelope_de_origem(
+            remota.device_id(),
             1,
             "u1",
             &AggregateRef::new("chapter", "cap-x"),
@@ -483,12 +534,13 @@ mod tests {
             &capitulo("cap-x", "Orfao"),
             "revisao-que-nunca-vimos",
         );
+        orfao.signature = remota.sign(&orfao);
 
         let relatorio = receber_eventos(&mut connection, &[orfao]).expect("receber");
         assert_eq!(relatorio.aplicados, 0);
         assert_eq!(relatorio.precisam_reconciliar, vec!["cap-x".to_string()]);
         assert_eq!(
-            cursor(&connection, ORIGEM),
+            cursor(&connection, remota.device_id()),
             0,
             "o cursor não pode passar por cima do que não conseguiu aplicar"
         );
@@ -498,15 +550,15 @@ mod tests {
     #[test]
     fn reenviar_o_mesmo_lote_e_inofensivo() {
         let fixture = TemporaryDatabase::new();
-        let mut connection = preparar(&fixture);
-        let lote = cadeia(3);
+        let (mut connection, remota) = preparar(&fixture);
+        let lote = cadeia(&remota, 3);
 
         receber_eventos(&mut connection, &lote).expect("primeira vez");
         let segunda = receber_eventos(&mut connection, &lote).expect("segunda vez");
 
         assert_eq!(segunda.aplicados, 0);
         assert_eq!(segunda.pendentes, 0);
-        assert_eq!(cursor(&connection, ORIGEM), 3);
+        assert_eq!(cursor(&connection, remota.device_id()), 3);
 
         let capitulos: i64 = connection
             .query_row("SELECT COUNT(*) FROM chapters", [], |row| row.get(0))
@@ -520,13 +572,13 @@ mod tests {
     #[test]
     fn lote_embaralhado_e_aplicado_na_ordem_certa() {
         let fixture = TemporaryDatabase::new();
-        let mut connection = preparar(&fixture);
+        let (mut connection, remota) = preparar(&fixture);
 
-        let todos = cadeia(3);
+        let todos = cadeia(&remota, 3);
         let embaralhado = vec![todos[2].clone(), todos[0].clone(), todos[1].clone()];
 
         let relatorio = receber_eventos(&mut connection, &embaralhado).expect("receber");
         assert_eq!(relatorio.aplicados, 3);
-        assert_eq!(cursor(&connection, ORIGEM), 3);
+        assert_eq!(cursor(&connection, remota.device_id()), 3);
     }
 }

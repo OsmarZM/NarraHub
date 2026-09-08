@@ -84,3 +84,37 @@ impl Drop for TemporaryDatabase {
         let _ = std::fs::remove_file(self.path.with_extension("db-shm"));
     }
 }
+
+/// Uma origem remota **de verdade**: identidade própria, chave própria, e a
+/// linha do roster com a pública que realmente deriva o `device_id`.
+///
+/// Existe porque a etapa 7 passou a cobrar a cadeia inteira. Um teste com
+/// chave inventada não exercitaria o caminho que a produção percorre — ele
+/// seria recusado, e com razão.
+pub fn origem_remota_confiavel(
+    connection: &Connection,
+    quem_introduz: &str,
+) -> crate::domain::identity::DeviceIdentity {
+    let identidade = crate::domain::identity::DeviceIdentity::generate();
+    crate::infrastructure::sqlite::sync_trust::introduzir_dispositivo(
+        connection,
+        quem_introduz,
+        identidade.device_id(),
+        &identidade.public_base32(),
+    )
+    .expect("introduzir origem remota");
+    identidade
+}
+
+/// O `self` de um banco de teste, sem passar pelo arquivo de identidade.
+pub fn self_de_teste(connection: &Connection) -> crate::domain::identity::DeviceIdentity {
+    let identidade = crate::domain::identity::DeviceIdentity::generate();
+    connection
+        .execute(
+            "INSERT INTO sync_devices (device_id, name, ed25519_public, is_self)
+             VALUES (?1, 'Este aparelho', ?2, 1)",
+            rusqlite::params![identidade.device_id(), identidade.public_base32()],
+        )
+        .expect("registrar self de teste");
+    identidade
+}
