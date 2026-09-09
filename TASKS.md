@@ -1708,7 +1708,11 @@ Fase:   4  (o que falta depende da NH-053)
 > ```
 >
 > O gate atual é a trava que impede declarar a tarefa pronta antes disso. Ele não é a prova da
-> tarefa.
+> tarefa — e o vínculo é de **via única**: `DONE` obriga que a emissão exista, mas a emissão
+> não autoriza `DONE`. A primeira versão cobrava os dois lados, e teria estragado justamente a
+> NH-053: no commit em que `abandonar()` passasse a emitir o evento, o gate exigiria fechar a
+> NH-058 com as outras cinco propriedades ainda por escrever. O gate feito para impedir
+> fechamento prematuro passaria a forçá-lo.
 
 Decisão do autor, preferida ao `cutoff_seq` por ser mais simples de explicar, testar e manter.
 

@@ -1590,13 +1590,36 @@ mod tests {
     /// Agora a pergunta é feita ao **log**, que é onde a propagação existiria:
     ///
     /// ```text
-    /// abandonar(Desktop)  →  sync_events ganhou alguma linha?
-    ///         não  →  a saída é local; a NH-058 tem que constar como PARCIAL
-    ///         sim  →  passou a propagar; a documentação tem que dizer isso
+    /// TASKS.md diz DONE   →  abandonar() TEM que deixar linha em sync_events
     /// ```
     ///
-    /// O vínculo vale nos dois sentidos. Não dá para fechar a tarefa sem
-    /// escrever o código, nem para escrever o código sem fechar a tarefa.
+    /// # A implicação é de via única, e isso é o ponto
+    ///
+    /// A primeira versão condicionava pelo log e cobrava o status dos dois
+    /// lados: emitiu evento ⇒ tem que estar `DONE`. Está invertido em relação
+    /// à regra que o próprio `TASKS.md` documenta, onde a emissão é a
+    /// **primeira de seis** condições — faltam ainda B aplicar, C receber por
+    /// B, idempotência, regra para evento antigo depois de `revoked`, e
+    /// desempate determinístico.
+    ///
+    /// O estrago apareceria na NH-053, que vai ser feita em partes:
+    ///
+    /// ```text
+    /// commit 1  abandonar() passa a emitir o evento   ← log cresce
+    /// commit 2  sync_apply aprende a aplicá-lo
+    /// commit 3  store-and-forward
+    /// commit 4  idempotência e concorrência
+    /// ```
+    ///
+    /// No commit 1 o gate veria o log crescer e **exigiria** `Status: DONE` —
+    /// com cinco propriedades ainda por escrever. O gate feito para impedir
+    /// fechamento prematuro passaria a forçá-lo. É o mesmo padrão das três
+    /// revisões anteriores, encontrado antes de custar caro: gate verde
+    /// provando coisa diferente do que o nome promete.
+    ///
+    /// Então: `DONE` obriga emissão; emissão **não** autoriza `DONE`. Quem
+    /// autoriza são as propriedades comportamentais completas, e elas só podem
+    /// ser escritas quando o evento existir.
     ///
     /// # O que este gate ainda NÃO prova
     ///
@@ -1645,20 +1668,21 @@ mod tests {
             .expect("seção vazia")
             .to_string();
 
-        if propaga {
+        // A condição é sobre o STATUS, não sobre o log. A ordem importa, e
+        // errá-la foi o defeito da primeira versão deste bloco.
+        if secao.contains("Status: DONE") {
             assert!(
-                secao.contains("Status: DONE"),
-                "a saída passou a emitir evento e a NH-058 continua marcada como parcial. \
-                 O código chegou antes da documentação — corrija o TASKS.md, e escreva as \
-                 propriedades de aplicação, idempotência e concorrência que fecham a tarefa."
+                propaga,
+                "a NH-058 está marcada como concluída, e a saída de um aparelho não colocou \
+                 nada no log: nenhum evento assinado leva a mudança de estado para os outros \
+                 peers. Num conjunto simétrico isso faz o roster divergir — o aparelho sai \
+                 aqui e continua ativo lá. Ou implemente a propagação, ou volte para PARCIAL."
             );
         } else {
             assert!(
                 secao.contains("Status: PARCIAL"),
-                "a NH-058 está marcada como concluída, e a saída de um aparelho não colocou \
-                 nada no log: nenhum evento assinado leva a mudança de estado para os outros \
-                 peers. Num conjunto simétrico isso faz o roster divergir — o aparelho sai \
-                 aqui e continua ativo lá. Ou implemente a propagação, ou mantenha PARCIAL."
+                "a NH-058 não está nem PARCIAL nem DONE. Este gate só sabe ler esses dois \
+                 estados, e um status que ele não entende é um status que ele não vigia."
             );
         }
     }
