@@ -408,6 +408,96 @@ fn bootstrap_eligible(tx: &Transaction<'_>) -> DatabaseCommandResult<Result<(), 
 // Validação semântica do bundle
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// **O bundle tem exatamente as tabelas e colunas que o receptor espera?**
+///
+/// Esta checagem existe porque a primeira versão da semeadura fazia isto:
+///
+/// ```text
+/// let Some(tabela) = bundle.tabelas.iter().find(|t| t.nome == nome) else {
+///     continue;                                    // ← tabela some em silêncio
+/// };
+/// ```
+///
+/// Um bundle sem `chapters` era aceito sem uma palavra: o receptor nascia com
+/// universo, livros, roster, estado causal e cursores corretos — e **sem os
+/// capítulos**. Pior que um erro, porque tudo o mais parece certo, e o cursor
+/// semeado faz o aparelho nunca pedir o que não veio.
+///
+/// A validação causal também tratava tabela ausente como tabela vazia, e a
+/// conferência final só comparava as três tabelas de estado causal. Nenhuma das
+/// três camadas olhava as dezenove de domínio.
+///
+/// As colunas vêm de `PRAGMA table_info` **do receptor**, dentro da transação —
+/// não de uma segunda lista mantida à mão, que é como a ordem de semeadura já
+/// errou uma vez.
+fn validar_estrutura(
+    tx: &Transaction<'_>,
+    bundle: &BootstrapBundle,
+) -> DatabaseCommandResult<Result<(), FalhaDeSemeadura>> {
+    let incoerente = |motivo: String| Ok(Err(FalhaDeSemeadura::BundleIncoerente { motivo }));
+
+    let esperadas: BTreeSet<&str> = tabelas_copiadas().into_iter().collect();
+    let mut vistas: BTreeSet<&str> = BTreeSet::new();
+    for tabela in &bundle.tabelas {
+        if !vistas.insert(tabela.nome.as_str()) {
+            return incoerente(format!(
+                "o bundle traz a tabela {} duas vezes. Qual das duas vale é uma pergunta que \
+                 ninguém deveria precisar responder no meio de um seed",
+                tabela.nome
+            ));
+        }
+    }
+
+    let faltando: Vec<&&str> = esperadas.difference(&vistas).collect();
+    if !faltando.is_empty() {
+        return incoerente(format!(
+            "faltam tabelas no bundle: {faltando:?}. O receptor nasceria sem essa parte do \
+             acervo, com o cursor já semeado — e cursor semeado faz o aparelho nunca pedir \
+             o que não veio"
+        ));
+    }
+    let sobrando: Vec<&&str> = vistas.difference(&esperadas).collect();
+    if !sobrando.is_empty() {
+        return incoerente(format!(
+            "o bundle traz tabelas que não pertencem a ele: {sobrando:?}. Ou o catálogo mudou \
+             de um lado só, ou alguém está mandando estado local disfarçado de acervo"
+        ));
+    }
+
+    for tabela in &bundle.tabelas {
+        let mut statement = tx
+            .prepare(&format!("PRAGMA table_info({})", tabela.nome))
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+        let colunas_do_receptor: Vec<String> = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+
+        if colunas_do_receptor != tabela.colunas {
+            return incoerente(format!(
+                "as colunas de {} não batem. O receptor tem {:?} e o bundle traz {:?}. Uma \
+                 coluna a menos entraria pelo DEFAULT do schema, em silêncio, e o dado do \
+                 escritor viraria o valor padrão",
+                tabela.nome, colunas_do_receptor, tabela.colunas
+            ));
+        }
+
+        for (i, linha) in tabela.linhas.iter().enumerate() {
+            if linha.len() != tabela.colunas.len() {
+                return incoerente(format!(
+                    "a linha {i} de {} tem {} valor(es) para {} coluna(s)",
+                    tabela.nome,
+                    linha.len(),
+                    tabela.colunas.len()
+                ));
+            }
+        }
+    }
+
+    Ok(Ok(()))
+}
+
 /// O que as FKs não conseguem cobrar.
 ///
 /// Uma FK garante que a linha apontada existe. Não garante que a **cadeia
@@ -420,58 +510,80 @@ fn bootstrap_eligible(tx: &Transaction<'_>) -> DatabaseCommandResult<Result<(), 
 fn validar_bundle(bundle: &BootstrapBundle) -> Result<(), FalhaDeSemeadura> {
     let incoerente = |motivo: String| FalhaDeSemeadura::BundleIncoerente { motivo };
 
-    let linhas_de = |nome: &str| -> Vec<Vec<Value>> {
-        bundle
-            .tabelas
-            .iter()
-            .find(|t| t.nome == nome)
-            .map(|t| t.linhas.clone())
-            .unwrap_or_default()
-    };
-    let texto = |linha: &[Value], i: usize| -> String {
-        match linha.get(i) {
-            Some(Value::Text(s)) => s.clone(),
-            _ => String::new(),
-        }
-    };
+    // Acesso por NOME de coluna, e não por posição.
+    //
+    // A primeira versão lia `linha[2]` — acoplada à ordem física que o
+    // `SELECT *` devolveu no doador. Um `ALTER TABLE ADD COLUMN` numa migration
+    // futura muda essa ordem, e a validação passaria a comparar campo errado
+    // **sem erro de compilação e sem erro de SQL**: leria um id onde espera uma
+    // revisão, concluiria que a revisão não está na história, e reprovaria
+    // bundles bons. Ou, pior, o contrário.
+    let campo =
+        |tabela: &Tabela, linha: &[Value], coluna: &str| -> Result<String, FalhaDeSemeadura> {
+            let Some(i) = tabela.colunas.iter().position(|nome| nome == coluna) else {
+                return Err(incoerente(format!(
+                    "a tabela {} do bundle não tem a coluna {coluna}",
+                    tabela.nome
+                )));
+            };
+            Ok(match linha.get(i) {
+                Some(Value::Text(texto)) => texto.clone(),
+                _ => String::new(),
+            })
+        };
+    let tabela_de =
+        |nome: &str| -> Option<&Tabela> { bundle.tabelas.iter().find(|t| t.nome == nome) };
 
     // (tipo, id, rev) conhecidos.
-    let revisoes: BTreeSet<(String, String, String)> = linhas_de("sync_revision_history")
-        .iter()
-        .map(|l| (texto(l, 0), texto(l, 1), texto(l, 2)))
-        .collect();
+    let mut revisoes: BTreeSet<(String, String, String)> = BTreeSet::new();
+    if let Some(historia) = tabela_de("sync_revision_history") {
+        for linha in &historia.linhas {
+            revisoes.insert((
+                campo(historia, linha, "aggregate_type")?,
+                campo(historia, linha, "aggregate_id")?,
+                campo(historia, linha, "rev")?,
+            ));
+        }
+    }
 
-    for linha in linhas_de("sync_aggregate_state") {
-        let chave = (texto(&linha, 0), texto(&linha, 1), texto(&linha, 2));
-        if !revisoes.contains(&chave) {
-            return Err(incoerente(format!(
-                "a revisão corrente de {}/{} é {}, que não está na história de revisões. \
-                 O receptor não reconheceria a base de nenhum evento seguinte, e todo \
-                 incremental daquele agregado cairia em Unknown — conteúdo entregue, \
-                 replicação morta",
-                chave.0, chave.1, chave.2
-            )));
+    if let Some(estado) = tabela_de("sync_aggregate_state") {
+        for linha in &estado.linhas {
+            let tipo = campo(estado, linha, "aggregate_type")?;
+            let id = campo(estado, linha, "aggregate_id")?;
+            let atual = campo(estado, linha, "current_rev")?;
+            if !revisoes.contains(&(tipo.clone(), id.clone(), atual.clone())) {
+                return Err(incoerente(format!(
+                    "a revisão corrente de {tipo}/{id} é {atual}, que não está na história de \
+                     revisões. O receptor não reconheceria a base de nenhum evento seguinte, e \
+                     todo incremental daquele agregado cairia em Unknown — conteúdo entregue, \
+                     replicação morta"
+                )));
+            }
         }
     }
 
     let no_roster: BTreeSet<&str> = bundle.roster.iter().map(|m| m.device_id.as_str()).collect();
 
-    for linha in linhas_de("sync_tombstones") {
-        let (tipo, id, rev) = (texto(&linha, 0), texto(&linha, 1), texto(&linha, 2));
-        if !revisoes.contains(&(tipo.clone(), id.clone(), rev.clone())) {
-            return Err(incoerente(format!(
-                "a exclusão de {tipo}/{id} aponta para a revisão {rev}, que não está na \
-                 história. Sem ela o receptor não distingue \"foi apagado\" de \"nunca \
-                 existiu\", e uma edição concorrente ressuscita o item"
-            )));
-        }
-        let origem = texto(&linha, 4);
-        if !origem.is_empty() && !no_roster.contains(origem.as_str()) {
-            return Err(incoerente(format!(
-                "a exclusão de {tipo}/{id} veio da origem {origem}, que não está no roster \
-                 do bundle. A poda pergunta se cada membro válido atravessou aquela \
-                 exclusão, e essa pergunta não teria a quem ser feita"
-            )));
+    if let Some(tumulos) = tabela_de("sync_tombstones") {
+        for linha in &tumulos.linhas {
+            let tipo = campo(tumulos, linha, "aggregate_type")?;
+            let id = campo(tumulos, linha, "aggregate_id")?;
+            let rev = campo(tumulos, linha, "deleted_rev")?;
+            if !revisoes.contains(&(tipo.clone(), id.clone(), rev.clone())) {
+                return Err(incoerente(format!(
+                    "a exclusão de {tipo}/{id} aponta para a revisão {rev}, que não está na \
+                     história. Sem ela o receptor não distingue \"foi apagado\" de \"nunca \
+                     existiu\", e uma edição concorrente ressuscita o item"
+                )));
+            }
+            let origem = campo(tumulos, linha, "origin_device_id")?;
+            if !origem.is_empty() && !no_roster.contains(origem.as_str()) {
+                return Err(incoerente(format!(
+                    "a exclusão de {tipo}/{id} veio da origem {origem}, que não está no roster \
+                     do bundle. A poda pergunta se cada membro válido atravessou aquela \
+                     exclusão, e essa pergunta não teria a quem ser feita"
+                )));
+            }
         }
     }
 
@@ -549,10 +661,18 @@ pub fn capturar(
     // perdedora de uma divergência vive no payload de um evento, e o bundle
     // não carrega o log: semear agora apagaria semanticamente uma escolha que
     // ninguém fez ainda.
+    // Aberta é `resolved_at = ''`, que é como o schema define — tem até índice
+    // parcial com esse predicado (`idx_sync_divergences_abertas`). A primeira
+    // versão contava a tabela inteira, e o efeito era pior do que parece:
+    // bastava o escritor ter resolvido uma divergência **uma vez na vida** para
+    // o bootstrap ficar impossível para sempre naquele acervo. Divergência
+    // resolvida é decisão tomada, e decisão tomada já está no conteúdo.
     let divergencias: i64 = tx
-        .query_row("SELECT COUNT(*) FROM sync_divergences", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM sync_divergences WHERE resolved_at = ''",
+            [],
+            |row| row.get(0),
+        )
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     if divergencias > 0 {
         return Ok(Err(FalhaDeCaptura::DivergenciaAberta {
@@ -697,6 +817,12 @@ pub fn semear(
     }
 
     // ── 3. o bundle é coerente? ─────────────────────────────────────────────
+    //
+    // Estrutura primeiro: não adianta validar a causalidade de um bundle a que
+    // falta uma tabela inteira.
+    if let Err(falha) = validar_estrutura(&tx, bundle)? {
+        return Ok(Err(falha));
+    }
     if let Err(falha) = validar_bundle(bundle) {
         return Ok(Err(falha));
     }
@@ -751,8 +877,13 @@ pub fn semear(
 
     // ── 4. domínio e estado causal, na ordem das FKs ────────────────────────
     for nome in tabelas_copiadas() {
+        // `validar_estrutura` já provou que está aqui. O `else` continua
+        // existindo porque a alternativa era `continue`, e foi assim que uma
+        // tabela inteira podia sumir sem ninguém reclamar.
         let Some(tabela) = bundle.tabelas.iter().find(|t| t.nome == nome) else {
-            continue;
+            return Ok(Err(FalhaDeSemeadura::BundleIncoerente {
+                motivo: format!("a tabela {nome} sumiu entre a validação e a inserção"),
+            }));
         };
         inserir_tabela(&tx, tabela)?;
     }
@@ -2126,6 +2257,238 @@ mod tests {
             receptor.cursor(estranho.identidade.device_id()),
             None,
             "o receptor nasceu com baseline de conteúdo que ninguém aplicou"
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Integridade estrutural do bundle
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// **Bundle truncado é recusado, não completado em silêncio.**
+    ///
+    /// Este é o pior formato de defeito que a etapa 12 podia ter: o receptor
+    /// nasceria com universo, história, livros, roster, estado causal e
+    /// cursores todos corretos — e **sem os capítulos**. Nada pareceria errado,
+    /// e o cursor semeado faria o aparelho nunca pedir o que não veio.
+    ///
+    /// A primeira versão da semeadura fazia `continue` quando a tabela não
+    /// estava no bundle. A validação causal tratava ausente como vazia, e a
+    /// conferência final só comparava as três tabelas causais. As três camadas
+    /// olhavam para o lado ao mesmo tempo.
+    #[test]
+    fn bundle_sem_uma_tabela_inteira_e_recusado() {
+        let doador = Aparelho::doador_com_acervo(4);
+        let receptor = Aparelho::novo();
+        let mut bundle = capturar_de(&doador);
+
+        let antes = bundle.tabelas.len();
+        bundle.tabelas.retain(|t| t.nome != "chapters");
+        assert_eq!(
+            bundle.tabelas.len(),
+            antes - 1,
+            "o cenário precisa remover mesmo"
+        );
+
+        let falha = semear_em(&receptor, &bundle).expect_err("falta uma tabela inteira");
+        // O assert é sobre a mensagem da validação ESTRUTURAL, não sobre
+        // qualquer recusa que cite "chapters".
+        //
+        // A primeira versão aceitava as duas: a estrutural ("faltam tabelas") e
+        // a rede de segurança do laço de inserção ("sumiu entre a validação e a
+        // inserção"). Com isso, mutar uma das camadas deixava o gate verde pela
+        // outra, e nenhuma das duas ficava provada. São camadas independentes de
+        // propósito — a de cima explica ao humano o que está errado no bundle, a
+        // de baixo existe para um caminho futuro não chegar ao INSERT sem passar
+        // pela primeira — e cada uma precisa do próprio veredito.
+        match &falha {
+            FalhaDeSemeadura::BundleIncoerente { motivo } => assert!(
+                motivo.contains("faltam tabelas") && motivo.contains("chapters"),
+                "a recusa precisa vir da validação estrutural, nomeando o que falta: {motivo}"
+            ),
+            outra => panic!("recusou pelo motivo errado: {outra}"),
+        }
+
+        assert_eq!(receptor.conta("chapters"), 0);
+        assert_eq!(receptor.conta("universes"), 0, "rollback incompleto");
+        assert_eq!(receptor.conta("sync_cursors"), 0);
+        assert_eq!(receptor.conta("sync_devices"), 1, "só o próprio self");
+    }
+
+    /// Tabela repetida no bundle: qual das duas vale não é pergunta para o meio
+    /// de um seed.
+    #[test]
+    fn bundle_com_tabela_duplicada_e_recusado() {
+        let doador = Aparelho::doador_com_acervo(2);
+        let receptor = Aparelho::novo();
+        let mut bundle = capturar_de(&doador);
+
+        let copia = bundle
+            .tabelas
+            .iter()
+            .find(|t| t.nome == "chapters")
+            .cloned()
+            .expect("chapters no bundle");
+        bundle.tabelas.push(copia);
+
+        let falha = semear_em(&receptor, &bundle).expect_err("tabela duplicada");
+        match &falha {
+            FalhaDeSemeadura::BundleIncoerente { motivo } => assert!(
+                motivo.contains("duas vezes"),
+                "recusou pelo motivo errado: {motivo}"
+            ),
+            outra => panic!("recusou pelo motivo errado: {outra}"),
+        }
+        assert_eq!(receptor.conta("chapters"), 0);
+    }
+
+    /// Tabela que não pertence ao bundle também reprova.
+    ///
+    /// O caso perigoso não é a tabela inventada: é uma tabela **local** viajando
+    /// disfarçada de acervo, num bundle montado por outra versão do aplicativo.
+    #[test]
+    fn bundle_com_tabela_estranha_e_recusado() {
+        let doador = Aparelho::doador_com_acervo(2);
+        let receptor = Aparelho::novo();
+        let mut bundle = capturar_de(&doador);
+
+        bundle.tabelas.push(Tabela {
+            nome: "change_log".to_string(),
+            colunas: vec!["id".to_string()],
+            linhas: vec![vec![Value::Text("x".to_string())]],
+        });
+
+        let falha = semear_em(&receptor, &bundle).expect_err("tabela fora do contrato");
+        assert!(matches!(falha, FalhaDeSemeadura::BundleIncoerente { .. }));
+        assert_eq!(receptor.conta("change_log"), 0);
+    }
+
+    /// **Coluna faltando não entra pelo DEFAULT.**
+    ///
+    /// É o caso silencioso da família: `chapters.word_count` tem
+    /// `DEFAULT 0`, então um `INSERT` sem ela funcionaria — e o acervo inteiro
+    /// chegaria com contagem de palavras zerada. A estatística do universo soma
+    /// `word_count`; o escritor veria o próprio trabalho valendo zero palavra.
+    ///
+    /// As colunas esperadas vêm de `PRAGMA table_info` **do receptor**, dentro
+    /// da transação, e não de uma segunda lista mantida à mão.
+    #[test]
+    fn coluna_faltando_no_bundle_nao_entra_pelo_default() {
+        let doador = Aparelho::doador_com_acervo(3);
+        let receptor = Aparelho::novo();
+        let mut bundle = capturar_de(&doador);
+
+        let capitulos = bundle
+            .tabelas
+            .iter_mut()
+            .find(|t| t.nome == "chapters")
+            .expect("chapters no bundle");
+        let posicao = capitulos
+            .colunas
+            .iter()
+            .position(|c| c == "word_count")
+            .expect("a coluna existe no schema");
+        capitulos.colunas.remove(posicao);
+        for linha in capitulos.linhas.iter_mut() {
+            linha.remove(posicao);
+        }
+
+        let falha = semear_em(&receptor, &bundle).expect_err("falta uma coluna");
+        match &falha {
+            FalhaDeSemeadura::BundleIncoerente { motivo } => assert!(
+                motivo.contains("word_count") || motivo.contains("colunas de chapters"),
+                "recusou pelo motivo errado: {motivo}"
+            ),
+            outra => panic!("recusou pelo motivo errado: {outra}"),
+        }
+        assert_eq!(receptor.conta("chapters"), 0);
+    }
+
+    /// Linha com número de valores diferente do de colunas.
+    #[test]
+    fn linha_com_aridade_errada_e_recusada() {
+        let doador = Aparelho::doador_com_acervo(2);
+        let receptor = Aparelho::novo();
+        let mut bundle = capturar_de(&doador);
+
+        let capitulos = bundle
+            .tabelas
+            .iter_mut()
+            .find(|t| t.nome == "chapters")
+            .expect("chapters no bundle");
+        capitulos.linhas[0].pop();
+
+        let falha = semear_em(&receptor, &bundle).expect_err("aridade errada");
+        assert!(matches!(falha, FalhaDeSemeadura::BundleIncoerente { .. }));
+        assert_eq!(receptor.conta("chapters"), 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Divergência: aberta bloqueia, resolvida não
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// **Decisão já tomada não bloqueia o bootstrap.**
+    ///
+    /// O schema define aberta como `resolved_at = ''` — tem índice parcial com
+    /// esse predicado. A primeira versão da captura contava a tabela inteira, e
+    /// o efeito era pior do que uma recusa a mais: bastava o escritor ter
+    /// resolvido **uma** divergência na vida daquele acervo para nunca mais
+    /// conseguir parear um aparelho novo. Uma divergência resolvida é uma
+    /// escolha que já está no conteúdo.
+    #[test]
+    fn divergencia_resolvida_nao_bloqueia_a_captura() {
+        let doador = Aparelho::doador_com_acervo(2);
+        {
+            let connection = doador.banco.database.write().expect("escrita");
+            connection
+                .execute(
+                    "INSERT INTO sync_divergences
+                        (id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev,
+                         local_operation, remote_operation, remote_event_id, resolved_at,
+                         resolution)
+                     VALUES ('d-velha','chapter','cap-1','b','l','r','upsert','upsert','e1',
+                             '2026-09-01 10:00:00','local')",
+                    [],
+                )
+                .expect("divergência já resolvida");
+        }
+
+        let mut connection = doador.banco.database.write().expect("escrita");
+        capturar(&mut connection)
+            .expect("consultar")
+            .expect("decisão já tomada não impede o bootstrap");
+    }
+
+    /// E uma aberta ao lado de resolvidas continua bloqueando, contando só a
+    /// aberta.
+    #[test]
+    fn a_captura_conta_apenas_as_divergencias_abertas() {
+        let doador = Aparelho::doador_com_acervo(2);
+        {
+            let connection = doador.banco.database.write().expect("escrita");
+            connection
+                .execute_batch(
+                    "INSERT INTO sync_divergences
+                        (id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev,
+                         local_operation, remote_operation, remote_event_id, resolved_at,
+                         resolution)
+                     VALUES ('d-velha','chapter','cap-1','b','l','r','upsert','upsert','e1',
+                             '2026-09-01 10:00:00','local');
+                     INSERT INTO sync_divergences
+                        (id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev,
+                         local_operation, remote_operation, remote_event_id)
+                     VALUES ('d-aberta','chapter','cap-2','b','l','r','upsert','upsert','e2');",
+                )
+                .expect("uma resolvida e uma aberta");
+        }
+
+        let mut connection = doador.banco.database.write().expect("escrita");
+        let falha = capturar(&mut connection)
+            .expect("consultar")
+            .expect_err("há uma decisão pendente");
+        assert_eq!(
+            falha,
+            FalhaDeCaptura::DivergenciaAberta { quantas: 1 },
+            "a contagem precisa ignorar as já resolvidas"
         );
     }
 }
