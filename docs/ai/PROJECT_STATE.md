@@ -3,7 +3,7 @@
 > Fonte da verdade sobre "onde estamos". Qualquer agente lê este arquivo antes de agir.
 > Atualize-o ao fechar uma tarefa que mude versão, fase ou dívida conhecida.
 
-Atualizado em: 2026-09-01
+Atualizado em: 2026-09-08
 
 ## Versão
 
@@ -106,6 +106,8 @@ diretório não o pegaria; o gate contra **colocação** pega.
 > **Etapa 9:** pareamento por QR — convite aleatório, expirável e de uso único. **Sem câmera nem socket.**
 > **Etapa 10:** PIN por SPAKE2 — sem dicionário offline, com limite de três tentativas.
 > **Etapa 11:** tombstones causais, coleta só com prova, e as duas saídas do conjunto. **Schema 17.**
+> **Revisão 11.1:** a prova de saída limpa passa a vir do aparelho que sai; `mudar_estado`
+> deixa de existir; a divergência registra a operação de cada lado. **Schema 18.**
 >
 > Reconciliação fina de capítulo por bloco depende da **NH-045** e não faz parte das 14
 > etapas. O Sync V2 pode fechar com conflito seguro de capítulo inteiro.
@@ -136,7 +138,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | `commands/` legado | **Removido** na Fase 3 |
 | Fronteira nativa do frontend | **Formalizada** — ADR 0008 |
 | Sync V1 sem criptografia | **Foco atual** — Fase 4 |
-| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1–11 concluídas; falta bootstrap, attachments, rede real e o gate de saída **NH-053** |
+| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1–11 concluídas (mais a revisão 11.1); falta bootstrap, attachments, rede real, o gate de saída **NH-053** e a propagação da saída (**NH-058**, parcial) |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
 | Ciclo de atualização empacotado | **Concluído.** Roteiro, checklist de release e três execuções reais |
@@ -152,7 +154,7 @@ migration — não pegar a versão mais recente:
 | 0.8.0 | 14 |
 | 0.9.0 e 0.9.1 | 15 |
 | 0.9.2 (publicada) | 15 |
-| `main` hoje | **17** — coordenadas causais dos tombstones |
+| `main` hoje | **18** — semântica da divergência e coerência de estado de saída |
 
 Consequência prática, e ela **mudou** com a migration 16: a próxima versão publicada será a
 primeira desde a 0.9.2 a carregar migration de verdade. O par `0.9.2 → próxima` deixa de ser
@@ -175,6 +177,25 @@ TMP='D:\DevTools\NarraHubTmp' TEMP='D:\DevTools\NarraHubTmp' cargo test --manife
 
 O CI (Ubuntu) nunca reproduziu isso. Crash estranho de compilador aqui: suspeitar de
 disco antes de suspeitar do código.
+
+## O que a revisão 11.1 mudou de entendimento
+
+A etapa 11 fechou verde e com gates. A revisão do autor achou três coisas que os gates não
+pegavam, e todas são da mesma família: **o teste provava o caminho bonito e deixava o atalho
+aberto ao lado.**
+
+1. A saída limpa comparava `MAX(seq)` conhecido contra a confirmação de um peer. Quando os
+   dois lados ignoram os mesmos eventos, a conta dá zero — e um aparelho com cinco alterações
+   offline saía como "limpo". A prova agora vem de quem sai, autenticado, e não pode encolher
+   o próprio passado.
+2. `sync_trust::mudar_estado(conn, id, "retired")` escrevia o mesmo estado sem pré-condição
+   nenhuma. Provar `aposentar` não vale nada enquanto o atalho continua exportado — a função
+   foi removida, e um gate reprova se `estado: &str` voltar como parâmetro.
+3. Três asserts do gate de exclusão concorrente eram tautologias
+   (`assert_eq!(x, "".to_string().max(x.clone()))`). Passavam com o mecanismo removido.
+
+A lição que vale para as etapas 12–14: **um gate só conta depois de ser visto reprovando**, e
+uma mutação isolada é a única forma de ver isso.
 
 ## Dívida arquitetural conhecida
 

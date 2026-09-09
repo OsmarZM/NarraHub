@@ -1123,7 +1123,7 @@ Registrado, **não implementar** antes de a fase correspondente abrir.
 | NH-053 | **GATE DE SAÍDA DA FASE 4** — todo caminho de escrita produz evento (detalhado abaixo) | 4 |
 | NH-056 | ~~Autoridade vem da sessão autenticada~~ — **fechada na etapa 8** | 4 |
 | NH-057 | ~~Origem desconhecida da rede não vira pedido visível~~ — **fechada na etapa 9** | 4 |
-| NH-058 | ~~Aposentadoria exige sincronização final~~ — **fechada na etapa 11** | 4 |
+| NH-058 | Aposentadoria exige sincronização final — **PARCIAL**: a saída não propaga por evento | 4 |
 | NH-050 | Teste de tokens de design (`var(--*)` sem definição reprova o CI) | 5 |
 | NH-051 | Escala de breakpoints e responsividade em telas menores | 5 |
 | NH-060 | Contrato `AIContext v1` e orçamento de contexto | 6 |
@@ -1254,7 +1254,7 @@ então toda poda ficaria travada para sempre.
 E tombstone sem coordenadas causais — os de bancos criados no schema 16 — **nunca** é
 coletável. Na dúvida, guardar.
 
-#### As duas saídas, e a NH-058 fechada
+#### As duas saídas, e o que a NH-058 ainda não tem
 
 ```text
 ACTIVE
@@ -1269,7 +1269,15 @@ mensagem**, não em silêncio. Voltar exige identidade nova, que é o que uma re
 
 `abandonar` devolve **quantos** eventos se perdem, para a tela dizer o número em vez de "alguma
 coisa pode se perder". É decisão de perda de dados, e o [ADR 0001](docs/ADR/0001-local-ownership.md)
-diz que ela é do escritor — informado.
+diz que ela é do escritor — informado. O número é um **piso**: conta o que este aparelho conhece
+daquela origem, e o que nunca chegou aqui não tem como ser contado.
+
+O que a etapa 11 **não** entregou, e a revisão 11.1 registrou em vez de esconder: a saída é um
+`UPDATE` local. O aparelho sai do conjunto neste banco e continua ativo em todos os outros,
+porque nenhum evento assinado carrega a mudança de estado para os peers. Num conjunto simétrico
+o roster diverge — o Desktop poda, o Notebook não. A propagação depende da NH-053 e está
+amarrada por gate executável (`a NH-058 só é declarada fechada quando a saída propagar por
+evento`).
 
 #### Mutação, mecanismo por mecanismo
 
@@ -1277,7 +1285,10 @@ diz que ela é do escritor — informado.
 | --- | --- |
 | coleta causal → por idade | `idade_do_tombstone_nao_autoriza_a_coleta` + 2 |
 | saída deixa de destravar a poda | `aparelho_abandonado_deixa_de_travar_a_poda` |
-| aposentar sem exigir sync final | `aposentar_exige_que_nada_tenha_ficado_para_tras` |
+| marca declarada pelo próprio aparelho → `MAX(seq)` local | `saida_limpa_recusa_quando_o_conjunto_nao_alcancou_a_marca_de_quem_sai` |
+| marca declarada aceita abaixo do conhecido | `marca_declarada_nao_pode_ser_menor_que_o_ja_conhecido` |
+| confirmação da própria origem passa a contar | `o_proprio_aparelho_nao_confirma_a_propria_saida` |
+| `mudar_estado(..., "retired")` de volta | `so_o_modulo_de_saida_escreve_o_estado_de_saida` |
 | tombstone fora da causalidade | `edicao_concorrente_...` + `nao_trava_o_cursor` |
 
 
@@ -1651,9 +1662,31 @@ pacote qualquer cita um id novo.
 
 ```text
 Owner:  Claude
-Status: FECHADA na etapa 11 — `retired`/`clean` e `retired`/`abandoned`, com corte de identidade
-Fase:   4
+Status: PARCIAL — as duas portas de saída existem e são provadas; a saída não propaga
+Fase:   4  (o que falta depende da NH-053)
 ```
+
+> **Por que não está fechada.** A etapa 11 declarou esta tarefa concluída, e a revisão 11.1
+> reabriu. O que existe: `aposentar_clean` e `abandonar`, com pré-condição real, corte de
+> identidade e destravamento da poda. O que não existe: **propagação**.
+>
+> ```text
+> aposentar_clean(...)  →  UPDATE sync_devices SET state = 'retired'   ← só neste banco
+> ```
+>
+> Nenhum evento assinado leva a mudança de estado para os outros aparelhos. Em `main`/`worker`
+> isso seria detalhe; em peers simétricos é divergência de roster — o Desktop já podou os
+> tombstones que o Notebook ainda considera bloqueados, e os dois estão "certos" segundo o
+> próprio estado.
+>
+> Fechar exige um tipo de agregado novo no log para ciclo de vida de dispositivo, com regra de
+> aplicação e de conflito próprias (dois peers se abandonando ao mesmo tempo é um caso real).
+> Isso é trabalho da **NH-053**, e antecipá-lo aqui só embaralharia as duas tarefas.
+>
+> O gate `a NH-058 só é declarada fechada quando a saída propagar por evento`
+> (`tests/docs-consistency.test.mjs`) amarra as duas pontas: enquanto `sync_gc.rs` não emitir
+> evento, o status tem que ser `PARCIAL` e nenhum documento pode chamar a tarefa de fechada;
+> quando alguém implementar a emissão, o teste reprova até a documentação ser corrigida.
 
 Decisão do autor, preferida ao `cutoff_seq` por ser mais simples de explicar, testar e manter.
 
@@ -1682,8 +1715,8 @@ eufemismo:
 
 | Ação | Significado |
 | --- | --- |
-| **Aposentar** | exige sincronização final confirmada com pelo menos um dispositivo ativo |
-| **Abandonar** | aceita que o que existia só naquele aparelho **foi perdido** |
+| **Aposentar** | o próprio aparelho, autenticado, declara sua marca; outro membro ativo confirma |
+| **Abandonar** | um membro ativo aceita que o que existia só naquele aparelho **foi perdido** |
 
 Não precisa de estado novo no banco — é semântica da ação. Mas precisa aparecer com clareza,
 porque é decisão de perda potencial de dados, e o [ADR 0001](docs/ADR/0001-local-ownership.md)

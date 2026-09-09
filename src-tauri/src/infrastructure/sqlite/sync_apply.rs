@@ -183,6 +183,23 @@ fn registrar_revisao(tx: &Transaction<'_>, envelope: &EventEnvelope) -> Database
     Ok(())
 }
 
+/// Guarda as duas versões e a base comum, mais **o que cada lado fez**.
+///
+/// A operação de cada lado não é enfeite. Sem ela, um lado local excluído chega
+/// à tela como `local_rev = ""`, e "aqui foi apagado" fica indistinguível de
+/// "não sabemos o que tem aqui" — que são escolhas opostas para o escritor.
+/// Com as duas operações registradas, a caixa de conciliação sabe qual par de
+/// botões oferecer:
+///
+/// ```text
+/// delete + upsert  ->  [manter a exclusão]  ou  [restaurar a edição]
+/// upsert + upsert  ->  [ficar com esta]     ou  [ficar com aquela]
+/// upsert + delete  ->  [manter o conteúdo]  ou  [aceitar a exclusão]
+/// ```
+///
+/// Quando o lado local é uma exclusão, `local_rev` passa a ser a revisão **da
+/// própria exclusão** ([`AggregateHistory::deleted_rev`]), e não uma string
+/// vazia: a exclusão é uma revisão causal, não a ausência de uma.
 fn registrar_divergencia(
     tx: &Transaction<'_>,
     envelope: &EventEnvelope,
@@ -190,17 +207,25 @@ fn registrar_divergencia(
     historia: &crate::domain::sync::AggregateHistory,
 ) -> DatabaseCommandResult<String> {
     let id = crate::domain::ids::new_id();
+    let (local_rev, local_operation) = match (&historia.current_rev, &historia.deleted_rev) {
+        (Some(rev), _) => (rev.as_str(), "upsert"),
+        (None, Some(rev)) => (rev.as_str(), "delete"),
+        (None, None) => ("", ""),
+    };
     tx.execute(
         "INSERT INTO sync_divergences
-            (id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev, remote_event_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev,
+             local_operation, remote_operation, remote_event_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
             &id,
             &envelope.aggregate_type,
             &envelope.aggregate_id,
             base_rev,
-            historia.current_rev.as_deref().unwrap_or_default(),
+            local_rev,
             &envelope.new_rev,
+            local_operation,
+            envelope.operation.as_str(),
             &envelope.event_id,
         ],
     )
