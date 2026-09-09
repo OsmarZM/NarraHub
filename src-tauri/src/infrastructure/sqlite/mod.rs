@@ -12,6 +12,7 @@ pub mod sync_exchange;
 pub mod sync_gc;
 pub mod sync_repository;
 pub mod sync_session;
+pub mod sync_snapshot;
 pub mod sync_trust;
 #[cfg(test)]
 pub mod test_support;

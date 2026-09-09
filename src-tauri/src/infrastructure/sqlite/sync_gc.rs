@@ -1172,7 +1172,15 @@ mod tests {
         let sessao =
             crate::infrastructure::sync_transport::SessaoAutenticada::deste_aparelho(&cenario.eu);
 
-        for seq in 1..=3 {
+        // Os eventos chegam FORA DE ORDEM: o seq 1 nunca apareceu, então
+        // nenhum dos três é aplicado e o cursor daquela origem não nasce.
+        //
+        // A primeira versão deste teste recebia 1..3 normalmente e depois
+        // apagava a linha de cursor para chegar no mesmo estado. A migration 19
+        // proibiu apagar cursor — apagar e reinserir re-semeia o baseline — e o
+        // atalho deixou de existir. O caminho honesto é o que o protocolo
+        // produz sozinho: evento guardado e não aplicado é evento preso.
+        for seq in 2..=4 {
             let id = format!("cap-{seq}");
             let seu = evento(
                 &cenario.android,
@@ -1184,19 +1192,16 @@ mod tests {
             );
             receber_eventos(&mut connection, &[seu]).expect("receber");
         }
-
-        // Ninguém mais confirmou nada do Android: os três eventos ficam presos.
-        connection
-            .execute(
-                "DELETE FROM sync_cursors WHERE origin_device_id = ?1",
-                [cenario.android.device_id()],
-            )
-            .expect("simular que nem nós tínhamos aplicado");
+        assert_eq!(
+            conhecido_ate(&connection, cenario.android.device_id()).expect("conhecido"),
+            4,
+            "os envelopes precisam estar no log"
+        );
 
         let perdidos = abandonar(&connection, &sessao, cenario.android.device_id())
             .expect("consultar")
             .expect("abandonar não exige prova");
-        assert_eq!(perdidos, 3, "a tela precisa poder dizer o número");
+        assert_eq!(perdidos, 4, "a tela precisa poder dizer o número");
 
         assert_eq!(
             motivo_de_saida(&connection, cenario.android.device_id()).expect("ler"),

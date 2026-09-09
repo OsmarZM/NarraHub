@@ -1294,6 +1294,89 @@ evento`).
 | tombstone fora da causalidade | `edicao_concorrente_...` + `nao_trava_o_cursor` |
 
 
+### NH-063 — Sync V2, etapa 12: bootstrap por snapshot atômico
+
+```text
+Owner:  Claude
+Status: DONE
+Fase:   4  (etapa 12 de 14)
+```
+
+Um Android recém-instalado não tem nada. Reconstruir o acervo por dez mil eventos seria lento e
+frágil, então o primeiro pareamento com um aparelho vazio usa snapshot como semente — e nunca
+mais depois disso.
+
+#### O contrato do bundle: quem decide não é a conveniência
+
+A pergunta que fechou a lista foi uma só: **de onde `aggregate_history` lê?** É ela que alimenta
+`classify`, e o que faltar ali muda a classificação do primeiro incremental. `Unknown` não
+avança o cursor — o snapshot entregaria o conteúdo e mataria a replicação no mesmo ato.
+
+Ela lê de três tabelas, e as três viajam: `sync_aggregate_state`, `sync_revision_history` e
+`sync_tombstones`. O que torna isso barato é `sync_revision_history.event_id` não ter FK para
+`sync_events`: a cadeia de revisões viaja sem arrastar o log.
+
+Ficam de fora `sync_events` e `sync_applied_events` — é o passado que o baseline substitui — e
+`sync_peer_vectors`, por autoridade: confirmação de peer só vale de primeira mão, e ela autoriza
+poda.
+
+**A matriz é executável.** As 36 tabelas do banco têm destino declarado em cinco categorias, e o
+gate lê `sqlite_master`: tabela nova sem classificação reprova. Três levantamentos manuais meus
+erraram antes disso — um contou 37 tabelas onde havia 36, outro somou 24 itens e escreveu 20, e
+o terceiro perdeu uma FK criada por `ALTER TABLE`.
+
+#### As duas pontas fechadas
+
+```text
+capturar()   recusa enquanto houver divergência aberta
+             tudo de uma transação de leitura só
+
+semear()     BEGIN IMMEDIATE
+             construtivo: só sabe inserir, nunca apagar
+             recusa qualquer receptor que não esteja provadamente vazio
+```
+
+`bootstrap_eligible` olha todas as tabelas que podem conter trabalho, não só os cursores — o
+capítulo criado por `create_chapter` não deixa evento nem cursor enquanto a NH-053 estiver
+aberta, e a checagem antiga o chamaria de aparelho virgem.
+
+O `DELETE FROM change_log` do passo 7 é preciso, não aproximado: a elegibilidade provou, na
+mesma transação, que a tabela estava vazia. Tudo o que estiver nela ali nasceu dos gatilhos
+`AFTER INSERT` desta semeadura, e é biografia falsa.
+
+#### Defeitos encontrados fora da etapa
+
+| Onde | O quê |
+| --- | --- |
+| `vetor_local()`, etapa 6 | `MAX(seq)` sem filtro anunciava progresso de evento pendente |
+| gatilho da v16 | baseline se re-semeava por `DELETE` + `INSERT` |
+| geração de `seq` | identidade reusada começaria em 1 sobre coordenadas existentes |
+
+Os dois primeiros já estavam em `main`. O terceiro só passou a ser alcançável com o bootstrap.
+
+#### Mutação, mecanismo por mecanismo
+
+| Removido | Reprova |
+| --- | --- |
+| `is_self` do bundle passa a valer | `o_doador_entra_como_peer...` + 3 |
+| elegibilidade volta a olhar só cursor | `conteudo_criado_sem_evento_bloqueia_o_seed` |
+| vetor lido fora da transação | `a_captura_nunca_mistura_dois_instantes` |
+| guard de identidade com passado | `identidade_com_passado_no_conjunto...` |
+| `MAX(seq)` indiscriminado | `origem_estrangeira_com_evento_pendente...` |
+| `change_log` fabricado sobrevive | `o_receptor_novo_comeca_a_propria_sequencia_do_zero` |
+| validação semântica removida | `revisao_corrente_fora_da_historia_reprova_o_bundle` |
+
+O gate de concorrência precisou de correção: com doze capturas a mutação **sobreviveu**. Subiu
+para duzentas e passou a reprovar de forma consistente. É estatístico, e está assumido como tal.
+
+E o gate de concorrência achou um defeito no próprio apoio de teste: o escritor dava dois
+commits — dado num, evento no outro — e a captura pegava a janela entre eles. O caminho de
+produção não tem essa janela, porque `update_chapter` usa o outbox transacional da etapa 3.
+
+**A NH-053 continua aberta.** O bundle carrega as tabelas de domínio, e o incremental depois
+dele só propaga capítulo. A etapa 12 não resolve isso de lado.
+
+
 ### NH-061 — Separação de domínio da saída do PAKE
 
 ```text
