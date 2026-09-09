@@ -1,7 +1,7 @@
 //! NarraHub — Database Migrations
 //! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 17;
+pub const LATEST_SCHEMA_VERSION: i64 = 18;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -22,6 +22,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         15 => Some(MIGRATION_V15),
         16 => Some(MIGRATION_V16),
         17 => Some(MIGRATION_V17),
+        18 => Some(MIGRATION_V18),
         _ => None,
     }
 }
@@ -1184,6 +1185,67 @@ END;
 CREATE INDEX idx_tombstones_origem ON sync_tombstones(origin_device_id, origin_seq);
 "#;
 
+pub const MIGRATION_V18: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v18
+-- Sync V2 - revisao 11.1: divergencia com semantica, e coerencia de estado
+-- ============================================
+--
+-- Duas correcoes da revisao da etapa 11. As duas existem porque a etapa 11
+-- deixou representavel um estado que a documentacao dizia impossivel.
+
+-- ── 1. A divergencia precisa dizer QUAL escolha o humano tem ────────────────
+--
+-- A etapa 11 gravava base_rev, local_rev e remote_rev. Isso basta enquanto os
+-- dois lados sao edicoes. Nao basta quando um deles e uma EXCLUSAO:
+--
+--   local_rev = ''   depois de um delete  ->  a tela nao consegue distinguir
+--                                             "manter exclusao" de "nao sei"
+--
+-- Com a operacao de cada lado registrada, a escolha fica inequivoca:
+--
+--   local delete + remote upsert   ->  [manter exclusao] ou [restaurar edicao]
+--   local upsert + remote upsert   ->  [ficar com esta]  ou [ficar com aquela]
+--   local upsert + remote delete   ->  [manter conteudo] ou [aceitar exclusao]
+ALTER TABLE sync_divergences ADD COLUMN local_operation TEXT NOT NULL DEFAULT ''
+    CHECK (local_operation IN ('', 'upsert', 'delete'));
+ALTER TABLE sync_divergences ADD COLUMN remote_operation TEXT NOT NULL DEFAULT ''
+    CHECK (remote_operation IN ('', 'upsert', 'delete'));
+
+-- ── 2. Motivo de saida so existe para quem saiu ─────────────────────────────
+--
+-- A etapa 11 impedia `active` com motivo de saida, e deixava passar o resto.
+-- Um dispositivo `revoked` com exit_reason = 'clean' seria um estado que
+-- nenhuma parte do codigo sabe ler: revogado por chave comprometida, mas
+-- marcado como tendo saido limpo.
+--
+-- `retired` com motivo VAZIO continua legal, e de proposito: e o que a
+-- reconciliacao de identidade produz quando um backup e restaurado noutra
+-- maquina. Aquele aparelho nao saiu de forma limpa nem foi abandonado pelo
+-- escritor -- ele foi superado. Como nao houve prova de sincronizacao final,
+-- ele conta como NAO limpo em toda decisao que dependa disso.
+-- Os gatilhos abaixo so olham escritas NOVAS. Um banco que ja esta no disco
+-- pode carregar a combinacao incoerente desde a v17, que permitia revogar um
+-- dispositivo sem limpar o motivo de saida. Deixar a linha la e pior do que
+-- nao ter gatilho nenhum: a proibicao passa a valer para todo mundo menos
+-- para quem ja errou, e a tela continua lendo 'clean' de um aparelho revogado.
+UPDATE sync_devices SET exit_reason = '' WHERE state <> 'retired' AND exit_reason <> '';
+
+CREATE TRIGGER trg_motivo_de_saida_so_para_quem_saiu_insert
+BEFORE INSERT ON sync_devices
+BEGIN
+    SELECT RAISE(ABORT, 'Motivo de saida so existe para dispositivo aposentado.')
+     WHERE NEW.state <> 'retired' AND NEW.exit_reason <> '';
+END;
+
+CREATE TRIGGER trg_motivo_de_saida_so_para_quem_saiu_update
+BEFORE UPDATE OF state, exit_reason ON sync_devices
+BEGIN
+    SELECT RAISE(ABORT, 'Motivo de saida so existe para dispositivo aposentado.')
+     WHERE NEW.state <> 'retired' AND NEW.exit_reason <> '';
+END;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1195,6 +1257,7 @@ mod tests {
     const NATIVE_SCHEMA_V15_FIXTURE: &str = include_str!("../../fixtures/schema15_native.sql");
     const NATIVE_SCHEMA_V16_FIXTURE: &str = include_str!("../../fixtures/schema16_native.sql");
     const NATIVE_SCHEMA_V17_FIXTURE: &str = include_str!("../../fixtures/schema17_native.sql");
+    const NATIVE_SCHEMA_V18_FIXTURE: &str = include_str!("../../fixtures/schema18_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -1317,8 +1380,8 @@ mod tests {
                 .expect("ligar foreign keys");
             apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
             connection
-                .execute_batch(NATIVE_SCHEMA_V17_FIXTURE)
-                .expect("carregar a fixture nativa de schema 17");
+                .execute_batch(NATIVE_SCHEMA_V18_FIXTURE)
+                .expect("carregar a fixture nativa de schema 18");
         }
         let db = Connection::open(&path).expect("reabrir");
         db.execute_batch("PRAGMA foreign_keys = ON;")
@@ -1341,6 +1404,47 @@ mod tests {
             })
             .expect("foreign_key_check");
         assert_eq!(violacoes, 0, "a fixture nao pode nascer com FK quebrada");
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// A divergencia entre EXCLUSAO e edicao chega inteira ate a tela.
+    ///
+    /// Este e o caso que o schema 17 nao conseguia representar: com so as tres
+    /// revisoes, um lado local excluido virava `local_rev = ''`, e "aqui foi
+    /// apagado" ficava indistinguivel de "nao sabemos o que tem aqui". Sao
+    /// escolhas opostas para o escritor -- manter a exclusao, ou restaurar a
+    /// edicao do outro aparelho -- e a caixa de conciliacao nao tem como
+    /// oferecer o par certo de botoes sem saber qual foi.
+    #[test]
+    fn a_divergencia_entre_exclusao_e_edicao_guarda_a_operacao_dos_dois_lados() {
+        let (db, path) = banco_v16_com_fixture();
+
+        let (base, local, remota, op_local, op_remota): (String, String, String, String, String) =
+            db.query_row(
+                "SELECT base_rev, local_rev, remote_rev, local_operation, remote_operation
+                   FROM sync_divergences WHERE id = 'fx18-div-2'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("ler a divergencia com exclusao");
+
+        assert_eq!(base, "fx16-rev-c9-a", "a base comum se perdeu");
+        assert_eq!(
+            local, "fx16-rev-c9-del",
+            "o lado local precisa guardar a revisao DA EXCLUSAO, nao uma string vazia"
+        );
+        assert_eq!(op_local, "delete");
+        assert_eq!(remota, "fx16-rev-c9-y");
+        assert_eq!(op_remota, "upsert");
 
         std::fs::remove_file(path).ok();
     }
@@ -1862,6 +1966,106 @@ mod tests {
             "a migration inventou uma origem que não existia"
         );
         assert_eq!(seq, 0);
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Um banco **nascido no schema 17** chega ao 18 sem perder nada — e sai
+    /// dele sem a combinação incoerente que a v17 deixava passar.
+    ///
+    /// A v17 proibia `active` com motivo de saída e parava aí. `revoked` com
+    /// `exit_reason = 'clean'` continuava representável: a chave vazou, e o
+    /// aparelho consta como tendo saído em ordem. Os gatilhos da v18 fecham a
+    /// porta para escritas novas; este teste prova que a migration também
+    /// **limpa o que já está no disco**, que é a metade que costuma ser
+    /// esquecida.
+    #[test]
+    fn banco_nascido_no_17_migra_para_o_18_e_perde_a_combinacao_incoerente() {
+        let path = std::env::temp_dir().join(format!("narrahub-17-para-18-{}.db", Uuid::new_v4()));
+        {
+            let connection = Connection::open(&path).expect("criar banco v17");
+            connection
+                .execute_batch("PRAGMA foreign_keys = ON;")
+                .expect("ligar foreign keys");
+            apply_migrations(&connection, 1, 17);
+            connection
+                .execute_batch(NATIVE_SCHEMA_V17_FIXTURE)
+                .expect("carregar a fixture nativa de schema 17");
+
+            // O estado que a v17 permitia: revogado, e ainda assim marcado
+            // como tendo saído em ordem.
+            connection
+                .execute_batch(
+                    "UPDATE sync_devices SET state = 'revoked', exit_reason = 'clean'
+                      WHERE device_id = 'fx16-dev-longe';",
+                )
+                .expect("produzir a combinação incoerente que a v17 aceitava");
+
+            apply_migrations(&connection, 18, 18);
+        }
+
+        let db = Connection::open(&path).expect("reabrir");
+        db.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("ligar foreign keys");
+
+        let violacoes: i64 = db
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("foreign_key_check");
+        assert_eq!(violacoes, 0);
+
+        let (estado, motivo): (String, String) = db
+            .query_row(
+                "SELECT state, exit_reason FROM sync_devices WHERE device_id = 'fx16-dev-longe'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("ler o dispositivo revogado");
+        assert_eq!(estado, "revoked", "a migration mexeu no estado");
+        assert_eq!(
+            motivo, "",
+            "o motivo de saída sobreviveu num dispositivo revogado"
+        );
+
+        // A saída legítima continua intacta: aposentado por abandono.
+        let (estado, motivo): (String, String) = db
+            .query_row(
+                "SELECT state, exit_reason FROM sync_devices WHERE device_id = 'fx16-dev-velho'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("ler o tablet abandonado");
+        assert_eq!(estado, "retired");
+        assert_eq!(
+            motivo, "abandoned",
+            "a migration apagou um motivo de saída legítimo"
+        );
+
+        // E a divergência que já existia ganha as colunas novas em branco: o
+        // schema não pode inventar uma operação que ninguém registrou.
+        let (op_local, op_remota): (String, String) = db
+            .query_row(
+                "SELECT local_operation, remote_operation FROM sync_divergences
+                  WHERE id = 'fx16-div-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("ler a divergência migrada");
+        assert_eq!(op_local, "");
+        assert_eq!(op_remota, "");
+
+        // E o gatilho novo vale para escritas novas.
+        let erro = db
+            .execute(
+                "UPDATE sync_devices SET exit_reason = 'clean' WHERE device_id = 'fx16-dev-note'",
+                [],
+            )
+            .expect_err("um dispositivo ativo não tem motivo de saída");
+        assert!(
+            erro.to_string().contains("Motivo de saida"),
+            "recusou pelo motivo errado: {erro}"
+        );
 
         std::fs::remove_file(path).ok();
     }

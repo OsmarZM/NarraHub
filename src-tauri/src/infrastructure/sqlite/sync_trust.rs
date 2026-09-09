@@ -293,51 +293,39 @@ pub fn introduzir_dispositivo(
     Ok(())
 }
 
-/// Muda o estado de um dispositivo do roster.
-///
-/// `retired` é decisão administrativa sobre um aparelho que era confiável;
-/// `revoked` diz que a chave caiu em mãos erradas. Nenhum dos dois apaga o que
-/// veio antes: os eventos continuam no log, e o que foi aplicado continua
-/// aplicado. Apagar automaticamente destruiria trabalho legítimo feito antes
-/// do comprometimento (ADR 0009 §5.1).
-pub fn mudar_estado(
-    connection: &Connection,
-    device_id: &str,
-    estado: &str,
-) -> DatabaseCommandResult<()> {
-    if !matches!(estado, "active" | "retired" | "revoked") {
-        return Err(DatabaseCommandError::validation(format!(
-            "Estado de dispositivo desconhecido: {estado}"
-        )));
-    }
-    let e_self: bool = connection
-        .query_row(
-            "SELECT is_self FROM sync_devices WHERE device_id = ?1",
-            [device_id],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?
-        .map(|valor| valor == 1)
-        .unwrap_or(false);
-
-    if e_self && estado != "active" {
-        return Err(DatabaseCommandError::validation(
-            "Este aparelho não pode aposentar nem revogar a si mesmo: ele deixaria de conseguir \
-             gravar as próprias alterações, e nenhuma sincronização consertaria isso depois.",
-        ));
-    }
-
-    connection
-        .execute(
-            "UPDATE sync_devices
-                SET state = ?2, state_changed_at = datetime('now')
-              WHERE device_id = ?1",
-            rusqlite::params![device_id, estado],
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
-}
+// ── por que não existe um `mudar_estado` aqui ──────────────────────────────
+//
+// Até a revisão 11.1 este módulo exportava:
+//
+//     pub fn mudar_estado(connection, device_id, estado: &str)
+//
+// Ela validava o vocabulário (`active` | `retired` | `revoked`) e protegia o
+// `self`. Não validava mais nada — e por isso era uma porta dos fundos para o
+// invariante mais caro da etapa 11:
+//
+//     mudar_estado(conn, android, "retired")
+//
+// Um aparelho aposentado sem prova nenhuma de sincronização final, sem sessão
+// autenticada, sem `exit_reason` — e a poda de tombstones passa a ignorá-lo,
+// porque `retired` significa "já foi". As cinco alterações que só existiam
+// naquele celular vão embora em silêncio, e a função que fez isso não parecia
+// perigosa: ela parecia um `UPDATE`.
+//
+// A correção não foi documentar o cuidado. Foi tirar a porta: as três
+// transições de saída do conjunto vivem em [`super::sync_gc`], cada uma com a
+// sua pré-condição e a sua sessão autenticada:
+//
+//     aposentar_clean(conn, sessao_de_quem_sai, high_water_mark)
+//     abandonar(conn, sessao_de_quem_decide, device_id) -> quantos se perdem
+//     revogar(conn, sessao_de_quem_decide, device_id)
+//
+// Nenhuma delas aceita `estado` como parâmetro. Não dá para chegar em
+// `retired` sem passar por uma prova ou por uma aceitação explícita de perda,
+// porque não existe função que escreva `retired` sem isso.
+//
+// Nenhum dos estados apaga o que veio antes: os eventos continuam no log e o
+// que foi aplicado continua aplicado. Apagar automaticamente destruiria
+// trabalho legítimo feito antes do comprometimento (ADR 0009 §5.1).
 
 #[cfg(test)]
 mod tests {
@@ -345,6 +333,7 @@ mod tests {
     use crate::domain::identity::DeviceIdentity;
     use crate::domain::sync::{AggregateRef, Operation};
     use crate::infrastructure::sqlite::sync_apply::envelope_de_origem;
+    use crate::infrastructure::sqlite::sync_gc::{abandonar, revogar, FalhaDeSaida};
     use crate::infrastructure::sqlite::sync_session::receber_eventos;
     use crate::infrastructure::sqlite::test_support::{
         origem_remota_confiavel, seed_universe, self_de_teste, TemporaryDatabase,
@@ -495,7 +484,13 @@ mod tests {
 
         {
             let connection = cenario.fixture.database.write().expect("escrita");
-            mudar_estado(&connection, cenario.remota.device_id(), "revoked").expect("revogar");
+            revogar(
+                &connection,
+                &SessaoAutenticada::deste_aparelho(&cenario.eu),
+                cenario.remota.device_id(),
+            )
+            .expect("consultar")
+            .expect("revogar");
         }
 
         let mut connection = cenario.fixture.database.write().expect("escrita");
@@ -516,7 +511,13 @@ mod tests {
 
         {
             let connection = cenario.fixture.database.write().expect("escrita");
-            mudar_estado(&connection, cenario.remota.device_id(), "retired").expect("aposentar");
+            abandonar(
+                &connection,
+                &SessaoAutenticada::deste_aparelho(&cenario.eu),
+                cenario.remota.device_id(),
+            )
+            .expect("consultar")
+            .expect("abandonar");
         }
 
         let mut connection = cenario.fixture.database.write().expect("escrita");
@@ -545,7 +546,13 @@ mod tests {
             .expect("contar");
         assert_eq!(existia, 1);
 
-        mudar_estado(&connection, cenario.remota.device_id(), "revoked").expect("revogar");
+        revogar(
+            &connection,
+            &SessaoAutenticada::deste_aparelho(&cenario.eu),
+            cenario.remota.device_id(),
+        )
+        .expect("consultar")
+        .expect("revogar");
 
         let continua: i64 = connection
             .query_row(
@@ -568,8 +575,16 @@ mod tests {
     fn o_proprio_aparelho_nao_pode_se_revogar() {
         let cenario = cenario();
         let connection = cenario.fixture.database.write().expect("escrita");
-        mudar_estado(&connection, cenario.eu.device_id(), "revoked")
-            .expect_err("o self não pode se revogar");
+        assert_eq!(
+            revogar(
+                &connection,
+                &SessaoAutenticada::deste_aparelho(&cenario.eu),
+                cenario.eu.device_id(),
+            )
+            .expect("consultar")
+            .err(),
+            Some(FalhaDeSaida::NaoPodeSairSozinho)
+        );
     }
 
     // ── ponto 3 da cadeia: a chave bate com o device_id ─────────────────────
@@ -734,7 +749,13 @@ mod tests {
     fn dispositivo_revogado_nao_apresenta_outros() {
         let cenario = cenario();
         let connection = cenario.fixture.database.write().expect("escrita");
-        mudar_estado(&connection, cenario.remota.device_id(), "revoked").expect("revogar");
+        revogar(
+            &connection,
+            &SessaoAutenticada::deste_aparelho(&cenario.eu),
+            cenario.remota.device_id(),
+        )
+        .expect("consultar")
+        .expect("revogar");
 
         let novo = DeviceIdentity::generate();
         let sessao = SessaoAutenticada::deste_aparelho(&cenario.remota);
