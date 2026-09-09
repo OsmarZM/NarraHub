@@ -1668,9 +1668,42 @@ mod tests {
             .expect("seção vazia")
             .to_string();
 
+        // O status é lido da **linha** que o declara, e não com um `contains`
+        // solto no texto da seção. Três coisas mudam com isso, e todas são
+        // sobre o gate continuar valendo enquanto o documento evolui:
+        //
+        //   - prosa que cite `Status: DONE` como exemplo deixa de decidir nada;
+        //   - duas linhas de status na mesma seção reprovam, em vez de a
+        //     primeira ganhar em silêncio;
+        //   - nenhuma linha de status reprova, em vez de cair no `else` e
+        //     passar por parecer PARCIAL.
+        //
+        // Repare que a linha carrega prosa depois do valor — no `TASKS.md` os
+        // status são escritos como `Status: PARCIAL — as duas portas...`. Por
+        // isso o que se compara é o **primeiro token**, e não a linha inteira:
+        // um `^Status:\s*(DONE|PARCIAL)\s*$` não casaria com nada aqui.
+        let declaracoes: Vec<&str> = secao
+            .lines()
+            .filter(|linha| linha.trim_start().starts_with("Status:"))
+            .collect();
+        assert_eq!(
+            declaracoes.len(),
+            1,
+            "a seção da NH-058 tem {} linhas de status, e o gate precisa de exatamente uma. \
+             Com duas, a primeira decidiria sozinha; com nenhuma, o gate deixaria de vigiar \
+             a tarefa sem que ninguém percebesse.",
+            declaracoes.len()
+        );
+        let status = declaracoes[0]
+            .trim_start()
+            .trim_start_matches("Status:")
+            .split_whitespace()
+            .next()
+            .unwrap_or_default();
+
         // A condição é sobre o STATUS, não sobre o log. A ordem importa, e
         // errá-la foi o defeito da primeira versão deste bloco.
-        if secao.contains("Status: DONE") {
+        if status == "DONE" {
             assert!(
                 propaga,
                 "a NH-058 está marcada como concluída, e a saída de um aparelho não colocou \
@@ -1679,10 +1712,11 @@ mod tests {
                  aqui e continua ativo lá. Ou implemente a propagação, ou volte para PARCIAL."
             );
         } else {
-            assert!(
-                secao.contains("Status: PARCIAL"),
-                "a NH-058 não está nem PARCIAL nem DONE. Este gate só sabe ler esses dois \
-                 estados, e um status que ele não entende é um status que ele não vigia."
+            assert_eq!(
+                status, "PARCIAL",
+                "a NH-058 está como \"{status}\", que não é nem PARCIAL nem DONE. Este gate \
+                 só sabe ler esses dois estados, e um status que ele não entende é um status \
+                 que ele não vigia."
             );
         }
     }
