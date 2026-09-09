@@ -221,6 +221,25 @@ pub enum FalhaDeSaida {
         conhecido: i64,
     },
     NaoEstaNoConjunto,
+    /// O aparelho **já saiu** do conjunto, e sair não se desfaz.
+    ///
+    /// Sem isto, as três portas viravam três formas de reescrever a saída de
+    /// quem já tinha saído:
+    ///
+    /// ```text
+    /// retired/'clean'  --abandonar-->  retired/'abandoned'
+    /// retired/'clean'  --revogar---->  revoked/''
+    /// ```
+    ///
+    /// Nenhum dos dois é recusado por incoerência de estado — os dois lados são
+    /// combinações estruturalmente válidas, e é justamente por isso que a
+    /// migration 18 não pega o caso. O que se perde é o **registro de como o
+    /// aparelho saiu**: uma aposentadoria que teve prova de sincronização final
+    /// vira, sem aviso, um abandono com perda aceita.
+    DispositivoJaSaiu {
+        estado: String,
+        motivo: String,
+    },
     /// Aposentar a si mesmo deixaria o aparelho sem conseguir gravar.
     NaoPodeSairSozinho,
     /// Quem pediu a mudança de estado não é membro ativo do conjunto.
@@ -252,6 +271,18 @@ impl std::fmt::Display for FalhaDeSaida {
                  tudo que produziu."
             ),
             FalhaDeSaida::NaoEstaNoConjunto => f.write_str("O dispositivo não está no conjunto."),
+            FalhaDeSaida::DispositivoJaSaiu { estado, motivo } => {
+                let como = match motivo.as_str() {
+                    "" => String::new(),
+                    outro => format!(" ({outro})"),
+                };
+                write!(
+                    f,
+                    "Este aparelho já saiu do conjunto: {estado}{como}. Uma saída não se \
+                     desfaz nem se reescreve — se ele voltar a ser usado, entra como \
+                     identidade nova."
+                )
+            }
             FalhaDeSaida::NaoPodeSairSozinho => f.write_str(
                 "Este aparelho não pode se aposentar: ele deixaria de conseguir gravar as \
                  próprias alterações.",
@@ -380,14 +411,21 @@ pub fn revogar(
         return Ok(Err(falha));
     }
 
-    connection
+    let linhas = connection
         .execute(
             "UPDATE sync_devices
                 SET state = 'revoked', exit_reason = '', state_changed_at = datetime('now')
-              WHERE device_id = ?1",
+              WHERE device_id = ?1
+                AND state = 'active'",
             [device_id],
         )
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+
+    if linhas != 1 {
+        return Err(DatabaseCommandError::validation(format!(
+            "Revogação recusada: {device_id} não estava ativo no conjunto."
+        )));
+    }
     Ok(Ok(()))
 }
 
@@ -403,39 +441,63 @@ fn e_membro_ativo(connection: &Connection, device_id: &str) -> DatabaseCommandRe
     Ok(estado.as_deref() == Some("active"))
 }
 
+/// O que toda porta de saída exige do **alvo**, antes de qualquer prova.
+///
+/// O estado entrou aqui na revisão 11.2. Sem ele, `sair` era uma operação que
+/// se podia repetir: um aparelho já aposentado com prova de sincronização final
+/// podia ser abandonado por cima, e o registro de que a saída tinha sido limpa
+/// desaparecia num `UPDATE` que ninguém consideraria perigoso.
 fn precondicoes(
     connection: &Connection,
     device_id: &str,
 ) -> DatabaseCommandResult<Result<(), FalhaDeSaida>> {
-    let registro: Option<i64> = connection
+    let registro: Option<(i64, String, String)> = connection
         .query_row(
-            "SELECT is_self FROM sync_devices WHERE device_id = ?1",
+            "SELECT is_self, state, exit_reason FROM sync_devices WHERE device_id = ?1",
             [device_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
 
     match registro {
         None => Ok(Err(FalhaDeSaida::NaoEstaNoConjunto)),
-        Some(1) => Ok(Err(FalhaDeSaida::NaoPodeSairSozinho)),
+        Some((1, _, _)) => Ok(Err(FalhaDeSaida::NaoPodeSairSozinho)),
+        Some((_, estado, motivo)) if estado != "active" => {
+            Ok(Err(FalhaDeSaida::DispositivoJaSaiu { estado, motivo }))
+        }
         Some(_) => Ok(Ok(())),
     }
 }
 
+/// Escreve a saída, e **só a partir de `active`**.
+///
+/// O `AND state = 'active'` repete o que [`precondicoes`] já checou, de
+/// propósito. As duas verificações protegem coisas diferentes: a de cima
+/// devolve um erro que a tela sabe explicar; esta impede que um caminho futuro
+/// — um comando novo, uma correção com pressa — chegue ao `UPDATE` sem passar
+/// por ela. Estado terminal por convenção não é estado terminal.
 fn marcar_saida(
     connection: &Connection,
     device_id: &str,
     motivo: &str,
 ) -> DatabaseCommandResult<()> {
-    connection
+    let linhas = connection
         .execute(
             "UPDATE sync_devices
                 SET state = 'retired', exit_reason = ?2, state_changed_at = datetime('now')
-              WHERE device_id = ?1",
+              WHERE device_id = ?1
+                AND state = 'active'",
             rusqlite::params![device_id, motivo],
         )
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+
+    if linhas != 1 {
+        return Err(DatabaseCommandError::validation(format!(
+            "Saída recusada: {device_id} não estava ativo no conjunto. Uma saída não se \
+             reescreve — o registro de como o aparelho saiu se perderia."
+        )));
+    }
     Ok(())
 }
 
@@ -1357,6 +1419,248 @@ mod tests {
                 .err(),
             Some(FalhaDeSaida::NaoPodeSairSozinho)
         );
+    }
+
+    /// **Sair não se desfaz.** Uma aposentadoria limpa não vira abandono.
+    ///
+    /// Este é o caso que a migration 18 **não** pega, e vale entender por quê:
+    /// as duas pontas são estados estruturalmente válidos.
+    ///
+    /// ```text
+    /// retired / 'clean'      ← legal
+    /// retired / 'abandoned'  ← legal
+    /// ```
+    ///
+    /// Nenhum gatilho de coerência tem o que reclamar. O que se perde está na
+    /// transição, não nos estados: `clean` foi conquistado com prova de
+    /// sincronização final, e `abandoned` é a declaração de que o escritor
+    /// aceitou perder o que só existia ali. Sobrescrever um pelo outro apaga o
+    /// registro de qual das duas coisas aconteceu — e é o registro que a tela
+    /// usa para dizer ao escritor se ele perdeu alguma coisa.
+    #[test]
+    fn aposentado_limpo_nao_pode_ser_abandonado() {
+        let cenario = cenario();
+        android_com_um_evento_confirmado(&cenario);
+        let connection = cenario.fixture.database.write().expect("escrita");
+        let sessao_eu =
+            crate::infrastructure::sync_transport::SessaoAutenticada::deste_aparelho(&cenario.eu);
+        let sessao_android =
+            crate::infrastructure::sync_transport::SessaoAutenticada::deste_aparelho(
+                &cenario.android,
+            );
+
+        aposentar_clean(&connection, &sessao_android, 1)
+            .expect("consultar")
+            .expect("a prova fecha");
+
+        assert_eq!(
+            abandonar(&connection, &sessao_eu, cenario.android.device_id())
+                .expect("consultar")
+                .err(),
+            Some(FalhaDeSaida::DispositivoJaSaiu {
+                estado: "retired".to_string(),
+                motivo: "clean".to_string(),
+            })
+        );
+        assert_eq!(
+            motivo_de_saida(&connection, cenario.android.device_id()).expect("ler"),
+            Some("clean".to_string()),
+            "o abandono reescreveu uma saída que tinha sido limpa"
+        );
+    }
+
+    /// E também não vira revogação.
+    ///
+    /// `revoked` fala de identidade, não de dados, e por isso limpa o motivo de
+    /// saída (migration 18). Aplicá-lo sobre um aparelho já aposentado apagaria
+    /// justamente o registro de como ele saiu, em nome de uma informação que
+    /// não muda nada: um aparelho fora do conjunto já não tem eventos aceitos.
+    #[test]
+    fn aposentado_nao_pode_ser_revogado() {
+        let cenario = cenario();
+        let connection = cenario.fixture.database.write().expect("escrita");
+        let sessao =
+            crate::infrastructure::sync_transport::SessaoAutenticada::deste_aparelho(&cenario.eu);
+
+        abandonar(&connection, &sessao, cenario.android.device_id())
+            .expect("consultar")
+            .expect("abandonar");
+
+        assert_eq!(
+            revogar(&connection, &sessao, cenario.android.device_id())
+                .expect("consultar")
+                .err(),
+            Some(FalhaDeSaida::DispositivoJaSaiu {
+                estado: "retired".to_string(),
+                motivo: "abandoned".to_string(),
+            })
+        );
+        assert_eq!(
+            motivo_de_saida(&connection, cenario.android.device_id()).expect("ler"),
+            Some("abandoned".to_string()),
+            "a revogação apagou o registro de como o aparelho saiu"
+        );
+    }
+
+    /// E um aparelho revogado não vira abandonado.
+    ///
+    /// Aqui a perda seria no outro sentido: `revoked` diz que a chave caiu em
+    /// mãos erradas, e o que veio dela merece revisão humana (ADR 0009 §5.1).
+    /// Reescrever para `retired`/`abandoned` transformaria um incidente de
+    /// segurança num aparelho que simplesmente foi trocado.
+    #[test]
+    fn revogado_nao_pode_ser_abandonado() {
+        let cenario = cenario();
+        let connection = cenario.fixture.database.write().expect("escrita");
+        let sessao =
+            crate::infrastructure::sync_transport::SessaoAutenticada::deste_aparelho(&cenario.eu);
+
+        revogar(&connection, &sessao, cenario.android.device_id())
+            .expect("consultar")
+            .expect("revogar");
+
+        assert_eq!(
+            abandonar(&connection, &sessao, cenario.android.device_id())
+                .expect("consultar")
+                .err(),
+            Some(FalhaDeSaida::DispositivoJaSaiu {
+                estado: "revoked".to_string(),
+                motivo: String::new(),
+            })
+        );
+
+        let estado: String = connection
+            .query_row(
+                "SELECT state FROM sync_devices WHERE device_id = ?1",
+                [cenario.android.device_id()],
+                |row| row.get(0),
+            )
+            .expect("ler estado");
+        assert_eq!(
+            estado, "revoked",
+            "o abandono rebaixou um incidente de segurança a troca de aparelho"
+        );
+    }
+
+    /// **A defesa em profundidade, provada sem passar pela porta da frente.**
+    ///
+    /// Os três gates acima entram por `abandonar`/`revogar` e param na
+    /// pré-condição. Este chama `marcar_saida` direto — que é o que um comando
+    /// novo, ou uma correção com pressa, faria sem querer.
+    ///
+    /// Se o único guarda fosse a pré-condição, o estado terminal seria terminal
+    /// **por convenção**: bastaria alguém alcançar o `UPDATE` por outro caminho.
+    /// O `AND state = 'active'` no próprio SQL é o que torna a convenção uma
+    /// regra.
+    #[test]
+    fn saida_nao_pode_ser_reescrita_nem_por_dentro() {
+        let cenario = cenario();
+        android_com_um_evento_confirmado(&cenario);
+        let connection = cenario.fixture.database.write().expect("escrita");
+        let sessao_android =
+            crate::infrastructure::sync_transport::SessaoAutenticada::deste_aparelho(
+                &cenario.android,
+            );
+
+        aposentar_clean(&connection, &sessao_android, 1)
+            .expect("consultar")
+            .expect("a prova fecha");
+
+        let erro = marcar_saida(&connection, cenario.android.device_id(), "abandoned")
+            .expect_err("o UPDATE precisa se defender sozinho");
+        assert!(
+            erro.to_string().contains("não estava ativo"),
+            "recusou pelo motivo errado: {erro}"
+        );
+        assert_eq!(
+            motivo_de_saida(&connection, cenario.android.device_id()).expect("ler"),
+            Some("clean".to_string())
+        );
+    }
+
+    /// **A NH-058 só é declarada fechada quando a saída realmente propagar.**
+    ///
+    /// A primeira versão deste gate procurava `append_local_event` por regex
+    /// dentro de `sync_gc.rs`. Era evidência indireta, e das ruins: uma chamada
+    /// daquele nome feita para qualquer outra coisa marcaria a tarefa como
+    /// pronta, e a emissão correta encapsulada noutro módulo a marcaria como
+    /// ausente. Presença de identificador não é comportamento — que é
+    /// exatamente o vício que a revisão 11.1 encontrou nos gates da etapa 11.
+    ///
+    /// Agora a pergunta é feita ao **log**, que é onde a propagação existiria:
+    ///
+    /// ```text
+    /// abandonar(Desktop)  →  sync_events ganhou alguma linha?
+    ///         não  →  a saída é local; a NH-058 tem que constar como PARCIAL
+    ///         sim  →  passou a propagar; a documentação tem que dizer isso
+    /// ```
+    ///
+    /// O vínculo vale nos dois sentidos. Não dá para fechar a tarefa sem
+    /// escrever o código, nem para escrever o código sem fechar a tarefa.
+    ///
+    /// # O que este gate ainda NÃO prova
+    ///
+    /// Que a saída *chega* aos outros peers. Isso exige as propriedades que só
+    /// podem ser escritas quando o evento existir, e que estão registradas como
+    /// critério de aceitação da NH-058 no `TASKS.md`:
+    ///
+    /// ```text
+    /// B recebe o evento          →  Android vira retired no banco de B
+    /// C recebe depois, por B     →  e no banco de C também
+    /// evento repetido            →  idempotente
+    /// duas decisões concorrentes →  desempate determinístico
+    /// ```
+    ///
+    /// Este gate é a trava que impede alguém de declarar a tarefa pronta antes
+    /// disso. Ele não é a prova da tarefa.
+    #[test]
+    fn a_nh_058_so_e_declarada_fechada_quando_a_saida_propagar() {
+        let cenario = cenario();
+        let connection = cenario.fixture.database.write().expect("escrita");
+        let sessao =
+            crate::infrastructure::sync_transport::SessaoAutenticada::deste_aparelho(&cenario.eu);
+
+        let conta_eventos = || -> i64 {
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_events", [], |row| row.get(0))
+                .expect("contar eventos")
+        };
+
+        let antes = conta_eventos();
+        abandonar(&connection, &sessao, cenario.desktop.device_id())
+            .expect("consultar")
+            .expect("abandonar");
+        let propaga = conta_eventos() > antes;
+
+        let tarefas = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../TASKS.md"),
+        )
+        .expect("ler o TASKS.md");
+        let secao = tarefas
+            .split("### NH-058")
+            .nth(1)
+            .expect("não achei a seção da NH-058 no TASKS.md")
+            .split("\n### ")
+            .next()
+            .expect("seção vazia")
+            .to_string();
+
+        if propaga {
+            assert!(
+                secao.contains("Status: DONE"),
+                "a saída passou a emitir evento e a NH-058 continua marcada como parcial. \
+                 O código chegou antes da documentação — corrija o TASKS.md, e escreva as \
+                 propriedades de aplicação, idempotência e concorrência que fecham a tarefa."
+            );
+        } else {
+            assert!(
+                secao.contains("Status: PARCIAL"),
+                "a NH-058 está marcada como concluída, e a saída de um aparelho não colocou \
+                 nada no log: nenhum evento assinado leva a mudança de estado para os outros \
+                 peers. Num conjunto simétrico isso faz o roster divergir — o aparelho sai \
+                 aqui e continua ativo lá. Ou implemente a propagação, ou mantenha PARCIAL."
+            );
+        }
     }
 
     /// **Gate estrutural: não existe outra porta para `retired`.**

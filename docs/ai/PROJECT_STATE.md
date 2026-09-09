@@ -197,6 +197,20 @@ aberto ao lado.**
 A lição que vale para as etapas 12–14: **um gate só conta depois de ser visto reprovando**, e
 uma mutação isolada é a única forma de ver isso.
 
+## E o que a revisão 11.2 mudou
+
+A 11.1 foi revisada pelo autor, que achou mais duas coisas — as duas da mesma família de novo:
+
+1. **Estado de saída não era terminal.** A pré-condição só olhava `is_self`, e o `UPDATE` não
+   tinha `AND state = 'active'`. `retired`/`clean` podia virar `retired`/`abandoned` ou
+   `revoked`, apagando o registro de que a saída tinha tido prova. Nenhum gatilho pegava: as
+   duas pontas são estados válidos, e o defeito estava na transição.
+2. **O gate da NH-058 procurava `append_local_event` por regex.** Presença de identificador não
+   é comportamento — e o vício reapareceu justamente no gate escrito para denunciá-lo. Agora
+   ele abandona um aparelho de verdade e observa se o log cresceu.
+
+O padrão que se repete nas três revisões: **o gate existia, passava, e provava outra coisa.**
+
 ## Dívida arquitetural conhecida
 
 - A tela de recuperação de schema (`NH-015`) **nunca foi vista rodando** — só testada. Para

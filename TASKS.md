@@ -1289,6 +1289,8 @@ evento`).
 | marca declarada aceita abaixo do conhecido | `marca_declarada_nao_pode_ser_menor_que_o_ja_conhecido` |
 | confirmação da própria origem passa a contar | `o_proprio_aparelho_nao_confirma_a_propria_saida` |
 | `mudar_estado(..., "retired")` de volta | `so_o_modulo_de_saida_escreve_o_estado_de_saida` |
+| pré-condição volta a ignorar o estado do alvo | `aposentado_limpo_nao_pode_ser_abandonado` + 2 |
+| `AND state = 'active'` sai do `UPDATE` | `saida_nao_pode_ser_reescrita_nem_por_dentro` |
 | tombstone fora da causalidade | `edicao_concorrente_...` + `nao_trava_o_cursor` |
 
 
@@ -1683,10 +1685,30 @@ Fase:   4  (o que falta depende da NH-053)
 > aplicação e de conflito próprias (dois peers se abandonando ao mesmo tempo é um caso real).
 > Isso é trabalho da **NH-053**, e antecipá-lo aqui só embaralharia as duas tarefas.
 >
-> O gate `a NH-058 só é declarada fechada quando a saída propagar por evento`
-> (`tests/docs-consistency.test.mjs`) amarra as duas pontas: enquanto `sync_gc.rs` não emitir
-> evento, o status tem que ser `PARCIAL` e nenhum documento pode chamar a tarefa de fechada;
-> quando alguém implementar a emissão, o teste reprova até a documentação ser corrigida.
+> O gate `a_nh_058_so_e_declarada_fechada_quando_a_saida_propagar` (em `sync_gc.rs`) amarra as
+> duas pontas: ele **abandona um aparelho de verdade e olha se o log cresceu**. Enquanto não
+> crescer, o status tem que ser `PARCIAL`; quando crescer, o teste reprova até a documentação
+> ser corrigida.
+>
+> A primeira versão desse gate procurava `append_local_event` por regex dentro do módulo. Foi
+> trocada na revisão 11.2 porque presença de identificador não é comportamento — uma chamada
+> daquele nome feita para outra coisa marcaria a tarefa como pronta, e a emissão correta
+> encapsulada noutro módulo a marcaria como ausente. É o mesmo vício que a 11.1 encontrou nos
+> gates da etapa 11, e ele reapareceu no gate escrito *para* denunciá-lo.
+>
+> **Critério de aceitação — a tarefa só fecha com estas propriedades provadas:**
+>
+> ```text
+> A aposenta o Android            →  evento de ciclo de vida entra no log de A
+> B recebe o evento               →  Android vira retired no banco de B
+> C recebe depois, por B          →  e no banco de C também (store-and-forward)
+> o mesmo evento chega duas vezes →  idempotente
+> evento antigo depois de revoked →  regra definida, não "o último ganha"
+> dois peers decidem ao mesmo tempo → desempate determinístico
+> ```
+>
+> O gate atual é a trava que impede declarar a tarefa pronta antes disso. Ele não é a prova da
+> tarefa.
 
 Decisão do autor, preferida ao `cutoff_seq` por ser mais simples de explicar, testar e manter.
 
@@ -1717,6 +1739,19 @@ eufemismo:
 | --- | --- |
 | **Aposentar** | o próprio aparelho, autenticado, declara sua marca; outro membro ativo confirma |
 | **Abandonar** | um membro ativo aceita que o que existia só naquele aparelho **foi perdido** |
+
+As três portas — aposentar, abandonar e revogar — só partem de `active`. **Sair não se desfaz
+nem se reescreve.** A revisão 11.2 fechou isso: até ela, `retired`/`clean` podia virar
+`retired`/`abandoned` ou `revoked`, porque a pré-condição só olhava `is_self` e o `UPDATE` não
+tinha `AND state = 'active'`. Nenhum gatilho de coerência pegava o caso — as duas pontas são
+estados válidos, e o que se perdia estava na transição: o registro de que aquela saída tinha
+tido prova de sincronização final.
+
+Uma consequência aceita: um aparelho aposentado que **depois** se descobre comprometido não
+pode ser revogado. Na prática ele já não tem eventos aceitos (o roster recusa origem não
+`active`), então a revogação só mudaria o rótulo — ao custo de apagar como ele saiu. Se um dia
+a sinalização de eventos já aplicados da §5.1 do ADR for implementada, isto merece revisão:
+seria o único caso em que a distinção volta a ter efeito prático.
 
 Não precisa de estado novo no banco — é semântica da ação. Mas precisa aparecer com clareza,
 porque é decisão de perda potencial de dados, e o [ADR 0001](docs/ADR/0001-local-ownership.md)
