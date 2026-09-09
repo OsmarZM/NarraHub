@@ -1,7 +1,7 @@
 //! NarraHub — Database Migrations
 //! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 18;
+pub const LATEST_SCHEMA_VERSION: i64 = 19;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -23,6 +23,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         16 => Some(MIGRATION_V16),
         17 => Some(MIGRATION_V17),
         18 => Some(MIGRATION_V18),
+        19 => Some(MIGRATION_V19),
         _ => None,
     }
 }
@@ -1246,6 +1247,46 @@ BEGIN
 END;
 "#;
 
+pub const MIGRATION_V19: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v19
+-- Sync V2 - etapa 12: o baseline nao se re-semeia por nenhum caminho
+-- ============================================
+--
+-- A v16 declarou o baseline imutavel e escreveu um gatilho para isso:
+--
+--   CREATE TRIGGER trg_sync_cursor_baseline_imutavel
+--   BEFORE UPDATE OF baseline_seq ON sync_cursors
+--
+-- So UPDATE. A linha podia ser APAGADA e inserida de novo com outro baseline,
+-- e o resultado e exatamente o que o comentario daquele gatilho chama pelo
+-- nome: snapshot por cima de cursor existente, a regressao ao V1 da secao 14
+-- do ADR 0009.
+--
+--   DELETE FROM sync_cursors WHERE origin_device_id = 'android';
+--   INSERT INTO sync_cursors (..., baseline_seq, ...) VALUES (..., 4000, ...);
+--                                                              ^^^^
+--                              estado inteiro sobrescrevendo estado inteiro
+--
+-- O estrago nao e o numero errado no cursor. E que o baseline declara "o
+-- conteudo ate aqui ja chegou por snapshot, nao cobre os eventos" -- entao
+-- re-semear em 4000 faz o aparelho parar de pedir tudo entre o baseline antigo
+-- e o novo. Os eventos daquele intervalo existem, sao legitimos, e nunca mais
+-- serao buscados. Perda silenciosa, sem nenhuma linha registrando a falta.
+--
+-- E a mesma forma do `mudar_estado` que a revisao 11.2 removeu: a regra existia
+-- e havia um caminho ao lado dela.
+--
+-- Cursor nao se apaga. Um dispositivo que sai do conjunto tem `state`, e o
+-- cursor dele continua sendo o registro de ate onde a historia daquela origem
+-- chegou -- historia que os eventos no log ainda referenciam.
+CREATE TRIGGER trg_sync_cursor_nao_se_apaga
+BEFORE DELETE ON sync_cursors
+BEGIN
+    SELECT RAISE(ABORT, 'Cursor nao se apaga: apagar e reinserir re-semeia o baseline, e o intervalo pulado nunca mais e pedido.');
+END;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1258,6 +1299,7 @@ mod tests {
     const NATIVE_SCHEMA_V16_FIXTURE: &str = include_str!("../../fixtures/schema16_native.sql");
     const NATIVE_SCHEMA_V17_FIXTURE: &str = include_str!("../../fixtures/schema17_native.sql");
     const NATIVE_SCHEMA_V18_FIXTURE: &str = include_str!("../../fixtures/schema18_native.sql");
+    const NATIVE_SCHEMA_V19_FIXTURE: &str = include_str!("../../fixtures/schema19_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -1380,8 +1422,8 @@ mod tests {
                 .expect("ligar foreign keys");
             apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
             connection
-                .execute_batch(NATIVE_SCHEMA_V18_FIXTURE)
-                .expect("carregar a fixture nativa de schema 18");
+                .execute_batch(NATIVE_SCHEMA_V19_FIXTURE)
+                .expect("carregar a fixture nativa de schema 19");
         }
         let db = Connection::open(&path).expect("reabrir");
         db.execute_batch("PRAGMA foreign_keys = ON;")
@@ -2065,6 +2107,84 @@ mod tests {
         assert!(
             erro.to_string().contains("Motivo de saida"),
             "recusou pelo motivo errado: {erro}"
+        );
+
+        std::fs::remove_file(path).ok();
+    }
+
+    /// Um banco **nascido no schema 18** chega ao 19, e o cursor deixa de poder
+    /// ser apagado.
+    ///
+    /// A v16 declarou o baseline imutável com um gatilho de `UPDATE`, e deixou
+    /// a linha apagável. `DELETE` seguido de `INSERT` re-semeava outro
+    /// baseline, e o intervalo pulado nunca mais era pedido — snapshot por
+    /// cima de cursor existente, que a seção 14 do ADR chama de regressão ao
+    /// V1.
+    ///
+    /// O teste confere as duas metades: o que já estava no disco sobrevive, e a
+    /// porta nova está fechada.
+    #[test]
+    fn banco_nascido_no_18_migra_para_o_19_e_perde_a_porta_de_apagar_cursor() {
+        let path = std::env::temp_dir().join(format!("narrahub-18-para-19-{}.db", Uuid::new_v4()));
+        {
+            let connection = Connection::open(&path).expect("criar banco v18");
+            connection
+                .execute_batch("PRAGMA foreign_keys = ON;")
+                .expect("ligar foreign keys");
+            apply_migrations(&connection, 1, 18);
+            connection
+                .execute_batch(NATIVE_SCHEMA_V18_FIXTURE)
+                .expect("carregar a fixture nativa de schema 18");
+            apply_migrations(&connection, 19, 19);
+        }
+
+        let db = Connection::open(&path).expect("reabrir");
+        db.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("ligar foreign keys");
+
+        let violacoes: i64 = db
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("foreign_key_check");
+        assert_eq!(violacoes, 0);
+
+        // Os cursores que vieram do 18 continuam lá, com o baseline intacto.
+        let (baseline, cursor): (i64, i64) = db
+            .query_row(
+                "SELECT baseline_seq, last_seq_applied FROM sync_cursors
+                  WHERE origin_device_id = 'fx16-dev-longe'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("ler o cursor semeado por snapshot");
+        assert!(
+            baseline > 0 && baseline == cursor,
+            "a migration mexeu no cursor semeado por snapshot: baseline {baseline}, cursor {cursor}"
+        );
+
+        // E a porta dos fundos fechou.
+        let erro = db
+            .execute(
+                "DELETE FROM sync_cursors WHERE origin_device_id = 'fx16-dev-longe'",
+                [],
+            )
+            .expect_err("cursor não se apaga a partir do schema 19");
+        assert!(
+            erro.to_string().contains("Cursor nao se apaga"),
+            "recusou pelo motivo errado: {erro}"
+        );
+
+        let continua: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sync_cursors WHERE origin_device_id = 'fx16-dev-longe'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert_eq!(
+            continua, 1,
+            "a tentativa recusada apagou a linha assim mesmo"
         );
 
         std::fs::remove_file(path).ok();

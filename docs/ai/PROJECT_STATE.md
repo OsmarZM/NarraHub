@@ -3,7 +3,7 @@
 > Fonte da verdade sobre "onde estamos". Qualquer agente lê este arquivo antes de agir.
 > Atualize-o ao fechar uma tarefa que mude versão, fase ou dívida conhecida.
 
-Atualizado em: 2026-09-08
+Atualizado em: 2026-09-09
 
 ## Versão
 
@@ -72,7 +72,7 @@ O gate `o andaime superado não volta para o repositório` reprova se `angular-s
 ## Fase ativa
 
 ```text
-FASE 4 — Sync V2   (etapas 1 a 11 de 14 concluídas)
+FASE 4 — Sync V2   (etapas 1 a 12 de 14 concluídas)
 ```
 
 As fases **3 e 3.5 fecharam em 2026-09-01**, com gates executáveis:
@@ -108,6 +108,8 @@ diretório não o pegaria; o gate contra **colocação** pega.
 > **Etapa 11:** tombstones causais, coleta só com prova, e as duas saídas do conjunto. **Schema 17.**
 > **Revisão 11.1:** a prova de saída limpa passa a vir do aparelho que sai; `mudar_estado`
 > deixa de existir; a divergência registra a operação de cada lado. **Schema 18.**
+> **Etapa 12:** bootstrap por snapshot atômico — captura numa transação de leitura só, e
+> semeadura construtiva que recusa qualquer receptor não virgem. **Schema 19.**
 >
 > Reconciliação fina de capítulo por bloco depende da **NH-045** e não faz parte das 14
 > etapas. O Sync V2 pode fechar com conflito seguro de capítulo inteiro.
@@ -138,7 +140,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | `commands/` legado | **Removido** na Fase 3 |
 | Fronteira nativa do frontend | **Formalizada** — ADR 0008 |
 | Sync V1 sem criptografia | **Foco atual** — Fase 4 |
-| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1–11 concluídas (mais a revisão 11.1); falta bootstrap, attachments, rede real, o gate de saída **NH-053** e a propagação da saída (**NH-058**, parcial) |
+| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1–12 concluídas; falta attachments, rede real, o gate de saída **NH-053** e a propagação da saída (**NH-058**, parcial) |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
 | Ciclo de atualização empacotado | **Concluído.** Roteiro, checklist de release e três execuções reais |
@@ -154,7 +156,7 @@ migration — não pegar a versão mais recente:
 | 0.8.0 | 14 |
 | 0.9.0 e 0.9.1 | 15 |
 | 0.9.2 (publicada) | 15 |
-| `main` hoje | **18** — semântica da divergência e coerência de estado de saída |
+| `main` hoje | **19** — o cursor não se apaga, e o baseline não se re-semeia |
 
 Consequência prática, e ela **mudou** com a migration 16: a próxima versão publicada será a
 primeira desde a 0.9.2 a carregar migration de verdade. O par `0.9.2 → próxima` deixa de ser
@@ -210,6 +212,22 @@ A 11.1 foi revisada pelo autor, que achou mais duas coisas — as duas da mesma 
    ele abandona um aparelho de verdade e observa se o log cresceu.
 
 O padrão que se repete nas três revisões: **o gate existia, passava, e provava outra coisa.**
+
+## O que a etapa 12 encontrou fora dela
+
+Dois defeitos que já estavam em `main`, achados pela revisão do autor enquanto o contrato do
+bootstrap era fechado:
+
+1. **`vetor_local()` inflava o progresso.** Para origem sem cursor, ela caía em `MAX(seq)` de
+   `sync_events` sem filtro. Um evento estrangeiro chegando fora de ordem — guardado, não
+   aplicado — fazia o aparelho anunciar progresso que não tinha. O peer parava de reenviar a
+   lacuna e o que faltava não chegava nunca mais. **Roda em toda sessão da etapa 6**, não só no
+   bootstrap.
+2. **O baseline se re-semeava por `DELETE` + `INSERT`.** O gatilho da v16 só cobria `UPDATE`.
+
+E um terceiro, este só possível a partir da etapa 12: o próximo `seq` local sai de
+`sync_events`, não do cursor. Um receptor que reusasse uma identidade já conhecida pelo
+conjunto começaria a escrever em `seq = 1` sobre coordenadas que já existem.
 
 ## Dívida arquitetural conhecida
 

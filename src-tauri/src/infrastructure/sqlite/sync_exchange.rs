@@ -73,8 +73,48 @@ pub fn vetor_local(connection: &Connection) -> DatabaseCommandResult<VetorDeSequ
     // Uma origem pode ter eventos no log sem ter cursor — é o caso do próprio
     // aparelho antes da primeira sessão. Sem isto, o primeiro encontro não
     // ofereceria nada do que foi escrito aqui.
+    //
+    // # Por que só o `self`, e só o aplicado
+    //
+    // A primeira versão desta consulta era `MAX(seq) GROUP BY device_id`, sem
+    // filtro nenhum. Ela acertava o caso que motivou o ramo e errava o vizinho:
+    //
+    // ```text
+    // seq 2 do Desktop chega        guardado em sync_events
+    // seq 1 nunca chegou            o cursor do Desktop não avança
+    // não existe linha de cursor    o ramo de cima não cobre esta origem
+    //          ↓
+    // MAX(seq) = 2  →  o vetor anuncia "tenho tudo do Desktop até 2"
+    // ```
+    //
+    // O peer que tem o 1 e o 2 lê esse anúncio e para de mandar os dois. O
+    // capítulo do seq 1 deixa de existir para o conjunto inteiro, e nada
+    // registra a falta — é a mesma família da lacuna que o cursor contíguo da
+    // etapa 5 foi feito para impedir, entrando por outra porta.
+    //
+    // Evento guardado **não** é evento aplicado. A distinção já estava no
+    // schema (`sync_applied_events`) e é exatamente o que a etapa 5 chama de
+    // pendente; faltava o vetor respeitá-la.
+    //
+    // Restam duas condições, e as duas são necessárias:
+    //
+    //   is_self = 1   uma origem estrangeira sem cursor não teve progresso
+    //                 nenhum verificado aqui — se tivesse, haveria cursor
+    //   aplicado      mesmo para o self, só conta o que foi materializado
+    //
+    // O `self` sozinho quase bastaria, porque evento local nasce aplicado na
+    // mesma transação (etapa 3). O `JOIN` está aqui porque "quase" não é
+    // invariante: se algum dia um caminho local guardar sem aplicar, este ramo
+    // continua contando a verdade em vez de descobrir o problema tarde.
     let mut origens = connection
-        .prepare("SELECT device_id, MAX(seq) FROM sync_events GROUP BY device_id")
+        .prepare(
+            "SELECT e.device_id, MAX(e.seq)
+               FROM sync_events e
+               JOIN sync_applied_events a ON a.event_id = e.event_id
+               JOIN sync_devices d ON d.device_id = e.device_id
+              WHERE d.is_self = 1
+              GROUP BY e.device_id",
+        )
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     let linhas = origens
         .query_map([], |row| {
@@ -524,6 +564,158 @@ mod tests {
         assert!(
             !android.tem_capitulo("cap-3"),
             "o Notebook repassou um evento que ele mesmo não conseguiu aplicar"
+        );
+    }
+
+    // ── o que o vetor pode e o que não pode anunciar ────────────────────────
+
+    /// A própria origem, sem cursor, conta pelos eventos aplicados.
+    ///
+    /// É o caso do aparelho antes da primeira sessão: os eventos locais nascem
+    /// já materializados, e sem este ramo o primeiro encontro não ofereceria
+    /// nada do que foi escrito aqui.
+    ///
+    /// # Como o estado é construído aqui
+    ///
+    /// A primeira versão deste teste escrevia pelo caminho normal e depois
+    /// apagava o cursor para chegar ao estado. A migration 19 proibiu apagar
+    /// cursor — e o `DELETE` estava com `.ok()`, então virou uma linha que não
+    /// fazia nada. O teste continuou verde **lendo o cursor que sobrou**, ou
+    /// seja, exercitando o ramo errado.
+    ///
+    /// Agora o log é montado direto: evento do próprio aparelho, marcado como
+    /// aplicado, sem linha de cursor. É exatamente o estado que este ramo
+    /// existe para cobrir, e chegar nele por SQL é honesto — o que não é
+    /// honesto é chegar a lugar nenhum e dizer que chegou.
+    #[test]
+    fn a_propria_origem_sem_cursor_conta_pelo_que_aplicou() {
+        let aparelho = Aparelho::novo("self");
+        let connection = aparelho.banco.database.write().expect("escrita");
+        for seq in 1..=3 {
+            connection
+                .execute(
+                    "INSERT INTO sync_events
+                        (event_id, device_id, seq, universe_id, aggregate_type, aggregate_id,
+                         operation, payload, base_rev, new_rev, signature)
+                     VALUES (?1, ?2, ?3, 'u1', 'chapter', ?4, 'upsert', '{}', '', ?5, 'sig')",
+                    rusqlite::params![
+                        format!("ev-{seq}"),
+                        aparelho.identidade.device_id(),
+                        seq,
+                        format!("cap-{seq}"),
+                        format!("rev-{seq}"),
+                    ],
+                )
+                .expect("evento local no log");
+            connection
+                .execute(
+                    "INSERT INTO sync_applied_events (event_id) VALUES (?1)",
+                    [format!("ev-{seq}")],
+                )
+                .expect("marcado como aplicado");
+        }
+        let sem_cursor: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sync_cursors", [], |row| row.get(0))
+            .expect("contar");
+        assert_eq!(
+            sem_cursor, 0,
+            "o cenário deste teste é justamente não ter cursor"
+        );
+
+        let vetor = vetor_local(&connection).expect("vetor");
+        assert_eq!(
+            vetor.get(aparelho.identidade.device_id()).copied(),
+            Some(3),
+            "o aparelho não ofereceria o que escreveu antes da primeira sessão"
+        );
+    }
+
+    /// **Origem estrangeira com evento PENDENTE não vira progresso.**
+    ///
+    /// O caso: o seq 2 de um peer chega, o seq 1 nunca chegou. O envelope fica
+    /// guardado no log — é assim que a etapa 5 define pendente — e o cursor
+    /// daquela origem não avança, porque avançar puraria o 1 para sempre.
+    ///
+    /// ```text
+    /// sync_events        seq 2 do Desktop   guardado, não aplicado
+    /// sync_applied_events                   vazio
+    /// sync_cursors                          nenhuma linha
+    /// ```
+    ///
+    /// Anunciar 2 aqui é dizer ao conjunto "já tenho tudo do Desktop até 2".
+    /// O peer que tem o 1 e o 2 para de mandar os dois, e o capítulo do seq 1
+    /// nunca chega em lugar nenhum. Perda silenciosa por excesso de confiança
+    /// num `MAX`.
+    ///
+    /// No bootstrap seria pior ainda: `baseline = 2` faria o receptor nascer
+    /// acreditando que o snapshot já cobre um conteúdo que ninguém aplicou.
+    #[test]
+    fn origem_estrangeira_com_evento_pendente_nao_entra_no_vetor() {
+        let eu = Aparelho::novo("eu");
+        let outro = Aparelho::novo("outro");
+
+        // Dois eventos na origem estrangeira; só o segundo é entregue.
+        let _primeiro = outro.escrever("cap-1", "Primeiro");
+        let segundo = outro.escrever("cap-2", "Segundo");
+        apresentar_origens(&outro, &eu);
+
+        {
+            let mut connection = eu.banco.database.write().expect("escrita");
+            receber_eventos(&mut connection, &[segundo]).expect("receber o segundo");
+        }
+
+        let connection = eu.banco.database.write().expect("escrita");
+        let guardado: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sync_events WHERE device_id = ?1",
+                [outro.identidade.device_id()],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert_eq!(guardado, 1, "o envelope pendente precisa estar no log");
+
+        let vetor = vetor_local(&connection).expect("vetor");
+        assert_eq!(
+            vetor
+                .get(outro.identidade.device_id())
+                .copied()
+                .unwrap_or(0),
+            0,
+            "o vetor anunciou progresso de uma origem cujo evento está pendente. \
+             O peer deixaria de reenviar o seq 1, e ele não chegaria nunca mais."
+        );
+    }
+
+    /// E com cursor existente, o pendente acima dele também não conta.
+    ///
+    /// Cursor em 5, seq 7 guardado, seq 6 faltando: o vetor continua 5. Aqui o
+    /// ramo dos cursores já protege — este gate existe para que a correção do
+    /// caso anterior não seja escrita de um jeito que quebre este.
+    #[test]
+    fn pendente_acima_do_cursor_nao_adianta_o_vetor() {
+        let eu = Aparelho::novo("eu");
+        let outro = Aparelho::novo("outro");
+        apresentar_origens(&outro, &eu);
+
+        let mut entregues = Vec::new();
+        for i in 1..=5 {
+            entregues.push(outro.escrever(&format!("cap-{i}"), "Entregue"));
+        }
+        let _sexto = outro.escrever("cap-6", "Nunca entregue");
+        let setimo = outro.escrever("cap-7", "Fora de ordem");
+
+        {
+            let mut connection = eu.banco.database.write().expect("escrita");
+            receber_eventos(&mut connection, &entregues).expect("receber 1..5");
+            receber_eventos(&mut connection, &[setimo]).expect("receber o 7");
+        }
+
+        let connection = eu.banco.database.write().expect("escrita");
+        let vetor = vetor_local(&connection).expect("vetor");
+        assert_eq!(
+            vetor.get(outro.identidade.device_id()).copied(),
+            Some(5),
+            "o vetor passou do cursor por causa de um evento pendente"
         );
     }
 }
