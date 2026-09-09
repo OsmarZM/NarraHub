@@ -259,13 +259,30 @@ fn tabelas_copiadas() -> Vec<&'static str> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum FalhaDeCaptura {
-    /// O acervo tem decisão pendente do escritor.
+    /// O acervo tem decisão pendente do escritor, no V2.
     DivergenciaAberta { quantas: i64 },
+    /// O acervo tem decisão pendente do escritor, no **V1**.
+    ///
+    /// Variante separada de propósito. A mensagem da divergência fala do
+    /// payload que vive em `sync_events`, e isso descreve o V2: lá o conflito
+    /// guarda duas revisões do agregado inteiro. O V1 é outra coisa — registra
+    /// conflito **por campo**, com `local_value` e `remote_value` na própria
+    /// linha. Dizer a mesma frase para os dois mandaria o escritor procurar a
+    /// versão perdida no lugar errado.
+    ConflitoV1Aberto { quantas: i64 },
 }
 
 impl std::fmt::Display for FalhaDeCaptura {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            FalhaDeCaptura::ConflitoV1Aberto { quantas } => write!(
+                f,
+                "Este acervo tem {quantas} conflito(s) do sistema antigo esperando decisão. O \
+                 bootstrap não pode acontecer agora: a versão que veio do outro aparelho está \
+                 guardada só naquela linha de conflito, e não no conteúdo. Ela não viaja no \
+                 pareamento, então o aparelho novo nasceria sem ela — sem ninguém ter \
+                 escolhido. Resolva os conflitos e pareie de novo."
+            ),
             FalhaDeCaptura::DivergenciaAberta { quantas } => write!(
                 f,
                 "Este acervo tem {quantas} divergência(s) esperando decisão. O bootstrap não \
@@ -677,6 +694,35 @@ pub fn capturar(
     if divergencias > 0 {
         return Ok(Err(FalhaDeCaptura::DivergenciaAberta {
             quantas: divergencias,
+        }));
+    }
+
+    // O V1 ainda está em produção, e `sync.rs` ainda escreve `sync_conflicts`.
+    //
+    // Aqui havia uma assimetria: `sync_conflicts` é `BloqueiaBootstrap` no
+    // catálogo, o que impede o **receptor** de ser semeado com conflito V1
+    // pendente — e nada impedia o **doador** de capturar com um. O efeito é o
+    // mesmo da divergência V2, por um caminho que ninguém estava olhando:
+    //
+    // ```text
+    // sync_conflicts   campo, local_value, remote_value
+    //                                      └─ a versão do outro aparelho,
+    //                                         que só existe nesta linha
+    // ```
+    //
+    // O conteúdo materializado tem o lado local. O `remote_value` não está no
+    // acervo e não viaja no bundle: capturar agora faria a versão pendente
+    // desaparecer do mundo do aparelho novo, sem decisão de ninguém.
+    let conflitos_v1: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM sync_conflicts WHERE resolved_at = ''",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    if conflitos_v1 > 0 {
+        return Ok(Err(FalhaDeCaptura::ConflitoV1Aberto {
+            quantas: conflitos_v1,
         }));
     }
 
@@ -2489,6 +2535,108 @@ mod tests {
             falha,
             FalhaDeCaptura::DivergenciaAberta { quantas: 1 },
             "a contagem precisa ignorar as já resolvidas"
+        );
+    }
+
+    /// Conflito do V1 **já resolvido** não bloqueia.
+    ///
+    /// Decisão tomada já está no conteúdo, como no V2.
+    #[test]
+    fn conflito_v1_resolvido_nao_bloqueia_a_captura() {
+        let doador = Aparelho::doador_com_acervo(2);
+        {
+            let connection = doador.banco.database.write().expect("escrita");
+            connection
+                .execute(
+                    "INSERT INTO sync_conflicts
+                        (id, aggregate_type, aggregate_id, field, local_value, remote_value,
+                         resolved_at)
+                     VALUES ('c-velho','chapter','cap-1','title','Meu','Dele',
+                             '2026-09-01 10:00:00')",
+                    [],
+                )
+                .expect("conflito V1 já resolvido");
+        }
+
+        let mut connection = doador.banco.database.write().expect("escrita");
+        capturar(&mut connection)
+            .expect("consultar")
+            .expect("decisão já tomada não impede o bootstrap");
+    }
+
+    /// **O conflito V1 aberto guarda uma versão que não está no acervo.**
+    ///
+    /// O caso completo: o capítulo materializado diz "A", e a linha de conflito
+    /// guarda `remote_value = "B"` — a versão que veio do outro aparelho e que
+    /// o escritor ainda não escolheu.
+    ///
+    /// ```text
+    /// chapters.title        "A"          viaja no bundle
+    /// sync_conflicts        local "A"    NÃO viaja
+    ///                       remote "B"   ← some do mundo do aparelho novo
+    /// ```
+    ///
+    /// A tabela é `BloqueiaBootstrap` no catálogo, o que impedia o receptor de
+    /// ser semeado tendo um conflito. Faltava a outra ponta: impedir o doador
+    /// de capturar tendo um.
+    #[test]
+    fn conflito_v1_aberto_recusa_a_captura() {
+        let doador = Aparelho::doador_com_acervo(1);
+        doador.escrever("cap-disputado", "A");
+        {
+            let connection = doador.banco.database.write().expect("escrita");
+            connection
+                .execute(
+                    "INSERT INTO sync_conflicts
+                        (id, aggregate_type, aggregate_id, field, local_value, remote_value)
+                     VALUES ('c-aberto','chapter','cap-disputado','title','A','B')",
+                    [],
+                )
+                .expect("conflito V1 aberto");
+        }
+
+        let mut connection = doador.banco.database.write().expect("escrita");
+        let falha = capturar(&mut connection)
+            .expect("consultar")
+            .expect_err("há uma versão pendente que não viaja");
+        assert_eq!(falha, FalhaDeCaptura::ConflitoV1Aberto { quantas: 1 });
+
+        // E a mensagem fala do V1, não do log de eventos do V2.
+        let texto = falha.to_string();
+        assert!(
+            texto.contains("sistema antigo"),
+            "a mensagem precisa mandar o escritor procurar no lugar certo: {texto}"
+        );
+    }
+
+    /// E a contagem ignora os já resolvidos.
+    #[test]
+    fn a_captura_conta_apenas_os_conflitos_v1_abertos() {
+        let doador = Aparelho::doador_com_acervo(2);
+        {
+            let connection = doador.banco.database.write().expect("escrita");
+            connection
+                .execute_batch(
+                    "INSERT INTO sync_conflicts
+                        (id, aggregate_type, aggregate_id, field, local_value, remote_value,
+                         resolved_at)
+                     VALUES ('c-velho','chapter','cap-1','title','Meu','Dele',
+                             '2026-09-01 10:00:00');
+                     INSERT INTO sync_conflicts
+                        (id, aggregate_type, aggregate_id, field, local_value, remote_value)
+                     VALUES ('c-aberto','chapter','cap-2','title','Meu','Dele');",
+                )
+                .expect("um resolvido e um aberto");
+        }
+
+        let mut connection = doador.banco.database.write().expect("escrita");
+        let falha = capturar(&mut connection)
+            .expect("consultar")
+            .expect_err("há um conflito pendente");
+        assert_eq!(
+            falha,
+            FalhaDeCaptura::ConflitoV1Aberto { quantas: 1 },
+            "a contagem precisa ignorar os já resolvidos"
         );
     }
 }

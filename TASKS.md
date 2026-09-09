@@ -1373,6 +1373,15 @@ E o gate de concorrência achou um defeito no próprio apoio de teste: o escrito
 commits — dado num, evento no outro — e a captura pegava a janela entre eles. O caminho de
 produção não tem essa janela, porque `update_chapter` usa o outbox transacional da etapa 3.
 
+#### Hardening registrado, não implementado
+
+`device_id` repetido em `bundle.roster` com a **mesma** chave Ed25519 e X25519 ou estado
+diferentes passa hoje: a validação só reprova quando as chaves divergem, e o `ON CONFLICT DO
+NOTHING` do merge faz a primeira entrada ganhar em silêncio. Nada no fluxo normal produz isso —
+a captura lê o roster do doador, que tem `device_id` como chave primária — mas um bundle
+montado por outra versão, ou adulterado, produziria. Levantado pelo autor na revisão do
+`60beab0` e deixado fora desta etapa de propósito.
+
 **A NH-053 continua aberta.** O bundle carrega as tabelas de domínio, e o incremental depois
 dele só propaga capítulo. A etapa 12 não resolve isso de lado.
 
