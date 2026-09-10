@@ -707,4 +707,51 @@ mod tests {
         );
         assert!(superficie_de("sync_revision_history").is_none());
     }
+
+    /// **A migration 20 criou toda coluna de referência que o catálogo declara.**
+    ///
+    /// O outro lado de `toda_tabela_e_coluna_do_catalogo_existe_no_schema`, e
+    /// só pôde existir depois do schema 20. Sem ele, o backfill gravaria o hash
+    /// numa coluna inexistente — e descobriria isso no aparelho do escritor, no
+    /// meio da conversão, com o inline já contado como migrado.
+    ///
+    /// As colunas vêm de `PRAGMA table_info`, para que a comparação não seja
+    /// entre duas listas escritas à mão.
+    #[test]
+    fn a_migration_20_criou_toda_coluna_de_referencia_do_catalogo() {
+        let fixture = TemporaryDatabase::new();
+        let connection = fixture.connection();
+        let reais: BTreeSet<(String, String)> = colunas_do_banco(&connection)
+            .expect("ler o schema")
+            .into_iter()
+            .collect();
+
+        let mut conferidas = 0;
+        for superficie in CATALOGO {
+            for referencia in superficie.referencias {
+                for coluna in [referencia.hash, referencia.mime] {
+                    assert!(
+                        reais.contains(&(superficie.tabela.to_string(), coluna.to_string())),
+                        "o catálogo declara {}.{coluna} e o schema não tem essa coluna.                          O backfill gravaria o hash no vazio.",
+                        superficie.tabela
+                    );
+                    conferidas += 1;
+                }
+            }
+        }
+        assert_eq!(
+            conferidas, 12,
+            "seis superfícies diretas, um par hash/MIME cada. Se este número caiu, o              catálogo perdeu uma referência e o gate passaria conferindo menos."
+        );
+    }
+
+    // Aqui havia um gate `coluna_de_referencia_nasce_vazia`, e ele passava por
+    // vácuo: `TemporaryDatabase` não semeia nenhuma dessas seis tabelas, então
+    // o `COUNT(*) WHERE coluna <> ''` era zero por não haver linha, e não por a
+    // coluna nascer vazia. Um gate que não encontra nada aprova tudo.
+    //
+    // A propriedade está provada onde há linha de verdade, em
+    // `migrations::tests::banco_nascido_no_19_migra_para_o_20_e_ganha_referencia_sem_perder_byte`:
+    // seis linhas semeadas no schema 19, migradas, e cada referência conferida
+    // como vazia com o valor legado intacto ao lado.
 }

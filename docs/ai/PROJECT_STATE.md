@@ -156,7 +156,7 @@ migration — não pegar a versão mais recente:
 | 0.8.0 | 14 |
 | 0.9.0 e 0.9.1 | 15 |
 | 0.9.2 (publicada) | 15 |
-| `main` hoje | **19** — o cursor não se apaga, e o baseline não se re-semeia |
+| `main` hoje | **20** — referência de blob por SHA-256 nas seis superfícies diretas |
 
 Consequência prática, e ela **mudou** com a migration 16: a próxima versão publicada será a
 primeira desde a 0.9.2 a carregar migration de verdade. O par `0.9.2 → próxima` deixa de ser
