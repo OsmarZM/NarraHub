@@ -118,6 +118,18 @@ pub const CATALOGO: &[(&str, Categoria)] = &[
     ("chapter_revisions", BloqueiaBootstrap),
     ("collaboration_sessions", BloqueiaBootstrap),
     ("collaboration_contributions", BloqueiaBootstrap),
+    // Asset que não pôde ser convertido para o contrato do ADR 0010.
+    //
+    // Bloqueia dos dois lados, por motivos diferentes:
+    //
+    //   doador    tem mídia que não viaja no contrato novo, e o aparelho novo
+    //             nasceria sem ela — sem ninguém ter decidido isso
+    //   receptor  um aparelho virgem não tem histórico de migração nenhum;
+    //             linha aqui significa que ele não está virgem
+    //
+    // A tabela não viaja: a pendência é sobre os bytes DESTE aparelho, e o
+    // aparelho novo vai descobrir as próprias ao rodar o backfill.
+    ("blob_migration_issues", BloqueiaBootstrap),
     // ── V1, sem escritor vivo ──────────────────────────────────────────────
     ("devices", LocalNaoTransferida),
     ("sync_peers", LocalNaoTransferida),
@@ -270,11 +282,24 @@ pub enum FalhaDeCaptura {
     /// linha. Dizer a mesma frase para os dois mandaria o escritor procurar a
     /// versão perdida no lugar errado.
     ConflitoV1Aberto { quantas: i64 },
+    /// O acervo tem mídia que não pôde ser convertida (ADR 0010).
+    ///
+    /// Variante separada pelo mesmo motivo das duas de cima: aqui não há
+    /// decisão pendente do escritor sobre qual versão vale. Há um arquivo que
+    /// o aparelho não conseguiu ler — URL externa, caminho local, base64
+    /// quebrada — e que continua guardado exatamente como estava. Mandar o
+    /// escritor "resolver o conflito" seria mandá-lo procurar uma decisão que
+    /// ninguém precisa tomar.
+    AssetNaoConvertido { quantas: i64 },
 }
 
 impl std::fmt::Display for FalhaDeCaptura {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            FalhaDeCaptura::AssetNaoConvertido { quantas } => write!(
+                f,
+                "Este acervo tem {quantas} imagem(ns) que o aplicativo não conseguiu converter                  para o formato novo. Elas continuam guardadas e visíveis aqui, mas não viajam                  no pareamento: o aparelho novo nasceria sem elas. Veja a lista de pendências                  de mídia, resolva o que der, e pareie de novo."
+            ),
             FalhaDeCaptura::ConflitoV1Aberto { quantas } => write!(
                 f,
                 "Este acervo tem {quantas} conflito(s) do sistema antigo esperando decisão. O \
@@ -723,6 +748,23 @@ pub fn capturar(
     if conflitos_v1 > 0 {
         return Ok(Err(FalhaDeCaptura::ConflitoV1Aberto {
             quantas: conflitos_v1,
+        }));
+    }
+
+    // Só as ABERTAS, como nas duas checagens acima. Pendência resolvida é
+    // história da migração deste aparelho, e história não impede pareamento —
+    // foi exatamente esse o defeito que a revisão da etapa 12 encontrou na
+    // contagem de divergências.
+    let assets_pendentes: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM blob_migration_issues WHERE resolved_at = ''",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    if assets_pendentes > 0 {
+        return Ok(Err(FalhaDeCaptura::AssetNaoConvertido {
+            quantas: assets_pendentes,
         }));
     }
 
@@ -2638,5 +2680,119 @@ mod tests {
             FalhaDeCaptura::ConflitoV1Aberto { quantas: 1 },
             "a contagem precisa ignorar os já resolvidos"
         );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Mídia que não pôde ser convertida (ADR 0010)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// **Asset não convertido recusa a captura.**
+    ///
+    /// A tabela `blob_migration_issues` chegou no schema 20 e o gate de
+    /// catálogo desta etapa a pegou sem destino declarado — que é literalmente
+    /// para isso que ele existe. A classificação é `BloqueiaBootstrap`, e o
+    /// lado do doador é este:
+    ///
+    /// ```text
+    /// entities.image = "https://cdn.exemplo.com/rosto.png"
+    ///                   └─ o aplicativo não sabe abrir isso, e não vai tentar
+    ///                      baixar. O valor fica; o hash fica vazio.
+    /// ```
+    ///
+    /// O acervo continua utilizável — a imagem aparece na tela como sempre
+    /// apareceu. O que não pode acontecer é o pareamento: o aparelho novo
+    /// receberia a linha com o hash vazio e sem nenhum blob, e a imagem
+    /// simplesmente não existiria lá.
+    #[test]
+    fn asset_nao_convertido_recusa_a_captura() {
+        let doador = Aparelho::doador_com_acervo(2);
+        {
+            let connection = doador.banco.database.write().expect("escrita");
+            connection
+                .execute(
+                    "INSERT INTO blob_migration_issues
+                        (id, surface, table_name, row_id, side, reason, detail)
+                     VALUES ('i1', 3, 'entities', 'e1', 'image', 'legacy_unrecognized',
+                             'valor inline não é uma data URL')",
+                    [],
+                )
+                .expect("pendência de mídia");
+        }
+
+        let mut connection = doador.banco.database.write().expect("escrita");
+        let falha = capturar(&mut connection)
+            .expect("consultar")
+            .expect_err("há mídia que não viaja no contrato novo");
+        assert_eq!(falha, FalhaDeCaptura::AssetNaoConvertido { quantas: 1 });
+
+        // E a mensagem não manda o escritor resolver conflito nenhum: não há
+        // decisão pendente aqui, há arquivo que o aplicativo não soube ler.
+        let texto = falha.to_string();
+        assert!(
+            texto.contains("converter") && !texto.contains("conflito"),
+            "a mensagem precisa falar de conversão, não de decisão: {texto}"
+        );
+    }
+
+    /// Pendência já resolvida não bloqueia.
+    ///
+    /// É história da migração deste aparelho, e história não impede pareamento
+    /// — o mesmo defeito que a revisão da etapa 12 encontrou na contagem de
+    /// divergências, que somava as resolvidas.
+    #[test]
+    fn pendencia_de_midia_resolvida_nao_bloqueia_a_captura() {
+        let doador = Aparelho::doador_com_acervo(2);
+        {
+            let connection = doador.banco.database.write().expect("escrita");
+            connection
+                .execute(
+                    "INSERT INTO blob_migration_issues
+                        (id, surface, table_name, row_id, side, reason, resolved_at)
+                     VALUES ('i1', 3, 'entities', 'e1', 'image', 'legacy_unrecognized',
+                             '2026-09-10 13:00:00')",
+                    [],
+                )
+                .expect("pendência já resolvida");
+        }
+
+        let mut connection = doador.banco.database.write().expect("escrita");
+        capturar(&mut connection)
+            .expect("consultar")
+            .expect("mídia já convertida não impede o bootstrap");
+    }
+
+    /// **E o receptor com pendência de mídia não é virgem.**
+    ///
+    /// O outro lado da classificação, e ele vem de graça: `bootstrap_eligible`
+    /// deriva da categoria, então declarar a tabela como `BloqueiaBootstrap`
+    /// basta. Um aparelho recém-instalado não tem histórico de migração
+    /// nenhum; linha aqui significa que ele já rodou o backfill sobre um acervo
+    /// que era dele.
+    #[test]
+    fn receptor_com_pendencia_de_midia_nao_e_semeado() {
+        let doador = Aparelho::doador_com_acervo(3);
+        let receptor = Aparelho::novo();
+        let bundle = capturar_de(&doador);
+        {
+            let connection = receptor.banco.database.write().expect("escrita");
+            connection
+                .execute(
+                    "INSERT INTO blob_migration_issues
+                        (id, surface, table_name, row_id, side, reason)
+                     VALUES ('i1', 1, 'attachments', 'a1', 'data_url', 'legacy_unrecognized')",
+                    [],
+                )
+                .expect("o receptor tem passado");
+        }
+
+        let falha = semear_em(&receptor, &bundle).expect_err("o receptor não está virgem");
+        match &falha {
+            FalhaDeSemeadura::ReceptorNaoEstaVazio { tabela, linhas } => {
+                assert_eq!(tabela, "blob_migration_issues");
+                assert_eq!(*linhas, 1);
+            }
+            outra => panic!("recusou pelo motivo errado: {outra}"),
+        }
+        assert_eq!(receptor.conta("chapters"), 0, "rollback incompleto");
     }
 }
