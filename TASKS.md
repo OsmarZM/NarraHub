@@ -22,7 +22,7 @@ Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 
 ```text
 Owner:  Claude
-Status: EM ANDAMENTO — fatias 1 a 5A entregues; 4 a 8 bloqueadas por decisão
+Status: EM ANDAMENTO — fatias 1 a 5A e o transformador entregues
 ADR:    0010
 Fase:   4  (etapa 13 de 14)
 ```
@@ -44,18 +44,39 @@ que o backup já varre recursivamente.
 - `infrastructure/sqlite/blob_backfill.rs` — backfill idempotente das **seis diretas**, com
   os quatro estados e a ordem hash-antes-do-inline observada por gatilho.
 
-**Bloqueado, e o motivo está em `NH-065`:** as quatro superfícies de documento (7 a 10), as
-barreiras de entrada, o evento de attachment e o bootstrap com manifesto de blobs.
+- `infrastructure/blob_document.rs` — o transformador HTML **único** das quatro superfícies
+  de documento, com `lol_html` (decisão A da `NH-065`). Duas passadas: varre sem I/O, decide
+  fora do rewriter, reescreve o N-ésimo `<img>`. Documento sem imagem sai byte a byte igual.
+- `interface/writer_messages.rs` — gate contra continuação de linha perdida em mensagem.
+
+**Falta:** o backfill dos quatro documentos, as três barreiras de entrada, o lado do editor
+(`parseHTML` exige `src` hoje), o evento de attachment e o bootstrap com manifesto de blobs.
 
 ---
 
 ### NH-065 — Decisão: as superfícies de documento guardam HTML, não JSON do Tiptap
 
 ```text
-Owner:  humano (decisão), Claude (execução)
-Status: BLOQUEADA — aguardando escolha entre A, B e C
+Owner:  Claude
+Status: DECIDIDA — escolha A, implementada
 Fase:   4  (etapa 13 de 14)
 ```
+
+**Decisão (2026-09-10): A.** O HTML continua a representação persistida, e a transformação usa
+`lol_html`. As outras duas foram recusadas com motivo: o varredor artesanal é o meio-termo
+entre estrutura e substring que esta etapa não aceita, e trocar para JSON ampliaria a etapa 13
+para uma migração do modelo de documento inteiro, cruzando com decisões futuras de identidade
+por bloco e merge.
+
+O formato canônico ficou fixado no ADR 0010 e em `infrastructure/blob_document.rs`:
+
+```html
+<img data-narrahub-blob="<64 hex>" data-mime-type="image/png" alt="rosto.png">
+```
+
+Entregue: o transformador único (`blob_document.rs`), com os oito gates pedidos na revisão
+mais cinco. Falta o lado do editor — `parseHTML` exige `src` hoje, então o Tiptap descartaria
+o elemento novo ao carregar; está na fatia do editor, dentro da `NH-064`.
 
 O ADR 0010 e o desenho aprovado da etapa 13 descrevem as superfícies 7 a 10 como documentos
 Tiptap em JSON, percorridos por árvore, com a imagem sendo um node de `attrs`. **Isso está
@@ -93,7 +114,7 @@ fail-closed do `update_chapter` e do `review` precisa do mesmo parser.
 | **B** | HTML continua, com varredor de `<img>` escrito à mão. Sem dependência, mas é o meio-termo entre estrutura e substring que foi recusado para o guard, e tem arestas (comentário HTML, `<img` dentro de atributo). |
 | **C** | Trocar a persistência para JSON do Tiptap. O desenho original passa a valer literalmente, mas é redesign da persistência do editor e migra todo capítulo existente. |
 
-**Recomendação:** A.
+**Recomendação:** A. **Aprovada pelo autor em 2026-09-10.**
 
 ---
 

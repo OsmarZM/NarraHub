@@ -47,7 +47,14 @@ cobrar proporcional à mudança.
 | 6 | `planning_items.image` |
 
 **Documento estruturado — um documento, zero a N assets, embutidos em posições arbitrárias
-do JSON do Tiptap:**
+do HTML:**
+
+> **Correção de 2026-09-10 (NH-065).** A versão original desta seção dizia "do JSON do
+> Tiptap". Estava errada, e a premissa era minha. O repositório persiste **HTML**:
+> `editor.getHTML()` na saída, `setContent(html)` na entrada, e `normalizeIncoming` envelopa
+> texto puro legado em `<p>`. O `attrs` do node existe no ProseMirror, em memória; o que chega
+> ao SQLite é `<img src="data:image/png;base64,…">`. Vale para as quatro superfícies — a 10
+> confirma pelo outro lado, com o convidado editando `content` num `contentEditable`.
 
 | # | Superfície | Escritor |
 | --- | --- | --- |
@@ -101,29 +108,77 @@ com os mesmos bytes, são **um** arquivo físico e dez referências.
     com o blob ausente e a tela mostra o asset como indisponível. No **bootstrap**, não.
 11. **Não há GC de blobs nesta etapa.** Apagar referência não apaga arquivo. Blob órfão é
     aceitável; GC distribuído levanta as mesmas perguntas causais dos tombstones (ADR 0009 §15).
-12. **O documento nunca controla um path.** `blobHash` → validação de formato canônico → o
+12. **O documento nunca controla um path.** `data-narrahub-blob` → validação de formato canônico → o
     resolver produz a URL local. Um hash recebido não pode virar path traversal.
+
+### O formato canônico persistido
+
+Uma imagem blob-safe no HTML guardado é exatamente isto:
+
+```html
+<img data-narrahub-blob="<64 hex minúsculos>"
+     data-mime-type="image/png"
+     alt="rosto.png">
+```
+
+`data-` porque é atributo de **dado**, não de imagem: nenhum navegador tenta buscar nada a
+partir dele, que é o que se quer de uma referência que só o aplicativo sabe resolver. O `src`
+sai do que é persistido.
+
+O que **nunca** vai ao banco:
+
+| Proibido | Por quê |
+| --- | --- |
+| `data:` URL, base64 | é o problema que esta etapa existe para resolver |
+| caminho absoluto | quebra na restauração noutra máquina |
+| URL temporária | vence, e o documento fica apontando para nada |
+| `blob:` do navegador | morre com a aba |
+
+**O hash é a identidade portátil.** O mesmo HTML tem que funcionar igual no Windows e no
+Android, e é isso que a ausência de caminho garante. A resolução `hash → recurso local`
+acontece **só em tempo de execução**, e a URL resolvida nunca volta ao documento guardado.
 
 ### Transformação das superfícies 7–10
 
-Cirúrgica na árvore JSON, nunca reconstruindo o documento a partir de um modelo simplificado:
+Decisão **A** da NH-065: o HTML continua a representação persistida, e a transformação usa
+`lol_html` — um reescritor em streaming feito para trocar um atributo e repassar todo o resto
+verbatim. Um varredor artesanal de `<img` foi recusado: tropeça em comentário HTML, em `<img`
+dentro de valor de atributo e em entidade escapada, e é o meio-termo entre estrutura e
+substring que esta etapa não aceita. Trocar a persistência para JSON também foi recusado —
+ampliaria a etapa 13 para uma migração do modelo de documento inteiro e cruzaria com decisões
+futuras de identidade por bloco.
+
+Duas passadas, e a separação é decisão:
 
 ```text
-parse Tiptap  →  percorre nodes  →  node image com src=data:
-                                          ↓
-                            decode → SHA-256 → BlobStore.put → verifica
-                                          ↓
-                          substitui o src por referência de blob
-                                          ↓
-                                 serializa de volta
+passada 1   varre e coleta os <img> em ordem de documento   — sem I/O
+decisão     decodifica, publica no BlobStore, verifica      — fora do rewriter
+passada 2   reescreve o N-ésimo <img> com a decisão N
 ```
 
-Preserva posição do node, `alt`, `title`, dimensões e **todo atributo que não seja o binário**,
-inclusive os desconhecidos.
+Publicar blob dentro do handler seria I/O de disco no meio de um parser em streaming, com o
+erro atravessando `Box<dyn Error>`. Separando, a passada 1 serve de graça aos **guards** — quem
+só precisa perguntar "este documento ainda tem mídia inline?" nunca toca o disco.
 
-O guard que impede regressão **valida estrutura, não substring**: procura `node.type == "image"`
-com `attrs.src` começando em `data:`, e valida o formato novo exigindo `blobHash` canônico.
-`content.contains("data:")` encontraria texto legítimo do escritor.
+Preserva `alt`, `title`, dimensões e **todo atributo que não seja o binário**, inclusive os
+desconhecidos, porque o rewriter parte do elemento real em vez de reconstruí-lo. E um documento
+sem imagem nenhuma sai **byte a byte igual**: `converter` devolve a entrada sem passar pelo
+rewriter quando não há nada a trocar, para o acervo inteiro do escritor não ser reescrito e
+normalizado por acidente.
+
+**Um transformador só**, reutilizado pelas quatro superfícies. Quatro parsers seriam quatro
+interpretações do mesmo formato, envelhecendo em quatro velocidades.
+
+O guard que impede regressão **valida estrutura, não substring**: procura um elemento `img`
+cujo `src` comece em `data:`, e valida o formato novo exigindo `data-narrahub-blob` canônico.
+`content.contains("data:")` encontraria texto legítimo do escritor — e
+`&lt;img src="data:…"&gt;` escrito por um personagem é texto, não elemento.
+
+**Consequência para o editor:** a extensão atual declara
+`parseHTML() { return [{ tag: 'img[src]' }] }`, e o seletor **exige** `src`. Um documento novo
+não tem, então o Tiptap descartaria o elemento ao carregar. `parseHTML` precisa virar
+`tag: 'img'` com os atributos de dado declarados. Isso não é redesenho do editor nem mudança
+de UX — é a mesma extensão lendo o formato novo.
 
 ### Política do legado inválido
 

@@ -298,7 +298,10 @@ impl std::fmt::Display for FalhaDeCaptura {
         match self {
             FalhaDeCaptura::AssetNaoConvertido { quantas } => write!(
                 f,
-                "Este acervo tem {quantas} imagem(ns) que o aplicativo não conseguiu converter                  para o formato novo. Elas continuam guardadas e visíveis aqui, mas não viajam                  no pareamento: o aparelho novo nasceria sem elas. Veja a lista de pendências                  de mídia, resolva o que der, e pareie de novo."
+                "Este acervo tem {quantas} imagem(ns) que o aplicativo não conseguiu converter \
+                 para o formato novo. Elas continuam preservadas neste aparelho, mas não \
+                 viajam no pareamento: o aparelho novo nasceria sem elas. Veja a lista de \
+                 pendências de mídia, resolva o que der, e pareie de novo."
             ),
             FalhaDeCaptura::ConflitoV1Aberto { quantas } => write!(
                 f,

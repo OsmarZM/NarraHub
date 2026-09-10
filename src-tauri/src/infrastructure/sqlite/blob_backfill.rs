@@ -1051,7 +1051,9 @@ mod tests {
         assert_eq!(
             sequencia,
             vec!["hash".to_string(), "inline-limpo".to_string()],
-            "a referência tem que existir antes de os bytes saírem. Nesta ordem, uma queda              entre as duas gravações deixa a linha recuperável; na outra, o arquivo do              escritor simplesmente não existe mais."
+            "a referência tem que existir antes de os bytes saírem. Nesta ordem, uma queda \
+             entre as duas gravações deixa a linha recuperável; na outra, o arquivo do \
+             escritor simplesmente não existe mais."
         );
     }
 

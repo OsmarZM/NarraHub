@@ -224,7 +224,15 @@ aprovado descrevem `chapters.content` como árvore JSON com nodes `image` de `at
 repositório faz `editor.getHTML()` na saída e `setContent(html)` na entrada, e
 `normalizeIncoming` ainda envelopa texto puro legado em `<p>`. O que chega ao SQLite é
 `<img src="data:image/png;base64,…">`. A premissa falsa é minha, e está registrada em
-**NH-065** com os três caminhos e a recomendação.
+**NH-065**, **decidida** em 2026-09-10: o HTML continua a representação persistida, e a
+transformação usa `lol_html`. O formato canônico é
+`<img data-narrahub-blob="<64 hex>" data-mime-type="…">`.
+
+**E uma continuação de linha perdida virou dezoito espaços na tela do escritor.** Oito
+mensagens carregavam a assinatura, duas delas já na `main` desde a etapa 11. O defeito
+compila, `cargo fmt` aceita, e nenhum teste de comportamento reclama — só o texto muda.
+A causa era a ferramenta com que eu escrevia os arquivos, que consumia a barra invertida.
+Fechado por `interface/writer_messages.rs`.
 
 <!-- chapter-revisions:premissa-corrigida -->
 **`chapter_revisions` não é tabela morta.** `docs/ARCHITECTURE_EVOLUTION_PLAN.md` afirmava que

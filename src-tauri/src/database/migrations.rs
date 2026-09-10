@@ -3366,7 +3366,8 @@ mod tests {
             assert_eq!(
                 antes(tabela),
                 *esperado,
-                "a migration 20 mexeu em {tabela}. Ela só acrescenta coluna e cria a tabela                  de pendências — não toca em estado causal."
+                "a migration 20 mexeu em {tabela}. Ela só acrescenta coluna e cria a tabela de \
+                 pendências — não toca em estado causal."
             );
         }
 

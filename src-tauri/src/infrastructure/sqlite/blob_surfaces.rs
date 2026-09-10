@@ -494,7 +494,9 @@ mod tests {
         ] {
             assert!(
                 suspeitas.contains(esperada),
-                "a varredura por nome não encontrou {esperada}, que está no schema e é                  superfície conhecida. A heurística parou de funcionar, e um gate que não                  encontra nada aprova tudo. Suspeitas encontradas: {suspeitas:?}"
+                "a varredura por nome não encontrou {esperada}, que está no schema e é \
+                 superfície conhecida. A heurística parou de funcionar, e um gate que não \
+                 encontra nada aprova tudo. Suspeitas encontradas: {suspeitas:?}"
             );
         }
 
@@ -732,7 +734,8 @@ mod tests {
                 for coluna in [referencia.hash, referencia.mime] {
                     assert!(
                         reais.contains(&(superficie.tabela.to_string(), coluna.to_string())),
-                        "o catálogo declara {}.{coluna} e o schema não tem essa coluna.                          O backfill gravaria o hash no vazio.",
+                        "o catálogo declara {}.{coluna} e o schema não tem essa coluna. O \
+                         backfill gravaria o hash no vazio.",
                         superficie.tabela
                     );
                     conferidas += 1;
@@ -741,7 +744,8 @@ mod tests {
         }
         assert_eq!(
             conferidas, 12,
-            "seis superfícies diretas, um par hash/MIME cada. Se este número caiu, o              catálogo perdeu uma referência e o gate passaria conferindo menos."
+            "seis superfícies diretas, um par hash/MIME cada. Se este número caiu, o catálogo \
+             perdeu uma referência e o gate passaria conferindo menos."
         );
     }
 
