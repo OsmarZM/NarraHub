@@ -201,46 +201,77 @@ test('nenhum documento afirma que chapter_revisions e uma tabela sem escritor', 
   //
   // Buscar escritores em código-fonte não encontra escritores em SQL. A consequência não foi
   // acadêmica: a etapa 13 quase deixou a tabela fora da migração de assets, e ela guarda uma
-  // cópia do documento do capítulo — base64 incluído — a cada salvamento.
+  // cópia do documento do capítulo — base64 incluída — a cada salvamento.
+  //
+  // ## A exceção é um marcador, e não uma palavra da prosa
+  //
+  // A primeira versão deste gate isentava a frase quando a vizinhança tinha "errada",
+  // "premissa" ou "afirmava" — porque os documentos que CITAM a frase antiga para dizer que
+  // ela estava errada não podem reprovar. Isso furou na hora: uma regressão escrita como
+  // "continua sendo tabela morta" passou verde, porque a linha seguinte, de um parágrafo
+  // vizinho, tinha a palavra "afirmava".
+  //
+  // Prosa não serve de exceção — ela aparece por acaso. Quem quer citar a frase antiga põe o
+  // marcador abaixo, explicitamente, e aí a isenção é uma decisão registrada em vez de uma
+  // coincidência de vocabulário.
+  // ## O que este gate NAO cobre, e por que isso e aceitavel
+  //
+  // Editar o texto DENTRO de um paragrafo que tem o marcador E nomeia o gatilho -- trocar
+  // "nao e tabela morta" por "continua sendo tabela morta" -- passa. E inalcancavel por
+  // construcao: aquele paragrafo PRECISA conter as palavras "tabela morta" para citar a
+  // afirmacao antiga, e nenhuma regra textual separa "nao e" de "continua sendo" sem voltar a
+  // farejar prosa, que e justamente o que furou na primeira versao deste gate.
+  //
+  // A protecao de verdade e comportamental e mora no Rust:
+  // `blob_surfaces::tests::chapter_revisions_tem_escritor_vivo` le `sqlite_master`, exige o
+  // gatilho, e exige que o catalogo nomeie ele como escritor da superficie 8.
+  //
+  // O que este gate cobre e onde a afirmacao realmente voltaria: um documento novo, uma secao
+  // nova, um resumo -- fora de qualquer paragrafo marcado.
+  const MARCADOR = '<!-- chapter-revisions:premissa-corrigida -->';
   const migrations = ler('../src-tauri/src/database/migrations.rs');
   if (!/CREATE TRIGGER[^;]*trg_chapter_revision/u.test(migrations)) return;
 
   const documentos = [
     ...DOCUMENTOS_DE_ESTADO,
+    '../TASKS.md',
     '../docs/ARCHITECTURE_EVOLUTION_PLAN.md',
     '../docs/ADR/0010-content-addressed-blob-store.md',
   ];
-  // Cada padrão é uma forma de dizer "ninguém escreve ali". A negação explícita do próprio
-  // documento corrigido não conta: ele cita a frase antiga para dizer que estava errada.
   const formasDeDizerQueEMorta = [
     /nunca teve escrita/iu,
     /sem escrita nenhuma/iu,
-    /não tem escritor/iu,
-    /nao tem escritor/iu,
+    /n[ãa]o tem escritor/iu,
     /tabela morta/iu,
-    /nunca é escrita/iu,
+    /nunca [ée] escrita/iu,
+    /tabela inativa/iu,
   ];
 
   for (const relativo of documentos) {
     const linhas = ler(relativo).split('\n');
     for (const [indice, linha] of linhas.entries()) {
-      if (!/chapter_revisions/u.test(linha)) continue;
-      // Janela de três linhas: a frase e a que a antecede ou segue, porque a afirmação e o
-      // nome da tabela raramente caem na mesma linha de um markdown quebrado em 88 colunas.
-      const janela = linhas.slice(Math.max(0, indice - 1), indice + 2).join(' ');
-      // Quem cita a frase antiga para dizer que ela estava errada não está afirmando o
-      // erro — está registrando a correção. O ADR 0010 e o plano de evolução fazem
-      // isso de propósito, e o gate tem que saber a diferença.
-      if (/errad[ao]|corrigid[ao]|premissa|afirmação anterior/iu.test(janela)) {
-        continue;
-      }
-      for (const forma of formasDeDizerQueEMorta) {
-        assert.ok(
-          !forma.test(janela),
-          `${relativo}:${indice + 1} afirma que chapter_revisions não tem escritor, e `
-            + `trg_chapter_revision escreve nela desde a migration 1:\n  ${linha.trim()}`,
-        );
-      }
+      const forma = formasDeDizerQueEMorta.find((padrao) => padrao.test(linha));
+      if (!forma) continue;
+      // A afirmação só conta quando fala DESTA tabela: a janela cobre o parágrafo, porque
+      // markdown quebrado em 100 colunas separa o nome da tabela da frase sobre ela.
+      const janela = linhas.slice(Math.max(0, indice - 3), indice + 4).join(' ');
+      if (!/chapter_revisions/u.test(janela)) continue;
+      // A isenção exige DUAS coisas, e a segunda é o que fecha a última brecha: o
+      // parágrafo tem que nomear o escritor vivo.
+      //
+      // Só o marcador não bastava. Editar o texto DENTRO do parágrafo marcado — trocar "não
+      // é tabela morta" por "continua sendo tabela morta" — passava verde, porque o marcador
+      // continuava ali em cima. Exigir `trg_chapter_revision` na mesma vizinhança obriga o
+      // parágrafo a dizer quem escreve, e um parágrafo que nomeia o gatilho não consegue
+      // afirmar que ninguém escreve.
+      assert.ok(
+        janela.includes(MARCADOR) && /trg_chapter_revision/u.test(janela),
+        `${relativo}:${indice + 1} afirma que chapter_revisions não tem escritor, e `
+          + `trg_chapter_revision escreve nela desde a migration 1. Se a intenção é CITAR a `
+          + `afirmação antiga para corrigi-la, o parágrafo precisa do marcador `
+          + `${MARCADOR} E do nome do escritor vivo, trg_chapter_revision:\n  `
+          + linha.trim(),
+      );
     }
   }
 });

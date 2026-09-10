@@ -255,6 +255,7 @@ argumento para o gate de catálogo:
 4. Seguir o **dado** em vez do nome — os call sites de `fileToDataUrl` — achou a sétima, dentro
    de `chapters.content`. Essa é a que já estava ativa: `chapter` é o único agregado que emite
    evento hoje.
+<!-- chapter-revisions:premissa-corrigida -->
 5. **A premissa mais errada:** eu afirmei que `chapter_revisions` era tabela morta, porque
    nenhum Rust ou TypeScript escreve nela. Quem escreve é o **banco** —
    `trg_chapter_revision`, `BEFORE UPDATE OF content, title ON chapters`, vivo no schema final.

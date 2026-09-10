@@ -18,6 +18,120 @@ Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 
 ## ACTIVE
 
+### NH-064 — Sync V2, etapa 13: assets por hash (blob store)
+
+```text
+Owner:  Claude
+Status: EM ANDAMENTO — fatias 1 a 5A entregues; 4 a 8 bloqueadas por decisão
+ADR:    0010
+Fase:   4  (etapa 13 de 14)
+```
+
+Os bytes de imagem saem do SQLite. O banco guarda `SHA-256(bytes reais)`, e um blob store
+único guarda os arquivos sob `app_data/assets/blobs/sha256/<ab>/<hash>` — dentro do diretório
+que o backup já varre recursivamente.
+
+**Entregue:**
+
+- `infrastructure/blob_store.rs` — `put`/`put_esperando`/`has`/`read`/`verify`/`path_for`,
+  temporário + verificação + `rename`, hash canônico validado antes de virar caminho.
+- `infrastructure/sqlite/blob_surfaces.rs` — o catálogo das dez superfícies, com o gate
+  contra uma décima-primeira entrar sem classificação.
+- `migration 20` — par hash/MIME nas seis superfícies diretas, e `blob_migration_issues`.
+  Transitória: nenhuma coluna legada removida, nenhum byte limpo por SQL.
+- `domain/data_url.rs` — leitura estrita de `data:` URL, com base64 escrito à mão (não há
+  dependência de base64 no projeto; `domain/identity.rs` abriu o precedente com base32).
+- `infrastructure/sqlite/blob_backfill.rs` — backfill idempotente das **seis diretas**, com
+  os quatro estados e a ordem hash-antes-do-inline observada por gatilho.
+
+**Bloqueado, e o motivo está em `NH-065`:** as quatro superfícies de documento (7 a 10), as
+barreiras de entrada, o evento de attachment e o bootstrap com manifesto de blobs.
+
+---
+
+### NH-065 — Decisão: as superfícies de documento guardam HTML, não JSON do Tiptap
+
+```text
+Owner:  humano (decisão), Claude (execução)
+Status: BLOQUEADA — aguardando escolha entre A, B e C
+Fase:   4  (etapa 13 de 14)
+```
+
+O ADR 0010 e o desenho aprovado da etapa 13 descrevem as superfícies 7 a 10 como documentos
+Tiptap em JSON, percorridos por árvore, com a imagem sendo um node de `attrs`. **Isso está
+factualmente errado, e a premissa é minha.**
+
+O que o repositório faz, nas duas pontas do round-trip
+(`src/app/features/writing/writing-editor.component.ts`):
+
+```text
+216:  this.contentChange.emit(editor.getHTML());
+254:  this.editor.commands.setContent(incoming, …);
+632:  if (/<(?:p|h[1-6]|ul|ol|li|blockquote|img|hr|div|br)\b/iu.test(value)) return content;
+```
+
+`chapters.content` é uma **string HTML** — e, para dado antigo, texto puro, que
+`normalizeIncoming` envelopa em `<p>`. Nenhum Rust e nenhum TypeScript faz `JSON.parse` dela.
+A extensão `InlineImage` declara `attrs` `src`/`alt`/`title`, mas isso existe no ProseMirror,
+em memória: o que chega ao SQLite é `<img src="data:image/png;base64,…" alt="…">`.
+
+Vale para as quatro. A superfície 10 confirma pelo outro lado: em
+`services/share-api/public/viewer.js:150` o convidado edita `content` num `contentEditable`, e
+`serializeRichEditor` devolve HTML.
+
+**Consequência:** não há árvore JSON para percorrer; "preservar atributos desconhecidos" passa
+a ser sobre atributos de `<img>`; HTML minúsculo os nomes, então a referência persistida seria
+`<img blobhash="…" mimetype="…">`; e "validar estrutura, não substring" passa a exigir um
+parser de HTML, que o `Cargo.toml` não tem. As fatias 6 e 8 herdam a dependência: o guard
+fail-closed do `update_chapter` e do `review` precisa do mesmo parser.
+
+**Os três caminhos:**
+
+| | |
+| --- | --- |
+| **A** | HTML continua a representação, com parser de verdade (`lol_html`, feito para reescrever um atributo e repassar o resto verbatim). Custo: dependência nova. |
+| **B** | HTML continua, com varredor de `<img>` escrito à mão. Sem dependência, mas é o meio-termo entre estrutura e substring que foi recusado para o guard, e tem arestas (comentário HTML, `<img` dentro de atributo). |
+| **C** | Trocar a persistência para JSON do Tiptap. O desenho original passa a valer literalmente, mas é redesign da persistência do editor e migra todo capítulo existente. |
+
+**Recomendação:** A.
+
+---
+
+### NH-066 — `IncomingContribution` não tem limite de tamanho
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4
+```
+
+O único `MAX_` da colaboração é `MAX_ATTRIBUTE_KEY = 120`, em `domain/collaboration.rs:9`, e
+ele cobre a **chave** do atributo, não o valor. `original_value` e `proposed_value` entram sem
+teto.
+
+O valor vem de fora, de um convidado com link. Um `proposed_value` de dezenas de megabytes é
+aceito, gravado, e depois lido pela tela de revisão. Registrado separadamente da etapa 13 de
+propósito: é limite de entrada, não migração de asset — e resolver dentro da etapa 13
+misturaria duas decisões de produto (qual é o teto, e o que acontece com quem passa dele).
+
+---
+
+### NH-067 — Identidade e convergência de `chapter_revisions` entre aparelhos
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4
+```
+
+`trg_chapter_revision` grava uma revisão a cada salvamento, com `id` sorteado no banco
+(`randomblob`). Dois aparelhos que editam o mesmo capítulo produzem revisões **diferentes**
+para a mesma edição, com ids diferentes — e a etapa 12 transfere a tabela no bundle.
+
+A pergunta em aberto não é de asset: é o que "a mesma revisão" significa entre aparelhos, e se
+esse histórico deve convergir, ficar local, ou ser podado. Separada de `NH-053`
+deliberadamente — não é ausência de evento, é ausência de identidade.
+
 ### NH-001 — Tornar `main` canônica
 
 ```text

@@ -72,7 +72,7 @@ O gate `o andaime superado não volta para o repositório` reprova se `angular-s
 ## Fase ativa
 
 ```text
-FASE 4 — Sync V2   (etapas 1 a 12 de 14 concluídas)
+FASE 4 — Sync V2   (etapas 1 a 12 de 14 concluídas; etapa 13 em andamento)
 ```
 
 As fases **3 e 3.5 fecharam em 2026-09-01**, com gates executáveis:
@@ -110,6 +110,10 @@ diretório não o pegaria; o gate contra **colocação** pega.
 > deixa de existir; a divergência registra a operação de cada lado. **Schema 18.**
 > **Etapa 12:** bootstrap por snapshot atômico — captura numa transação de leitura só, e
 > semeadura construtiva que recusa qualquer receptor não virgem. **Schema 19.**
+> **Etapa 13, em andamento:** assets por `SHA-256` (ADR 0010). Blob store, catálogo das dez
+> superfícies binárias e backfill das seis diretas entregues. **Schema 20.** As quatro
+> superfícies de documento estão paradas em **NH-065**: elas guardam **HTML**, não JSON do
+> Tiptap, e o desenho aprovado dizia o contrário.
 >
 > Reconciliação fina de capítulo por bloco depende da **NH-045** e não faz parte das 14
 > etapas. O Sync V2 pode fechar com conflito seguro de capítulo inteiro.
@@ -140,7 +144,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | `commands/` legado | **Removido** na Fase 3 |
 | Fronteira nativa do frontend | **Formalizada** — ADR 0008 |
 | Sync V1 sem criptografia | **Foco atual** — Fase 4 |
-| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1–12 concluídas; falta attachments, rede real, o gate de saída **NH-053** e a propagação da saída (**NH-058**, parcial) |
+| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1–12 concluídas, 13 em andamento (**ADR 0010**, **NH-064**); falta rede real, o gate de saída **NH-053** e a propagação da saída (**NH-058**, parcial) |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
 | Ciclo de atualização empacotado | **Concluído.** Roteiro, checklist de release e três execuções reais |
@@ -212,6 +216,27 @@ A 11.1 foi revisada pelo autor, que achou mais duas coisas — as duas da mesma 
    ele abandona um aparelho de verdade e observa se o log cresceu.
 
 O padrão que se repete nas três revisões: **o gate existia, passava, e provava outra coisa.**
+
+## O que a etapa 13 encontrou fora dela
+
+**As superfícies de documento guardam HTML, não JSON do Tiptap.** O ADR 0010 e o desenho
+aprovado descrevem `chapters.content` como árvore JSON com nodes `image` de `attrs`. O
+repositório faz `editor.getHTML()` na saída e `setContent(html)` na entrada, e
+`normalizeIncoming` ainda envelopa texto puro legado em `<p>`. O que chega ao SQLite é
+`<img src="data:image/png;base64,…">`. A premissa falsa é minha, e está registrada em
+**NH-065** com os três caminhos e a recomendação.
+
+<!-- chapter-revisions:premissa-corrigida -->
+**`chapter_revisions` não é tabela morta.** `docs/ARCHITECTURE_EVOLUTION_PLAN.md` afirmava que
+ela "nunca teve escrita nenhuma, nem no frontend nem no Rust". A segunda metade é verdadeira, e
+é o que fazia a primeira soar verificada — quem escreve é o gatilho `trg_chapter_revision`,
+desde a migration 1. **Buscar escritores em código-fonte não encontra escritores em SQL.**
+Documento corrigido, com gate behavioral em Rust e gate de documentação em JS.
+
+**Dois gates meus passavam pelo motivo errado.** O da heurística de nome aprovaria qualquer
+coisa se a heurística deixasse de casar — ganhou uma segunda metade que exige encontrar as seis
+colunas conhecidas. O `coluna_de_referencia_nasce_vazia` contava zero linhas porque a fixture
+não semeia aquelas tabelas, e foi removido com a nota do motivo no lugar.
 
 ## O que a etapa 12 encontrou fora dela
 

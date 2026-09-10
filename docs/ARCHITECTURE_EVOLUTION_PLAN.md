@@ -362,10 +362,12 @@ acabou de gravar.
 salvamento — e o método antigo (`updateContent(id, content, wordCount)`) não
 tinha como obrigar quem chamava a recontar.
 
+<!-- chapter-revisions:premissa-corrigida -->
 **Revisões de capítulo não têm comando, mas têm escritor.** A afirmação
 anterior deste documento — que `chapter_revisions` "nunca teve escrita nenhuma,
-nem no frontend nem no Rust" — estava factual e executavelmente errada, e a
-correção veio da etapa 13 (ADR 0010). O escritor é SQL:
+nem no frontend nem no Rust" — estava factual e executavelmente errada:
+`trg_chapter_revision` escreve nela desde a migration 1. A correção veio da
+etapa 13 (ADR 0010), e o escritor é SQL:
 
 ```sql
 CREATE TRIGGER trg_chapter_revision
