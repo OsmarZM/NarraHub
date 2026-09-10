@@ -362,11 +362,36 @@ acabou de gravar.
 salvamento — e o método antigo (`updateContent(id, content, wordCount)`) não
 tinha como obrigar quem chamava a recontar.
 
-**Revisões de capítulo não foram implementadas.** A tabela `chapter_revisions`
-existe desde a migration 1 e **nunca teve escrita nenhuma**, nem no frontend
-nem no Rust. Não havia o que migrar. Criar a revisão antes de sobrescrever o
-capítulo é um recurso novo, com decisão de produto por trás (quando criar,
-quanto guardar, como mostrar), e ficou fora desta fase de propósito.
+**Revisões de capítulo não têm comando, mas têm escritor.** A afirmação
+anterior deste documento — que `chapter_revisions` "nunca teve escrita nenhuma,
+nem no frontend nem no Rust" — estava factual e executavelmente errada, e a
+correção veio da etapa 13 (ADR 0010). O escritor é SQL:
+
+```sql
+CREATE TRIGGER trg_chapter_revision
+BEFORE UPDATE OF content, title ON chapters
+WHEN OLD.content <> NEW.content OR OLD.title <> NEW.title
+BEGIN
+  INSERT INTO chapter_revisions (…) VALUES (OLD.…);
+END;
+```
+
+O gatilho existe desde a migration 1 e grava a versão anterior a **cada**
+salvamento de capítulo. A qualificação do upgrade 0.7.4 → 0.9.1 já mostrava 45
+linhas ali. O que a frase original acertava era o outro lado: **buscar
+escritores em código-fonte não encontra escritores em SQL** — não há comando
+Rust nem chamada do frontend que insira na tabela, e é por isso que a busca
+concluiu "morta".
+
+O que continua verdade: **não há recurso de revisões**. Ninguém lê, mostra,
+restaura ou poda esse histórico, e as decisões de produto por trás (quando
+criar, quanto guardar, como mostrar) seguem abertas. A tabela acumula.
+
+A consequência prática apareceu na etapa 13: se o capítulo guarda imagem em
+base64, o gatilho copia a base64 — então `chapter_revisions.content` é uma das
+dez superfícies binárias do ADR 0010, e migra. O gate
+`chapter_revisions_tem_escritor_vivo` existe para que esta seção não volte a
+afirmar que a tabela é morta enquanto o gatilho existir.
 
 #### Ordem 8 — colaboração e aplicação de propostas ✔
 

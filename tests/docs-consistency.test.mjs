@@ -190,3 +190,57 @@ test('o schema atribuído à main é o que a main cria', () => {
       `${declarado[1]}. Desse número sai a escolha do par de versões de todo teste de upgrade.`,
   );
 });
+
+test('nenhum documento afirma que chapter_revisions e uma tabela sem escritor', () => {
+  // Esta afirmação já esteve escrita e era falsa. `ARCHITECTURE_EVOLUTION_PLAN.md` dizia que a
+  // tabela "nunca teve escrita nenhuma, nem no frontend nem no Rust" — e a segunda metade da
+  // frase é verdadeira, o que é exatamente o que fazia a primeira soar verificada.
+  //
+  //   grep no código-fonte  →  nenhum INSERT em chapter_revisions
+  //   migrations.rs         →  CREATE TRIGGER trg_chapter_revision, desde a migration 1
+  //
+  // Buscar escritores em código-fonte não encontra escritores em SQL. A consequência não foi
+  // acadêmica: a etapa 13 quase deixou a tabela fora da migração de assets, e ela guarda uma
+  // cópia do documento do capítulo — base64 incluído — a cada salvamento.
+  const migrations = ler('../src-tauri/src/database/migrations.rs');
+  if (!/CREATE TRIGGER[^;]*trg_chapter_revision/u.test(migrations)) return;
+
+  const documentos = [
+    ...DOCUMENTOS_DE_ESTADO,
+    '../docs/ARCHITECTURE_EVOLUTION_PLAN.md',
+    '../docs/ADR/0010-content-addressed-blob-store.md',
+  ];
+  // Cada padrão é uma forma de dizer "ninguém escreve ali". A negação explícita do próprio
+  // documento corrigido não conta: ele cita a frase antiga para dizer que estava errada.
+  const formasDeDizerQueEMorta = [
+    /nunca teve escrita/iu,
+    /sem escrita nenhuma/iu,
+    /não tem escritor/iu,
+    /nao tem escritor/iu,
+    /tabela morta/iu,
+    /nunca é escrita/iu,
+  ];
+
+  for (const relativo of documentos) {
+    const linhas = ler(relativo).split('\n');
+    for (const [indice, linha] of linhas.entries()) {
+      if (!/chapter_revisions/u.test(linha)) continue;
+      // Janela de três linhas: a frase e a que a antecede ou segue, porque a afirmação e o
+      // nome da tabela raramente caem na mesma linha de um markdown quebrado em 88 colunas.
+      const janela = linhas.slice(Math.max(0, indice - 1), indice + 2).join(' ');
+      // Quem cita a frase antiga para dizer que ela estava errada não está afirmando o
+      // erro — está registrando a correção. O ADR 0010 e o plano de evolução fazem
+      // isso de propósito, e o gate tem que saber a diferença.
+      if (/errad[ao]|corrigid[ao]|premissa|afirmação anterior/iu.test(janela)) {
+        continue;
+      }
+      for (const forma of formasDeDizerQueEMorta) {
+        assert.ok(
+          !forma.test(janela),
+          `${relativo}:${indice + 1} afirma que chapter_revisions não tem escritor, e `
+            + `trg_chapter_revision escreve nela desde a migration 1:\n  ${linha.trim()}`,
+        );
+      }
+    }
+  }
+});
