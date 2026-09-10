@@ -244,3 +244,80 @@ test('o patch que o gateway envia casa campo a campo com o struct do Rust', () =
     );
   }
 });
+
+test('o formato canonico de imagem e o mesmo no Rust e na extensao do Tiptap', () => {
+  // ADR 0010, decisão A da NH-065. O documento persistido guarda referência:
+  //
+  //   <img data-narrahub-blob="<64 hex>" data-mime-type="image/png" alt="rosto.png">
+  //
+  // Os dois lados escrevem esses nomes por conta própria: o Rust nas constantes de
+  // `blob_document.rs`, a extensão no `parseHTML`/`renderHTML` de cada atributo. Divergir é
+  // silencioso e caro — o transformador gravaria `data-narrahub-blob` e o editor leria outra
+  // coisa, então toda imagem migrada desapareceria do capítulo ao carregar. Sem erro nenhum:
+  // o Tiptap simplesmente não reconheceria o atributo.
+  const rust = readFileSync(new URL('../src-tauri/src/infrastructure/blob_document.rs', import.meta.url), 'utf8');
+  const editor = readFileSync(new URL('../src/app/features/writing/writing-editor.component.ts', import.meta.url), 'utf8');
+
+  const constante = (nome) => {
+    const achado = rust.match(new RegExp(`pub const ${nome}: &str = "([^"]+)"`, 'u'));
+    assert.ok(achado, `não achei ${nome} em blob_document.rs; a varredura quebrou`);
+    return achado[1];
+  };
+  const atributoDoBlob = constante('ATTR_BLOB');
+  const atributoDoMime = constante('ATTR_MIME');
+
+  // A varredura acha mesmo o que deveria? Sem isto o gate passaria por vácuo.
+  assert.equal(atributoDoBlob, 'data-narrahub-blob');
+  assert.equal(atributoDoMime, 'data-mime-type');
+
+  for (const atributo of [atributoDoBlob, atributoDoMime]) {
+    assert.ok(
+      editor.includes(`getAttribute('${atributo}')`),
+      `a extensão do Tiptap não lê ${atributo}. O transformador grava esse atributo, e o `
+        + `editor descartaria a imagem ao carregar o capítulo.`,
+    );
+    assert.ok(
+      editor.includes(`'${atributo}':`),
+      `a extensão do Tiptap não escreve ${atributo} de volta`,
+    );
+  }
+});
+
+test('o seletor da imagem no Tiptap nao exige src', () => {
+  // Um documento já convertido não tem `src` — ele tem só a referência. Enquanto o seletor
+  // fosse `img[src]`, o Tiptap não reconheceria o elemento e o descartaria inteiro ao
+  // carregar: a imagem do escritor sumiria da tela, e o próximo salvamento gravaria o
+  // capítulo já sem ela.
+  const editor = readFileSync(new URL('../src/app/features/writing/writing-editor.component.ts', import.meta.url), 'utf8');
+  const extensao = editor.slice(editor.indexOf('const InlineImage'), editor.indexOf('function createCharacterAvatarExtension'));
+  assert.ok(extensao.length > 200, 'não achei a extensão InlineImage; a varredura quebrou');
+
+  assert.ok(
+    !/tag:\s*'img\[src\]'/u.test(extensao),
+    "o seletor voltou a ser 'img[src]', e isso descarta todo documento já convertido",
+  );
+  assert.ok(
+    /tag:\s*'img'/u.test(extensao),
+    "o seletor precisa ser 'img' para reconhecer os dois formatos",
+  );
+});
+
+test('a extensao do Tiptap nao serializa src de volta', () => {
+  // O `src` existe em memória, preenchido pelo resolvedor em runtime. Serializá-lo gravaria
+  // uma URL local — específica daquela máquina — dentro do documento, e o acervo restaurado
+  // noutro aparelho apontaria para um caminho que não existe. É o item 4 do contrato do ADR
+  // 0010: nenhum caminho absoluto é persistido.
+  const editor = readFileSync(new URL('../src/app/features/writing/writing-editor.component.ts', import.meta.url), 'utf8');
+  const extensao = editor.slice(editor.indexOf('const InlineImage'), editor.indexOf('function createCharacterAvatarExtension'));
+
+  const bloco = extensao.slice(extensao.indexOf('src: {'));
+  const fim = bloco.indexOf('},');
+  assert.ok(fim > 0, 'não achei o atributo src na extensão; a varredura quebrou');
+  const declaracao = bloco.slice(0, fim);
+
+  assert.ok(
+    /renderHTML:\s*\(\)\s*=>\s*\(\{\}\)/u.test(declaracao),
+    'o `src` voltou a ser serializado. A URL resolvida em runtime iria para o banco:\n  '
+      + declaracao.trim(),
+  );
+});

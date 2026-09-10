@@ -60,13 +60,60 @@ const DEFAULT_PROMPT_SHORTCUTS: PromptShortcut[] = [
   { id: 'builtin-sensory', command: 'sensorial', label: 'Detalhe sensorial', icon: '✦', builtIn: true, prompt: 'Escreva um detalhe sensorial curto e coerente com a cena atual, sem alterar os acontecimentos.' },
 ];
 
+/**
+ * A imagem do capitulo, no formato do ADR 0010.
+ *
+ * O documento persistido guarda REFERENCIA, nunca bytes:
+ *
+ *     <img data-narrahub-blob="<64 hex>" data-mime-type="image/png" alt="rosto.png">
+ *
+ * O `src` existe so em memoria, preenchido pelo resolvedor em tempo de
+ * execucao. Ele NAO e serializado: `renderHTML` o omite de proposito, porque
+ * uma URL local resolvida gravada no banco quebraria o acervo restaurado
+ * noutro aparelho -- e o mesmo HTML tem que funcionar no Windows e no Android.
+ *
+ * O seletor de `parseHTML` era `img[src]`, e isso descartava o formato novo:
+ * um documento ja convertido nao tem `src`, entao o Tiptap perdia o elemento
+ * inteiro ao carregar. Agora e `img`, com os dois formatos reconhecidos --
+ * `data-narrahub-blob` para o novo e `src` para o legado ainda nao migrado.
+ */
 const InlineImage = Node.create({
   name: 'image',
   group: 'block',
   atom: true,
   draggable: true,
-  addAttributes() { return { src: { default: '' }, alt: { default: '' }, title: { default: '' } }; },
-  parseHTML() { return [{ tag: 'img[src]' }]; },
+  addAttributes() {
+    return {
+      blobHash: {
+        default: '',
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-narrahub-blob') ?? '',
+        renderHTML: (attributes: Record<string, unknown>) => {
+          const hash = String(attributes['blobHash'] ?? '');
+          return hash ? { 'data-narrahub-blob': hash } : {};
+        },
+      },
+      mimeType: {
+        default: '',
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-mime-type') ?? '',
+        renderHTML: (attributes: Record<string, unknown>) => {
+          const mime = String(attributes['mimeType'] ?? '');
+          return mime ? { 'data-mime-type': mime } : {};
+        },
+      },
+      // Legado: lido para que documento nao migrado continue aparecendo, e
+      // NUNCA escrito de volta. E a metade de leitura da compatibilidade; o
+      // caminho de escrita nao pode produzir `src` nenhum, resolvido ou
+      // inline.
+      src: {
+        default: '',
+        parseHTML: (element: HTMLElement) => element.getAttribute('src') ?? '',
+        renderHTML: () => ({}),
+      },
+      alt: { default: '' },
+      title: { default: '' },
+    };
+  },
+  parseHTML() { return [{ tag: 'img' }]; },
   renderHTML({ HTMLAttributes }) { return ['img', mergeAttributes(HTMLAttributes, { loading: 'lazy' })]; },
 });
 
