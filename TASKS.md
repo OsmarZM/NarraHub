@@ -17,6 +17,47 @@ Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 ---
 
 ## ACTIVE
+### NH-077 — Sync V2, etapa 14: Windows ↔ Android ponta a ponta
+
+```text
+Owner:  Claude
+Status: EM LEVANTAMENTO — plano escrito, nada implementado
+ADR:    0009 §23 (última etapa da ordem)
+Fase:   4  (etapa 14 de 14)
+```
+
+Levantamento completo em `docs/ETAPA_14_LEVANTAMENTO.md`. O achado que redefine o tamanho da
+etapa:
+
+**O Sync V2 não tem nenhuma porta para o frontend.** O `lib.rs` registra 108 comandos e
+nenhum é do V2 — sem pareamento, sem troca, sem roster, sem bootstrap. O que o aplicativo
+chama quando o usuário sincroniza é o **V1** (`src-tauri/src/sync.rs`), que tem socket e
+descoberta próprios e copia 17 tabelas inteiras.
+
+E o V2 **nunca atravessou um socket**: `TcpListener`/`TcpStream`/`UdpSocket` não aparecem em
+nenhum módulo dele. O Noise da etapa 8 fala com buffers em memória, e os "três aparelhos" da
+etapa 6 são três bancos no mesmo processo.
+
+Então a etapa 14 não é empacotamento nem teste em dois aparelhos: ela contém três trabalhos
+que não existem no repositório — transporte real com enquadramento, descoberta, e a ponte de
+IPC/interface — mais a decisão do destino do V1.
+
+**O que já está pronto do lado do Android:** `src-tauri/gen/android` versionado (42 arquivos),
+`com.narrahub.app`, minSdk 24, `INTERNET` no manifest, scripts `android:*` no `package.json`,
+os quatro alvos Rust instalados, `cfg(mobile)`/`cfg(desktop)` já em uso e o updater restrito a
+desktop no `Cargo.toml`. **O que não existe:** nenhum job de CI para Android — logo, nenhuma
+garantia de que o alvo compila.
+
+**Fatias planejadas:** 0 o alvo compila + job de CI · 1 transporte com enquadramento ·
+2 ponte de IPC · 3 pareamento por PIN na interface · 4 o primeiro E2E de verdade, com imagem ·
+5 descoberta e QR (candidata a sair do escopo).
+
+**Quatro decisões pendentes do humano** antes da fatia 2: destino do V1 (substituir, conviver
+ou congelar), descoberta (mDNS, broadcast ou só endereço/QR), primeiro pareamento (PIN ou QR),
+e escopo do E2E. Só a fatia 0 anda sem elas, porque não decide nada — só mede.
+
+---
+
 
 ### NH-073 — Perfis de suíte (`fast` / `integration` / `slow`) e CI em paralelo
 

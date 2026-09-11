@@ -114,7 +114,13 @@ diretório não o pegaria; o gate contra **colocação** pega.
 > superfícies, backfill das dez, transformador HTML único com `lol_html`, as três barreiras de
 > entrada, evento de attachment e bootstrap com manifesto de blobs verificados antes do seed.
 > `attachments` deixou de ser `EtapaPosterior` e passa a viajar no bundle. O backfill roda na
-> **fronteira de arranque**, entre as migrations e o primeiro consumo do acervo.
+> **fronteira de arranque**, entre as migrations e o primeiro consumo do acervo. Na revisão da
+> PR, `exigir_blob_safe` foi alinhado ao ADR 0010: fonte externa ou desconhecida
+> (`https://`, caminho do Windows, `file://`, `blob:`) **não passa em persistência nova**, e o
+> legado continua preservado byte a byte com pendência registrada.
+> **Etapa 14 — em levantamento.** Ver `docs/ETAPA_14_LEVANTAMENTO.md` e `NH-077`: o Sync V2
+> ainda não tem comando algum no `invoke_handler` nem socket próprio, e o que o usuário
+> alcança hoje continua sendo o Sync V1 (`src-tauri/src/sync.rs`).
 >
 > Reconciliação fina de capítulo por bloco depende da **NH-045** e não faz parte das 14
 > etapas. O Sync V2 pode fechar com conflito seguro de capítulo inteiro.
