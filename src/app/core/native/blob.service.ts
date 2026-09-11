@@ -51,7 +51,7 @@ export class BlobService {
     try {
       return await invoke<string>('blob_put', { base64 });
     } catch (error) {
-      throw normalizeNativeCommandError(error);
+      throw normalizeNativeCommandError(error, 'A imagem não pôde ser guardada neste aparelho.');
     }
   }
 
@@ -100,7 +100,7 @@ export class BlobService {
     try {
       return await invoke<StorageUpgradeSummary>('storage_prepare_assets');
     } catch (error) {
-      throw normalizeNativeCommandError(error);
+      throw normalizeNativeCommandError(error, 'A conversão das imagens antigas não pôde ser concluída.');
     }
   }
 
