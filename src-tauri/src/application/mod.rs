@@ -18,5 +18,6 @@ pub mod knowledge_service;
 pub mod manuscript_service;
 pub mod planning_service;
 pub mod sync_bootstrap;
+pub mod sync_panorama;
 pub mod universe_service;
 pub mod workspace_service;

@@ -134,6 +134,10 @@ test('só as portas nativas falam com o Tauri', () => {
     'core/native/blob.service.ts',
     // Ciclo de vida do pool SQLite: abre e fecha a conexão, não executa SQL.
     'core/services/database.service.ts',
+    // O estado do Sync V2 (etapa 14, fatia 2). É plataforma: o que ela lê é sobre
+    // ESTE APARELHO -- identidade, roster, cursor, pendência --, e não conteúdo do
+    // escritor. Distinta de `sync.service.ts`, que é a porta do V1 e está congelada.
+    'core/native/sync-v2.service.ts',
   ];
 
   const infratores = [];
@@ -444,5 +448,90 @@ test('uma falha na migracao de midia nao impede o aplicativo de abrir', () => {
   assert.ok(
     /try\s*\{/u.test(trecho) && /catch/u.test(trecho),
     'a chamada precisa estar protegida: uma falha ali nao pode impedir a abertura.',
+  );
+});
+
+test('o panorama do Sync V2 tem os mesmos campos no Rust e no TypeScript', () => {
+  // Etapa 14, fatia 2. O `Panorama` viaja por IPC com `serde(rename_all = "camelCase")`, e o
+  // frontend declara a mesma forma a mao. Sao dois arquivos que precisam concordar e que
+  // nenhum compilador compara: renomear um campo no Rust deixaria o TypeScript compilando e
+  // lendo `undefined` -- que na tela aparece como zero, ou seja, como "sincronizado".
+  const rust = readFileSync(
+    new URL('../src-tauri/src/application/sync_panorama.rs', import.meta.url), 'utf8');
+  const ts = readFileSync(
+    new URL('../src/app/core/native/sync-v2.service.ts', import.meta.url), 'utf8');
+
+  const structRust = (nome) => {
+    const inicio = rust.indexOf(`pub struct ${nome} {`);
+    assert.ok(inicio > 0, `nao achei o struct ${nome}; a varredura quebrou`);
+    const corpo = rust.slice(inicio, rust.indexOf('\n}', inicio));
+    return [...corpo.matchAll(/^\s{4}pub ([a-z0-9_]+):/gmu)].map((m) => m[1]);
+  };
+
+  const interfaceTs = (nome) => {
+    const inicio = ts.indexOf(`export interface ${nome} {`);
+    assert.ok(inicio > 0, `nao achei a interface ${nome}; a varredura quebrou`);
+    const corpo = ts.slice(inicio, ts.indexOf('\n}', inicio));
+    return [...corpo.matchAll(/^\s{2}([A-Za-z0-9_]+)\??:/gmu)].map((m) => m[1]);
+  };
+
+  const camel = (snake) => snake.replace(/_([a-z0-9])/gu, (_, c) => c.toUpperCase());
+
+  for (const [nomeRust, nomeTs] of [
+    ['Panorama', 'SyncV2Panorama'],
+    ['AparelhoConhecido', 'KnownDevice'],
+    ['PendenciaDeOrigem', 'OriginPending'],
+  ]) {
+    const esperados = structRust(nomeRust).map(camel).sort();
+    const declarados = interfaceTs(nomeTs).sort();
+    assert.ok(esperados.length >= 4, `${nomeRust}: a varredura achou campos de menos`);
+    assert.deepStrictEqual(
+      declarados, esperados,
+      `${nomeRust} (Rust) e ${nomeTs} (TypeScript) divergiram. O IPC serializa em camelCase, `
+        + 'e campo que o frontend le errado chega como `undefined` -- que na tela vira zero.',
+    );
+  }
+});
+
+test('o servico do Sync V2 nao fala com o Sync V1', () => {
+  // Decisao registrada: congelar e substituir, sem coexistir. Um acervo com parte das
+  // escritas vindas do snapshot do V1 e parte da causalidade do V2 teria estado cuja origem
+  // o V2 nao consegue explicar.
+  const bruto = readFileSync(
+    new URL('../src/app/core/native/sync-v2.service.ts', import.meta.url), 'utf8');
+
+  // Sem os comentários. A primeira versão deste gate reprovou o próprio arquivo porque a
+  // documentação dele NOMEIA os comandos do V1 para dizer que não os usa -- e foi o mesmo
+  // erro que a etapa 13 cometeu num gate de documentação: varrer prosa como se fosse código.
+  const ts = bruto
+    .replace(/\/\*[\s\S]*?\*\//gu, '')
+    .replace(/^\s*\/\/.*$/gmu, '');
+
+  for (const proibido of ['sync_start', 'sync_stop', 'sync_connect', 'sync_status']) {
+    assert.ok(
+      !ts.includes(proibido),
+      `\`${proibido}\` e comando do Sync V1. O servico do V2 nao se apoia nele.`,
+    );
+  }
+
+  assert.ok(
+    ts.includes("invoke<SyncV2Panorama>('sync_v2_panorama')"),
+    'o servico precisa chamar o comando do V2; sem isso ele e um tipo sem porta.',
+  );
+});
+
+test('o comando do Sync V2 esta registrado no invoke_handler', () => {
+  // A lacuna que a etapa 14 encontrou foi exatamente esta: 108 comandos registrados e nenhum
+  // do V2. Um comando que existe e nao esta no `invoke_handler` e codigo sem porta -- o mesmo
+  // defeito que a revisao da etapa 2.5 apontou em `load_or_create` e a da 13 no backfill.
+  const lib = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+  const inicio = lib.indexOf('invoke_handler');
+  assert.ok(inicio > 0, 'nao achei o invoke_handler');
+  const lista = lib.slice(inicio, lib.indexOf('])', inicio));
+
+  assert.ok(
+    lista.includes('sync_v2_commands::sync_v2_panorama'),
+    'o comando do panorama do V2 nao esta registrado. Comando fora do `invoke_handler` nao '
+      + 'existe para o frontend.',
   );
 });

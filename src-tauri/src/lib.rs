@@ -234,6 +234,7 @@ pub fn run() {
             interface::tauri::blob_commands::blob_read,
             interface::tauri::blob_commands::blob_has,
             interface::tauri::blob_commands::storage_prepare_assets,
+            interface::tauri::sync_v2_commands::sync_v2_panorama,
             interface::tauri::collaboration_commands::collaboration_store_contribution,
             interface::tauri::collaboration_commands::collaboration_end_all,
             interface::tauri::collaboration_commands::collaboration_end_session,
