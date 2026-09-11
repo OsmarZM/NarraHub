@@ -87,7 +87,9 @@ em `local_ai.rs` está isolado por `#[cfg(windows)]`.
 
 **O que não existe:** nenhum job de CI para Android. `.github/workflows/` tem `ci.yml`
 (Ubuntu: Angular + core Rust) e `release-windows.yml` (`workflow_dispatch`). Nunca houve APK
-construído por pipeline, e portanto nenhuma garantia de que o alvo compila hoje.
+construído por pipeline — e a medição da fatia 0 mostrou que **hoje o alvo não compila**, por
+uma capability que pede `updater:default` numa plataforma onde o plugin não existe. Detalhe em
+§4, fatia 0.
 
 ### 2.4 Caminhos de dados — portáveis por construção
 
@@ -145,11 +147,48 @@ explica.
 
 Cada fatia é uma PR com gate próprio, na ordem em que uma destrava a seguinte.
 
-### Fatia 0 — O alvo compila? *(sem código de produto)*
+### Fatia 0 — O alvo compila? **Medido: não.** *(sem código de produto)*
 
-`cargo check --lib --target aarch64-linux-android`, depois `npm run android:apk`. Resultado
-factual antes de qualquer plano: se o core não compila para Android, a etapa começa por aí.
-Adicionar um job de CI `Android` que construa o APK de debug — sem ele, toda garantia de
+Executado em 2026-09-11, `cargo check --lib --target aarch64-linux-android`, duas vezes.
+
+**Primeira tentativa** — falha em `aws-lc-sys v0.44.0`:
+
+```text
+error occurred in cc-rs: failed to find tool "clang.exe": program not found
+```
+
+Diagnóstico, e não conclusão: o `clang.exe` **existe** no NDK 27
+(`toolchains/llvm/prebuilt/windows-x86_64/bin/clang.exe`), só não está no `PATH`. O
+`cargo check` cru não configura o que o `tauri android build` configura, então esta falha é
+do meu comando, não do projeto. `aws-lc-sys` entra por
+`reqwest`/`hyper-rustls`/`rustls` → `aws-lc-rs`, tanto pelo `tauri-plugin-http` quanto pelo
+`reqwest` direto.
+
+**Segunda tentativa**, com o `bin` do NDK no `PATH` — `aws-lc-sys` compila, e a falha passa a
+ser do próprio crate:
+
+```text
+error: failed to run custom build command for `narrahub v0.9.2`
+  Permission updater:default not found, expected one of core:default, …
+```
+
+**Este é o bloqueador real, e é de configuração.** `src-tauri/capabilities/default.json`
+(`identifier: main-capability`) declara `updater:default` e **não** declara `platforms`. O
+`Cargo.toml` restringe `tauri-plugin-updater` a
+`cfg(any(target_os = "macos", windows, target_os = "linux"))`, então no Android o plugin não
+existe, a permissão não existe, e o `build.rs` do Tauri para antes de qualquer verificação de
+tipo. Nada do código do NarraHub foi rejeitado — o build nunca chegou lá.
+
+O caminho é escopar a capability por plataforma (um `platforms` na capability atual, ou uma
+capability separada para desktop). Isso é implementação e **não** foi feito.
+
+Fica registrado o que a medição **não** provou: que o core compila para Android depois disso.
+Ela provou que o primeiro obstáculo não é o código, e que as dependências nativas
+(`aws-lc-sys`, `rusqlite`, `sqlx`, `x25519-dalek`, `lol_html`, `spake2`, `zip`, `sysinfo`)
+todas atravessaram a verificação para `aarch64-linux-android`.
+
+**Ainda desta fatia:** `npm run android:apk` (o Gradle precisa de `JAVA_HOME`, vazio no shell
+onde medi) e um job de CI `Android` construindo o APK de debug — sem ele, toda garantia de
 portabilidade continua sendo afirmação.
 
 ### Fatia 1 — Transporte com enquadramento

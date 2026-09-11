@@ -45,8 +45,11 @@ IPC/interface — mais a decisão do destino do V1.
 **O que já está pronto do lado do Android:** `src-tauri/gen/android` versionado (42 arquivos),
 `com.narrahub.app`, minSdk 24, `INTERNET` no manifest, scripts `android:*` no `package.json`,
 os quatro alvos Rust instalados, `cfg(mobile)`/`cfg(desktop)` já em uso e o updater restrito a
-desktop no `Cargo.toml`. **O que não existe:** nenhum job de CI para Android — logo, nenhuma
-garantia de que o alvo compila.
+desktop no `Cargo.toml`. **O que não existe:** nenhum job de CI para Android — e a medição da
+fatia 0 mostrou que **hoje o alvo não compila**: a capability `main-capability` pede
+`updater:default` sem declarar `platforms`, e o plugin do updater é restrito a desktop no
+`Cargo.toml`, então o `build.rs` do Tauri para antes de verificar tipo algum. As dependências
+nativas todas atravessaram.
 
 **Fatias planejadas:** 0 o alvo compila + job de CI · 1 transporte com enquadramento ·
 2 ponte de IPC · 3 pareamento por PIN na interface · 4 o primeiro E2E de verdade, com imagem ·
