@@ -86,6 +86,25 @@ pub fn seed_universe(connection: &Connection, universe_id: &str) {
 /// e isso **não** foi feito: aí o alcance passaria a incluir as escritas, e a
 /// conversa sobre durabilidade deixaria de ser trivial. Registrado como
 /// dívida em `NH-074`.
+///
+/// # Onde o custo existia, e onde nunca existiu
+///
+/// Isto era um problema **da máquina de desenvolvimento**, não do CI, e os
+/// números do próprio GitHub Actions dizem isso:
+///
+/// ```text
+/// main, ANTES da otimização    380 testes   19,37 s
+/// esta branch, DEPOIS          384 testes   17,62 s
+/// ```
+///
+/// O CI nunca teve o gargalo. O `fsync` custa centenas de milissegundos num
+/// SSD externo por USB e microssegundos num disco local de datacenter, e os
+/// 4362 s eram inteiramente esse fator.
+///
+/// Ou seja: o CI verde desta mudança prova que **nada quebrou**, e não prova o
+/// ganho — o ganho é local, e é medido localmente. Quem for mexer nas dívidas
+/// de `NH-073` a `NH-076` precisa medir na própria máquina antes de concluir
+/// qualquer coisa sobre gargalo.
 pub struct TemporaryDatabase {
     pub database: SqliteDatabase,
     path: PathBuf,
