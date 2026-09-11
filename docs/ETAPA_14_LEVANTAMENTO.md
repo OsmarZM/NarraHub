@@ -147,7 +147,34 @@ explica.
 
 Cada fatia é uma PR com gate próprio, na ordem em que uma destrava a seguinte.
 
-### Fatia 0 — O alvo compila? **Medido: não.** *(sem código de produto)*
+### As quatro decisões — fechadas em 2026-09-11
+
+```text
+1  Sync V1        congelar e substituir. NAO coexistir.
+                  Fica no codigo durante a etapa 14 para referencia e rollback,
+                  e deixa o fluxo de produto quando o E2E do V2 fechar.
+                  Nenhuma interoperabilidade V1<->V2 e construida.
+                  Nenhum refactor no V1: sem framing, sem Noise, sem blob.
+
+2  Descoberta     nenhuma, na primeira versao. IP/endereco + porta + PIN.
+                  mDNS, multicast e broadcast UDP ficam para a fatia 5, depois
+                  de o protocolo estar provado.
+
+3  Pareamento     PIN primeiro. QR vira outra forma de transportar os MESMOS
+                  dados, sem inventar outro protocolo. O material de conexao
+                  precisa ser representavel como
+                  { endpoint, identidade publica do aparelho, info de sessao,
+                    PIN } desde agora.
+
+4  E2E            nao fecha com "um capitulo atravessou". Ver a fatia 4.
+```
+
+O que cada decisão elimina do trabalho: a 2 tira rede multicast, permissão extra
+de Android e diferença entre roteadores do caminho crítico; a 3 tira câmera e
+plugin; a 1 tira a pior classe de defeito possível, que seria um acervo com
+escritas de dois mecanismos e origem inexplicável.
+
+### Fatia 0 — **Fechada.** O alvo compila, e o CI passou a provar isso
 
 Executado em 2026-09-11, `cargo check --lib --target aarch64-linux-android`, duas vezes.
 
@@ -179,17 +206,68 @@ error: failed to run custom build command for `narrahub v0.9.2`
 existe, a permissão não existe, e o `build.rs` do Tauri para antes de qualquer verificação de
 tipo. Nada do código do NarraHub foi rejeitado — o build nunca chegou lá.
 
-O caminho é escopar a capability por plataforma (um `platforms` na capability atual, ou uma
-capability separada para desktop). Isso é implementação e **não** foi feito.
+**A correção.** A permissão saiu da capability comum e foi para
+`src-tauri/capabilities/updater-desktop.json`, com `"platforms": ["windows", "macOS", "linux"]`
+— arquivo próprio para a restrição ficar ao lado da permissão em vez de escondida numa lista
+de quinze. Depois disso:
 
-Fica registrado o que a medição **não** provou: que o core compila para Android depois disso.
-Ela provou que o primeiro obstáculo não é o código, e que as dependências nativas
-(`aws-lc-sys`, `rusqlite`, `sqlx`, `x25519-dalek`, `lol_html`, `spake2`, `zip`, `sysinfo`)
-todas atravessaram a verificação para `aarch64-linux-android`.
+```text
+cargo check  --lib --target aarch64-linux-android      0 erros, 1 aviso
+cargo clippy --lib --target aarch64-linux-android -D warnings   limpo
+cargo clippy --all-targets -D warnings (desktop)                limpo
+cargo fmt --check                                               limpo
+```
 
-**Ainda desta fatia:** `npm run android:apk` (o Gradle precisa de `JAVA_HOME`, vazio no shell
-onde medi) e um job de CI `Android` construindo o APK de debug — sem ele, toda garantia de
-portabilidade continua sendo afirmação.
+O aviso era `unused variable: app` no `setup` do `lib.rs`: os dois blocos de lá são
+`cfg(desktop)` — updater e ícone de janela —, então no Android `app` não é usado por nada. Com
+`clippy -D warnings` no CI isso seria erro, e ficou explícito com um `let _ = &app;` comentado,
+que diz "a ausência de uso é por plataforma", em vez de renomear para `_app` e perder a
+informação no desktop.
+
+**Nenhuma dependência nativa precisou mudar.** `aws-lc-sys`, `rusqlite`, `sqlx`,
+`x25519-dalek`, `lol_html`, `spake2`, `zip` e `sysinfo` atravessaram a verificação para
+`aarch64-linux-android` sem ajuste. A arquitetura de sync não foi tocada.
+
+**O job de CI `Android`** (`.github/workflows/ci.yml`) faz o que o `cargo check` cru não faz:
+`npm ci` → `npm run build` (o `frontendDist` aponta para `dist/narrahub-app/browser`) →
+`clippy` para o alvo → **`npm run android:apk`** → o APK sobe como artefato com
+`if-no-files-found: error`. Passar pelo Gradle e pelo manifest importa porque foi exatamente aí
+que o alvo estava quebrado: a resolução de capability por plataforma não acontece no
+`cargo check`.
+
+O `NDK_HOME` do job aponta para o `ANDROID_NDK_LATEST_HOME` que o runner já traz, e o `clang`
+do NDK entra no `PATH` porque `aws-lc-sys` compila C para o alvo.
+
+#### O segundo bloqueador, que só o Gradle revela
+
+Com o core compilando, `npm run android:apk` parou em outro lugar:
+
+```text
+Error Project directory …\gen/android\app/src/main\java/com/narrahub/app/dev
+      does not exist. … delete the `gen/android` folder and run `tauri android init`
+```
+
+O `identifier` do `tauri.conf.json` é `com.narrahub.app.dev` — sufixo deliberado, para o app de
+desenvolvimento do desktop ter diretório de dados próprio e não pisar no instalado. No Android
+o identifier decide o **pacote Java** que o Tauri procura, e o projeto versionado em
+`gen/android` foi gerado como `com.narrahub.app`, igual ao `applicationId` do
+`build.gradle.kts`.
+
+Seguir a sugestão da mensagem apagaria 42 arquivos versionados por causa de um sufixo. A
+correção é uma linha em `src-tauri/tauri.android.conf.json`, que o Tauri **mescla
+automaticamente** em qualquer build de Android:
+
+```json
+{ "identifier": "com.narrahub.app" }
+```
+
+A explicação não cabe dentro do arquivo: o schema do Tauri recusa propriedade desconhecida
+(`Additional properties are not allowed ('_comentario_identifier' was unexpected)`), e a
+primeira tentativa de comentar ali falhou por isso. Por isso o motivo está aqui.
+
+Fica um aviso pré-existente, do projeto gerado, que **não** foi mexido porque mudá-lo
+regeneraria `gen/android`: o Tauri recomenda não terminar o identifier em `.app`, por
+conflitar com a extensão de bundle do macOS. Não afeta Windows nem Android.
 
 ### Fatia 1 — Transporte com enquadramento
 
@@ -213,30 +291,65 @@ nenhum segredo atravessando a fronteira — a regra que a etapa 13 já aplicou a
 A tela mínima nos dois sistemas: mostrar o PIN num lado, digitar no outro, ver o resultado.
 QR fica para a fatia 5, porque depende de câmera.
 
-### Fatia 4 — O primeiro E2E de verdade
+### Fatia 4 — O E2E, e o escopo é obrigatório
 
-Windows e Android na mesma rede, pareados por PIN, um capítulo criado num lado aparecendo no
-outro — **incluindo uma imagem**, que é o que a etapa 13 tornou possível verificar: o mesmo
-HTML com `data-narrahub-blob`, o blob transferido e verificado, e o `<img>` resolvido em
-execução no aparelho de destino.
+Três cenários, e a etapa **não** fecha com menos:
 
-> Gate: o roteiro E2E escrito e executado, com evidência. É o único gate da etapa que não é
-> automatizável hoje, e isso precisa estar declarado em vez de disfarçado.
+```text
+1  BOOTSTRAP                Windows A com acervo  ->  Android B novo
+   atravessa:               identidade/roster conforme o contrato do V2
+                            snapshot
+                            baseline e vetores necessarios
+                            capitulo
+                            imagem referenciada
+                            blob fisico da imagem
+   no Android:              texto aparece
+                            imagem aparece
+                            hash do blob confere
 
-### Fatia 5 — Descoberta e QR *(pode virar etapa 15)*
+2  INCREMENTAL B -> A       editar o capitulo no Android
+                            evento V2  ->  Windows converge
 
-Depende da decisão de §3.2 e de uma dependência de câmera. Candidata a sair do escopo se a
-fatia 4 fechar com endereço digitado.
+3  INCREMENTAL A -> B       nova alteracao no Windows
+                            evento V2  ->  Android converge
+```
+
+Só com os três é "Windows ↔ Android E2E comprovado". Um capítulo atravessando prova transporte;
+o que se quer provar é **convergência nas duas direções sobre um acervo real**, com o contrato
+de blobs da etapa 13 incluído.
+
+> Gate: o roteiro escrito e executado, com evidência — hash conferido no aparelho de destino,
+> não "a imagem apareceu". É o único gate da etapa que não é automatizável hoje, e isso fica
+> declarado em vez de disfarçado.
+
+### Fatia 5 — QR e descoberta, como UX sobre protocolo provado
+
+**Não muda o protocolo provado na fatia 4.** O QR serializa o mesmo material de conexão que o
+PIN já usa, e a descoberta automática substitui a digitação do endereço — nada além disso. Se
+alterar mensagem, handshake ou ordem, deixou de ser esta fatia.
 
 ---
 
-## 5. Decisões que preciso do humano antes da fatia 2
+## 5. Decisões — respondidas, mantidas aqui pelo motivo
 
-1. **Destino do V1** — substituir, conviver ou congelar (§3.4).
-2. **Descoberta** — mDNS, broadcast, ou só endereço/QR nesta etapa (§3.2).
-3. **Primeiro pareamento** — PIN (sem câmera, mais curto) ou QR (precisa de câmera).
-4. **Escopo do E2E da fatia 4** — capítulo com imagem já cobre o essencial, ou a etapa só fecha
-   com bootstrap completo de acervo entre os dois aparelhos.
+Respondidas em 2026-09-11 (resumo em §4). O registro do que foi perguntado fica porque o
+motivo de cada escolha é o que evita reabrir a discussão em três meses.
 
-Nada aqui está implementado. A fatia 0 é a única que pode andar sem essas respostas, porque ela
-não decide nada: só mede se o alvo compila.
+1. **Destino do V1** → **congelar e substituir.** Não coexistir. O motivo é o pior defeito
+   possível: um acervo com parte das escritas vindas do snapshot/LWW do V1 e parte da
+   causalidade do V2 teria estado cuja origem o V2 não consegue explicar. O V1 fica no código
+   durante a etapa para referência e rollback, e **não** recebe refactor — sem framing novo,
+   sem Noise, sem blob, sem adaptação. Reaproveitar dele só o que for genérico de verdade e
+   não carregar semântica V1.
+2. **Descoberta** → **nenhuma agora.** IP/endereço + porta + PIN. Provar o transporte antes de
+   envolver multicast, permissão de Android e diferença entre roteadores.
+3. **Primeiro pareamento** → **PIN.** Sem câmera, sem plugin, testável nos dois sistemas
+   imediatamente, e separa autenticação/Noise/transporte da UX.
+4. **Escopo do E2E** → os três cenários da fatia 4, com blob e convergência bidirecional.
+
+### Critério de parada, a partir daqui
+
+Parar para decisão **somente** se algo exigir alterar: modelo causal do V2, identidade/roster,
+handshake criptográfico, bootstrap da etapa 12, contrato de blobs da etapa 13, ou o modelo de
+confiança entre aparelhos. Framing, comandos Tauri, organização de tarefa assíncrona, formato
+de mensagem e divisão de módulos: decidir e seguir.
