@@ -18,6 +18,26 @@ Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 
 ## ACTIVE
 
+### NH-072 — Transporte de blob pela rede
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4  (depende da etapa 14)
+```
+
+`blob_backfill::transferir_blobs` recebe a origem como
+`FnMut(&str) -> Result<Vec<u8>, String>` justamente para que a rede entre ali sem mudar o
+resto. Hoje só existe `origem_local`, que lê de um `BlobStore` na mesma máquina — é o que o
+pareamento local e os gates usam.
+
+Falta o transporte de verdade: pedir o hash ao peer pela sessão Noise, receber em streaming e
+alimentar o `put_esperando`. Sem chunking sofisticado; a verificação já está no lugar certo, e
+o gate `origem_que_mente_sobre_o_hash_nao_publica_nada` prova que uma origem hostil não
+publica nada.
+
+---
+
 ### NH-068 — Colar imagem no editor deveria publicar no blob store
 
 ```text
@@ -93,7 +113,7 @@ Nada do banco muda quando isso acontecer — a referência já é o hash.
 
 ```text
 Owner:  Claude
-Status: EM ANDAMENTO — fatias 1 a 5A e o transformador entregues
+Status: DONE — as oito fatias entregues
 ADR:    0010
 Fase:   4  (etapa 13 de 14)
 ```
@@ -130,7 +150,13 @@ que o backup já varre recursivamente.
   chamando a mesma `blob_document::exigir_blob_safe`.
 - O editor publica no blob store e resolve em runtime; o `src` nunca é serializado.
 
-**Falta:** o evento de attachment (fatia 7) e o bootstrap com manifesto de blobs (fatia 8).
+- `attachment` no Sync V2: evento com metadado mais `blob_hash`, tombstone na remoção, e
+  aplicação que recusa payload com bytes. A tabela deixou `EtapaPosterior` e viaja no bundle.
+- Bootstrap com manifesto: conjunto único de hashes derivado das três origens que viajam,
+  transferência com SHA recalculado, e seed recusado enquanto faltar blob obrigatório.
+
+**Nada falta para a etapa 13.** O que ficou registrado são as dívidas `NH-066` a `NH-071`,
+nenhuma delas bloqueando as invariantes do ADR 0010.
 
 ---
 

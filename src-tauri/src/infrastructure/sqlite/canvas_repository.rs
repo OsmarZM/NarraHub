@@ -2,7 +2,7 @@ use crate::database::error::DatabaseCommandResult;
 use crate::domain::canvas::{
     Attachment, CanvasEdge, CanvasEntityPosition, CanvasNode, CanvasNodePatch,
 };
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use super::connection::map_sqlite_error;
 
@@ -293,7 +293,8 @@ pub fn list_attachments(
 ) -> DatabaseCommandResult<Vec<Attachment>> {
     let mut statement = connection
         .prepare(
-            "SELECT id, universe_id, owner_type, owner_id, data_url, caption, sort_order,
+            "SELECT id, universe_id, owner_type, owner_id, data_url, blob_hash, mime_type,
+                    caption, sort_order,
                     created_at
                FROM attachments
               WHERE universe_id = ?1 AND owner_type = ?2 AND owner_id = ?3
@@ -308,6 +309,8 @@ pub fn list_attachments(
                 owner_type: row.get("owner_type")?,
                 owner_id: row.get("owner_id")?,
                 data_url: row.get("data_url")?,
+                blob_hash: row.get("blob_hash")?,
+                mime_type: row.get("mime_type")?,
                 caption: row.get("caption")?,
                 sort_order: row.get("sort_order")?,
                 created_at: row.get("created_at")?,
@@ -316,6 +319,78 @@ pub fn list_attachments(
         .map_err(map_sqlite_error)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(map_sqlite_error)
+}
+
+/// O anexo por `id`, para o payload do evento.
+///
+/// Lido de dentro da transação que acabou de escrever, como o capítulo faz: o
+/// payload é o estado **novo** do agregado, e montá-lo a partir do que a tela
+/// mandou descreveria só o que ela mexeu.
+pub fn get_attachment(
+    connection: &Connection,
+    id: &str,
+) -> DatabaseCommandResult<Option<Attachment>> {
+    connection
+        .query_row(
+            "SELECT id, universe_id, owner_type, owner_id, data_url, blob_hash, mime_type,
+                    caption, sort_order, created_at
+               FROM attachments WHERE id = ?1",
+            [id],
+            |row| {
+                Ok(Attachment {
+                    id: row.get("id")?,
+                    universe_id: row.get("universe_id")?,
+                    owner_type: row.get("owner_type")?,
+                    owner_id: row.get("owner_id")?,
+                    data_url: row.get("data_url")?,
+                    blob_hash: row.get("blob_hash")?,
+                    mime_type: row.get("mime_type")?,
+                    caption: row.get("caption")?,
+                    sort_order: row.get("sort_order")?,
+                    created_at: row.get("created_at")?,
+                })
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)
+}
+
+/// Grava o anexo inteiro, vindo de um evento.
+///
+/// Diferente do `insert_attachment`: a posição **não** é recalculada, porque
+/// ela veio no payload. Recalcular faria o mesmo anexo aparecer em posições
+/// diferentes em cada aparelho.
+pub fn upsert_attachment_from_event(
+    connection: &Connection,
+    attachment: &Attachment,
+) -> DatabaseCommandResult<()> {
+    connection
+        .execute(
+            "INSERT INTO attachments
+               (id, universe_id, owner_type, owner_id, data_url, blob_hash, mime_type,
+                caption, sort_order, created_at)
+             VALUES (?1, ?2, ?3, ?4, '', ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(id) DO UPDATE SET
+                owner_type = excluded.owner_type,
+                owner_id = excluded.owner_id,
+                blob_hash = excluded.blob_hash,
+                mime_type = excluded.mime_type,
+                caption = excluded.caption,
+                sort_order = excluded.sort_order",
+            rusqlite::params![
+                attachment.id,
+                attachment.universe_id,
+                attachment.owner_type,
+                attachment.owner_id,
+                attachment.blob_hash,
+                attachment.mime_type,
+                attachment.caption,
+                attachment.sort_order,
+                attachment.created_at,
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    Ok(())
 }
 
 /// A posição sai de uma subquery no próprio `INSERT`. O caminho antigo lia
@@ -537,6 +612,8 @@ mod tests {
                         owner_type: "entity".into(),
                         owner_id: "e1".into(),
                         data_url: "data:,".into(),
+                        blob_hash: String::new(),
+                        mime_type: String::new(),
                         caption: String::new(),
                         sort_order: 0,
                         created_at: "2026-01-01 00:00:00".into(),
@@ -564,6 +641,8 @@ mod tests {
                     owner_type: "entity".into(),
                     owner_id: owner.into(),
                     data_url: "data:,".into(),
+                    blob_hash: String::new(),
+                    mime_type: String::new(),
                     caption: String::new(),
                     sort_order: 0,
                     created_at: "2026-01-01 00:00:00".into(),

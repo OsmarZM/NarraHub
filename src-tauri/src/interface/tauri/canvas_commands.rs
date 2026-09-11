@@ -144,6 +144,7 @@ pub fn attachment_create(
     canvas_service::create_attachment(
         &super::database(&app)?,
         &super::blob_store(&app)?,
+        &super::sync_identity(&app)?,
         &universe_id,
         &owner_type,
         &owner_id,
@@ -154,5 +155,5 @@ pub fn attachment_create(
 
 #[tauri::command]
 pub fn attachment_delete(app: AppHandle, id: String) -> DatabaseCommandResult<()> {
-    canvas_service::delete_attachment(&super::database(&app)?, &id)
+    canvas_service::delete_attachment(&super::database(&app)?, &super::sync_identity(&app)?, &id)
 }

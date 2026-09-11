@@ -72,7 +72,7 @@ O gate `o andaime superado não volta para o repositório` reprova se `angular-s
 ## Fase ativa
 
 ```text
-FASE 4 — Sync V2   (etapas 1 a 12 de 14 concluídas; etapa 13 em andamento)
+FASE 4 — Sync V2   (etapas 1 a 13 de 14 concluídas)
 ```
 
 As fases **3 e 3.5 fecharam em 2026-09-01**, com gates executáveis:
@@ -110,10 +110,10 @@ diretório não o pegaria; o gate contra **colocação** pega.
 > deixa de existir; a divergência registra a operação de cada lado. **Schema 18.**
 > **Etapa 12:** bootstrap por snapshot atômico — captura numa transação de leitura só, e
 > semeadura construtiva que recusa qualquer receptor não virgem. **Schema 19.**
-> **Etapa 13, em andamento:** assets por `SHA-256` (ADR 0010). Blob store, catálogo das dez
-> superfícies binárias e backfill das seis diretas entregues. **Schema 20.** As quatro
-> superfícies de documento estão paradas em **NH-065**: elas guardam **HTML**, não JSON do
-> Tiptap, e o desenho aprovado dizia o contrário.
+> **Etapa 13:** assets por `SHA-256` (ADR 0010). **Schema 20.** Blob store, catálogo das dez
+> superfícies, backfill das dez, transformador HTML único com `lol_html`, as três barreiras de
+> entrada, evento de attachment e bootstrap com manifesto de blobs verificados antes do seed.
+> `attachments` deixou de ser `EtapaPosterior` e passa a viajar no bundle.
 >
 > Reconciliação fina de capítulo por bloco depende da **NH-045** e não faz parte das 14
 > etapas. O Sync V2 pode fechar com conflito seguro de capítulo inteiro.
@@ -144,7 +144,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | `commands/` legado | **Removido** na Fase 3 |
 | Fronteira nativa do frontend | **Formalizada** — ADR 0008 |
 | Sync V1 sem criptografia | **Foco atual** — Fase 4 |
-| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1–12 concluídas, 13 em andamento (**ADR 0010**, **NH-064**); falta rede real, o gate de saída **NH-053** e a propagação da saída (**NH-058**, parcial) |
+| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1–13 concluídas (**ADR 0010** fecha os assets); falta rede real, o gate de saída **NH-053** e a propagação da saída (**NH-058**, parcial) |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
 | Ciclo de atualização empacotado | **Concluído.** Roteiro, checklist de release e três execuções reais |

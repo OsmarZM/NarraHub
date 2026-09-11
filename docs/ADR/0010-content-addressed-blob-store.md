@@ -282,6 +282,33 @@ depende de todos os assets serem representáveis são impedidas: bootstrap, remo
 colunas legadas, e qualquer coisa que declare a migração concluída. Sync incremental de conteúdo
 não relacionado não trava.
 
+### O fluxo do bootstrap, como ficou
+
+```text
+1  capturar snapshot          numa transação de leitura só
+2  derivar o manifesto        conjunto único de hashes, na MESMA transação
+3  receptor calcula ausentes  verify(), não apenas has()
+4  transferir os ausentes     temp → SHA-256 → compara → rename
+5  verificar todos
+6  só então semear o banco
+```
+
+A ordem é o oposto da do incremental, e o motivo é que **o bootstrap não se
+repete**. Depois de semeado, o cursor está no baseline: o que faltou nunca mais é
+pedido, e a imagem ausente fica ausente para sempre. No incremental há sempre uma
+próxima sessão, então lá o evento aplica, o cursor avança, e o arquivo chega
+depois.
+
+O manifesto deriva de três origens — as seis colunas diretas, os
+`data-narrahub-blob` dentro de `chapters.content` e de
+`chapter_revisions.content`, e o `blob_hash` dos anexos. Fica de fora o que não
+viaja: `sync_conflicts`, colaboração pendente e o log histórico. Um blob
+referenciado só por eles não é obrigatório, porque o receptor nunca vai ver
+aquela linha.
+
+Blob já recebido quando o seed é recusado fica **órfão**, e isso é aceitável:
+órfão é menos perigoso que banco semeado pela metade, e não há GC nesta etapa.
+
 ### Reclassificação na matriz da etapa 12
 
 | Tabela | Antes | Depois | Condição |

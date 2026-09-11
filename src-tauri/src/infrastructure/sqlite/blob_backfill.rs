@@ -46,6 +46,7 @@ use crate::infrastructure::blob_document;
 use crate::infrastructure::blob_store::{e_hash_canonico, BlobStore};
 use crate::infrastructure::sqlite::blob_surfaces::{Forma, Superficie, CATALOGO};
 use rusqlite::Connection;
+use std::collections::BTreeSet;
 
 /// O que a passada fez. Serve ao relatório e aos gates.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -603,6 +604,180 @@ fn gravar_documento(
     tx.commit()
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// O manifesto de blobs do bootstrap (ADR 0010, fatia 8)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// **Todos os hashes de que o receptor vai precisar, sem repetição.**
+///
+/// Conjunto, e não lista: a mesma imagem usada cem vezes é um hash, é um
+/// arquivo, e é uma transferência. É a deduplicação da etapa aparecendo no
+/// pareamento.
+///
+/// Deriva de **três origens**, e cada uma tem um motivo para estar aqui:
+///
+/// ```text
+/// seis campos diretos     a coluna de hash, direto
+/// chapters.content        os <img data-narrahub-blob> dentro do documento
+/// chapter_revisions       idem, porque a tabela viaja no bundle
+/// ```
+///
+/// E **não** deriva de:
+///
+/// - `sync_conflicts` — continua fora do bundle. A versão pendente não viaja,
+///   e é por isso que conflito aberto bloqueia a captura;
+/// - `collaboration_contributions` — estado local de revisão, também fora;
+/// - `sync_events` histórico — não viaja, e o baseline o substitui.
+///
+/// Um blob referenciado só por essas três não é obrigatório: o receptor nunca
+/// vai ver aquela linha.
+pub fn manifesto_de_blobs(
+    connection: &Connection,
+    tabelas_que_viajam: &[&str],
+) -> DatabaseCommandResult<BTreeSet<String>> {
+    let mut hashes: BTreeSet<String> = BTreeSet::new();
+
+    for superficie in CATALOGO {
+        if !tabelas_que_viajam.contains(&superficie.tabela) {
+            continue;
+        }
+        match superficie.forma {
+            Forma::CampoDireto => {
+                for referencia in superficie.referencias {
+                    let mut statement = connection
+                        .prepare(&format!(
+                            "SELECT {} FROM {} WHERE {} <> ''",
+                            referencia.hash, superficie.tabela, referencia.hash
+                        ))
+                        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+                    let lidos: Vec<String> = statement
+                        .query_map([], |row| row.get(0))
+                        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+                    for hash in lidos {
+                        if e_hash_canonico(&hash) {
+                            hashes.insert(hash);
+                        }
+                    }
+                }
+            }
+            Forma::DocumentoTiptap => {
+                let recorte = superficie.clausula_do_recorte();
+                for lado in superficie.colunas_legadas {
+                    let mut statement = connection
+                        .prepare(&format!(
+                            "SELECT {lado} FROM {} WHERE ({recorte}) AND {lado} <> ''",
+                            superficie.tabela
+                        ))
+                        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+                    let documentos: Vec<String> = statement
+                        .query_map([], |row| row.get(0))
+                        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+                    for documento in documentos {
+                        // Documento que não abre não contribui hash, e não é
+                        // erro aqui: a pendência de migração já bloqueia a
+                        // captura por outro caminho.
+                        if let Ok(encontrados) = blob_document::hashes_do_documento(&documento) {
+                            hashes.extend(encontrados);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(hashes)
+}
+
+/// O que o receptor ainda não tem, **verificado**.
+///
+/// Presença não basta: um arquivo corrompido no destino tem o nome certo e o
+/// conteúdo errado, e tratá-lo como presente faria o bootstrap concluir com
+/// uma imagem quebrada que ninguém mais vai buscar.
+pub fn blobs_faltantes(
+    destino: &BlobStore,
+    manifesto: &BTreeSet<String>,
+) -> DatabaseCommandResult<BTreeSet<String>> {
+    let mut faltantes = BTreeSet::new();
+    for hash in manifesto {
+        if !destino.verify(hash)? {
+            faltantes.insert(hash.clone());
+        }
+    }
+    Ok(faltantes)
+}
+
+/// O que a transferência fez.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ResumoDaTransferencia {
+    /// Chegaram agora.
+    pub transferidos: usize,
+    /// Já estavam aqui e conferiram — não retransmitidos.
+    pub ja_presentes: usize,
+    /// Hashes que a origem não pôde entregar, ou que não conferiram.
+    pub falharam: BTreeSet<String>,
+}
+
+/// **Transfere o que falta, conferindo o SHA de cada um.**
+///
+/// ```text
+/// destino pede hash  →  origem entrega bytes  →  temp  →  SHA-256
+///                                                           ↓
+///                                           bate?  →  rename (publica)
+///                                           não?   →  descarta, não publica
+/// ```
+///
+/// A origem é uma **função**, e não um `BlobStore`, e a escolha tem motivo.
+/// Com `BlobStore` nos dois lados a verificação do destino é inalcançável:
+/// `BlobStore::read` já confere antes de devolver, então origem mentirosa não
+/// se expressa — a mutação que troca `put_esperando` por `put` sobreviveu
+/// exatamente por isso.
+///
+/// E a origem real vai ser a **rede**, onde mentir é o caso interessante: um
+/// peer anuncia o hash da capa boa e manda outros bytes. Receber uma função
+/// descreve esse contrato de verdade, e o gate
+/// `origem_que_mente_sobre_o_hash_nao_publica_nada` passa a ser escrevível.
+///
+/// Mesmo hash já presente não é retransmitido. E não estoura no primeiro erro:
+/// junta os que falharam e devolve, porque quem decide se dá para semear é o
+/// bootstrap, e ele precisa da lista inteira para dizer ao escritor o que
+/// faltou.
+pub fn transferir_blobs(
+    mut buscar: impl FnMut(&str) -> Result<Vec<u8>, String>,
+    destino: &BlobStore,
+    manifesto: &BTreeSet<String>,
+) -> DatabaseCommandResult<ResumoDaTransferencia> {
+    let mut resumo = ResumoDaTransferencia::default();
+    for hash in manifesto {
+        if destino.verify(hash)? {
+            resumo.ja_presentes += 1;
+            continue;
+        }
+        let Ok(bytes) = buscar(hash) else {
+            resumo.falharam.insert(hash.clone());
+            continue;
+        };
+        // `put_esperando` recalcula o SHA **do disco** e recusa publicar sob um
+        // endereço que os bytes não sustentam. É a linha que impede um peer de
+        // escolher o endereço do que mandou.
+        match destino.put_esperando(hash, &bytes) {
+            Ok(_) => resumo.transferidos += 1,
+            Err(_) => {
+                resumo.falharam.insert(hash.clone());
+            }
+        }
+    }
+    Ok(resumo)
+}
+
+/// A origem quando o blob está num `BlobStore` local — o caso do teste e o do
+/// pareamento na mesma máquina.
+pub fn origem_local(origem: &BlobStore) -> impl FnMut(&str) -> Result<Vec<u8>, String> + '_ {
+    move |hash| origem.read(hash).map_err(|erro| erro.message)
 }
 
 /// O `detail` tem `CHECK (length(detail) <= 200)` no schema.

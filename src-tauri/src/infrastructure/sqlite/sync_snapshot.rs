@@ -46,6 +46,7 @@
 //! o gatilho de contiguidade da v16 só cobra densidade **acima** do baseline.
 
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
+use crate::infrastructure::sqlite::blob_backfill;
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
@@ -133,8 +134,15 @@ pub const CATALOGO: &[(&str, Categoria)] = &[
     // ── V1, sem escritor vivo ──────────────────────────────────────────────
     ("devices", LocalNaoTransferida),
     ("sync_peers", LocalNaoTransferida),
-    // ── etapa 13 ───────────────────────────────────────────────────────────
-    ("attachments", EtapaPosterior),
+    // ── reclassificada pela etapa 13 ───────────────────────────────────────
+    //
+    // Era `EtapaPosterior` porque a tabela guardava a imagem inteira em
+    // `data_url`: copiá-la no bundle mandaria megabytes de base64 pelo
+    // pareamento, e o contrato do bundle é estado, não arquivo.
+    //
+    // Agora ela guarda `blob_hash`, e o arquivo viaja fora — a fatia 8 deriva
+    // o manifesto de hashes daqui. A linha ficou pequena, então viaja.
+    ("attachments", TransferidaNoBundle),
 ];
 
 /// A ordem em que as tabelas do bundle são inseridas.
@@ -176,6 +184,9 @@ pub const ORDEM_DE_SEMEADURA: &[&str] = &[
     "canvas_edges",
     "canvas_entity_positions",
     "timeline_events",
+    // Reclassificada pela etapa 13: guarda `blob_hash`, e o arquivo viaja
+    // fora. FK para `universes`, que vem primeiro.
+    "attachments",
     "sync_devices",
     "sync_aggregate_state",
     "sync_revision_history",
@@ -251,6 +262,17 @@ pub struct BootstrapBundle {
     /// De onde o incremental começa, por origem. Vira `baseline_seq` e
     /// `last_seq_applied` ao mesmo tempo no receptor.
     pub vetor: BTreeMap<String, i64>,
+    /// **Os blobs de que o receptor vai precisar** (ADR 0010, fatia 8).
+    ///
+    /// Conjunto único: a mesma imagem usada cem vezes é um hash, um arquivo e
+    /// uma transferência.
+    ///
+    /// O manifesto viaja no bundle, mas os **arquivos não** — eles são
+    /// transferidos à parte e verificados antes de o banco ser semeado. É a
+    /// separação do item 7 do contrato: o cursor causal não espera arquivo
+    /// grande, e o bootstrap é o único lugar em que a exigência se inverte
+    /// (item 10).
+    pub blobs: BTreeSet<String>,
 }
 
 /// As tabelas copiadas linha a linha.
@@ -335,6 +357,15 @@ pub enum FalhaDeSemeadura {
     IdentidadeComPassadoNoBundle { device_id: String, seq: i64 },
     /// O bundle é internamente incoerente.
     BundleIncoerente { motivo: String },
+    /// **Falta blob obrigatório, ou algum não conferiu o SHA.**
+    ///
+    /// O banco **não** é semeado. Semear sem os arquivos daria um acervo em
+    /// que a imagem não existe e ninguém mais vai buscá-la: o cursor já estaria
+    /// no baseline, então o incremental não reenvia nada daquele passado.
+    ///
+    /// Blob já recebido fica órfão no disco, e isso é aceitável — órfão é
+    /// menos perigoso que banco semeado pela metade, e não há GC nesta etapa.
+    BlobObrigatorioAusente { quantos: usize, exemplo: String },
 }
 
 impl std::fmt::Display for FalhaDeSemeadura {
@@ -366,6 +397,13 @@ impl std::fmt::Display for FalhaDeSemeadura {
                  continuasse com ela, a próxima escrita nasceria como a alteração número 1 e \
                  colidiria com uma que já existe por aí — duas coisas diferentes com a mesma \
                  coordenada. Gere uma identidade nova para este aparelho antes de parear."
+            ),
+            FalhaDeSemeadura::BlobObrigatorioAusente { quantos, exemplo } => write!(
+                f,
+                "Faltam {quantos} imagem(ns) para completar o pareamento, ou alguma chegou \
+                 corrompida (por exemplo {exemplo}). Nada foi gravado neste aparelho: um \
+                 acervo semeado sem as imagens ficaria com elas faltando para sempre, porque \
+                 o pareamento não se repete. Tente parear de novo."
             ),
             FalhaDeSemeadura::BundleIncoerente { motivo } => {
                 write!(f, "O bundle não descreve um estado válido: {motivo}")
@@ -809,6 +847,15 @@ pub fn capturar(
     // é perda de dados.
     let vetor = crate::infrastructure::sqlite::sync_exchange::vetor_local(&tx)?;
 
+    // O manifesto sai das tabelas que REALMENTE viajam: conflito V1 e
+    // colaboração pendente ficam fora, e um blob referenciado só por eles não é
+    // obrigatório — o receptor nunca vai ver aquela linha.
+    //
+    // Dentro da MESMA transação de leitura que montou as tabelas: derivá-lo
+    // depois do commit leria um instante diferente do acervo, e o manifesto
+    // passaria a descrever um snapshot que não é o que está no bundle.
+    let blobs = blob_backfill::manifesto_de_blobs(&tx, &tabelas_copiadas())?;
+
     tx.commit()
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
 
@@ -816,6 +863,7 @@ pub fn capturar(
         tabelas,
         roster,
         vetor,
+        blobs,
     }))
 }
 
@@ -876,9 +924,28 @@ fn ler_tabela(tx: &Transaction<'_>, nome: &str) -> DatabaseCommandResult<Tabela>
 /// capítulo — e seria exatamente esse capítulo que o seed enterraria.
 pub fn semear(
     connection: &mut Connection,
+    store: &crate::infrastructure::blob_store::BlobStore,
     identidade_local: &crate::domain::identity::DeviceIdentity,
     bundle: &BootstrapBundle,
 ) -> DatabaseCommandResult<Result<(), FalhaDeSemeadura>> {
+    // **Os blobs primeiro, antes de qualquer escrita no banco.**
+    //
+    // A ordem é a exigência da fatia 8, e ela é o oposto da do incremental:
+    //
+    //   incremental   evento aplica, blob chega depois, cursor avança
+    //   bootstrap     blob verificado, e SÓ ENTÃO o banco é semeado
+    //
+    // O motivo é que o bootstrap não se repete. Depois de semeado, o cursor
+    // está no baseline: o que faltou não é reenviado por ninguém, e a imagem
+    // ausente fica ausente para sempre. No incremental há sempre uma próxima
+    // sessão.
+    let faltantes = blob_backfill::blobs_faltantes(store, &bundle.blobs)?;
+    if !faltantes.is_empty() {
+        return Ok(Err(FalhaDeSemeadura::BlobObrigatorioAusente {
+            quantos: faltantes.len(),
+            exemplo: faltantes.iter().next().cloned().unwrap_or_default(),
+        }));
+    }
     let tx = connection
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
@@ -1204,6 +1271,10 @@ mod tests {
     struct Aparelho {
         banco: TemporaryDatabase,
         identidade: DeviceIdentity,
+        /// O blob store deste aparelho. Cada um tem o seu, como na vida real:
+        /// o doador tem os arquivos, o receptor não tem nenhum até a
+        /// transferência acontecer.
+        store: crate::infrastructure::blob_store::BlobStore,
         _dados: std::path::PathBuf,
     }
 
@@ -1224,6 +1295,7 @@ mod tests {
             Self {
                 banco,
                 identidade,
+                store: crate::infrastructure::blob_store::BlobStore::new(&dados),
                 _dados: dados,
             }
         }
@@ -1315,9 +1387,34 @@ mod tests {
             .expect("o acervo do doador não tem divergência aberta")
     }
 
-    fn semear_em(receptor: &Aparelho, bundle: &BootstrapBundle) -> Result<(), FalhaDeSemeadura> {
+    /// Transfere os blobs do doador e semeia o receptor.
+    fn semear_de(
+        doador: &Aparelho,
+        receptor: &Aparelho,
+        bundle: &BootstrapBundle,
+    ) -> Result<(), FalhaDeSemeadura> {
+        blob_backfill::transferir_blobs(
+            blob_backfill::origem_local(&doador.store),
+            &receptor.store,
+            &bundle.blobs,
+        )
+        .expect("transferir blobs");
+        semear_sem_blobs(receptor, bundle)
+    }
+
+    /// Semeia sem transferir nada. Para os gates que provam a recusa.
+    fn semear_sem_blobs(
+        receptor: &Aparelho,
+        bundle: &BootstrapBundle,
+    ) -> Result<(), FalhaDeSemeadura> {
         let mut connection = receptor.banco.database.write().expect("escrita");
-        semear(&mut connection, &receptor.identidade, bundle).expect("semear")
+        semear(
+            &mut connection,
+            &receptor.store,
+            &receptor.identidade,
+            bundle,
+        )
+        .expect("semear")
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1335,7 +1432,7 @@ mod tests {
         let receptor = Aparelho::novo();
         let bundle = capturar_de(&doador);
 
-        semear_em(&receptor, &bundle).expect("o receptor está vazio");
+        semear_sem_blobs(&receptor, &bundle).expect("o receptor está vazio");
 
         assert_eq!(
             receptor.cursor(doador.identidade.device_id()),
@@ -1382,7 +1479,7 @@ mod tests {
             .vetor
             .insert(receptor.identidade.device_id().to_string(), 0);
 
-        semear_em(&receptor, &bundle).expect("zero é ausência de passado");
+        semear_sem_blobs(&receptor, &bundle).expect("zero é ausência de passado");
 
         assert_eq!(receptor.cursor(receptor.identidade.device_id()), None);
         assert_eq!(receptor.escrever("cap-novo", "Primeiro").seq, 1);
@@ -1424,7 +1521,7 @@ mod tests {
             .vetor
             .insert(receptor.identidade.device_id().to_string(), 57);
 
-        let falha = semear_em(&receptor, &bundle)
+        let falha = semear_sem_blobs(&receptor, &bundle)
             .expect_err("o conjunto conhece 57 escritas desta identidade");
         assert_eq!(
             falha,
@@ -1474,7 +1571,7 @@ mod tests {
         assert_eq!(era_dono_la, 1, "no banco do doador, ele é o self");
 
         let bundle = capturar_de(&doador);
-        semear_em(&receptor, &bundle).expect("semear");
+        semear_sem_blobs(&receptor, &bundle).expect("semear");
 
         let connection = receptor.banco.database.write().expect("escrita");
         let donos: Vec<String> = connection
@@ -1754,8 +1851,8 @@ mod tests {
         let receptor = Aparelho::novo();
         let bundle = capturar_de(&doador);
 
-        semear_em(&receptor, &bundle).expect("o primeiro seed acontece");
-        let falha = semear_em(&receptor, &bundle).expect_err("o segundo não pode acontecer");
+        semear_sem_blobs(&receptor, &bundle).expect("o primeiro seed acontece");
+        let falha = semear_sem_blobs(&receptor, &bundle).expect_err("o segundo não pode acontecer");
 
         assert!(
             matches!(falha, FalhaDeSemeadura::ReceptorNaoEstaVazio { .. }),
@@ -1791,7 +1888,7 @@ mod tests {
             }
         }
 
-        let falha = semear_em(&receptor, &ruim).expect_err("o bundle é incoerente");
+        let falha = semear_sem_blobs(&receptor, &ruim).expect_err("o bundle é incoerente");
         assert!(matches!(falha, FalhaDeSemeadura::BundleIncoerente { .. }));
 
         assert_eq!(
@@ -1802,7 +1899,7 @@ mod tests {
         assert_eq!(receptor.conta("sync_cursors"), 0);
         assert_eq!(receptor.conta("sync_aggregate_state"), 0);
 
-        semear_em(&receptor, &bom).expect("o retry com bundle bom precisa concluir");
+        semear_sem_blobs(&receptor, &bom).expect("o retry com bundle bom precisa concluir");
         assert_eq!(receptor.conta("chapters"), 3);
     }
 
@@ -1843,7 +1940,7 @@ mod tests {
         assert_eq!(receptor.conta("sync_cursors"), 0, "e não cria cursor");
 
         let bundle = capturar_de(&doador);
-        let falha = semear_em(&receptor, &bundle).expect_err("há trabalho local aqui");
+        let falha = semear_sem_blobs(&receptor, &bundle).expect_err("há trabalho local aqui");
         assert!(
             matches!(falha, FalhaDeSemeadura::ReceptorNaoEstaVazio { .. }),
             "recusou pelo motivo errado: {falha}"
@@ -1883,7 +1980,7 @@ mod tests {
         let doador = Aparelho::doador_com_acervo(40);
         let receptor = Aparelho::novo();
         let bundle = capturar_de(&doador);
-        semear_em(&receptor, &bundle).expect("semear");
+        semear_sem_blobs(&receptor, &bundle).expect("semear");
         assert_eq!(
             receptor.cursor(doador.identidade.device_id()),
             Some((40, 40))
@@ -1951,7 +2048,7 @@ mod tests {
 
         let receptor = Aparelho::novo();
         let bundle = capturar_de(&doador);
-        semear_em(&receptor, &bundle).expect("semear");
+        semear_sem_blobs(&receptor, &bundle).expect("semear");
 
         assert_eq!(
             receptor.conta("sync_tombstones"),
@@ -2020,7 +2117,7 @@ mod tests {
 
         let receptor = Aparelho::novo();
         let bundle = capturar_de(&doador);
-        semear_em(&receptor, &bundle).expect("semear");
+        semear_sem_blobs(&receptor, &bundle).expect("semear");
 
         assert_eq!(
             receptor.conta("sync_peer_vectors"),
@@ -2114,7 +2211,7 @@ mod tests {
 
         let receptor = Aparelho::novo();
         let bundle = capturar_de(&doador);
-        semear_em(&receptor, &bundle).expect("semear");
+        semear_sem_blobs(&receptor, &bundle).expect("semear");
 
         let depois: Vec<Causality> = casos
             .iter()
@@ -2164,7 +2261,7 @@ mod tests {
             .expect("estado no bundle");
         estado.linhas[0][2] = Value::Text("rev-que-ninguem-conhece".to_string());
 
-        let falha = semear_em(&receptor, &bundle).expect_err("bundle incoerente");
+        let falha = semear_sem_blobs(&receptor, &bundle).expect_err("bundle incoerente");
         assert!(
             matches!(falha, FalhaDeSemeadura::BundleIncoerente { .. }),
             "recusou pelo motivo errado: {falha}"
@@ -2205,7 +2302,7 @@ mod tests {
             .expect("tombstones no bundle");
         tumulos.linhas[0][2] = Value::Text("rev-de-exclusao-inventada".to_string());
 
-        let falha = semear_em(&receptor, &bundle).expect_err("bundle incoerente");
+        let falha = semear_sem_blobs(&receptor, &bundle).expect_err("bundle incoerente");
         assert!(matches!(falha, FalhaDeSemeadura::BundleIncoerente { .. }));
         assert_eq!(receptor.conta("chapters"), 0);
         assert_eq!(receptor.conta("sync_tombstones"), 0);
@@ -2248,7 +2345,7 @@ mod tests {
             .expect("tombstones no bundle");
         tumulos.linhas[0][4] = Value::Text("aparelho-que-nao-esta-no-roster".to_string());
 
-        let falha = semear_em(&receptor, &bundle).expect_err("origem desconhecida");
+        let falha = semear_sem_blobs(&receptor, &bundle).expect_err("origem desconhecida");
         assert!(matches!(falha, FalhaDeSemeadura::BundleIncoerente { .. }));
     }
 
@@ -2265,7 +2362,7 @@ mod tests {
         let mut bundle = capturar_de(&doador);
         bundle.vetor.insert("origem-fantasma".to_string(), 7);
 
-        let falha = semear_em(&receptor, &bundle).expect_err("origem fora do roster");
+        let falha = semear_sem_blobs(&receptor, &bundle).expect_err("origem fora do roster");
         assert!(matches!(falha, FalhaDeSemeadura::BundleIncoerente { .. }));
         assert_eq!(receptor.conta("chapters"), 0, "escreveu antes de validar");
     }
@@ -2343,7 +2440,7 @@ mod tests {
         );
 
         let receptor = Aparelho::novo();
-        semear_em(&receptor, &bundle).expect("semear");
+        semear_sem_blobs(&receptor, &bundle).expect("semear");
         assert_eq!(
             receptor.cursor(estranho.identidade.device_id()),
             None,
@@ -2380,7 +2477,7 @@ mod tests {
             "o cenário precisa remover mesmo"
         );
 
-        let falha = semear_em(&receptor, &bundle).expect_err("falta uma tabela inteira");
+        let falha = semear_sem_blobs(&receptor, &bundle).expect_err("falta uma tabela inteira");
         // O assert é sobre a mensagem da validação ESTRUTURAL, não sobre
         // qualquer recusa que cite "chapters".
         //
@@ -2421,7 +2518,7 @@ mod tests {
             .expect("chapters no bundle");
         bundle.tabelas.push(copia);
 
-        let falha = semear_em(&receptor, &bundle).expect_err("tabela duplicada");
+        let falha = semear_sem_blobs(&receptor, &bundle).expect_err("tabela duplicada");
         match &falha {
             FalhaDeSemeadura::BundleIncoerente { motivo } => assert!(
                 motivo.contains("duas vezes"),
@@ -2448,7 +2545,7 @@ mod tests {
             linhas: vec![vec![Value::Text("x".to_string())]],
         });
 
-        let falha = semear_em(&receptor, &bundle).expect_err("tabela fora do contrato");
+        let falha = semear_sem_blobs(&receptor, &bundle).expect_err("tabela fora do contrato");
         assert!(matches!(falha, FalhaDeSemeadura::BundleIncoerente { .. }));
         assert_eq!(receptor.conta("change_log"), 0);
     }
@@ -2483,7 +2580,7 @@ mod tests {
             linha.remove(posicao);
         }
 
-        let falha = semear_em(&receptor, &bundle).expect_err("falta uma coluna");
+        let falha = semear_sem_blobs(&receptor, &bundle).expect_err("falta uma coluna");
         match &falha {
             FalhaDeSemeadura::BundleIncoerente { motivo } => assert!(
                 motivo.contains("word_count") || motivo.contains("colunas de chapters"),
@@ -2508,7 +2605,7 @@ mod tests {
             .expect("chapters no bundle");
         capitulos.linhas[0].pop();
 
-        let falha = semear_em(&receptor, &bundle).expect_err("aridade errada");
+        let falha = semear_sem_blobs(&receptor, &bundle).expect_err("aridade errada");
         assert!(matches!(falha, FalhaDeSemeadura::BundleIncoerente { .. }));
         assert_eq!(receptor.conta("chapters"), 0);
     }
@@ -2788,7 +2885,7 @@ mod tests {
                 .expect("o receptor tem passado");
         }
 
-        let falha = semear_em(&receptor, &bundle).expect_err("o receptor não está virgem");
+        let falha = semear_sem_blobs(&receptor, &bundle).expect_err("o receptor não está virgem");
         match &falha {
             FalhaDeSemeadura::ReceptorNaoEstaVazio { tabela, linhas } => {
                 assert_eq!(tabela, "blob_migration_issues");
@@ -2797,5 +2894,358 @@ mod tests {
             outra => panic!("recusou pelo motivo errado: {outra}"),
         }
         assert_eq!(receptor.conta("chapters"), 0, "rollback incompleto");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Bootstrap com blobs (ADR 0010, fatia 8)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Uma `data:` URL de verdade, com os bytes dela.
+    fn inline_de_teste(conteudo: &str) -> (String, Vec<u8>) {
+        let bytes = conteudo.as_bytes().to_vec();
+        let texto = crate::domain::data_url::codificar_base64(&bytes);
+        (format!("data:image/png;base64,{texto}"), bytes)
+    }
+
+    /// Põe a mesma imagem em três superfícies do doador, já como referência.
+    ///
+    /// Devolve o hash. Semear o acervo com referência (e não com `data:` URL)
+    /// é o que o backfill produz, e é o estado em que um doador de verdade
+    /// está quando chega ao pareamento.
+    fn semear_imagem_no_doador(doador: &Aparelho, conteudo: &str) -> String {
+        let (_, bytes) = inline_de_teste(conteudo);
+        let hash = doador.store.put(&bytes).expect("publicar no doador");
+        let connection = doador.banco.database.write().expect("escrita");
+        connection
+            .execute(
+                "UPDATE universes SET cover_blob_hash = ?1, cover_mime_type = 'image/png'",
+                [&hash],
+            )
+            .expect("capa do universo");
+        connection
+            .execute(
+                "UPDATE chapters SET content = ?1 WHERE id = 'cap-1'",
+                [&format!(
+                    "<p>texto</p><img data-narrahub-blob=\"{hash}\" data-mime-type=\"image/png\">"
+                )],
+            )
+            .expect("imagem dentro do capítulo");
+        connection
+            .execute(
+                "INSERT INTO attachments
+                    (id, universe_id, owner_type, owner_id, data_url, blob_hash, mime_type,
+                     caption, sort_order, created_at)
+                 VALUES ('anexo-1','u1','chapter','cap-1','', ?1, 'image/png','', 0,
+                         '2026-01-01')",
+                [&hash],
+            )
+            .expect("anexo");
+        hash
+    }
+
+    /// **O manifesto é um conjunto: a mesma imagem em três lugares é um hash.**
+    ///
+    /// É a deduplicação da etapa aparecendo no pareamento. Sem conjunto, a
+    /// mesma capa usada em cem cards viraria cem transferências do mesmo
+    /// arquivo.
+    ///
+    /// E ele cobre as três origens: coluna direta, documento de capítulo e
+    /// anexo — que é a tabela reclassificada pela fatia 7.
+    #[test]
+    fn o_manifesto_de_blobs_e_um_conjunto_unico() {
+        let doador = Aparelho::doador_com_acervo(2);
+        let hash = semear_imagem_no_doador(&doador, "a-mesma-arte");
+
+        let bundle = capturar_de(&doador);
+        assert_eq!(
+            bundle.blobs,
+            std::collections::BTreeSet::from([hash.clone()]),
+            "três referências, um hash"
+        );
+    }
+
+    /// Conteúdo diferente em cada superfície dá um hash por conteúdo.
+    ///
+    /// Senão o gate de cima passaria por vácuo: um manifesto que sempre
+    /// devolve um elemento também devolveria um para três imagens distintas.
+    #[test]
+    fn o_manifesto_junta_todas_as_origens() {
+        let doador = Aparelho::doador_com_acervo(2);
+        let (_, bytes_capa) = inline_de_teste("a-capa");
+        let (_, bytes_cap) = inline_de_teste("dentro-do-capitulo");
+        let (_, bytes_anexo) = inline_de_teste("o-anexo");
+        let capa = doador.store.put(&bytes_capa).expect("capa");
+        let no_capitulo = doador.store.put(&bytes_cap).expect("capítulo");
+        let anexo = doador.store.put(&bytes_anexo).expect("anexo");
+        {
+            let connection = doador.banco.database.write().expect("escrita");
+            connection
+                .execute(
+                    "UPDATE universes SET cover_blob_hash = ?1, cover_mime_type = 'image/png'",
+                    [&capa],
+                )
+                .expect("capa");
+            connection
+                .execute(
+                    "UPDATE chapters SET content = ?1 WHERE id = 'cap-1'",
+                    [&format!("<img data-narrahub-blob=\"{no_capitulo}\">")],
+                )
+                .expect("capítulo");
+            connection
+                .execute(
+                    "INSERT INTO attachments
+                        (id, universe_id, owner_type, owner_id, data_url, blob_hash, mime_type,
+                         caption, sort_order, created_at)
+                     VALUES ('a1','u1','chapter','cap-1','', ?1, 'image/png','', 0,'2026-01-01')",
+                    [&anexo],
+                )
+                .expect("anexo");
+        }
+
+        let bundle = capturar_de(&doador);
+        assert_eq!(
+            bundle.blobs,
+            std::collections::BTreeSet::from([capa, no_capitulo, anexo]),
+            "as três origens precisam entrar"
+        );
+    }
+
+    /// **A transferência não retransmite o que já está aqui.**
+    #[test]
+    fn a_transferencia_baixa_somente_os_ausentes() {
+        let doador = Aparelho::doador_com_acervo(2);
+        let hash = semear_imagem_no_doador(&doador, "arte");
+        let receptor = Aparelho::novo();
+        let bundle = capturar_de(&doador);
+
+        let primeira = blob_backfill::transferir_blobs(
+            blob_backfill::origem_local(&doador.store),
+            &receptor.store,
+            &bundle.blobs,
+        )
+        .expect("primeira transferência");
+        assert_eq!(primeira.transferidos, 1);
+        assert_eq!(primeira.ja_presentes, 0);
+        assert!(primeira.falharam.is_empty());
+        assert!(receptor.store.verify(&hash).expect("integridade"));
+
+        let segunda = blob_backfill::transferir_blobs(
+            blob_backfill::origem_local(&doador.store),
+            &receptor.store,
+            &bundle.blobs,
+        )
+        .expect("segunda transferência");
+        assert_eq!(segunda.transferidos, 0, "não retransmite o que já conferiu");
+        assert_eq!(segunda.ja_presentes, 1);
+    }
+
+    /// **Blob obrigatório ausente aborta o bootstrap ANTES do seed.**
+    ///
+    /// O banco não pode ser semeado sem os arquivos. Depois de semeado o
+    /// cursor está no baseline: o que faltou nunca mais é pedido, e a imagem
+    /// fica ausente para sempre — o pareamento não se repete.
+    #[test]
+    fn blob_obrigatorio_ausente_aborta_antes_do_seed() {
+        let doador = Aparelho::doador_com_acervo(3);
+        semear_imagem_no_doador(&doador, "a-imagem-que-nao-vai-chegar");
+        let receptor = Aparelho::novo();
+        let bundle = capturar_de(&doador);
+        assert_eq!(bundle.blobs.len(), 1, "o cenário precisa exigir um blob");
+
+        let falha = semear_sem_blobs(&receptor, &bundle).expect_err("falta o arquivo");
+        match &falha {
+            FalhaDeSemeadura::BlobObrigatorioAusente { quantos, .. } => assert_eq!(*quantos, 1),
+            outra => panic!("recusou pelo motivo errado: {outra}"),
+        }
+
+        // E nada foi escrito: nem conteúdo, nem cursor, nem roster.
+        assert_eq!(receptor.conta("chapters"), 0);
+        assert_eq!(receptor.conta("universes"), 0);
+        assert_eq!(receptor.conta("sync_cursors"), 0);
+        assert_eq!(receptor.conta("sync_devices"), 1, "só o próprio self");
+    }
+
+    /// **Blob corrompido no receptor conta como ausente.**
+    ///
+    /// Presença não basta: o arquivo tem o nome certo e o conteúdo errado.
+    /// Tratá-lo como presente faria o bootstrap concluir com uma imagem
+    /// quebrada que ninguém mais vai buscar.
+    #[test]
+    fn blob_corrompido_no_receptor_aborta_o_seed() {
+        let doador = Aparelho::doador_com_acervo(2);
+        let hash = semear_imagem_no_doador(&doador, "arte");
+        let receptor = Aparelho::novo();
+        let bundle = capturar_de(&doador);
+
+        // O arquivo existe, com o nome certo e o conteúdo de outra coisa.
+        let caminho = receptor.store.path_for(&hash).expect("caminho");
+        std::fs::create_dir_all(caminho.parent().expect("pai")).expect("preparar");
+        std::fs::write(&caminho, b"nao sou aquela imagem").expect("corromper");
+        assert!(receptor.store.has(&hash).expect("presença"));
+
+        let falha = semear_sem_blobs(&receptor, &bundle).expect_err("o conteúdo não é o do hash");
+        assert!(matches!(
+            falha,
+            FalhaDeSemeadura::BlobObrigatorioAusente { .. }
+        ));
+        assert_eq!(receptor.conta("chapters"), 0);
+    }
+
+    /// **O fluxo completo: transfere, verifica, semeia.**
+    ///
+    /// E o receptor termina com o acervo E os arquivos — a imagem do capítulo
+    /// abre, a capa abre, o anexo abre.
+    #[test]
+    fn bootstrap_com_blobs_completos_conclui() {
+        let doador = Aparelho::doador_com_acervo(3);
+        let hash = semear_imagem_no_doador(&doador, "a-arte-do-acervo");
+        let receptor = Aparelho::novo();
+        let bundle = capturar_de(&doador);
+
+        semear_de(&doador, &receptor, &bundle).expect("o bootstrap precisa concluir");
+
+        assert_eq!(receptor.conta("chapters"), 3);
+        assert_eq!(receptor.conta("attachments"), 1, "a tabela agora viaja");
+        assert!(
+            receptor.store.verify(&hash).expect("integridade"),
+            "o arquivo tinha que estar aqui"
+        );
+
+        let connection = receptor.banco.database.write().expect("escrita");
+        let capa: String = connection
+            .query_row("SELECT cover_blob_hash FROM universes", [], |row| {
+                row.get(0)
+            })
+            .expect("ler a capa");
+        assert_eq!(capa, hash);
+        let anexo: String = connection
+            .query_row("SELECT blob_hash FROM attachments", [], |row| row.get(0))
+            .expect("ler o anexo");
+        assert_eq!(anexo, hash);
+        let capitulo: String = connection
+            .query_row(
+                "SELECT content FROM chapters WHERE id = 'cap-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("ler o capítulo");
+        assert!(capitulo.contains(&hash), "{capitulo}");
+    }
+
+    /// Acervo sem imagem nenhuma tem manifesto vazio, e semeia sem cerimônia.
+    #[test]
+    fn acervo_sem_imagem_tem_manifesto_vazio() {
+        let doador = Aparelho::doador_com_acervo(2);
+        let receptor = Aparelho::novo();
+        let bundle = capturar_de(&doador);
+
+        assert!(bundle.blobs.is_empty());
+        semear_sem_blobs(&receptor, &bundle).expect("nada a transferir");
+        assert_eq!(receptor.conta("chapters"), 2);
+    }
+
+    /// **Blob referenciado só por conflito V1 não é obrigatório.**
+    ///
+    /// `sync_conflicts` continua fora do bundle, então o receptor nunca vai
+    /// ver aquela linha — exigir o arquivo dela travaria um pareamento por uma
+    /// imagem que não vai chegar a lugar nenhum.
+    ///
+    /// (Na prática conflito aberto já bloqueia a captura; este gate fixa a
+    /// regra do manifesto de forma independente disso, com o conflito
+    /// **resolvido**.)
+    #[test]
+    fn blob_so_do_conflito_v1_nao_entra_no_manifesto() {
+        let doador = Aparelho::doador_com_acervo(2);
+        let (_, bytes) = inline_de_teste("so-no-conflito");
+        let hash = doador.store.put(&bytes).expect("publicar");
+        {
+            let connection = doador.banco.database.write().expect("escrita");
+            connection
+                .execute(
+                    "INSERT INTO sync_conflicts
+                        (id, aggregate_type, aggregate_id, field, local_value, remote_value,
+                         resolved_at)
+                     VALUES ('c1','chapter','cap-1','content', ?1, ?1,
+                             '2026-09-01 10:00:00')",
+                    [&format!("<img data-narrahub-blob=\"{hash}\">")],
+                )
+                .expect("conflito resolvido");
+        }
+
+        let bundle = capturar_de(&doador);
+        assert!(
+            bundle.blobs.is_empty(),
+            "o manifesto pegou um hash que só existe fora do bundle: {:?}",
+            bundle.blobs
+        );
+    }
+
+    /// **Origem que mente sobre o hash não publica nada.**
+    ///
+    /// O caso que a rede vai trazer: um peer anuncia o hash da capa boa e
+    /// manda outros bytes. Se o destino aceitasse, todo aparelho que já tivesse
+    /// aquele hash na referência passaria a servir o arquivo do atacante como
+    /// se fosse o original — e o endereçamento por conteúdo teria virado
+    /// endereçamento por afirmação.
+    ///
+    /// Este gate só pôde ser escrito depois de a origem virar função. Com
+    /// `BlobStore` nos dois lados, `read` já verifica antes de devolver, então
+    /// a mentira era inexpressável e a verificação do destino ficava sem prova.
+    #[test]
+    fn origem_que_mente_sobre_o_hash_nao_publica_nada() {
+        let doador = Aparelho::doador_com_acervo(2);
+        let hash = semear_imagem_no_doador(&doador, "a-capa-boa");
+        let receptor = Aparelho::novo();
+        let bundle = capturar_de(&doador);
+
+        let resumo = blob_backfill::transferir_blobs(
+            |_pedido| Ok(b"outros-bytes-quaisquer".to_vec()),
+            &receptor.store,
+            &bundle.blobs,
+        )
+        .expect("a transferência não estoura");
+
+        assert_eq!(resumo.transferidos, 0);
+        assert_eq!(
+            resumo.falharam,
+            std::collections::BTreeSet::from([hash.clone()])
+        );
+        assert!(
+            !receptor.store.has(&hash).expect("presença"),
+            "nada podia ter sido publicado sob o endereço anunciado"
+        );
+        assert!(
+            !receptor
+                .store
+                .has(&crate::infrastructure::blob_store::hash_dos_bytes(
+                    b"outros-bytes-quaisquer"
+                ))
+                .expect("presença"),
+            "nem sob o endereço verdadeiro dos bytes recebidos"
+        );
+
+        // E o seed é recusado: o blob obrigatório não chegou.
+        let falha = semear_sem_blobs(&receptor, &bundle).expect_err("falta o arquivo");
+        assert!(matches!(
+            falha,
+            FalhaDeSemeadura::BlobObrigatorioAusente { .. }
+        ));
+    }
+
+    /// Origem que não tem o arquivo entra em `falharam`, sem estourar.
+    #[test]
+    fn origem_sem_o_arquivo_nao_derruba_a_transferencia() {
+        let doador = Aparelho::doador_com_acervo(2);
+        let hash = semear_imagem_no_doador(&doador, "arte");
+        let receptor = Aparelho::novo();
+        let bundle = capturar_de(&doador);
+
+        let resumo = blob_backfill::transferir_blobs(
+            |_pedido| Err("o peer não tem este arquivo".to_string()),
+            &receptor.store,
+            &bundle.blobs,
+        )
+        .expect("a transferência não estoura");
+        assert_eq!(resumo.falharam, std::collections::BTreeSet::from([hash]));
     }
 }
