@@ -11,6 +11,7 @@ pub mod entity_commands;
 pub mod knowledge_commands;
 pub mod manuscript_commands;
 pub mod planning_commands;
+pub mod sync_v2_commands;
 pub mod universe_commands;
 pub mod workspace_commands;
 

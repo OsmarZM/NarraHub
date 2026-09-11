@@ -43,6 +43,12 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_http::init())
         .setup(|app| {
+            // Os dois blocos deste `setup` sao `cfg(desktop)`: updater e icone de
+            // janela. No Android nenhum dos dois compila, e `app` fica sem uso --
+            // aviso que o `clippy -D warnings` do CI transforma em erro. O
+            // sublinhado diz que a ausencia de uso e por plataforma, nao descuido.
+            #[cfg_attr(not(desktop), allow(unused_variables))]
+            let _ = &app;
             #[cfg(desktop)]
             if has_updater_config(app.config()) {
                 app.handle()
@@ -228,6 +234,7 @@ pub fn run() {
             interface::tauri::blob_commands::blob_read,
             interface::tauri::blob_commands::blob_has,
             interface::tauri::blob_commands::storage_prepare_assets,
+            interface::tauri::sync_v2_commands::sync_v2_panorama,
             interface::tauri::collaboration_commands::collaboration_store_contribution,
             interface::tauri::collaboration_commands::collaboration_end_all,
             interface::tauri::collaboration_commands::collaboration_end_session,

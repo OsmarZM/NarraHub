@@ -326,6 +326,25 @@ impl Codigos {
         Ok(TrocaPendente::anfitriao(&codigo.pin))
     }
 
+    /// O único código aberto, quando há exatamente um.
+    ///
+    /// O pareamento por PIN precisa disto porque o visitante **não conhece o
+    /// id** — ele digitou oito dígitos, e o id nunca apareceu em tela nenhuma.
+    /// O anfitrião, então, resolve o código pelo que ele próprio tem aberto.
+    ///
+    /// Com dois códigos abertos a resposta seria um palpite: o SPAKE2 exige
+    /// escolher o PIN **antes** de calcular, e tentar os dois transformaria o
+    /// limite de três tentativas em seis. Recusar é o que mantém o limite
+    /// significando o que diz.
+    pub fn unico_aberto(&self) -> Result<String, FalhaDeCodigo> {
+        let mut aberto = self.abertos.keys();
+        match (aberto.next(), aberto.next()) {
+            (Some(id), None) => Ok(id.clone()),
+            (None, _) => Err(FalhaDeCodigo::CodigoDesconhecido),
+            (Some(_), Some(_)) => Err(FalhaDeCodigo::CodigoDesconhecido),
+        }
+    }
+
     /// Encerra o código depois de um pareamento bem-sucedido.
     pub fn consumir(&mut self, id: &str) {
         self.abertos.remove(id);
