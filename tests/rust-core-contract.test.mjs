@@ -128,6 +128,10 @@ test('só as portas nativas falam com o Tauri', () => {
     // A janela é do sistema operacional, não do produto: ela não guarda o livro
     // de ninguém. Antes desta porta, `getCurrentWindow()` estava em quatro arquivos.
     'core/native/window.service.ts',
+    // Bytes de asset atravessando o IPC (ADR 0010). É plataforma, não domínio: o
+    // que ela faz é publicar bytes e devolver algo renderizável, sem nunca
+    // expor caminho de arquivo. O domínio guarda o hash, e o hash é portátil.
+    'core/native/blob.service.ts',
     // Ciclo de vida do pool SQLite: abre e fecha a conexão, não executa SQL.
     'core/services/database.service.ts',
   ];
@@ -243,4 +247,202 @@ test('o patch que o gateway envia casa campo a campo com o struct do Rust', () =
       `${pair.ts} e ${pair.rust} divergiram: o serde descartaria a chave desconhecida sem erro`,
     );
   }
+});
+
+test('o formato canonico de imagem e o mesmo no Rust e na extensao do Tiptap', () => {
+  // ADR 0010, decisão A da NH-065. O documento persistido guarda referência:
+  //
+  //   <img data-narrahub-blob="<64 hex>" data-mime-type="image/png" alt="rosto.png">
+  //
+  // Os dois lados escrevem esses nomes por conta própria: o Rust nas constantes de
+  // `blob_document.rs`, a extensão no `parseHTML`/`renderHTML` de cada atributo. Divergir é
+  // silencioso e caro — o transformador gravaria `data-narrahub-blob` e o editor leria outra
+  // coisa, então toda imagem migrada desapareceria do capítulo ao carregar. Sem erro nenhum:
+  // o Tiptap simplesmente não reconheceria o atributo.
+  const rust = readFileSync(new URL('../src-tauri/src/infrastructure/blob_document.rs', import.meta.url), 'utf8');
+  const editor = readFileSync(new URL('../src/app/features/writing/writing-editor.component.ts', import.meta.url), 'utf8');
+
+  const constante = (nome) => {
+    const achado = rust.match(new RegExp(`pub const ${nome}: &str = "([^"]+)"`, 'u'));
+    assert.ok(achado, `não achei ${nome} em blob_document.rs; a varredura quebrou`);
+    return achado[1];
+  };
+  const atributoDoBlob = constante('ATTR_BLOB');
+  const atributoDoMime = constante('ATTR_MIME');
+
+  // A varredura acha mesmo o que deveria? Sem isto o gate passaria por vácuo.
+  assert.equal(atributoDoBlob, 'data-narrahub-blob');
+  assert.equal(atributoDoMime, 'data-mime-type');
+
+  for (const atributo of [atributoDoBlob, atributoDoMime]) {
+    assert.ok(
+      editor.includes(`getAttribute('${atributo}')`),
+      `a extensão do Tiptap não lê ${atributo}. O transformador grava esse atributo, e o `
+        + `editor descartaria a imagem ao carregar o capítulo.`,
+    );
+    assert.ok(
+      editor.includes(`'${atributo}':`),
+      `a extensão do Tiptap não escreve ${atributo} de volta`,
+    );
+  }
+});
+
+test('o seletor da imagem no Tiptap nao exige src', () => {
+  // Um documento já convertido não tem `src` — ele tem só a referência. Enquanto o seletor
+  // fosse `img[src]`, o Tiptap não reconheceria o elemento e o descartaria inteiro ao
+  // carregar: a imagem do escritor sumiria da tela, e o próximo salvamento gravaria o
+  // capítulo já sem ela.
+  const editor = readFileSync(new URL('../src/app/features/writing/writing-editor.component.ts', import.meta.url), 'utf8');
+  const extensao = editor.slice(editor.indexOf('const InlineImage'), editor.indexOf('function createCharacterAvatarExtension'));
+  assert.ok(extensao.length > 200, 'não achei a extensão InlineImage; a varredura quebrou');
+
+  assert.ok(
+    !/tag:\s*'img\[src\]'/u.test(extensao),
+    "o seletor voltou a ser 'img[src]', e isso descarta todo documento já convertido",
+  );
+  assert.ok(
+    /tag:\s*'img'/u.test(extensao),
+    "o seletor precisa ser 'img' para reconhecer os dois formatos",
+  );
+});
+
+test('a extensao do Tiptap nao serializa src de volta', () => {
+  // O `src` existe em memória, preenchido pelo resolvedor em runtime. Serializá-lo gravaria
+  // uma URL local — específica daquela máquina — dentro do documento, e o acervo restaurado
+  // noutro aparelho apontaria para um caminho que não existe. É o item 4 do contrato do ADR
+  // 0010: nenhum caminho absoluto é persistido.
+  const editor = readFileSync(new URL('../src/app/features/writing/writing-editor.component.ts', import.meta.url), 'utf8');
+  const extensao = editor.slice(editor.indexOf('const InlineImage'), editor.indexOf('function createCharacterAvatarExtension'));
+
+  const bloco = extensao.slice(extensao.indexOf('src: {'));
+  const fim = bloco.indexOf('},');
+  assert.ok(fim > 0, 'não achei o atributo src na extensão; a varredura quebrou');
+  const declaracao = bloco.slice(0, fim);
+
+  assert.ok(
+    /renderHTML:\s*\(\)\s*=>\s*\(\{\}\)/u.test(declaracao),
+    'o `src` voltou a ser serializado. A URL resolvida em runtime iria para o banco:\n  '
+      + declaracao.trim(),
+  );
+});
+
+test('a imagem inserida pelo editor nasce como referencia de blob', () => {
+  // ADR 0010. O caminho antigo era `File → readAsDataURL → <img src="data:...">`, e ele punha
+  // os bytes dentro do texto do capitulo: o documento crescia dezenas de vezes, o gatilho de
+  // revisao copiava tudo a cada salvamento, e o evento assinado levava a base64 para todos os
+  // aparelhos.
+  //
+  // O gate e textual porque a propriedade e sobre o CAMINHO, e o caminho e uma chamada. Um
+  // teste de comportamento aqui precisaria de Tauri, FileReader e disco.
+  const editor = readFileSync(new URL('../src/app/features/writing/writing-editor.component.ts', import.meta.url), 'utf8');
+  const inicio = editor.indexOf('async importImage(');
+  assert.ok(inicio > 0, 'nao achei importImage; a varredura quebrou');
+  // Sem os comentários: a explicação do que mudou CITA o caminho antigo, e um gate que lê
+  // comentário reprovaria a própria documentação da correção.
+  const corpo = editor
+    .slice(inicio, editor.indexOf('\n  }', inicio))
+    .split('\n')
+    .filter((linha) => !linha.trim().startsWith('//'))
+    .join('\n');
+
+  assert.ok(
+    /blobs\.publish\(/u.test(corpo),
+    'a insercao de imagem tem que publicar no blob store antes de tocar no documento',
+  );
+  assert.ok(
+    /blobHash/u.test(corpo),
+    'o node inserido tem que carregar a referencia por hash',
+  );
+  assert.ok(
+    !/readAsDataURL|fileToDataUrl|data:image/u.test(corpo),
+    `a insercao voltou a produzir data URL:\n${corpo}`,
+  );
+});
+
+test('o editor nao tem mais caminho de data URL para persistencia', () => {
+  // O helper `fileToDataUrl` existia so para o caminho antigo. Deixa-lo no arquivo seria
+  // deixar a porta destrancada: a proxima pessoa que precisar inserir imagem acha a funcao
+  // pronta e usa.
+  const editor = readFileSync(new URL('../src/app/features/writing/writing-editor.component.ts', import.meta.url), 'utf8');
+  const linhas = editor
+    .split('\n')
+    .map((linha, indice) => ({ linha, numero: indice + 1 }))
+    .filter(({ linha }) => /readAsDataURL|fileToDataUrl/u.test(linha))
+    .filter(({ linha }) => !linha.trim().startsWith('//'));
+
+  assert.deepEqual(
+    linhas,
+    [],
+    'o editor voltou a ter caminho de data URL fora de comentario:\n'
+      + linhas.map(({ numero, linha }) => `  ${numero}: ${linha.trim()}`).join('\n'),
+  );
+});
+
+test('o servico de blob nao devolve caminho de arquivo ao frontend', () => {
+  // Invariante do ADR 0010: nenhum caminho absoluto atravessa a fronteira. O mesmo capitulo
+  // tem que funcionar no Windows e no Android, e caminho e exatamente o que nao viaja --
+  // restaurar um backup noutra maquina deixaria toda imagem apontando para o nada.
+  const servico = readFileSync(new URL('../src/app/core/native/blob.service.ts', import.meta.url), 'utf8');
+  assert.ok(/blob_put/u.test(servico) && /blob_read/u.test(servico), 'a varredura quebrou');
+
+  for (const proibido of ['path_for', 'app_data', 'blobPath', 'filePath']) {
+    assert.ok(
+      !servico.includes(proibido),
+      `o servico de blob menciona ${proibido}: caminho nao atravessa a fronteira`,
+    );
+  }
+  assert.ok(
+    /URL\.createObjectURL/u.test(servico),
+    'a URL de exibicao e montada em memoria, na propria aba',
+  );
+});
+
+test('o arranque chama a fronteira de assets entre as migrations e o primeiro consumo', () => {
+  // ADR 0010. O backfill existia desde a fatia 5 e nao tinha chamador -- a mesma lacuna que a
+  // revisao da etapa 2.5 apontou para `load_or_create`: funciona em teste e nunca roda no
+  // aplicativo.
+  //
+  // A ordem importa e por isso o gate mede posicao, nao so presenca:
+  //
+  //   db.init()          o plugin-sql aplica as migrations
+  //   prepareAssets()    converte o legado de midia
+  //   universes.load()   primeiro consumo do acervo
+  //
+  // Chamar depois do primeiro consumo deixaria a tela ler um acervo que ainda tem base64
+  // dentro, e `update_chapter` recusaria o proximo salvamento.
+  const arranque = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
+
+  const migrations = arranque.indexOf('this.db.init()');
+  const assets = arranque.indexOf('this.blobs.prepareAssets()');
+  const consumo = arranque.indexOf('this.universes.load()');
+
+  assert.ok(migrations > 0, 'nao achei a abertura do pool; a varredura quebrou');
+  assert.ok(
+    assets > 0,
+    'o arranque nao chama `prepareAssets`. Sem isso o backfill volta a ser codigo sem '
+      + 'chamador, e um acervo antigo abre com base64 dentro do banco.',
+  );
+  assert.ok(consumo > 0, 'nao achei o primeiro consumo do acervo');
+
+  assert.ok(
+    migrations < assets && assets < consumo,
+    'a fronteira de assets tem que ficar DEPOIS das migrations e ANTES do primeiro consumo:'
+      + `\n  db.init()        em ${migrations}`
+      + `\n  prepareAssets()  em ${assets}`
+      + `\n  universes.load() em ${consumo}`,
+  );
+});
+
+test('uma falha na migracao de midia nao impede o aplicativo de abrir', () => {
+  // Pendencia de midia e problema de midia. Quem exige o contrato completo e o pareamento, e
+  // ele ja sabe recusar. Travar a abertura por uma imagem antiga ilegivel transformaria um
+  // problema de midia em perda de acesso ao texto.
+  const arranque = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
+  const inicio = arranque.indexOf('this.blobs.prepareAssets()');
+  const trecho = arranque.slice(Math.max(0, inicio - 400), inicio + 400);
+
+  assert.ok(
+    /try\s*\{/u.test(trecho) && /catch/u.test(trecho),
+    'a chamada precisa estar protegida: uma falha ali nao pode impedir a abertura.',
+  );
 });

@@ -35,6 +35,7 @@ pub fn collaboration_store_contribution(
 ) -> DatabaseCommandResult<bool> {
     collaboration_service::store_contribution(
         &super::database(&app)?,
+        &super::blob_store(&app)?,
         &session_id,
         sequence,
         contribution,

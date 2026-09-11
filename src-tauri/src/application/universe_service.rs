@@ -1,16 +1,37 @@
+use crate::application::blob_fields;
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::ids::{new_id, now_timestamp};
 use crate::domain::universe::{Universe, UniverseStats, UniverseUpdate, UniverseWithStats};
+use crate::infrastructure::blob_store::BlobStore;
 use crate::infrastructure::sqlite::{universe_repository, SqliteDatabase};
 
-pub fn list_with_stats(database: &SqliteDatabase) -> DatabaseCommandResult<Vec<UniverseWithStats>> {
+pub fn list_with_stats(
+    database: &SqliteDatabase,
+    store: &BlobStore,
+) -> DatabaseCommandResult<Vec<UniverseWithStats>> {
     let connection = database.read()?;
-    universe_repository::list_with_stats(&connection)
+    let mut universos = universe_repository::list_with_stats(&connection)?;
+    // A capa vive no blob store; o que a tela recebe é reconstruído aqui, como
+    // transporte. Ver `blob_fields` — e `NH-069`, que é o dia em que o
+    // frontend resolver por hash e esta linha sair.
+    for universo in universos.iter_mut() {
+        universo.universe.cover_image =
+            blob_fields::ler_asset_direto(&connection, store, "universes", &universo.universe.id)?;
+    }
+    Ok(universos)
 }
 
-pub fn get(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<Option<Universe>> {
+pub fn get(
+    database: &SqliteDatabase,
+    store: &BlobStore,
+    id: &str,
+) -> DatabaseCommandResult<Option<Universe>> {
     let connection = database.read()?;
-    universe_repository::get(&connection, id)
+    let Some(mut universo) = universe_repository::get(&connection, id)? else {
+        return Ok(None);
+    };
+    universo.cover_image = blob_fields::ler_asset_direto(&connection, store, "universes", id)?;
+    Ok(Some(universo))
 }
 
 pub fn stats(database: &SqliteDatabase, universe_id: &str) -> DatabaseCommandResult<UniverseStats> {
@@ -24,6 +45,7 @@ pub fn stats(database: &SqliteDatabase, universe_id: &str) -> DatabaseCommandRes
 /// capa — duas idas ao banco, e uma janela em que o universo existia sem capa.
 pub fn create(
     database: &SqliteDatabase,
+    store: &BlobStore,
     name: &str,
     description: &str,
     cover_image: &str,
@@ -43,13 +65,25 @@ pub fn create(
         created_at: timestamp.clone(),
         updated_at: timestamp,
     };
-    let connection = database.write()?;
-    universe_repository::insert(&connection, &universe)?;
+    let mut connection = database.write()?;
+    // Numa transação: o `INSERT` do repositório grava o valor recebido na
+    // coluna legada, e a normalização o troca por referência antes do commit.
+    // Fora de transação haveria um instante — curto, mas real — em que os
+    // bytes estariam gravados.
+    let tx = connection
+        .transaction()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    universe_repository::insert(&tx, &universe)?;
+    blob_fields::gravar_asset_direto(&tx, store, "universes", &universe.id, cover_image)?;
+    tx.commit()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    // O que volta para a tela é o transporte, não o que ficou no banco.
     Ok(universe)
 }
 
 pub fn update(
     database: &SqliteDatabase,
+    store: &BlobStore,
     id: &str,
     patch: UniverseUpdate,
 ) -> DatabaseCommandResult<()> {
@@ -65,10 +99,18 @@ pub fn update(
             "O universo precisa de um nome.",
         ));
     }
-    let connection = database.write()?;
-    if !universe_repository::update(&connection, id, &patch, &now_timestamp())? {
+    let mut connection = database.write()?;
+    let tx = connection
+        .transaction()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    if !universe_repository::update(&tx, id, &patch, &now_timestamp())? {
         return Err(DatabaseCommandError::not_found("Universo não encontrado."));
     }
+    if let Some(capa) = patch.cover_image.as_deref() {
+        blob_fields::gravar_asset_direto(&tx, store, "universes", id, capa)?;
+    }
+    tx.commit()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     Ok(())
 }
 

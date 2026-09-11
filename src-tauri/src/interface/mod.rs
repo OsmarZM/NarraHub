@@ -3,3 +3,4 @@
 
 pub mod command_placement;
 pub mod tauri;
+pub mod writer_messages;

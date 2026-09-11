@@ -34,6 +34,7 @@ use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::sync::{
     classify, compute_revision, AggregateRef, Causality, EventEnvelope, Operation,
 };
+use crate::infrastructure::sqlite::canvas_repository;
 use crate::infrastructure::sqlite::sync_repository::aggregate_history;
 use rusqlite::{OptionalExtension, Transaction};
 
@@ -245,12 +246,94 @@ fn aplicar_no_agregado(
 ) -> DatabaseCommandResult<()> {
     match envelope.aggregate_type.as_str() {
         "chapter" => aplicar_capitulo(tx, envelope),
+        "attachment" => aplicar_anexo(tx, envelope),
         outro => Err(DatabaseCommandError::storage(format!(
             "Agregado '{outro}' ainda não tem aplicação de evento implementada. A sessão para \
              aqui de propósito: avançar marcaria o evento como aplicado sem que o dado tivesse \
              chegado, e ninguém saberia que faltou."
         ))),
     }
+}
+
+/// Aplica um evento de anexo (ADR 0010, fatia 7).
+///
+/// ## O cursor não espera o arquivo
+///
+/// O payload carrega `blob_hash`, e o blob pode não estar aqui ainda — a
+/// transferência é separada do log causal (item 7 do contrato). O evento é
+/// aplicado, a linha materializa com a referência, e o cursor avança.
+///
+/// ```text
+/// evento aplicado   →  linha com blob_hash   →  cursor avança
+/// blob ausente      →  a tela mostra indisponível
+/// blob chega depois →  a mesma linha passa a renderizar
+/// ```
+///
+/// Travar o cursor por arquivo faltando pararia a replicação **inteira** do
+/// aparelho por causa de uma imagem: capítulos, entidades e planejamento
+/// deixariam de convergir. O contrário — aplicar e representar a ausência — é
+/// o que a fatia 8 vai reforçar no bootstrap, onde a exigência é outra.
+fn aplicar_anexo(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {
+    if envelope.operation == Operation::Delete {
+        tx.execute(
+            "DELETE FROM attachments WHERE id = ?1",
+            [&envelope.aggregate_id],
+        )
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+        tx.execute(
+            "INSERT INTO sync_tombstones
+                (aggregate_type, aggregate_id, deleted_rev, origin_device_id, origin_seq)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(aggregate_type, aggregate_id)
+             DO UPDATE SET deleted_rev = excluded.deleted_rev,
+                           origin_device_id = excluded.origin_device_id,
+                           origin_seq = excluded.origin_seq",
+            rusqlite::params![
+                &envelope.aggregate_type,
+                &envelope.aggregate_id,
+                &envelope.new_rev,
+                &envelope.device_id,
+                envelope.seq,
+            ],
+        )
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+        tx.execute(
+            "DELETE FROM sync_aggregate_state WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+            [&envelope.aggregate_type, &envelope.aggregate_id],
+        )
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+        return Ok(());
+    }
+
+    let anexo: crate::domain::canvas::Attachment = serde_json::from_str(&envelope.payload)
+        .map_err(|error| {
+            DatabaseCommandError::storage(format!(
+                "O payload do anexo não descreve um anexo: {error}"
+            ))
+        })?;
+    if anexo.id != envelope.aggregate_id {
+        return Err(DatabaseCommandError::storage(
+            "O payload descreve um anexo diferente do agregado do envelope.",
+        ));
+    }
+    // Bytes num evento de anexo é o defeito que a etapa 13 existe para
+    // impedir, e o log é assinado e append-only: o que entra aqui não sai
+    // mais. Recusar é a última chance.
+    if !anexo.data_url.is_empty() {
+        return Err(DatabaseCommandError::storage(
+            "O evento de anexo traz conteúdo embutido. Ele não vai ser aplicado: o contrato do \
+             ADR 0010 é referência por hash, e aplicar isto gravaria os bytes de volta.",
+        ));
+    }
+    if !anexo.blob_hash.is_empty()
+        && !crate::infrastructure::blob_store::e_hash_canonico(&anexo.blob_hash)
+    {
+        return Err(DatabaseCommandError::storage(
+            "O evento de anexo traz uma referência que não é um SHA-256 canônico.",
+        ));
+    }
+
+    canvas_repository::upsert_attachment_from_event(tx, &anexo)
 }
 
 fn aplicar_capitulo(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {
@@ -888,5 +971,152 @@ mod tests {
             erro.to_string().contains("capítulo diferente"),
             "recusou pelo motivo errado: {erro}"
         );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Anexo recebido (ADR 0010, fatia 7)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    fn anexo(hash: &str, data_url: &str) -> String {
+        format!(
+            r#"{{"id":"anexo-1","universe_id":"u1","owner_type":"chapter",
+                 "owner_id":"cap-1","data_url":"{data_url}","blob_hash":"{hash}",
+                 "mime_type":"image/png","caption":"","sort_order":0,
+                 "created_at":"2026-01-01 00:00:00"}}"#
+        )
+        .replace('\n', "")
+    }
+
+    /// **Evento de anexo com bytes dentro é recusado.**
+    ///
+    /// O que isto fecha não é acidente: é um peer com versão antiga, um banco
+    /// importado, ou uma linha adulterada. Aplicar gravaria a base64 de volta
+    /// no acervo — e o evento é assinado e append-only, então ele continuaria
+    /// chegando em cada sessão.
+    ///
+    /// A sessão para aqui de propósito. Marcar como aplicado sem gravar
+    /// esconderia o problema; gravar traria os bytes de volta.
+    #[test]
+    fn evento_de_anexo_com_bytes_e_recusado() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        connection
+            .execute_batch(
+                "INSERT INTO chapters (id, book_id, title, content, word_count)
+                 VALUES ('cap-1','b1','Cap','', 0);",
+            )
+            .expect("semear capítulo");
+
+        let hash = crate::infrastructure::blob_store::hash_dos_bytes(b"imagem");
+        let agregado = AggregateRef::new("attachment", "anexo-1");
+        let envelope = envelope_de_origem(
+            ORIGEM,
+            1,
+            "u1",
+            &agregado,
+            Operation::Upsert,
+            &anexo(&hash, "data:image/png;base64,aW1hZ2Vt"),
+            "",
+        );
+
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("transação");
+        let erro = apply_remote_event(&tx, &envelope).expect_err("o evento traz bytes");
+        assert!(
+            erro.message.contains("conteúdo embutido"),
+            "recusou pelo motivo errado: {}",
+            erro.message
+        );
+        drop(tx);
+
+        let quantos: i64 = connection
+            .query_row("SELECT COUNT(*) FROM attachments", [], |row| row.get(0))
+            .expect("contar");
+        assert_eq!(quantos, 0, "nada podia ter sido gravado");
+    }
+
+    /// Referência que não é hash canônico também é recusada.
+    #[test]
+    fn evento_de_anexo_com_referencia_torta_e_recusado() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        connection
+            .execute_batch(
+                "INSERT INTO chapters (id, book_id, title, content, word_count)
+                 VALUES ('cap-1','b1','Cap','', 0);",
+            )
+            .expect("semear capítulo");
+
+        let agregado = AggregateRef::new("attachment", "anexo-1");
+        let envelope = envelope_de_origem(
+            ORIGEM,
+            1,
+            "u1",
+            &agregado,
+            Operation::Upsert,
+            &anexo("../../../etc/passwd", ""),
+            "",
+        );
+
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("transação");
+        let erro = apply_remote_event(&tx, &envelope).expect_err("referência torta");
+        assert!(erro.message.contains("canônico"), "{}", erro.message);
+    }
+
+    /// **E o anexo bem formado aplica, mesmo sem o blob estar aqui.**
+    ///
+    /// É o item 7 do contrato: a transferência de blob é separada do log
+    /// causal. O evento aplica, a linha materializa com a referência, e o
+    /// cursor avança — travar a replicação inteira por um arquivo faltando
+    /// pararia capítulos e entidades de convergir também.
+    ///
+    /// Senão os dois gates acima passariam por vácuo: uma aplicação que recusa
+    /// tudo também recusa bytes.
+    #[test]
+    fn anexo_aplica_mesmo_com_o_blob_ainda_ausente() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        connection
+            .execute_batch(
+                "INSERT INTO chapters (id, book_id, title, content, word_count)
+                 VALUES ('cap-1','b1','Cap','', 0);",
+            )
+            .expect("semear capítulo");
+
+        let hash = crate::infrastructure::blob_store::hash_dos_bytes(b"a-que-vem-depois");
+        let agregado = AggregateRef::new("attachment", "anexo-1");
+        let envelope = envelope_de_origem(
+            ORIGEM,
+            1,
+            "u1",
+            &agregado,
+            Operation::Upsert,
+            &anexo(&hash, ""),
+            "",
+        );
+
+        let resultado = aplicar(&mut connection, &envelope);
+        assert_eq!(resultado, Applied::Aplicado, "o evento tinha que aplicar");
+
+        let (gravado, inline): (String, String) = connection
+            .query_row(
+                "SELECT blob_hash, data_url FROM attachments WHERE id = 'anexo-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("ler o anexo");
+        assert_eq!(gravado, hash, "a referência tinha que ficar");
+        assert_eq!(inline, "", "e a coluna legada, vazia");
+
+        // O cursor avançou: o arquivo ausente não trava a causalidade.
+        let aplicados: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+                row.get(0)
+            })
+            .expect("contar");
+        assert_eq!(aplicados, 1);
     }
 }

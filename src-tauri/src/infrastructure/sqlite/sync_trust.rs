@@ -274,10 +274,14 @@ pub fn introduzir_dispositivo(
     if let Some(motivo) = saida.filter(|texto| !texto.is_empty()) {
         return Err(DatabaseCommandError::validation(match motivo.as_str() {
             "abandoned" => format!(
-                "O dispositivo {device_id} foi abandonado e não pode voltar ao conjunto com a                  mesma identidade. A poda de exclusões já assumiu que ele não voltaria;                  readmiti-lo traria de volta conteúdo que foi apagado de propósito. Reinstale o                  aplicativo naquele aparelho para ele entrar como um dispositivo novo."
+                "O dispositivo {device_id} foi abandonado e não pode voltar ao conjunto com a \
+                 mesma identidade. A poda de exclusões já assumiu que ele não voltaria; \
+                 readmiti-lo traria de volta conteúdo que foi apagado de propósito. Reinstale \
+                 o aplicativo naquele aparelho para ele entrar como um dispositivo novo."
             ),
             _ => format!(
-                "O dispositivo {device_id} foi aposentado e saiu do conjunto. Para voltar, ele                  precisa entrar como um dispositivo novo."
+                "O dispositivo {device_id} foi aposentado e saiu do conjunto. Para voltar, ele \
+                 precisa entrar como um dispositivo novo."
             ),
         }));
     }

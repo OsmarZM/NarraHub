@@ -36,6 +36,12 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 sysinfo = "0.37"
 zip = { version = "4", default-features = false, features = ["deflate"] }
+# Reescrita estrutural de HTML (ADR 0010, NH-065). `chapters.content` guarda
+# HTML, nao JSON do Tiptap, e a transformacao de <img src="data:..."> para
+# referencia de blob precisa ser estrutural. Este crate existe para reescrever
+# um atributo e repassar todo o resto verbatim, que e a garantia de preservar
+# atributo desconhecido e o HTML ao redor.
+lol_html = "3.0.1"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2"

@@ -76,7 +76,17 @@ pub struct Attachment {
     pub universe_id: String,
     pub owner_type: String,
     pub owner_id: String,
+    /// **Transporte, não persistência.**
+    ///
+    /// Na leitura, `blob_fields::ler_asset_direto` reconstrói esta `data:` URL
+    /// a partir do blob, para as telas não precisarem mudar. No banco a coluna
+    /// fica vazia, e no **payload de evento** também: o que viaja é
+    /// `blob_hash`.
     pub data_url: String,
+    /// `SHA-256` dos bytes reais (ADR 0010). É o que vai ao banco e ao evento.
+    pub blob_hash: String,
+    /// O MIME lido do cabeçalho da `data:` URL na conversão.
+    pub mime_type: String,
     pub caption: String,
     pub sort_order: i64,
     pub created_at: String,

@@ -1,7 +1,7 @@
 //! NarraHub — Database Migrations
 //! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 19;
+pub const LATEST_SCHEMA_VERSION: i64 = 20;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -24,6 +24,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         17 => Some(MIGRATION_V17),
         18 => Some(MIGRATION_V18),
         19 => Some(MIGRATION_V19),
+        20 => Some(MIGRATION_V20),
         _ => None,
     }
 }
@@ -1287,6 +1288,113 @@ BEGIN
 END;
 "#;
 
+pub const MIGRATION_V20: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v20
+-- Etapa 13 - referencia de blob por SHA-256 (ADR 0010)
+-- ============================================
+--
+-- Os bytes de imagem saem do SQLite. O banco passa a guardar
+-- SHA-256(bytes reais) e o blob store guarda o arquivo, sob
+-- `app_data/assets/blobs/sha256/<ab>/<hash>` -- dentro do diretorio que o
+-- backup ja varre recursivamente.
+--
+-- ESTA MIGRATION E TRANSITORIA, E SO PREPARA O SCHEMA.
+--
+--   migration 20    acrescenta referencia, mantem as colunas antigas
+--   backfill Rust   decodifica, publica no blob store, verifica, grava o hash
+--                   e SO DEPOIS limpa o inline
+--   migration N     remove as colunas legadas, com prova executavel de que
+--                   nao ha mais legado
+--
+-- Nao ha UPDATE nem DELETE aqui, e a ausencia e deliberada. A conversao nao
+-- cabe em SQL: exige ler o cabecalho da data URL, decodificar base64,
+-- calcular SHA-256, gravar arquivo temporario, verificar e renomear. Um
+-- `UPDATE ... SET data_url = ''` numa migration apagaria a unica copia dos
+-- bytes do escritor antes de existir a segunda.
+--
+--   NUNCA limpar os bytes antigos antes de haver blob valido publicado.
+--
+-- As seis superficies de campo direto ganham par hash/MIME. O MIME e
+-- guardado porque o blob e so bytes: sem ele, servir o arquivo de volta
+-- exigiria adivinhar o tipo pelo conteudo, e adivinhar tipo de arquivo a
+-- partir de bytes e como se serve XSS por engano.
+--
+-- As quatro superficies de documento (chapters.content,
+-- chapter_revisions.content, sync_conflicts e collaboration_contributions)
+-- NAO ganham coluna: um documento com tres imagens precisaria de tres
+-- colunas, entao o hash mora dentro do node Tiptap.
+
+ALTER TABLE attachments ADD COLUMN blob_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE attachments ADD COLUMN mime_type TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE universes ADD COLUMN cover_blob_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE universes ADD COLUMN cover_mime_type TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE entities ADD COLUMN image_blob_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE entities ADD COLUMN image_mime_type TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE canvas_nodes ADD COLUMN image_blob_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE canvas_nodes ADD COLUMN image_mime_type TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE books ADD COLUMN cover_blob_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE books ADD COLUMN cover_mime_type TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE planning_items ADD COLUMN image_blob_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE planning_items ADD COLUMN image_mime_type TEXT NOT NULL DEFAULT '';
+
+-- O que nao pudemos converter, registrado num lugar so.
+--
+-- Falha de migracao nao transforma dado desconhecido em ausencia. Um valor
+-- inline que nao seja uma representacao valida conhecida -- URL externa,
+-- caminho local, base64 truncado, JSON que nao abre -- e PRESERVADO exatamente
+-- como esta, o hash fica vazio, e a pendencia aparece aqui.
+--
+-- Central, e nao seis colunas em seis tabelas: dez copias da mesma regra
+-- envelheceriam em dez velocidades. E precisa responder programaticamente
+-- quantos assets faltam, quais, e por que -- porque o bootstrap consulta isso
+-- para recusar parear um aparelho novo enquanto houver midia necessaria que
+-- nao pode viajar no contrato novo.
+CREATE TABLE IF NOT EXISTS blob_migration_issues (
+    id TEXT PRIMARY KEY NOT NULL,
+    -- O numero da superficie no ADR 0010, para que documento e banco falem a
+    -- mesma lingua.
+    surface INTEGER NOT NULL CHECK (surface BETWEEN 1 AND 10),
+    table_name TEXT NOT NULL CHECK (table_name <> ''),
+    row_id TEXT NOT NULL CHECK (row_id <> ''),
+    -- A coluna, que nas superficies de dois lados identifica QUAL lado falhou.
+    -- Falha num lado nao autoriza tocar no outro.
+    side TEXT NOT NULL CHECK (side <> ''),
+    reason TEXT NOT NULL CHECK (reason IN (
+        'legacy_unrecognized',
+        'document_unparseable',
+        'node_unrecognized',
+        'blob_write_failed',
+        'blob_missing'
+    )),
+    -- Diagnostico curto, para o escritor entender o que ficou pendente.
+    --
+    -- O limite de tamanho e uma regra, nao um palpite: a issue NAO guarda os
+    -- bytes. Sem o CHECK, o caminho mais natural do mundo -- "grava o valor
+    -- que nao deu para converter, para nao perder" -- traria a base64 inteira
+    -- de volta para dentro do SQLite, que e exatamente o problema que esta
+    -- etapa existe para resolver. O valor legado continua onde sempre esteve.
+    detail TEXT NOT NULL DEFAULT '' CHECK (length(detail) <= 200),
+    detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at TEXT NOT NULL DEFAULT '',
+    -- A identidade da pendencia e (superficie, linha, lado, motivo).
+    --
+    -- E o que torna o registro idempotente por ESTRUTURA, e nao por disciplina
+    -- de quem escreve o backfill: rodar o backfill dez vezes sobre o mesmo
+    -- legado invalido nao pode produzir dez pendencias.
+    UNIQUE (surface, row_id, side, reason)
+);
+
+CREATE INDEX IF NOT EXISTS idx_blob_migration_issues_abertas
+    ON blob_migration_issues(surface, table_name)
+    WHERE resolved_at = '';
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1300,6 +1408,7 @@ mod tests {
     const NATIVE_SCHEMA_V17_FIXTURE: &str = include_str!("../../fixtures/schema17_native.sql");
     const NATIVE_SCHEMA_V18_FIXTURE: &str = include_str!("../../fixtures/schema18_native.sql");
     const NATIVE_SCHEMA_V19_FIXTURE: &str = include_str!("../../fixtures/schema19_native.sql");
+    const NATIVE_SCHEMA_V20_FIXTURE: &str = include_str!("../../fixtures/schema20_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -1422,8 +1531,8 @@ mod tests {
                 .expect("ligar foreign keys");
             apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
             connection
-                .execute_batch(NATIVE_SCHEMA_V19_FIXTURE)
-                .expect("carregar a fixture nativa de schema 19");
+                .execute_batch(NATIVE_SCHEMA_V20_FIXTURE)
+                .expect("carregar a fixture nativa de schema 20");
         }
         let db = Connection::open(&path).expect("reabrir");
         db.execute_batch("PRAGMA foreign_keys = ON;")
@@ -2911,5 +3020,368 @@ mod tests {
             leftover, 0,
             "excluir o elemento precisa levar as ligacoes dele"
         );
+    }
+
+    /// **A migration 20 acrescenta referência e não toca em um byte antigo.**
+    ///
+    /// O gate que fecha o pior caminho possível desta etapa. A conversão exige
+    /// ler cabeçalho de data URL, decodificar base64, calcular SHA-256, gravar
+    /// arquivo e renomear — nada disso cabe em SQL. Uma migration que tentasse
+    /// atalhar com `UPDATE ... SET data_url = ''` apagaria a única cópia dos
+    /// bytes do escritor antes de existir a segunda, no aparelho dele, sem
+    /// volta.
+    ///
+    /// ```text
+    /// migration 20   →  coluna nova, vazia; coluna antiga, intacta
+    /// backfill Rust  →  publica o blob, verifica, grava o hash, e SÓ ENTÃO
+    ///                   limpa o inline
+    /// ```
+    #[test]
+    fn banco_nascido_no_19_migra_para_o_20_e_ganha_referencia_sem_perder_byte() {
+        let connection = Connection::open_in_memory().expect("abrir banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("ligar foreign keys");
+        apply_migrations(&connection, 1, 19);
+
+        // Um valor por superfície direta, cada um diferente do outro, para que
+        // uma troca entre colunas não passe.
+        let inline = |sufixo: &str| format!("data:image/png;base64,QUJD{sufixo}");
+        connection
+            .execute_batch(&format!(
+                "INSERT INTO universes (id, name, cover_image, created_at, updated_at)
+                    VALUES ('u1','Universo','{}','2026-01-01','2026-01-01');
+                 INSERT INTO stories (id, universe_id, name, created_at, updated_at)
+                    VALUES ('s1','u1','Historia','2026-01-01','2026-01-01');
+                 INSERT INTO books (id, story_id, name, cover_image, created_at, updated_at)
+                    VALUES ('b1','s1','Livro','{}','2026-01-01','2026-01-01');
+                 INSERT INTO entities (id, universe_id, type, name, image)
+                    VALUES ('e1','u1','character','Alguem','{}');
+                 INSERT INTO canvas_nodes (id, universe_id, kind, image)
+                    VALUES ('c1','u1','image','{}');
+                 INSERT INTO planning_items
+                    (id, universe_id, title, image, created_at, updated_at)
+                    VALUES ('p1','u1','Cena','{}','2026-01-01','2026-01-01');
+                 INSERT INTO attachments
+                    (id, universe_id, owner_type, owner_id, data_url, created_at)
+                    VALUES ('a1','u1','entity','e1','{}','2026-01-01');",
+                inline("VU5J"),
+                inline("TElW"),
+                inline("RU5U"),
+                inline("Q0FO"),
+                inline("UExB"),
+                inline("QVRU"),
+            ))
+            .expect("semear as seis superfícies diretas no schema 19");
+
+        apply_migrations(&connection, 20, 20);
+
+        // As colunas de referência existem e nascem vazias: quem preenche é o
+        // backfill, depois de haver blob publicado e verificado.
+        for (tabela, id, legada, valor_esperado, hash, mime) in [
+            (
+                "attachments",
+                "a1",
+                "data_url",
+                inline("QVRU"),
+                "blob_hash",
+                "mime_type",
+            ),
+            (
+                "universes",
+                "u1",
+                "cover_image",
+                inline("VU5J"),
+                "cover_blob_hash",
+                "cover_mime_type",
+            ),
+            (
+                "entities",
+                "e1",
+                "image",
+                inline("RU5U"),
+                "image_blob_hash",
+                "image_mime_type",
+            ),
+            (
+                "canvas_nodes",
+                "c1",
+                "image",
+                inline("Q0FO"),
+                "image_blob_hash",
+                "image_mime_type",
+            ),
+            (
+                "books",
+                "b1",
+                "cover_image",
+                inline("TElW"),
+                "cover_blob_hash",
+                "cover_mime_type",
+            ),
+            (
+                "planning_items",
+                "p1",
+                "image",
+                inline("UExB"),
+                "image_blob_hash",
+                "image_mime_type",
+            ),
+        ] {
+            let (guardado, hash_lido, mime_lido): (String, String, String) = connection
+                .query_row(
+                    &format!("SELECT {legada}, {hash}, {mime} FROM {tabela} WHERE id = ?1"),
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap_or_else(|error| panic!("ler {tabela}.{legada}: {error}"));
+
+            assert_eq!(
+                guardado, valor_esperado,
+                "{tabela}.{legada} mudou na migration. Enquanto o hash está vazio, esse \
+                 valor é a única cópia do arquivo do escritor."
+            );
+            assert_eq!(hash_lido, "", "{tabela}.{hash} tinha que nascer vazia");
+            assert_eq!(mime_lido, "", "{tabela}.{mime} tinha que nascer vazia");
+        }
+    }
+
+    /// A migration 20 não carrega `UPDATE` nem `DELETE`.
+    ///
+    /// Gate de texto, e desta vez é o instrumento certo: a proibição é sobre a
+    /// **forma** da migration, não sobre um efeito observável. Um `UPDATE`
+    /// escrito ali roda no aparelho do escritor antes de qualquer teste de
+    /// comportamento existir para ver o estrago.
+    #[test]
+    fn a_migration_20_nao_tem_comando_que_apaga_dado() {
+        let corpo: String = MIGRATION_V20
+            .lines()
+            .filter(|linha| !linha.trim_start().starts_with("--"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_uppercase();
+        for proibido in ["UPDATE ", "DELETE ", "DROP "] {
+            assert!(
+                !corpo.contains(proibido),
+                "a migration 20 é transitória e só prepara o schema: encontrei {proibido:?} \
+                 nela. A limpeza do inline acontece depois, no backfill, e só depois de \
+                 existir blob válido publicado."
+            );
+        }
+    }
+
+    /// **A pendência de migração não guarda os bytes.**
+    ///
+    /// É o caminho mais natural do mundo — "grava o valor que não deu para
+    /// converter, para não perder" — e traria a base64 inteira de volta para
+    /// dentro do SQLite, que é o problema que esta etapa existe para resolver.
+    /// O valor legado continua onde sempre esteve; a issue só diz que ele está
+    /// lá e por quê.
+    #[test]
+    fn a_pendencia_de_migracao_nao_guarda_os_bytes() {
+        let connection = Connection::open_in_memory().expect("abrir banco");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+
+        let base64_gigante = "A".repeat(4096);
+        let erro = connection
+            .execute(
+                "INSERT INTO blob_migration_issues
+                    (id, surface, table_name, row_id, side, reason, detail)
+                 VALUES ('i1', 1, 'attachments', 'a1', 'data_url', 'legacy_unrecognized', ?1)",
+                [&base64_gigante],
+            )
+            .expect_err("o schema tem que recusar bytes na pendência");
+        assert!(
+            erro.to_string().contains("CHECK"),
+            "recusou pelo motivo errado: {erro}"
+        );
+    }
+
+    /// **Registrar a mesma pendência de novo não duplica.**
+    ///
+    /// O backfill é idempotente por decisão, e aqui a idempotência é
+    /// estrutural: a identidade da pendência é (superfície, linha, lado,
+    /// motivo). Rodar o backfill dez vezes sobre o mesmo legado inválido não
+    /// pode produzir dez pendências, e essa garantia não depende de quem
+    /// escreveu o `INSERT`.
+    #[test]
+    fn a_mesma_pendencia_registrada_duas_vezes_nao_duplica() {
+        let connection = Connection::open_in_memory().expect("abrir banco");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+
+        let inserir = |id: &str| {
+            connection.execute(
+                "INSERT INTO blob_migration_issues
+                    (id, surface, table_name, row_id, side, reason)
+                 VALUES (?1, 1, 'attachments', 'a1', 'data_url', 'legacy_unrecognized')
+                 ON CONFLICT (surface, row_id, side, reason) DO NOTHING",
+                [id],
+            )
+        };
+        assert_eq!(inserir("i1").expect("primeira"), 1);
+        assert_eq!(
+            inserir("i2").expect("segunda"),
+            0,
+            "a segunda passada não pode acrescentar linha"
+        );
+
+        let quantas: i64 = connection
+            .query_row("SELECT COUNT(*) FROM blob_migration_issues", [], |row| {
+                row.get(0)
+            })
+            .expect("contar");
+        assert_eq!(quantas, 1);
+    }
+
+    /// **A pendência identifica qual lado falhou.**
+    ///
+    /// Nas superfícies de dois lados, falha num lado não autoriza tocar no
+    /// outro. Se a identidade da pendência ignorasse o lado, registrar o
+    /// problema do `remote_value` calaria o do `local_value` — e o escritor
+    /// resolveria um acreditando ter resolvido os dois.
+    #[test]
+    fn a_pendencia_identifica_o_lado_que_falhou() {
+        let connection = Connection::open_in_memory().expect("abrir banco");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+
+        for (id, lado) in [("i1", "local_value"), ("i2", "remote_value")] {
+            connection
+                .execute(
+                    "INSERT INTO blob_migration_issues
+                        (id, surface, table_name, row_id, side, reason)
+                     VALUES (?1, 9, 'sync_conflicts', 'conf-1', ?2, 'document_unparseable')",
+                    [id, lado],
+                )
+                .unwrap_or_else(|error| panic!("registrar o lado {lado}: {error}"));
+        }
+
+        let lados: Vec<String> = connection
+            .prepare("SELECT side FROM blob_migration_issues WHERE row_id = 'conf-1' ORDER BY side")
+            .expect("preparar")
+            .query_map([], |row| row.get(0))
+            .expect("consultar")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("ler");
+        assert_eq!(lados, vec!["local_value", "remote_value"]);
+    }
+
+    /// Superfície fora de 1..10 é recusada pelo schema.
+    ///
+    /// O ADR 0010 fechou em dez. Um número fora da faixa é pendência que
+    /// ninguém sabe onde procurar — e o bootstrap consulta esta tabela para
+    /// decidir se pode parear.
+    #[test]
+    fn pendencia_de_superficie_inexistente_e_recusada() {
+        let connection = Connection::open_in_memory().expect("abrir banco");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+
+        for numero in ["0", "11", "-1"] {
+            let erro = connection
+                .execute(
+                    &format!(
+                        "INSERT INTO blob_migration_issues
+                            (id, surface, table_name, row_id, side, reason)
+                         VALUES ('i-{numero}', {numero}, 'attachments', 'a1', 'data_url',
+                                 'legacy_unrecognized')"
+                    ),
+                    [],
+                )
+                .expect_err("fora da faixa do ADR 0010");
+            assert!(erro.to_string().contains("CHECK"), "{numero}: {erro}");
+        }
+    }
+
+    /// Motivo desconhecido é recusado.
+    ///
+    /// A lista fechada é o que permite o bootstrap perguntar "há pendência que
+    /// impede o pareamento?" sem interpretar texto livre.
+    #[test]
+    fn pendencia_com_motivo_desconhecido_e_recusada() {
+        let connection = Connection::open_in_memory().expect("abrir banco");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+
+        let erro = connection
+            .execute(
+                "INSERT INTO blob_migration_issues
+                    (id, surface, table_name, row_id, side, reason)
+                 VALUES ('i1', 1, 'attachments', 'a1', 'data_url', 'nao-deu-certo')",
+                [],
+            )
+            .expect_err("motivo fora da lista");
+        assert!(erro.to_string().contains("CHECK"), "{erro}");
+    }
+
+    /// **Um banco que NASCEU no 19 sobe para o 20 sem perder Sync V2.**
+    ///
+    /// Diferente de `banco_nascido_no_19_migra_para_o_20_e_ganha_referencia_sem_perder_byte`,
+    /// que constrói o 19 por migração: aqui o schema 19 vem da fixture nativa,
+    /// com as formas que só um banco nascido lá tem — tombstone sem
+    /// coordenadas, cursor com baseline, divergência com operação dos dois
+    /// lados.
+    ///
+    /// Este teste também é o que mantém a fixture do 19 **viva**. Quando a
+    /// migration 20 apontou o helper para a fixture do 20, a do 19 virou
+    /// constante sem uso — e foi assim que a do 18 escondeu uma compilação
+    /// quebrada atrás de um `tail` numa etapa anterior. Fixture que ninguém
+    /// carrega não é rede de segurança, é arquivo.
+    #[test]
+    fn banco_nativo_do_19_sobe_para_o_20_sem_perder_o_sync_v2() {
+        let connection = Connection::open_in_memory().expect("abrir banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("ligar foreign keys");
+        apply_migrations(&connection, 1, 19);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V19_FIXTURE)
+            .expect("carregar a fixture nativa de schema 19");
+
+        let antes = |tabela: &str| -> i64 {
+            connection
+                .query_row(&format!("SELECT COUNT(*) FROM {tabela}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap_or_else(|error| panic!("contar {tabela}: {error}"))
+        };
+        let contagens: Vec<(&str, i64)> = [
+            "sync_devices",
+            "sync_events",
+            "sync_applied_events",
+            "sync_cursors",
+            "sync_aggregate_state",
+            "sync_revision_history",
+            "sync_tombstones",
+            "sync_divergences",
+        ]
+        .into_iter()
+        .map(|tabela| (tabela, antes(tabela)))
+        .collect();
+        assert!(
+            contagens.iter().all(|(_, quantas)| *quantas > 0),
+            "a fixture precisa ter linha em todas: {contagens:?}"
+        );
+
+        apply_migrations(&connection, 20, 20);
+
+        for (tabela, esperado) in &contagens {
+            assert_eq!(
+                antes(tabela),
+                *esperado,
+                "a migration 20 mexeu em {tabela}. Ela só acrescenta coluna e cria a tabela de \
+                 pendências — não toca em estado causal."
+            );
+        }
+
+        // E o que a 20 traz de novo está lá, num banco que veio por este caminho.
+        let pendencias: i64 = connection
+            .query_row("SELECT COUNT(*) FROM blob_migration_issues", [], |row| {
+                row.get(0)
+            })
+            .expect("a tabela de pendências existe e nasce vazia");
+        assert_eq!(pendencias, 0);
+
+        let integridade: String = connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("integrity_check");
+        assert_eq!(integridade, "ok");
     }
 }

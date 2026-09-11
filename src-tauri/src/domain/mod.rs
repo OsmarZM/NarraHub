@@ -12,6 +12,7 @@
 
 pub mod canvas;
 pub mod collaboration;
+pub mod data_url;
 pub mod entity;
 pub mod identity;
 pub mod ids;

@@ -118,6 +118,264 @@ O que fazer com eles, por natureza:
 
 ---
 
+### NH-072 — Transporte de blob pela rede
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4  (depende da etapa 14)
+```
+
+`blob_backfill::transferir_blobs` recebe a origem como
+`FnMut(&str) -> Result<Vec<u8>, String>` justamente para que a rede entre ali sem mudar o
+resto. Hoje só existe `origem_local`, que lê de um `BlobStore` na mesma máquina — é o que o
+pareamento local e os gates usam.
+
+Falta o transporte de verdade: pedir o hash ao peer pela sessão Noise, receber em streaming e
+alimentar o `put_esperando`. Sem chunking sofisticado; a verificação já está no lugar certo, e
+o gate `origem_que_mente_sobre_o_hash_nao_publica_nada` prova que uma origem hostil não
+publica nada.
+
+---
+
+### NH-068 — Colar imagem no editor deveria publicar no blob store
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4
+```
+
+Colar de um navegador traz `<img src="data:...">` no HTML da área de transferência. A 6B fechou
+isso do jeito conservador: `transformPastedHTML` **remove** o `src` inline e o escritor recebe o
+recado de usar o botão de imagem. A imagem colada não entra.
+
+O certo é publicar no blob store durante a colagem, como o botão faz. Não foi feito agora porque
+exige transformação assíncrona dentro de um handler síncrono do ProseMirror — um `Plugin` com
+`handlePaste` que insere um placeholder e o substitui quando o `blob_put` volta.
+
+Aceitar o inline não era opção: `update_chapter` recusa, então o capítulo ficaria sem poder ser
+salvo depois de uma colagem.
+
+---
+
+### NH-069 — Frontend deveria resolver as seis superfícies diretas por hash
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4
+```
+
+Capa de universo, capa de livro, imagem de entidade, node do canvas, imagem de cena e anexo
+guardam hash no banco (ADR 0010). Mas a **leitura** reconstrói a `data:` URL a partir do blob,
+em `application/blob_fields::ler_asset_direto`, para que nenhuma tela precisasse mudar no
+fechamento da etapa 13.
+
+A invariante está cumprida — os bytes não estão no SQLite. O custo é I/O: uma lista de
+entidades paga uma leitura de disco por entidade com imagem. O payload não cresceu (a coluna já
+devolvia a data URL antes), mas o caminho definitivo é o frontend chamar `BlobService.resolve()`
+como o editor já faz, e `ler_asset_direto` sair.
+
+---
+
+### NH-070 — `create_node` tem oito parâmetros
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4
+```
+
+O `store` foi o oitavo, e o clippy reclama a partir de sete. Está com
+`#[allow(clippy::too_many_arguments)]` e o motivo no código. Agrupar num struct mexeria no
+contrato do comando Tauri e no frontend, e isso não cabia no fechamento da etapa 13.
+
+---
+
+### NH-071 — Transporte de asset pelo IPC usa base64
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4
+```
+
+`blob_put` e `blob_read` carregam base64 porque o IPC do Tauri carrega texto. Isso é
+**transporte**, e o ADR 0010 é explícito: o que é proibido é persistir. O hash é o que vai ao
+banco.
+
+O caminho melhor é um protocolo customizado (`asset://` ou `register_asynchronous_uri_scheme_protocol`),
+que serviria os bytes sem passar pela serialização do IPC e sem inflar a memória em um terço.
+Nada do banco muda quando isso acontecer — a referência já é o hash.
+
+### NH-064 — Sync V2, etapa 13: assets por hash (blob store)
+
+```text
+Owner:  Claude
+Status: DONE — as oito fatias entregues
+ADR:    0010
+Fase:   4  (etapa 13 de 14)
+```
+
+Os bytes de imagem saem do SQLite. O banco guarda `SHA-256(bytes reais)`, e um blob store
+único guarda os arquivos sob `app_data/assets/blobs/sha256/<ab>/<hash>` — dentro do diretório
+que o backup já varre recursivamente.
+
+**Entregue:**
+
+- `infrastructure/blob_store.rs` — `put`/`put_esperando`/`has`/`read`/`verify`/`path_for`,
+  temporário + verificação + `rename`, hash canônico validado antes de virar caminho.
+- `infrastructure/sqlite/blob_surfaces.rs` — o catálogo das dez superfícies, com o gate
+  contra uma décima-primeira entrar sem classificação.
+- `migration 20` — par hash/MIME nas seis superfícies diretas, e `blob_migration_issues`.
+  Transitória: nenhuma coluna legada removida, nenhum byte limpo por SQL.
+- `domain/data_url.rs` — leitura estrita de `data:` URL, com base64 escrito à mão (não há
+  dependência de base64 no projeto; `domain/identity.rs` abriu o precedente com base32).
+- `infrastructure/sqlite/blob_backfill.rs` — backfill idempotente das **seis diretas**, com
+  os quatro estados e a ordem hash-antes-do-inline observada por gatilho.
+
+- `infrastructure/blob_document.rs` — o transformador HTML **único** das quatro superfícies
+  de documento, com `lol_html` (decisão A da `NH-065`). Duas passadas: varre sem I/O, decide
+  fora do rewriter, reescreve o N-ésimo `<img>`. Documento sem imagem sai byte a byte igual.
+- `interface/writer_messages.rs` — gate contra continuação de linha perdida em mensagem.
+
+- `infrastructure/sqlite/blob_backfill.rs` — backfill das quatro superfícies de documento,
+  com a supressão da revisão fabricada pelo gatilho.
+- `interface/tauri/blob_commands.rs` + `core/native/blob.service.ts` — a fronteira do blob
+  store, sem caminho de arquivo atravessando.
+- `application/blob_fields.rs` — as seis superfícies diretas, com **uma** implementação
+  guiada pelo catálogo: normaliza na escrita, reconstrói na leitura.
+- As três barreiras: `update_chapter`, `store_contribution` e `review(approved)`, todas
+  chamando a mesma `blob_document::exigir_blob_safe`.
+- O editor publica no blob store e resolve em runtime; o `src` nunca é serializado.
+- Fonte externa/desconhecida não passa em persistência nova (ver `NH-065`); no legado
+  continua preservada com pendência.
+
+- `attachment` no Sync V2: evento com metadado mais `blob_hash`, tombstone na remoção, e
+  aplicação que recusa payload com bytes. A tabela deixou `EtapaPosterior` e viaja no bundle.
+- Bootstrap com manifesto: conjunto único de hashes derivado das três origens que viajam,
+  transferência com SHA recalculado, e seed recusado enquanto faltar blob obrigatório.
+
+**Nada falta para a etapa 13.** O que ficou registrado são as dívidas `NH-066` a `NH-071`,
+nenhuma delas bloqueando as invariantes do ADR 0010.
+
+---
+
+### NH-065 — Decisão: as superfícies de documento guardam HTML, não JSON do Tiptap
+
+```text
+Owner:  Claude
+Status: DECIDIDA — escolha A, implementada
+Fase:   4  (etapa 13 de 14)
+```
+
+**Decisão (2026-09-10): A.** O HTML continua a representação persistida, e a transformação usa
+`lol_html`. As outras duas foram recusadas com motivo: o varredor artesanal é o meio-termo
+entre estrutura e substring que esta etapa não aceita, e trocar para JSON ampliaria a etapa 13
+para uma migração do modelo de documento inteiro, cruzando com decisões futuras de identidade
+por bloco e merge.
+
+O formato canônico ficou fixado no ADR 0010 e em `infrastructure/blob_document.rs`:
+
+```html
+<img data-narrahub-blob="<64 hex>" data-mime-type="image/png" alt="rosto.png">
+```
+
+Entregue, e **o lado do editor também** — esta frase dizia "falta o lado do editor" e ficou
+velha: `InlineImage.parseHTML` passou a casar `{ tag: 'img' }` e a ler `data-narrahub-blob` /
+`data-mime-type`, com `src: { renderHTML: () => ({}) }` para o `src` nunca ser serializado, e
+`resolverImagens()` preenchendo `src` em tempo de execução com `addToHistory: false`. O
+transformador único (`blob_document.rs`) saiu com os oito gates pedidos na revisão mais cinco.
+
+**Ajuste de semântica (2026-09-11), pedido na revisão da PR da etapa 13:** `<img>` com `src`
+externo/desconhecido — `https://`, caminho do Windows, `/home/...`, `file://`, `blob:` — não
+é mais aceito em **persistência nova**. A primeira versão de `exigir_blob_safe` aceitava, com
+o argumento de que não põe byte no SQLite; o argumento estava certo sobre tamanho e errado
+sobre o contrato, porque o ADR 0010 já listava caminho absoluto, URL temporária e `blob:`
+entre o que nunca vai ao banco. O critério é portabilidade: o mesmo HTML tem que funcionar no
+Windows e no Android.
+
+É *fail-closed*, sem comparar "externa antiga" com "externa nova": o documento legado **abre**
+normalmente, e o que ele perde é a próxima gravação, até a imagem sair ou ser reinserida pelo
+editor. O **backfill não mudou** — externa legada continua preservada byte a byte com
+`blob_migration_issue` registrada. Nenhuma URL é baixada e nenhum caminho é aberto.
+
+O ADR 0010 e o desenho aprovado da etapa 13 descrevem as superfícies 7 a 10 como documentos
+Tiptap em JSON, percorridos por árvore, com a imagem sendo um node de `attrs`. **Isso está
+factualmente errado, e a premissa é minha.**
+
+O que o repositório faz, nas duas pontas do round-trip
+(`src/app/features/writing/writing-editor.component.ts`):
+
+```text
+216:  this.contentChange.emit(editor.getHTML());
+254:  this.editor.commands.setContent(incoming, …);
+632:  if (/<(?:p|h[1-6]|ul|ol|li|blockquote|img|hr|div|br)\b/iu.test(value)) return content;
+```
+
+`chapters.content` é uma **string HTML** — e, para dado antigo, texto puro, que
+`normalizeIncoming` envelopa em `<p>`. Nenhum Rust e nenhum TypeScript faz `JSON.parse` dela.
+A extensão `InlineImage` declara `attrs` `src`/`alt`/`title`, mas isso existe no ProseMirror,
+em memória: o que chega ao SQLite é `<img src="data:image/png;base64,…" alt="…">`.
+
+Vale para as quatro. A superfície 10 confirma pelo outro lado: em
+`services/share-api/public/viewer.js:150` o convidado edita `content` num `contentEditable`, e
+`serializeRichEditor` devolve HTML.
+
+**Consequência:** não há árvore JSON para percorrer; "preservar atributos desconhecidos" passa
+a ser sobre atributos de `<img>`; HTML minúsculo os nomes, então a referência persistida seria
+`<img blobhash="…" mimetype="…">`; e "validar estrutura, não substring" passa a exigir um
+parser de HTML, que o `Cargo.toml` não tem. As fatias 6 e 8 herdam a dependência: o guard
+fail-closed do `update_chapter` e do `review` precisa do mesmo parser.
+
+**Os três caminhos:**
+
+| | |
+| --- | --- |
+| **A** | HTML continua a representação, com parser de verdade (`lol_html`, feito para reescrever um atributo e repassar o resto verbatim). Custo: dependência nova. |
+| **B** | HTML continua, com varredor de `<img>` escrito à mão. Sem dependência, mas é o meio-termo entre estrutura e substring que foi recusado para o guard, e tem arestas (comentário HTML, `<img` dentro de atributo). |
+| **C** | Trocar a persistência para JSON do Tiptap. O desenho original passa a valer literalmente, mas é redesign da persistência do editor e migra todo capítulo existente. |
+
+**Recomendação:** A. **Aprovada pelo autor em 2026-09-10.**
+
+---
+
+### NH-066 — `IncomingContribution` não tem limite de tamanho
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4
+```
+
+O único `MAX_` da colaboração é `MAX_ATTRIBUTE_KEY = 120`, em `domain/collaboration.rs:9`, e
+ele cobre a **chave** do atributo, não o valor. `original_value` e `proposed_value` entram sem
+teto.
+
+O valor vem de fora, de um convidado com link. Um `proposed_value` de dezenas de megabytes é
+aceito, gravado, e depois lido pela tela de revisão. Registrado separadamente da etapa 13 de
+propósito: é limite de entrada, não migração de asset — e resolver dentro da etapa 13
+misturaria duas decisões de produto (qual é o teto, e o que acontece com quem passa dele).
+
+---
+
+### NH-067 — Identidade e convergência de `chapter_revisions` entre aparelhos
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4
+```
+
+`trg_chapter_revision` grava uma revisão a cada salvamento, com `id` sorteado no banco
+(`randomblob`). Dois aparelhos que editam o mesmo capítulo produzem revisões **diferentes**
+para a mesma edição, com ids diferentes — e a etapa 12 transfere a tabela no bundle.
+
+A pergunta em aberto não é de asset: é o que "a mesma revisão" significa entre aparelhos, e se
+esse histórico deve convergir, ficar local, ou ser podado. Separada de `NH-053`
+deliberadamente — não é ausência de evento, é ausência de identidade.
+
 ### NH-001 — Tornar `main` canônica
 
 ```text

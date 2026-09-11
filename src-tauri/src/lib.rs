@@ -10,8 +10,8 @@ mod sync;
 use database::migrations::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V14,
     MIGRATION_V15, MIGRATION_V16, MIGRATION_V17, MIGRATION_V18, MIGRATION_V19, MIGRATION_V2,
-    MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8,
-    MIGRATION_V9,
+    MIGRATION_V20, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7,
+    MIGRATION_V8, MIGRATION_V9,
 };
 use tauri_plugin_sql::{Migration, MigrationKind};
 
@@ -178,6 +178,12 @@ pub fn run() {
                             sql: MIGRATION_V19,
                             kind: MigrationKind::Up,
                         },
+                        Migration {
+                            version: 20,
+                            description: "Content-addressed blob references for assets",
+                            sql: MIGRATION_V20,
+                            kind: MigrationKind::Up,
+                        },
                     ],
                 )
                 .build(),
@@ -218,6 +224,10 @@ pub fn run() {
             interface::tauri::collaboration_commands::collaboration_sessions,
             interface::tauri::collaboration_commands::collaboration_contributions,
             interface::tauri::collaboration_commands::collaboration_save_session,
+            interface::tauri::blob_commands::blob_put,
+            interface::tauri::blob_commands::blob_read,
+            interface::tauri::blob_commands::blob_has,
+            interface::tauri::blob_commands::storage_prepare_assets,
             interface::tauri::collaboration_commands::collaboration_store_contribution,
             interface::tauri::collaboration_commands::collaboration_end_all,
             interface::tauri::collaboration_commands::collaboration_end_session,

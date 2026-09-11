@@ -4,6 +4,8 @@ use crate::domain::collaboration::{
     IncomingContribution, NewCollaborationSession, MAX_ATTRIBUTE_KEY,
 };
 use crate::domain::ids::{new_id, now_timestamp};
+use crate::infrastructure::blob_document;
+use crate::infrastructure::blob_store::BlobStore;
 use crate::infrastructure::sqlite::{collaboration_repository, SqliteDatabase};
 
 pub fn list_sessions(
@@ -38,8 +40,56 @@ pub fn save_session(
 
 /// Guarda o que chegou de um convidado. Recado entra já como `noted`; edição
 /// entra como `pending`, porque ela só toca no universo depois de aprovada.
+/// **É documento de capítulo?**
+///
+/// O recorte do ADR 0010 para as superfícies 9 e 10. Campo de texto comum
+/// continua texto: um convidado pode legitimamente propor um resumo que
+/// menciona data URLs.
+fn e_documento_de_capitulo(target_type: &str, field: &str) -> bool {
+    target_type == "chapter" && field == "content"
+}
+
+/// PRIMEIRA BARREIRA (ADR 0010): normaliza na fronteira, antes do `INSERT`.
+///
+/// O valor vem de fora, de um convidado com link, e pode chegar no formato
+/// antigo. A regra é a mesma dos dois lados da linha, e eles são
+/// independentes:
+///
+/// ```text
+/// inline válida     →  publica no BlobStore, grava referência
+/// inline inválida   →  RECUSA. Dado novo não ganha pendência de migração:
+///                      pendência é para legado que já estava no acervo.
+/// blob inválido     →  RECUSA
+/// externa           →  RECUSA. Não põe byte no banco, mas o endereço dela só
+///                      existe no aparelho de quem propôs: URL vence, caminho
+///                      local não existe no Android, `blob:` morre com a aba.
+///                      Uma proposta sobre capítulo que já tem imagem remota
+///                      antiga precisa remover ou reinserir essa imagem — é o
+///                      *fail-closed* do ADR 0010.
+/// ```
+///
+/// Sem fallback para inline: se a transformação falhar, o erro sobe. Gravar
+/// "o que deu" seria a porta que as três barreiras existem para fechar.
+fn normalizar_documento(
+    store: &BlobStore,
+    lado: &str,
+    valor: &str,
+) -> DatabaseCommandResult<String> {
+    if valor.trim().is_empty() {
+        return Ok(valor.to_string());
+    }
+    let conversao = blob_document::converter(valor, store)?;
+    if let Err(motivo) = blob_document::exigir_blob_safe(&conversao.html) {
+        return Err(DatabaseCommandError::validation(format!(
+            "A proposta não pôde ser aceita ({lado}): {motivo}"
+        )));
+    }
+    Ok(conversao.html)
+}
+
 pub fn store_contribution(
     database: &SqliteDatabase,
+    store: &BlobStore,
     session_id: &str,
     sequence: i64,
     incoming: IncomingContribution,
@@ -60,6 +110,21 @@ pub fn store_contribution(
         incoming.created_at.clone()
     };
 
+    // Os dois lados são normalizados de forma independente, e antes de a
+    // linha existir: uma falha aqui não deixa meia contribuição no banco.
+    let (original_value, proposed_value) =
+        if e_documento_de_capitulo(&incoming.target_type, &incoming.field) {
+            (
+                normalizar_documento(store, "versão original", &incoming.original_value)?,
+                normalizar_documento(store, "proposta", &incoming.proposed_value)?,
+            )
+        } else {
+            (
+                incoming.original_value.clone(),
+                incoming.proposed_value.clone(),
+            )
+        };
+
     let contribution = CollaborationContribution {
         id: incoming.id,
         session_id: session_id.to_string(),
@@ -71,8 +136,8 @@ pub fn store_contribution(
         target_id: incoming.target_id,
         target_label: incoming.target_label,
         field: incoming.field,
-        original_value: incoming.original_value,
-        proposed_value: incoming.proposed_value,
+        original_value,
+        proposed_value,
         message: incoming.message,
         status: status.to_string(),
         created_at,
@@ -126,6 +191,25 @@ pub fn review(database: &SqliteDatabase, id: &str, decision: &str) -> DatabaseCo
 
     let timestamp = now_timestamp();
     if decision == "approved" {
+        // SEGUNDA BARREIRA (ADR 0010). Fail-closed, e não é redundante.
+        //
+        // A proposta pode ter entrado antes da barreira existir, ter vindo de
+        // um banco importado, ou ter sido adulterada na linha. Aprovar é
+        // copiar `proposed_value` para `chapters.content`, e dali o gatilho de
+        // revisão e o evento assinado seguem sozinhos.
+        //
+        // O erro desfaz a transação: a contribuição continua `pending`, o
+        // capítulo não muda, nenhuma revisão é criada e nenhum evento nasce.
+        // Não normaliza aqui de propósito — publicar blob no meio de uma
+        // aprovação transformaria "revisar" em "migrar", e o escritor não pediu
+        // isso. A proposta fica pendente com a mensagem dizendo por quê.
+        if e_documento_de_capitulo(&contribution.target_type, &contribution.field) {
+            if let Err(motivo) = blob_document::exigir_blob_safe(&contribution.proposed_value) {
+                return Err(DatabaseCommandError::validation(format!(
+                    "Esta proposta não pode ser aplicada: {motivo}"
+                )));
+            }
+        }
         apply(&transaction, &contribution, &timestamp)?;
         collaboration_repository::log_applied_change(
             &transaction,
@@ -216,6 +300,7 @@ fn ensure_end_status(status: &str) -> DatabaseCommandResult<()> {
 mod tests {
     use super::*;
     use crate::database::error::DatabaseErrorKind;
+    use crate::infrastructure::blob_store::BlobStore;
     use crate::infrastructure::sqlite::test_support::{seed_universe, TemporaryDatabase};
 
     fn seed_session(fixture: &TemporaryDatabase) {
@@ -258,6 +343,40 @@ mod tests {
         }
     }
 
+    /// Um blob store temporario para os testes que atravessam a fronteira.
+    ///
+    /// `store_contribution` publica blob quando o valor e documento de
+    /// capitulo, e publicar precisa de um lugar no disco.
+    struct LojaDeTeste {
+        raiz: std::path::PathBuf,
+        store: BlobStore,
+    }
+
+    impl LojaDeTeste {
+        fn nova() -> Self {
+            let raiz = std::env::temp_dir()
+                .join(format!("narrahub-colab-{}", crate::domain::ids::new_id()));
+            std::fs::create_dir_all(&raiz).expect("criar raiz");
+            Self {
+                store: BlobStore::new(&raiz),
+                raiz,
+            }
+        }
+    }
+
+    impl Drop for LojaDeTeste {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.raiz).ok();
+        }
+    }
+
+    /// Uma `data:` URL de verdade, com os bytes dela.
+    fn inline_de_teste(conteudo: &str) -> (String, Vec<u8>) {
+        let bytes = conteudo.as_bytes().to_vec();
+        let texto = crate::domain::data_url::codificar_base64(&bytes);
+        (format!("data:image/png;base64,{texto}"), bytes)
+    }
+
     #[test]
     fn contribuicao_sem_nome_entra_como_convidado() {
         let fixture = TemporaryDatabase::new();
@@ -265,6 +384,7 @@ mod tests {
 
         assert!(store_contribution(
             &fixture.database,
+            &LojaDeTeste::nova().store,
             "sess",
             1,
             incoming("c1", "name", "Novo", "u1")
@@ -285,6 +405,7 @@ mod tests {
 
         assert!(store_contribution(
             &fixture.database,
+            &LojaDeTeste::nova().store,
             "sess",
             1,
             incoming("c1", "name", "Novo", "u1")
@@ -292,6 +413,7 @@ mod tests {
         .expect("primeira"));
         assert!(!store_contribution(
             &fixture.database,
+            &LojaDeTeste::nova().store,
             "sess",
             1,
             incoming("c1", "name", "Novo", "u1")
@@ -311,6 +433,7 @@ mod tests {
         seed_session(&fixture);
         store_contribution(
             &fixture.database,
+            &LojaDeTeste::nova().store,
             "sess",
             1,
             incoming("c1", "name", "Renomeado", "u1"),
@@ -345,6 +468,7 @@ mod tests {
         seed_session(&fixture);
         store_contribution(
             &fixture.database,
+            &LojaDeTeste::nova().store,
             "sess",
             1,
             incoming("c1", "name", "Renomeado", "u1"),
@@ -377,6 +501,7 @@ mod tests {
         seed_session(&fixture);
         store_contribution(
             &fixture.database,
+            &LojaDeTeste::nova().store,
             "sess",
             1,
             incoming("c1", "name", "Renomeado", "u1"),
@@ -406,6 +531,7 @@ mod tests {
         seed_session(&fixture);
         store_contribution(
             &fixture.database,
+            &LojaDeTeste::nova().store,
             "sess",
             1,
             incoming("c1", "cover_image", "x.png", "u1"),
@@ -428,6 +554,7 @@ mod tests {
         seed_session(&fixture);
         store_contribution(
             &fixture.database,
+            &LojaDeTeste::nova().store,
             "sess",
             1,
             incoming("c1", "name", "Novo", "ja-excluido"),
@@ -449,6 +576,7 @@ mod tests {
         seed_session(&fixture);
         store_contribution(
             &fixture.database,
+            &LojaDeTeste::nova().store,
             "sess",
             1,
             incoming("boa", "name", "Novo nome", "u1"),
@@ -456,6 +584,7 @@ mod tests {
         .expect("guardar");
         store_contribution(
             &fixture.database,
+            &LojaDeTeste::nova().store,
             "sess",
             2,
             incoming("ruim", "cover_image", "x", "u1"),
@@ -463,6 +592,7 @@ mod tests {
         .expect("guardar");
         store_contribution(
             &fixture.database,
+            &LojaDeTeste::nova().store,
             "sess",
             3,
             incoming("boa2", "description", "Nova", "u1"),
@@ -494,7 +624,14 @@ mod tests {
 
         let mut proposta = incoming("c1", "attribute:Apelido", "Sr. Subaperto", "e1");
         proposta.target_type = "entity".into();
-        store_contribution(&fixture.database, "sess", 1, proposta).expect("guardar");
+        store_contribution(
+            &fixture.database,
+            &LojaDeTeste::nova().store,
+            "sess",
+            1,
+            proposta,
+        )
+        .expect("guardar");
 
         review(&fixture.database, "c1", "approved").expect("aprovar");
 
@@ -515,7 +652,14 @@ mod tests {
         seed_session(&fixture);
         let mut proposta = incoming("c1", &format!("attribute:{}", "a".repeat(200)), "x", "e1");
         proposta.target_type = "entity".into();
-        store_contribution(&fixture.database, "sess", 1, proposta).expect("guardar");
+        store_contribution(
+            &fixture.database,
+            &LojaDeTeste::nova().store,
+            "sess",
+            1,
+            proposta,
+        )
+        .expect("guardar");
 
         let error = review(&fixture.database, "c1", "approved").expect_err("deveria recusar");
         assert_eq!(error.kind, DatabaseErrorKind::Validation);
@@ -542,5 +686,332 @@ mod tests {
         let fixture = TemporaryDatabase::new();
         let error = end_all_active(&fixture.database, "pausada").expect_err("deveria recusar");
         assert_eq!(error.kind, DatabaseErrorKind::Validation);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // As duas barreiras de colaboração (ADR 0010)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Semeia o mínimo para haver capítulo alvo.
+    fn semear_capitulo_alvo(fixture: &TemporaryDatabase, conteudo: &str) {
+        fixture
+            .connection()
+            .execute_batch(&format!(
+                "INSERT OR IGNORE INTO universes (id, name, created_at, updated_at)
+                    VALUES ('u1','U','2026-01-01','2026-01-01');
+                 INSERT OR IGNORE INTO stories (id, universe_id, name, created_at, updated_at)
+                    VALUES ('s1','u1','S','2026-01-01','2026-01-01');
+                 INSERT OR IGNORE INTO books (id, story_id, name, created_at, updated_at)
+                    VALUES ('b1','s1','L','2026-01-01','2026-01-01');
+                 INSERT INTO chapters (id, book_id, title, content, word_count)
+                    VALUES ('cap1','b1','Cap','{conteudo}', 5);"
+            ))
+            .expect("semear capítulo");
+    }
+
+    fn proposta_de_capitulo(id: &str, original: &str, proposto: &str) -> IncomingContribution {
+        IncomingContribution {
+            id: id.into(),
+            contributor: "Convidada".into(),
+            kind: "edit".into(),
+            universe_id: "u1".into(),
+            target_type: "chapter".into(),
+            target_id: "cap1".into(),
+            target_label: "Cap".into(),
+            field: "content".into(),
+            original_value: original.into(),
+            proposed_value: proposto.into(),
+            message: String::new(),
+            created_at: String::new(),
+        }
+    }
+
+    /// **`store_contribution` normaliza a inline válida antes do `INSERT`.**
+    ///
+    /// Nada de inline novo no banco: o valor do convidado entra já como
+    /// referência, e os bytes vão para o blob store.
+    #[test]
+    fn store_contribution_normaliza_inline_antes_de_gravar() {
+        let fixture = TemporaryDatabase::new();
+        let loja = LojaDeTeste::nova();
+        seed_session(&fixture);
+        let (url, bytes) = inline_de_teste("a-imagem-da-convidada");
+
+        assert!(store_contribution(
+            &fixture.database,
+            &loja.store,
+            "sess",
+            1,
+            proposta_de_capitulo(
+                "c1",
+                &format!("<p>antes</p><img src=\"{url}\">"),
+                &format!("<p>proposta</p><img src=\"{url}\">"),
+            ),
+        )
+        .expect("guardar"));
+
+        let hash = crate::infrastructure::blob_store::hash_dos_bytes(&bytes);
+        let (original, proposto): (String, String) = fixture
+            .connection()
+            .query_row(
+                "SELECT original_value, proposed_value FROM collaboration_contributions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("ler");
+
+        for (lado, valor) in [("original", &original), ("proposta", &proposto)] {
+            assert!(valor.contains(&hash), "{lado} sem referência: {valor}");
+            assert!(
+                !valor.contains("data:") && !valor.contains("base64"),
+                "{lado} ainda tem inline: {valor}"
+            );
+        }
+        assert!(loja.store.verify(&hash).expect("integridade"));
+    }
+
+    /// **Inline inválida é recusada, e nada entra no banco.**
+    ///
+    /// Dado novo não ganha pendência de migração: pendência é para legado que
+    /// já estava no acervo. O que não dá para converter na fronteira é
+    /// recusado ali.
+    #[test]
+    fn store_contribution_recusa_inline_invalida_sem_gravar() {
+        let fixture = TemporaryDatabase::new();
+        let loja = LojaDeTeste::nova();
+        seed_session(&fixture);
+
+        let erro = store_contribution(
+            &fixture.database,
+            &loja.store,
+            "sess",
+            1,
+            proposta_de_capitulo(
+                "c1",
+                "<p>antes</p>",
+                "<img src=\"data:image/png;base64,!!!nao-abre\">",
+            ),
+        )
+        .expect_err("a proposta não pode entrar");
+        assert_eq!(erro.kind, DatabaseErrorKind::Validation);
+
+        let quantas: i64 = fixture
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM collaboration_contributions",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert_eq!(quantas, 0, "nada podia ter sido gravado");
+    }
+
+    /// Referência de blob torta também é recusada na fronteira.
+    #[test]
+    fn store_contribution_recusa_referencia_torta() {
+        let fixture = TemporaryDatabase::new();
+        let loja = LojaDeTeste::nova();
+        seed_session(&fixture);
+
+        let erro = store_contribution(
+            &fixture.database,
+            &loja.store,
+            "sess",
+            1,
+            proposta_de_capitulo(
+                "c1",
+                "<p>antes</p>",
+                "<img data-narrahub-blob=\"../../../etc/passwd\">",
+            ),
+        )
+        .expect_err("referência torta");
+        assert_eq!(erro.kind, DatabaseErrorKind::Validation);
+    }
+
+    /// **Contribuição nova não consegue persistir fonte externa.**
+    ///
+    /// O caminho da colaboração é o que mais importa fechar: o valor vem de
+    /// outro aparelho, e `original_value` chega junto — um documento legado com
+    /// imagem externa poderia atravessar a fronteira nos dois lados.
+    ///
+    /// Os dois lados são verificados, e nada é gravado: `COUNT(*) = 0`.
+    #[test]
+    fn store_contribution_recusa_fonte_externa_nos_dois_lados() {
+        for fora in [
+            "https://cdn.exemplo.com/capa.png",
+            "C:\\Users\\alguem\\capa.png",
+            "/home/alguem/capa.png",
+            "file:///home/alguem/capa.png",
+            "blob:http://localhost:4200/9f2c-4b1e",
+        ] {
+            let imagem = format!("<img src=\"{fora}\">");
+
+            for (original, proposto) in [
+                ("<p>antes</p>".to_string(), imagem.clone()),
+                (imagem.clone(), "<p>depois</p>".to_string()),
+            ] {
+                let fixture = TemporaryDatabase::new();
+                let loja = LojaDeTeste::nova();
+                seed_session(&fixture);
+
+                let erro = store_contribution(
+                    &fixture.database,
+                    &loja.store,
+                    "sess",
+                    1,
+                    proposta_de_capitulo("c1", &original, &proposto),
+                )
+                .expect_err("fonte externa não pode entrar");
+                assert_eq!(erro.kind, DatabaseErrorKind::Validation);
+
+                let quantas: i64 = fixture
+                    .connection()
+                    .query_row(
+                        "SELECT COUNT(*) FROM collaboration_contributions",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .expect("contar");
+                assert_eq!(quantas, 0, "nada podia ter sido gravado: {fora:?}");
+            }
+        }
+    }
+
+    /// Campo de texto comum continua texto.
+    ///
+    /// Um convidado pode propor um resumo que menciona data URLs. O recorte é
+    /// `chapter`/`content`, e transformar prosa em asset seria inventar
+    /// arquivo.
+    #[test]
+    fn campo_de_texto_comum_nao_passa_pela_normalizacao() {
+        let fixture = TemporaryDatabase::new();
+        let loja = LojaDeTeste::nova();
+        seed_session(&fixture);
+        let prosa = "Ele explicava o que era data:image/png;base64,AAAA para a turma.";
+
+        let mut proposta = proposta_de_capitulo("c1", "antes", prosa);
+        proposta.field = "summary".into();
+        assert!(
+            store_contribution(&fixture.database, &loja.store, "sess", 1, proposta)
+                .expect("guardar"),
+        );
+
+        let proposto: String = fixture
+            .connection()
+            .query_row(
+                "SELECT proposed_value FROM collaboration_contributions",
+                [],
+                |row| row.get(0),
+            )
+            .expect("ler");
+        assert_eq!(proposto, prosa, "a prosa do convidado não podia ser tocada");
+    }
+
+    /// **`review(approved)` recusa proposta legada com inline, e ela continua
+    /// `pending`.**
+    ///
+    /// O cenário salta a primeira barreira de propósito, gravando direto no
+    /// banco: é o que um banco importado, uma versão antiga ou uma linha
+    /// adulterada produzem. Aprovar copiaria os bytes para o capítulo, e dali
+    /// o gatilho de revisão e o evento assinado seguiriam sozinhos.
+    #[test]
+    fn review_recusa_proposta_com_inline_e_ela_continua_pendente() {
+        let fixture = TemporaryDatabase::new();
+        seed_session(&fixture);
+        semear_capitulo_alvo(&fixture, "<p>o texto do escritor</p>");
+        let (url, _) = inline_de_teste("bytes");
+
+        // Entra pela porta de trás, como legado.
+        fixture
+            .connection()
+            .execute(
+                "INSERT INTO collaboration_contributions
+                    (id, session_id, sequence, kind, universe_id, target_type, target_id,
+                     target_label, field, original_value, proposed_value, status, created_at)
+                 VALUES ('c1','sess',1,'edit','u1','chapter','cap1','Cap','content',
+                         '<p>antes</p>', ?1, 'pending','2026-01-01')",
+                [&format!("<p>proposta</p><img src=\"{url}\">")],
+            )
+            .expect("legado gravado direto");
+
+        let erro = review(&fixture.database, "c1", "approved").expect_err("não pode aplicar");
+        assert_eq!(erro.kind, DatabaseErrorKind::Validation);
+
+        let conexao = fixture.connection();
+        let status: String = conexao
+            .query_row(
+                "SELECT status FROM collaboration_contributions WHERE id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("ler status");
+        assert_eq!(
+            status, "pending",
+            "a contribuição tinha que continuar pendente"
+        );
+
+        let conteudo: String = conexao
+            .query_row(
+                "SELECT content FROM chapters WHERE id = 'cap1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("ler capítulo");
+        assert_eq!(
+            conteudo, "<p>o texto do escritor</p>",
+            "o capítulo não podia mudar"
+        );
+
+        let revisoes: i64 = conexao
+            .query_row("SELECT COUNT(*) FROM chapter_revisions", [], |row| {
+                row.get(0)
+            })
+            .expect("contar revisões");
+        assert_eq!(revisoes, 0, "o gatilho não podia criar revisão");
+
+        let eventos: i64 = conexao
+            .query_row("SELECT COUNT(*) FROM sync_events", [], |row| row.get(0))
+            .expect("contar eventos");
+        assert_eq!(eventos, 0, "nenhum evento podia nascer");
+    }
+
+    /// E a proposta blob-safe é aplicada normalmente.
+    ///
+    /// Senão o gate de cima passaria por vácuo: uma barreira que recusa tudo
+    /// também recusa o inline.
+    #[test]
+    fn review_aplica_proposta_blob_safe() {
+        let fixture = TemporaryDatabase::new();
+        let loja = LojaDeTeste::nova();
+        seed_session(&fixture);
+        semear_capitulo_alvo(&fixture, "<p>antes</p>");
+        let (url, bytes) = inline_de_teste("imagem");
+
+        store_contribution(
+            &fixture.database,
+            &loja.store,
+            "sess",
+            1,
+            proposta_de_capitulo(
+                "c1",
+                "<p>antes</p>",
+                &format!("<p>depois</p><img src=\"{url}\">"),
+            ),
+        )
+        .expect("guardar");
+
+        review(&fixture.database, "c1", "approved").expect("aprovar");
+
+        let conteudo: String = fixture
+            .connection()
+            .query_row(
+                "SELECT content FROM chapters WHERE id = 'cap1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("ler capítulo");
+        let hash = crate::infrastructure::blob_store::hash_dos_bytes(&bytes);
+        assert!(conteudo.contains(&hash), "{conteudo}");
+        assert!(!conteudo.contains("data:"));
     }
 }

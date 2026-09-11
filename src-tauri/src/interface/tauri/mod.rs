@@ -4,6 +4,7 @@
 //! chama o caso de uso e devolve o erro no contrato que o frontend já
 //! entende. Regra que aparecer neste arquivo está no lugar errado.
 
+pub mod blob_commands;
 pub mod canvas_commands;
 pub mod collaboration_commands;
 pub mod entity_commands;
@@ -24,6 +25,17 @@ use ::tauri::AppHandle;
 pub fn database(app: &AppHandle) -> DatabaseCommandResult<SqliteDatabase> {
     let path = crate::database::app_database_path(app).map_err(DatabaseCommandError::storage)?;
     Ok(SqliteDatabase::new(path))
+}
+
+/// O blob store deste aparelho.
+///
+/// Como `database`, não guarda estado: o caminho vem do `AppHandle`, e a
+/// restauração de backup troca o diretório debaixo do app.
+pub fn blob_store(
+    app: &AppHandle,
+) -> DatabaseCommandResult<crate::infrastructure::blob_store::BlobStore> {
+    let app_data = crate::database::app_data_path(app).map_err(DatabaseCommandError::storage)?;
+    Ok(crate::infrastructure::blob_store::BlobStore::new(app_data))
 }
 
 /// A identidade de sincronização deste aparelho, pronta para assinar.

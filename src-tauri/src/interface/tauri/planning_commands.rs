@@ -9,7 +9,11 @@ pub fn planning_list(
     app: AppHandle,
     universe_id: String,
 ) -> DatabaseCommandResult<Vec<PlanningItem>> {
-    planning_service::list(&super::database(&app)?, &universe_id)
+    planning_service::list(
+        &super::database(&app)?,
+        &super::blob_store(&app)?,
+        &universe_id,
+    )
 }
 
 #[tauri::command]
@@ -23,6 +27,7 @@ pub fn planning_create(
 ) -> DatabaseCommandResult<String> {
     planning_service::create(
         &super::database(&app)?,
+        &super::blob_store(&app)?,
         &universe_id,
         &title,
         &description,
@@ -138,5 +143,5 @@ pub fn planning_save_card(
     app: AppHandle,
     request: planning_service::PlanningCardSaveRequest,
 ) -> DatabaseCommandResult<()> {
-    planning_service::save_card(&super::database(&app)?, request)
+    planning_service::save_card(&super::database(&app)?, &super::blob_store(&app)?, request)
 }

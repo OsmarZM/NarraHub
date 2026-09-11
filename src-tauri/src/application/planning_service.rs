@@ -1,9 +1,11 @@
+use crate::application::blob_fields;
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::ids::{new_id, now_timestamp};
 use crate::domain::planning::{
     is_known_field_scope, is_known_status, PlanningCardPlacement, PlanningFieldDefinition,
     PlanningItem, SCOPE_UNIVERSAL,
 };
+use crate::infrastructure::blob_store::BlobStore;
 use crate::infrastructure::sqlite::{planning_repository, SqliteDatabase};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -29,14 +31,20 @@ const FIELD_TYPES: &[&str] = &[
 
 pub fn list(
     database: &SqliteDatabase,
+    store: &BlobStore,
     universe_id: &str,
 ) -> DatabaseCommandResult<Vec<PlanningItem>> {
     let connection = database.read()?;
-    planning_repository::list(&connection, universe_id)
+    let mut cards = planning_repository::list(&connection, universe_id)?;
+    for card in cards.iter_mut() {
+        card.image = blob_fields::ler_asset_direto(&connection, store, "planning_items", &card.id)?;
+    }
+    Ok(cards)
 }
 
 pub fn create(
     database: &SqliteDatabase,
+    store: &BlobStore,
     universe_id: &str,
     title: &str,
     description: &str,
@@ -50,7 +58,10 @@ pub fn create(
         ));
     }
     let id = new_id();
-    let connection = database.write()?;
+    let mut conexao = database.write()?;
+    let connection = conexao
+        .transaction()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     planning_repository::insert_card(
         &connection,
         &planning_repository::NewPlanningCard {
@@ -63,6 +74,10 @@ pub fn create(
             timestamp: &now_timestamp(),
         },
     )?;
+    blob_fields::gravar_asset_direto(&connection, store, "planning_items", &id, image)?;
+    connection
+        .commit()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     Ok(id)
 }
 
@@ -319,10 +334,11 @@ pub struct PlanningCardSaveRequest {
 /// `interface → application → domain → repository`. Ver ADR 0008 e a Fase 3 do roadmap.
 pub fn save_card(
     database: &SqliteDatabase,
+    store: &BlobStore,
     request: PlanningCardSaveRequest,
 ) -> DatabaseCommandResult<()> {
     let mut connection = database.write()?;
-    save_card_with(&mut connection, request)
+    save_card_with(&mut connection, store, request)
 }
 
 /// A gravação em si, sobre uma conexão já obtida.
@@ -331,6 +347,7 @@ pub fn save_card(
 /// desta operação existem desde antes da migração e continuam sendo a rede que a protege.
 pub(crate) fn save_card_with(
     connection: &mut Connection,
+    store: &BlobStore,
     request: PlanningCardSaveRequest,
 ) -> DatabaseCommandResult<()> {
     validate_request(&request)?;
@@ -415,6 +432,8 @@ pub(crate) fn save_card_with(
             universe_id: &request.universe_id,
             title: request.title.trim(),
             description: request.description.trim(),
+            // O valor recebido entra aqui e e trocado por referencia antes
+            // do commit, logo abaixo.
             image: &request.image,
             status: &request.status,
             chapter_id: request.chapter_id.as_deref(),
@@ -427,6 +446,13 @@ pub(crate) fn save_card_with(
             "O card não existe mais neste universo.",
         ));
     }
+    blob_fields::gravar_asset_direto(
+        &transaction,
+        store,
+        "planning_items",
+        &request.id,
+        &request.image,
+    )?;
     transaction
         .commit()
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))
@@ -453,7 +479,14 @@ fn validate_request(request: &PlanningCardSaveRequest) -> DatabaseCommandResult<
             "A imagem do card ultrapassa o limite local permitido.",
         ));
     }
-    if !request.image.is_empty() && !request.image.starts_with("data:image/") {
+    // Aceita as duas formas: a `data:` URL que a tela ainda manda (transporte,
+    // normalizado na fronteira) e o hash canonico, que e o contrato do
+    // ADR 0010. Sem a segunda, um card com imagem ja referenciada nao poderia
+    // ser salvo de novo.
+    if !request.image.is_empty()
+        && !request.image.starts_with("data:image/")
+        && !crate::infrastructure::blob_store::e_hash_canonico(&request.image)
+    {
         return Err(DatabaseCommandError::validation(
             "A imagem do card deve ser um arquivo local válido.",
         ));
@@ -566,10 +599,21 @@ fn string_array(value: &Value, field_id: &str) -> DatabaseCommandResult<Vec<Stri
 #[cfg(test)]
 mod card_save_tests {
     use super::*;
-    use crate::database::migrations::{
-        MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V15, MIGRATION_V2,
-        MIGRATION_V3, MIGRATION_V6,
-    };
+    /// Um blob store temporario para os testes.
+    fn loja_de_teste() -> (
+        std::path::PathBuf,
+        crate::infrastructure::blob_store::BlobStore,
+    ) {
+        let raiz = std::env::temp_dir().join(format!(
+            "narrahub-plan-blob-{}",
+            crate::domain::ids::new_id()
+        ));
+        std::fs::create_dir_all(&raiz).expect("criar raiz");
+        let store = crate::infrastructure::blob_store::BlobStore::new(&raiz);
+        (raiz, store)
+    }
+
+    use crate::database::migrations::{sql_for_version, LATEST_SCHEMA_VERSION};
     use rusqlite::Connection;
 
     fn seeded_connection() -> Connection {
@@ -577,19 +621,19 @@ mod card_save_tests {
         connection
             .execute_batch("PRAGMA foreign_keys = ON;")
             .expect("enable foreign keys");
-        for migration in [
-            MIGRATION_V1,
-            MIGRATION_V2,
-            MIGRATION_V3,
-            MIGRATION_V6,
-            MIGRATION_V10,
-            MIGRATION_V11,
-            MIGRATION_V12,
-            MIGRATION_V15,
-        ] {
+        // A cadeia INTEIRA, e nao uma lista escolhida a mao.
+        //
+        // Esta fixture aplicava oito migrations selecionadas, e a migration 20
+        // a quebrou: `image_blob_hash` nao existia, e o teste falhou com "no
+        // such column" -- num arquivo que nao tinha nada a ver com assets.
+        //
+        // E o mesmo defeito que esta etapa ja encontrou quatro vezes por
+        // outros caminhos: lista mantida a mao envelhece em silencio. Derivar
+        // de `sql_for_version` faz a proxima migration entrar sozinha.
+        for versao in 1..=LATEST_SCHEMA_VERSION {
             connection
-                .execute_batch(migration)
-                .expect("apply migration");
+                .execute_batch(sql_for_version(versao).expect("migration conhecida"))
+                .unwrap_or_else(|error| panic!("aplicar migration v{versao}: {error}"));
         }
         connection.execute_batch(
             r#"
@@ -629,7 +673,7 @@ mod card_save_tests {
                 "tags": ["t1"]
             }),
         };
-        save_card_with(&mut connection, request).expect("save card");
+        save_card_with(&mut connection, &loja_de_teste().1, request).expect("save card");
 
         let (title, values): (String, String) = connection
             .query_row(
@@ -680,7 +724,7 @@ mod card_save_tests {
             chapter_id: None,
             field_values: serde_json::json!({"stories":["s2"]}),
         };
-        assert!(save_card_with(&mut connection, request).is_err());
+        assert!(save_card_with(&mut connection, &loja_de_teste().1, request).is_err());
         let title: String = connection
             .query_row(
                 "SELECT title FROM planning_items WHERE id = 'p1'",

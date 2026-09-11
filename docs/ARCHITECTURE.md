@@ -65,11 +65,13 @@ O esquema principal contém:
 - `content_tags`, `content_tag_assignments`;
 - `relations`, `mentions`;
 - `timeline_events`, `planning_items`, `planning_field_definitions`, `attachments`;
-- `chapter_revisions`, `change_log`;
+- `chapter_revisions` (escrita pelo gatilho `trg_chapter_revision`, não por comando),
+  `change_log`;
 - Sync V1, ainda em produção: `devices`, `sync_peers`, `sync_conflicts`.
-- Sync V2, criadas pelo schema 16 e ainda sem escrita (ADR 0009): `sync_devices`,
+- Sync V2 (ADR 0009), em produção desde as etapas 3 a 12: `sync_devices`,
   `sync_events`, `sync_applied_events`, `sync_cursors`, `sync_aggregate_state`,
-  `sync_revision_history`, `sync_tombstones`, `sync_divergences`.
+  `sync_revision_history`, `sync_tombstones`, `sync_divergences`. Só
+  `update_chapter` emite evento hoje (NH-053).
 - `collaboration_sessions`, `collaboration_contributions`.
 
 ### Integração nativa
