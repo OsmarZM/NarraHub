@@ -184,6 +184,36 @@ pub fn decodificar_base64(texto: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// O maior asset que o aplicativo aceita publicar.
+///
+/// O editor ja limitava a 8 MB na tela; o limite vive aqui para que a
+/// fronteira o cobre tambem. Validacao que existe so no frontend e sugestao,
+/// nao regra: o comando Tauri e chamavel por qualquer caminho.
+pub const MAIOR_ASSET: usize = 8 * 1024 * 1024;
+
+/// Base64 padrao, para o caminho de volta.
+///
+/// Existe porque o IPC do Tauri carrega texto, e bytes precisam atravessar de
+/// alguma forma. **Isto e transporte, nunca persistencia** — o que vai ao
+/// banco e o hash.
+pub fn codificar_base64(bytes: &[u8]) -> String {
+    const ALFABETO: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut texto = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for grupo in bytes.chunks(3) {
+        let mut acumulado = 0u32;
+        for (posicao, byte) in grupo.iter().enumerate() {
+            acumulado |= u32::from(*byte) << (16 - 8 * posicao);
+        }
+        for indice in 0..=grupo.len() {
+            texto.push(ALFABETO[((acumulado >> (18 - 6 * indice)) & 0x3F) as usize] as char);
+        }
+        for _ in grupo.len()..3 {
+            texto.push('=');
+        }
+    }
+    texto
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +372,35 @@ mod tests {
             !parece_data_url("o personagem escreveu data:image/png no caderno"),
             "só conta no começo do valor: texto do escritor não é mídia"
         );
+    }
+
+    /// O codificador e o decodificador sao inversos, inclusive nas bordas.
+    #[test]
+    fn codificar_e_decodificar_fecham_o_ciclo() {
+        for tamanho in [0usize, 1, 2, 3, 4, 5, 255, 256, 1000] {
+            let bytes: Vec<u8> = (0..tamanho).map(|i| (i % 251) as u8).collect();
+            let texto = codificar_base64(&bytes);
+            assert_eq!(
+                decodificar_base64(&texto).expect("o proprio codificador tem que abrir"),
+                bytes,
+                "tamanho {tamanho}"
+            );
+        }
+    }
+
+    /// E bate com os vetores da RFC na direcao da escrita.
+    #[test]
+    fn o_codificador_bate_com_os_vetores_da_rfc() {
+        for (texto, esperado) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(codificar_base64(texto.as_bytes()), esperado, "{texto:?}");
+        }
     }
 }

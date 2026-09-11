@@ -13,6 +13,7 @@ import {
   ViewEncapsulation,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { BlobService } from '../../core/native/blob.service';
 import { Editor, Extension, Node, mergeAttributes } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
@@ -242,7 +243,10 @@ export class WritingEditorComponent implements AfterViewInit, OnChanges, OnDestr
   private readonly handleWindowResize = () => { this.resizeTitle(); this.positionAiBubble(); this.positionSlashMenu(); };
   private readonly handleDocumentScroll = () => { this.positionAiBubble(); this.positionSlashMenu(); };
 
-  constructor(private readonly changeDetector: ChangeDetectorRef) { this.loadVocabulary(); }
+  constructor(
+    private readonly changeDetector: ChangeDetectorRef,
+    private readonly blobs: BlobService,
+  ) { this.loadVocabulary(); }
 
   ngAfterViewInit(): void {
     this.editor = new Editor({
@@ -258,6 +262,28 @@ export class WritingEditorComponent implements AfterViewInit, OnChanges, OnDestr
           autocapitalize: 'sentences',
         },
         handleKeyDown: (_, event) => this.handleSlashKey(event) || this.handleAutocompleteKey(event),
+        // Colar de um navegador traz `<img src="data:...">` no HTML da area de
+        // transferencia, e isso entraria no documento pela porta de tras.
+        //
+        // A decisao conservadora: tirar o `src` inline do que foi colado. A
+        // imagem nao aparece, e o escritor recebe o recado de usar o botao de
+        // imagem -- que publica no blob store. Aceitar o inline faria o
+        // capitulo ficar sem poder ser salvo, porque `update_chapter` recusa.
+        //
+        // Publicar durante a colagem exigiria transformacao assincrona no meio
+        // de um handler sincrono do ProseMirror. Registrado como divida
+        // (NH-068), nao como bloqueio.
+        transformPastedHTML: (html) => {
+          const limpo = html.replace(/<img\b[^>]*>/giu, (tag) =>
+            /src\s*=\s*["']?\s*data:/iu.test(tag) ? '' : tag,
+          );
+          if (limpo !== html) {
+            this.imageError =
+              'A imagem colada nao foi inserida. Use o botao de imagem para adiciona-la.';
+            queueMicrotask(() => this.changeDetector.detectChanges());
+          }
+          return limpo;
+        },
       },
       onUpdate: ({ editor }) => {
         if (!this.applyingExternalContent) this.contentChange.emit(editor.getHTML());
@@ -283,6 +309,7 @@ export class WritingEditorComponent implements AfterViewInit, OnChanges, OnDestr
     });
     window.addEventListener('resize', this.handleWindowResize);
     document.addEventListener('scroll', this.handleDocumentScroll, true);
+    void this.resolverImagens();
     queueMicrotask(() => this.resizeTitle());
   }
 
@@ -300,11 +327,58 @@ export class WritingEditorComponent implements AfterViewInit, OnChanges, OnDestr
     this.applyingExternalContent = true;
     this.editor.commands.setContent(incoming, { emitUpdate: false });
     this.applyingExternalContent = false;
+    void this.resolverImagens();
+  }
+
+  /**
+   * Preenche o `src` das imagens a partir da referencia, para exibicao.
+   *
+   * O documento guardado tem so o hash. O `<img>` precisa de algo que o
+   * navegador saiba buscar, e isso e montado aqui, em memoria.
+   *
+   * **A URL resolvida nao volta ao banco**, e a garantia nao esta nesta
+   * funcao: esta na extensao, onde o atributo `src` tem
+   * `renderHTML: () => ({})`. O `getHTML()` que o autosave manda para o Rust
+   * simplesmente nao tem `src` — nao ha janela em que ele possa escapar.
+   *
+   * `emitUpdate: false` no despacho, porque resolver imagem nao e edicao do
+   * escritor: emitir marcaria o capitulo como sujo e dispararia autosave por
+   * ter aberto o capitulo.
+   */
+  private async resolverImagens(): Promise<void> {
+    if (!this.editor) return;
+    const pendentes: { posicao: number; hash: string }[] = [];
+    this.editor.state.doc.descendants((node, posicao) => {
+      if (node.type.name !== 'image') return;
+      const hash = String(node.attrs['blobHash'] ?? '');
+      if (hash && !node.attrs['src']) pendentes.push({ posicao, hash });
+    });
+    if (!pendentes.length) return;
+
+    for (const pendente of pendentes) {
+      const url = await this.blobs.resolve(pendente.hash);
+      // Blob ausente: o node fica sem `src` e a imagem aparece indisponivel.
+      // Inventar caminho seria pior — e a referencia continua no documento,
+      // pronta para a proxima vez que o arquivo estiver aqui.
+      if (!url || !this.editor) continue;
+      const node = this.editor.state.doc.nodeAt(pendente.posicao);
+      if (!node || node.type.name !== 'image') continue;
+      const transacao = this.editor.state.tr.setNodeMarkup(pendente.posicao, undefined, {
+        ...node.attrs,
+        src: url,
+      });
+      transacao.setMeta('addToHistory', false);
+      this.applyingExternalContent = true;
+      this.editor.view.dispatch(transacao);
+      this.applyingExternalContent = false;
+    }
+    this.changeDetector.detectChanges();
   }
 
   ngOnDestroy(): void {
     this.stopVoiceNote();
     this.learnVocabulary();
+    this.blobs.releaseAll();
     window.removeEventListener('resize', this.handleWindowResize);
     document.removeEventListener('scroll', this.handleDocumentScroll, true);
     this.editor?.destroy();
@@ -434,8 +508,30 @@ export class WritingEditorComponent implements AfterViewInit, OnChanges, OnDestr
     if (!file || !this.editor) return;
     if (!file.type.startsWith('image/')) { this.imageError = 'Escolha um arquivo de imagem.'; return; }
     if (file.size > 8 * 1024 * 1024) { this.imageError = 'A imagem deve ter no máximo 8 MB.'; return; }
-    const src = await this.fileToDataUrl(file);
-    this.editor.chain().focus().insertContent({ type: 'image', attrs: { src, alt: file.name, title: file.name } }).run();
+    // ADR 0010. O caminho antigo era:
+    //
+    //     File  →  readAsDataURL  →  <img src="data:...">  →  SQLite
+    //
+    // e ele punha os bytes dentro do texto do capitulo: o documento crescia
+    // dezenas de vezes, o gatilho de revisao copiava tudo a cada salvamento, e
+    // o evento assinado carregava a base64 para todos os aparelhos.
+    //
+    // O novo:
+    //
+    //     File  →  bytes  →  blob_put  →  SHA-256  →  <img data-narrahub-blob>
+    //
+    // A UX nao muda: o escritor continua escolhendo o arquivo e vendo a imagem
+    // aparecer. Muda o que e persistido.
+    try {
+      const blobHash = await this.blobs.publish(file);
+      const src = (await this.blobs.resolve(blobHash)) ?? '';
+      this.editor.chain().focus().insertContent({
+        type: 'image',
+        attrs: { blobHash, mimeType: file.type, alt: file.name, title: file.name, src },
+      }).run();
+    } catch (error) {
+      this.imageError = error instanceof Error ? error.message : 'A imagem nao pode ser guardada.';
+    }
   }
 
   toggleSpellcheck(): void {
@@ -664,14 +760,6 @@ export class WritingEditorComponent implements AfterViewInit, OnChanges, OnDestr
     element.style.height = `${Math.max(element.scrollHeight, 52)}px`;
   }
 
-  private fileToDataUrl(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(reader.error ?? new Error('Falha ao ler a imagem.'));
-      reader.readAsDataURL(file);
-    });
-  }
 
   private normalizeIncoming(content: string): string {
     const value = content.trim();

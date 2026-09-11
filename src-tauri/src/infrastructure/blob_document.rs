@@ -44,7 +44,7 @@
 //! o `lol_html` visita os elementos na ordem em que aparecem.
 
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
-use crate::domain::data_url::{classificar, Legado};
+use crate::domain::data_url::{classificar, parece_data_url, Legado};
 use crate::infrastructure::blob_store::{e_hash_canonico, BlobStore};
 use lol_html::html_content::Element;
 use lol_html::{element, rewrite_str, RewriteStrSettings};
@@ -72,9 +72,25 @@ pub enum Imagem {
     Referencia { hash: String, mime: String },
     /// `src` com `data:` URL que abriu — migrável.
     InlineValida { mime: String, bytes: Vec<u8> },
-    /// `src` não vazio que não é `data:` URL decodificável, **ou** um
-    /// `data-narrahub-blob` que não é hash canônico.
-    NaoReconhecida { motivo: String },
+    /// `src` começa em `data:` e **não** abre: base64 quebrada, sem MIME,
+    /// truncada.
+    ///
+    /// Separada da externa de propósito. As duas viram pendência no backfill,
+    /// igual — mas na **entrada** são coisas diferentes: esta põe bytes no
+    /// banco e tem que bloquear.
+    InlineInvalida { motivo: String },
+    /// `src` não vazio que não é `data:` URL: URL externa, caminho local,
+    /// `blob:` de navegador, nome de arquivo.
+    ///
+    /// Não põe byte nenhum no banco. Bloquear a gravação por causa dela faria
+    /// o escritor perder a capacidade de salvar um capítulo que tem uma imagem
+    /// remota antiga — e isso não é o problema que esta etapa resolve.
+    ExternaOuDesconhecida { motivo: String },
+    /// `data-narrahub-blob` presente e **não** canônico.
+    ///
+    /// Só aparece por adulteração, banco importado ou bug de versão. É
+    /// referência que o aplicativo não consegue resolver.
+    ReferenciaInvalida { motivo: String },
     /// `<img>` sem `src` e sem referência. Não é asset nenhum.
     SemFonte,
 }
@@ -161,7 +177,7 @@ pub fn imagens_do_documento(html: &str) -> Result<Vec<NoDeImagem>, FalhaDeDocume
                     if e_hash_canonico(&hash) {
                         Imagem::Referencia { hash, mime }
                     } else {
-                        Imagem::NaoReconhecida {
+                        Imagem::ReferenciaInvalida {
                             motivo: "a referência de blob no documento não é um SHA-256 \
                                      canônico"
                                 .to_string(),
@@ -170,11 +186,19 @@ pub fn imagens_do_documento(html: &str) -> Result<Vec<NoDeImagem>, FalhaDeDocume
                 } else if src.trim().is_empty() {
                     Imagem::SemFonte
                 } else {
+                    // A pergunta "é `data:`?" é respondida pela forma do
+                    // valor, não pela mensagem de erro de quem tentou abrir.
+                    let inline = parece_data_url(&src);
                     match classificar(&src) {
                         Legado::Decodificada { mime, bytes } => {
                             Imagem::InlineValida { mime, bytes }
                         }
-                        Legado::NaoReconhecido { motivo } => Imagem::NaoReconhecida { motivo },
+                        Legado::NaoReconhecido { motivo } if inline => {
+                            Imagem::InlineInvalida { motivo }
+                        }
+                        Legado::NaoReconhecido { motivo } => {
+                            Imagem::ExternaOuDesconhecida { motivo }
+                        }
                         // `classificar` só devolve Vazio para string vazia, e
                         // isso já foi tratado acima.
                         Legado::Vazio => Imagem::SemFonte,
@@ -197,19 +221,118 @@ pub fn imagens_do_documento(html: &str) -> Result<Vec<NoDeImagem>, FalhaDeDocume
     }
 }
 
-/// **Este documento ainda tem mídia inline?**
+/// **Este documento tem mídia inline?**
 ///
-/// O guard fail-closed das barreiras de entrada. Estrutural: pergunta se
-/// existe um elemento `img` cujo `src` é `data:`. Um `contains("data:")`
-/// responderia sim para um personagem que escreveu sobre data URLs no meio do
-/// capítulo.
+/// Estrutural: existe um elemento `img` cujo `src` começa em `data:`. Um
+/// `contains("data:")` responderia sim para um personagem que escreveu sobre
+/// data URLs no meio do capítulo.
+///
+/// Aberto e fechado: inline é `data:`, e só. URL externa não é inline — ela
+/// não põe byte no banco.
 pub fn tem_midia_inline(html: &str) -> Result<bool, FalhaDeDocumento> {
     Ok(imagens_do_documento(html)?.iter().any(|no| {
         matches!(
             no.imagem,
-            Imagem::InlineValida { .. } | Imagem::NaoReconhecida { .. }
+            Imagem::InlineValida { .. } | Imagem::InlineInvalida { .. }
         )
     }))
+}
+
+/// Por que este documento não pode ser gravado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NaoEBlobSafe {
+    /// Tem `<img>` com `data:` URL. É o que esta etapa existe para impedir.
+    MidiaInline { quantas: usize },
+    /// Tem referência de blob que não é hash canônico.
+    ReferenciaInvalida { quantas: usize },
+    /// O documento não pôde ser lido.
+    NaoProcessavel { motivo: String },
+}
+
+impl std::fmt::Display for NaoEBlobSafe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NaoEBlobSafe::MidiaInline { quantas } => write!(
+                f,
+                "Este texto ainda tem {quantas} imagem(ns) embutida(s) no próprio conteúdo. \
+                 Imagem embutida faz o texto crescer dezenas de vezes e viaja em cada \
+                 sincronização, então o NarraHub passou a guardar imagem em arquivo \
+                 separado. Abra a lista de pendências de mídia para ver quais imagens deste \
+                 capítulo ainda não foram convertidas."
+            ),
+            NaoEBlobSafe::ReferenciaInvalida { quantas } => write!(
+                f,
+                "Este texto tem {quantas} referência(s) de imagem em formato que o aplicativo \
+                 não reconhece. O conteúdo continua preservado como está; a gravação foi \
+                 recusada para não propagar a referência quebrada aos outros aparelhos."
+            ),
+            NaoEBlobSafe::NaoProcessavel { motivo } => write!(
+                f,
+                "O texto deste capítulo não pôde ser lido como documento: {motivo}."
+            ),
+        }
+    }
+}
+
+/// **A única definição de "documento blob-safe".**
+///
+/// Editor, colaboração e gravação de capítulo chamam esta função. Três
+/// interpretações do mesmo contrato divergiriam — e divergir aqui significa
+/// uma porta fechada e duas abertas, com a descoberta acontecendo no acervo de
+/// alguém.
+///
+/// Blob-safe é: todo `<img>` do documento é referência canônica, é externa/
+/// desconhecida, ou não tem fonte nenhuma.
+///
+/// ```text
+/// <img data-narrahub-blob="<64 hex>">   ✓  é o contrato
+/// <img src="https://cdn/x.png">         ✓  não põe byte no banco
+/// <img>                                 ✓  não é asset
+/// <img src="data:…">                    ✗  MidiaInline
+/// <img data-narrahub-blob="../etc">     ✗  ReferenciaInvalida
+/// ```
+///
+/// **A externa passa, e isso é decisão.** Ela não é o problema desta etapa:
+/// não põe bytes no SQLite, não infla o evento, não viaja no bundle. Recusá-la
+/// travaria a gravação de todo capítulo com uma imagem remota antiga — o
+/// escritor perderia a capacidade de editar aquele texto por causa de algo que
+/// o aplicativo nunca se comprometeu a resolver.
+///
+/// **A inline que não abre bloqueia junto com a que abre.** Ela põe bytes no
+/// banco do mesmo jeito, e é exatamente o caso que o backfill preserva com
+/// pendência. O capítulo fica sem poder ser salvo até a pendência ser
+/// resolvida, e a mensagem manda o escritor para a lista — travar é o
+/// comportamento pedido, e é melhor que continuar emitindo evento gigante.
+pub fn exigir_blob_safe(html: &str) -> Result<(), NaoEBlobSafe> {
+    let imagens = match imagens_do_documento(html) {
+        Ok(imagens) => imagens,
+        Err(FalhaDeDocumento::NaoProcessavel { motivo }) => {
+            return Err(NaoEBlobSafe::NaoProcessavel { motivo })
+        }
+    };
+
+    let inline = imagens
+        .iter()
+        .filter(|no| {
+            matches!(
+                no.imagem,
+                Imagem::InlineValida { .. } | Imagem::InlineInvalida { .. }
+            )
+        })
+        .count();
+    if inline > 0 {
+        return Err(NaoEBlobSafe::MidiaInline { quantas: inline });
+    }
+
+    let tortas = imagens
+        .iter()
+        .filter(|no| matches!(no.imagem, Imagem::ReferenciaInvalida { .. }))
+        .count();
+    if tortas > 0 {
+        return Err(NaoEBlobSafe::ReferenciaInvalida { quantas: tortas });
+    }
+
+    Ok(())
 }
 
 /// Os hashes referenciados por este documento.
@@ -300,7 +423,12 @@ pub fn converter(html: &str, store: &BlobStore) -> DatabaseCommandResult<Convers
                 decisoes.push(Decisao::Preservar);
             }
             Imagem::SemFonte => decisoes.push(Decisao::Preservar),
-            Imagem::NaoReconhecida { motivo } => {
+            // As três pendências recebem o mesmo tratamento no backfill:
+            // preserva e registra. A distinção entre elas existe para a
+            // **entrada**, em `exigir_blob_safe`.
+            Imagem::InlineInvalida { motivo }
+            | Imagem::ExternaOuDesconhecida { motivo }
+            | Imagem::ReferenciaInvalida { motivo } => {
                 pendencias.push((no.indice, motivo.clone()));
                 decisoes.push(Decisao::Preservar);
             }
@@ -750,18 +878,174 @@ mod tests {
     }
 
     /// E o guard **vê** mídia de verdade — senão o de cima passaria por vácuo.
+    ///
+    /// A primeira versão deste gate afirmava que `<img src="https://…">` também
+    /// era mídia inline. Está errado, e o erro só apareceu quando eu fui
+    /// escrever a barreira de entrada: inline é `data:`, e a diferença é a que
+    /// decide se a gravação trava.
+    ///
+    /// ```text
+    /// data:…            põe bytes no banco      →  inline
+    /// https://cdn/x.png não põe byte nenhum     →  não é inline
+    /// ```
     #[test]
     fn o_guard_ve_midia_inline_de_verdade() {
         let (url, _) = inline("imagem");
         assert!(tem_midia_inline(&format!("<p>a</p><img src=\"{url}\">")).expect("varrer"));
         assert!(
-            tem_midia_inline("<img src=\"https://exemplo.com/x.png\">").expect("varrer"),
-            "legado não reconhecido também é mídia que não está no contrato novo"
+            tem_midia_inline("<img src=\"data:image/png;base64,!!!\">").expect("varrer"),
+            "a inline que não abre põe bytes no banco do mesmo jeito"
+        );
+        assert!(
+            !tem_midia_inline("<img src=\"https://exemplo.com/x.png\">").expect("varrer"),
+            "URL externa não é mídia inline: ela não põe byte nenhum no banco"
         );
         assert!(
             !tem_midia_inline(&format!("<img {ATTR_BLOB}=\"{}\">", hash_dos_bytes(b"x")))
                 .expect("varrer"),
             "documento já convertido não tem mídia inline"
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // A definição única de blob-safe
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// **`exigir_blob_safe` é a mesma porta para as três barreiras.**
+    ///
+    /// Cada caso com o veredito que ele tem que produzir. Este gate é o
+    /// contrato que editor, colaboração e gravação de capítulo compartilham —
+    /// se ele mudar, as três mudam juntas, que é exatamente o ponto de existir
+    /// uma definição só.
+    #[test]
+    fn a_definicao_de_blob_safe_e_uma_so() {
+        let (url, _) = inline("imagem");
+        let hash = hash_dos_bytes(b"qualquer");
+
+        // Passa.
+        for aceito in [
+            String::new(),
+            "<p>só texto</p>".to_string(),
+            format!("<img {ATTR_BLOB}=\"{hash}\" {ATTR_MIME}=\"image/png\" alt=\"x\">"),
+            "<img src=\"https://cdn.exemplo.com/capa.png\">".to_string(),
+            "<img src=\"C:\\Users\\alguem\\capa.png\">".to_string(),
+            "<img>".to_string(),
+            // Prosa do escritor sobre data URLs continua prosa.
+            "<p>Escreva &lt;img src=\"data:image/png;base64,AAA\"&gt; assim.</p>".to_string(),
+            "<code>&lt;img src=\"data:image/gif;base64,R0lGOD\"&gt;</code>".to_string(),
+        ] {
+            assert_eq!(
+                exigir_blob_safe(&aceito),
+                Ok(()),
+                "devia passar: {aceito:?}"
+            );
+        }
+
+        // Recusa por mídia inline.
+        for (documento, quantas) in [
+            (format!("<img src=\"{url}\">"), 1),
+            (format!("<p>a</p><img src=\"{url}\"><img src=\"{url}\">"), 2),
+            (
+                "<img src=\"data:image/png;base64,!!!nao-abre\">".to_string(),
+                1,
+            ),
+            ("<img src=\"data:image/png,sem-base64\">".to_string(), 1),
+        ] {
+            assert_eq!(
+                exigir_blob_safe(&documento),
+                Err(NaoEBlobSafe::MidiaInline { quantas }),
+                "devia recusar como inline: {documento:?}"
+            );
+        }
+
+        // Recusa por referência torta.
+        assert_eq!(
+            exigir_blob_safe(&format!("<img {ATTR_BLOB}=\"../../../etc/passwd\">")),
+            Err(NaoEBlobSafe::ReferenciaInvalida { quantas: 1 })
+        );
+        assert_eq!(
+            exigir_blob_safe(&format!("<img {ATTR_BLOB}=\"{}\">", hash.to_uppercase())),
+            Err(NaoEBlobSafe::ReferenciaInvalida { quantas: 1 }),
+            "maiúscula não é hash canônico"
+        );
+    }
+
+    /// A mensagem manda o escritor para onde ele resolve.
+    ///
+    /// Recusar a gravação do capítulo é caro para quem está escrevendo. Se a
+    /// mensagem não disser o que fazer, o escritor fica com um texto que não
+    /// salva e nenhuma pista.
+    #[test]
+    fn a_recusa_diz_ao_escritor_o_que_fazer() {
+        let (url, _) = inline("imagem");
+        let erro = exigir_blob_safe(&format!("<img src=\"{url}\">")).expect_err("recusa");
+        let texto = erro.to_string();
+        assert!(
+            texto.contains("pendências de mídia"),
+            "a mensagem precisa apontar a lista: {texto}"
+        );
+        assert!(
+            !texto.contains("data:") && !texto.contains("blob-safe"),
+            "e não pode falar em jargão de implementação: {texto}"
+        );
+    }
+
+    /// **O que o backfill preserva é o que a entrada recusa, e isso é
+    /// coerente.**
+    ///
+    /// Uma inline que não abre é preservada pelo backfill com pendência, e
+    /// bloqueia a gravação daquele capítulo. As duas metades dizem a mesma
+    /// coisa: o aplicativo não sabe o que fazer com aquele valor, então não
+    /// destrói e não propaga.
+    ///
+    /// Já a externa é preservada **e** passa na entrada — ela não põe byte no
+    /// banco, e travar a gravação por causa dela custaria ao escritor a
+    /// capacidade de editar o texto.
+    #[test]
+    fn o_backfill_e_a_barreira_concordam_sobre_o_que_e_pendencia() {
+        let loja = Loja::nova();
+
+        let quebrada = "<img src=\"data:image/png;base64,!!!\">";
+        let conversao = converter(quebrada, &loja.store).expect("converter");
+        assert_eq!(conversao.pendencias.len(), 1, "o backfill registra");
+        assert_eq!(conversao.html, quebrada, "e preserva");
+        assert!(
+            exigir_blob_safe(quebrada).is_err(),
+            "e a entrada recusa o mesmo valor"
+        );
+
+        let externa = "<img src=\"https://cdn.exemplo.com/x.png\">";
+        let conversao = converter(externa, &loja.store).expect("converter");
+        assert_eq!(conversao.pendencias.len(), 1, "o backfill registra");
+        assert_eq!(conversao.html, externa, "e preserva");
+        assert_eq!(
+            exigir_blob_safe(externa),
+            Ok(()),
+            "mas a entrada aceita: ela não põe byte no banco"
+        );
+    }
+
+    /// Documento convertido pelo transformador passa na barreira.
+    ///
+    /// Fecha o ciclo: o que o backfill produz é exatamente o que a entrada
+    /// aceita. Se as duas pontas divergissem, o backfill deixaria o acervo num
+    /// estado que o próprio aplicativo recusa gravar.
+    #[test]
+    fn o_que_o_transformador_produz_passa_na_barreira() {
+        let loja = Loja::nova();
+        let (url, _) = inline("imagem");
+        let documento = format!("<p>a</p><img src=\"{url}\" alt=\"x\"><p>b</p>");
+
+        assert!(
+            exigir_blob_safe(&documento).is_err(),
+            "antes de converter, recusa"
+        );
+        let conversao = converter(&documento, &loja.store).expect("converter");
+        assert_eq!(
+            exigir_blob_safe(&conversao.html),
+            Ok(()),
+            "depois de converter, passa: {}",
+            conversao.html
         );
     }
 

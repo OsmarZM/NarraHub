@@ -5,6 +5,7 @@ use crate::domain::manuscript::{
     Book, BookOption, BookUpdate, Chapter, ChapterOption, ChapterUpdate, Story, StoryUpdate,
 };
 use crate::domain::sync::{AggregateRef, Operation};
+use crate::infrastructure::blob_document;
 use crate::infrastructure::sqlite::sync_repository::{append_event_in_transaction, LocalChange};
 use crate::infrastructure::sqlite::{manuscript_repository, SqliteDatabase};
 use rusqlite::TransactionBehavior;
@@ -197,6 +198,26 @@ pub fn update_chapter(
         return Err(DatabaseCommandError::validation(
             "O capítulo precisa de um título.",
         ));
+    }
+
+    // TERCEIRA BARREIRA (ADR 0010). Fail-closed, antes de qualquer escrita.
+    //
+    // O caminho que isto fecha tem quatro passos, e cada um piora o anterior:
+    //
+    //   inline  →  chapters  →  trg_chapter_revision  →  sync_events
+    //              grava        copia os bytes          assina e propaga
+    //
+    // O evento é assinado e append-only: base64 que entra ali não sai mais, e
+    // viaja para todos os aparelhos em cada sincronização. Recusar aqui é o
+    // último ponto em que ainda há como não gravar.
+    //
+    // Parece redundante depois da barreira do editor, e não é: cobre legado
+    // não migrado, banco importado, versão antiga do frontend, e o caminho de
+    // colaboração que grava capítulo por outra porta.
+    if let Some(content) = patch.content.as_deref() {
+        if let Err(motivo) = blob_document::exigir_blob_safe(content) {
+            return Err(DatabaseCommandError::validation(motivo.to_string()));
+        }
     }
     let mut connection = database.write()?;
 
@@ -641,5 +662,217 @@ mod tests {
             .expect("buscar")
             .expect("existe");
         assert_eq!(saved.updated_at, chapter.updated_at);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // A terceira barreira (ADR 0010)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    fn semear_capitulo(fixture: &TemporaryDatabase, conteudo: &str) {
+        fixture
+            .connection()
+            .execute_batch(&format!(
+                "INSERT OR IGNORE INTO stories (id, universe_id, name, created_at, updated_at)
+                    VALUES ('s1','u1','S','2026-01-01','2026-01-01');
+                 INSERT OR IGNORE INTO books (id, story_id, name, created_at, updated_at)
+                    VALUES ('b1','s1','L','2026-01-01','2026-01-01');
+                 INSERT INTO chapters (id, book_id, title, content, word_count)
+                    VALUES ('cap1','b1','Cap','{conteudo}', 5);"
+            ))
+            .expect("semear capítulo");
+    }
+
+    /// **`update_chapter` recusa mídia inline, e nada a jusante acontece.**
+    ///
+    /// O caminho que isto fecha tem quatro passos:
+    ///
+    /// ```text
+    /// inline  →  chapters  →  trg_chapter_revision  →  sync_events
+    ///                                                  assinado, append-only
+    /// ```
+    ///
+    /// O evento é assinado e não se reescreve: base64 que entra ali viaja para
+    /// todos os aparelhos, em cada sincronização, para sempre. O gate mede os
+    /// quatro passos, não só a recusa.
+    #[test]
+    fn update_chapter_recusa_midia_inline() {
+        let fixture = TemporaryDatabase::new();
+        seed_universe(&fixture.connection(), "u1");
+        let (_dados, identidade) = arrancar(&fixture);
+        semear_capitulo(&fixture, "<p>o texto do escritor</p>");
+
+        let base64 = crate::domain::data_url::codificar_base64(b"bytes-de-imagem");
+        let inline = format!("<p>novo</p><img src=\"data:image/png;base64,{base64}\">");
+
+        let erro = update_chapter(
+            &fixture.database,
+            &identidade,
+            "cap1",
+            ChapterUpdate {
+                content: Some(inline),
+                word_count: Some(2),
+                ..Default::default()
+            },
+        )
+        .expect_err("mídia inline não pode ser gravada");
+        assert_eq!(erro.kind, DatabaseErrorKind::Validation);
+        assert!(
+            erro.message.contains("pendências de mídia"),
+            "a mensagem precisa dizer ao escritor o que fazer: {}",
+            erro.message
+        );
+
+        let conexao = fixture.connection();
+        let conteudo: String = conexao
+            .query_row(
+                "SELECT content FROM chapters WHERE id = 'cap1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("ler capítulo");
+        assert_eq!(conteudo, "<p>o texto do escritor</p>", "o capítulo mudou");
+
+        let revisoes: i64 = conexao
+            .query_row("SELECT COUNT(*) FROM chapter_revisions", [], |row| {
+                row.get(0)
+            })
+            .expect("contar");
+        assert_eq!(revisoes, 0, "o gatilho criou revisão");
+
+        let eventos: i64 = conexao
+            .query_row("SELECT COUNT(*) FROM sync_events", [], |row| row.get(0))
+            .expect("contar");
+        assert_eq!(eventos, 0, "um evento nasceu com bytes dentro");
+    }
+
+    /// Inline que não abre também é recusada.
+    ///
+    /// Ela põe bytes no banco do mesmo jeito. É o caso que o backfill preserva
+    /// com pendência, e o capítulo fica sem poder ser salvo até a pendência ser
+    /// resolvida — travar é melhor que continuar emitindo evento gigante.
+    #[test]
+    fn update_chapter_recusa_inline_que_nao_abre() {
+        let fixture = TemporaryDatabase::new();
+        seed_universe(&fixture.connection(), "u1");
+        let (_dados, identidade) = arrancar(&fixture);
+        semear_capitulo(&fixture, "<p>antes</p>");
+
+        let erro = update_chapter(
+            &fixture.database,
+            &identidade,
+            "cap1",
+            ChapterUpdate {
+                content: Some("<img src=\"data:image/png;base64,!!!\">".to_string()),
+                word_count: Some(0),
+                ..Default::default()
+            },
+        )
+        .expect_err("inline quebrada também é inline");
+        assert_eq!(erro.kind, DatabaseErrorKind::Validation);
+    }
+
+    /// **E o documento blob-safe passa, com evento nascendo sem bytes.**
+    ///
+    /// Senão o gate de cima passaria por vácuo: uma barreira que recusa tudo
+    /// também recusa inline, e o escritor perderia a capacidade de salvar.
+    #[test]
+    fn update_chapter_aceita_blob_safe_e_o_evento_nasce_sem_bytes() {
+        let fixture = TemporaryDatabase::new();
+        seed_universe(&fixture.connection(), "u1");
+        let (_dados, identidade) = arrancar(&fixture);
+        semear_capitulo(&fixture, "<p>antes</p>");
+
+        let hash = crate::infrastructure::blob_store::hash_dos_bytes(b"a-imagem");
+        let blob_safe = format!(
+            "<p>depois</p><img data-narrahub-blob=\"{hash}\" data-mime-type=\"image/png\">"
+        );
+
+        update_chapter(
+            &fixture.database,
+            &identidade,
+            "cap1",
+            ChapterUpdate {
+                content: Some(blob_safe.clone()),
+                word_count: Some(2),
+                ..Default::default()
+            },
+        )
+        .expect("documento blob-safe pode ser salvo");
+
+        let conexao = fixture.connection();
+        assert_eq!(
+            conexao
+                .query_row::<String, _, _>(
+                    "SELECT content FROM chapters WHERE id = 'cap1'",
+                    [],
+                    |row| row.get(0)
+                )
+                .expect("ler"),
+            blob_safe
+        );
+
+        // O evento nasceu, e o payload dele não carrega bytes.
+        let payload: String = conexao
+            .query_row("SELECT payload FROM sync_events", [], |row| row.get(0))
+            .expect("ler o payload do evento");
+        assert!(
+            payload.contains(&hash),
+            "o evento tem que carregar a referência: {payload}"
+        );
+        for proibido in ["data:image", "base64,"] {
+            assert!(
+                !payload.contains(proibido),
+                "o payload do evento carrega {proibido}: {payload}"
+            );
+        }
+
+        // E a revisão que o gatilho criou também é só referência.
+        let revisao: String = conexao
+            .query_row("SELECT content FROM chapter_revisions", [], |row| {
+                row.get(0)
+            })
+            .expect("ler a revisão");
+        assert_eq!(
+            revisao, "<p>antes</p>",
+            "a revisão guarda a versão anterior"
+        );
+    }
+
+    /// Texto do escritor que **fala** de data URLs continua salvável.
+    ///
+    /// É o gate que separa validação estrutural de busca por substring. Um
+    /// `contains("data:image")` travaria o capítulo de quem está escrevendo um
+    /// tutorial.
+    #[test]
+    fn update_chapter_aceita_texto_que_menciona_data_url() {
+        let fixture = TemporaryDatabase::new();
+        seed_universe(&fixture.connection(), "u1");
+        let (_dados, identidade) = arrancar(&fixture);
+        semear_capitulo(&fixture, "<p>antes</p>");
+
+        let prosa = "<p>Escreva &lt;img src=\"data:image/png;base64,AAAA\"&gt; para embutir.</p>";
+        update_chapter(
+            &fixture.database,
+            &identidade,
+            "cap1",
+            ChapterUpdate {
+                content: Some(prosa.to_string()),
+                word_count: Some(7),
+                ..Default::default()
+            },
+        )
+        .expect("prosa do escritor não é mídia inline");
+
+        assert_eq!(
+            fixture
+                .connection()
+                .query_row::<String, _, _>(
+                    "SELECT content FROM chapters WHERE id = 'cap1'",
+                    [],
+                    |row| row.get(0)
+                )
+                .expect("ler"),
+            prosa
+        );
     }
 }

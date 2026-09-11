@@ -5,7 +5,11 @@ use tauri::AppHandle;
 
 #[tauri::command]
 pub fn entity_list(app: AppHandle, universe_id: String) -> DatabaseCommandResult<Vec<Entity>> {
-    entity_service::list(&super::database(&app)?, &universe_id)
+    entity_service::list(
+        &super::database(&app)?,
+        &super::blob_store(&app)?,
+        &universe_id,
+    )
 }
 
 #[tauri::command]
@@ -13,17 +17,22 @@ pub fn entity_details(
     app: AppHandle,
     id: String,
 ) -> DatabaseCommandResult<Option<EntityWithDetails>> {
-    entity_service::get_with_details(&super::database(&app)?, &id)
+    entity_service::get_with_details(&super::database(&app)?, &super::blob_store(&app)?, &id)
 }
 
 #[tauri::command]
 pub fn entity_create(app: AppHandle, input: NewEntity) -> DatabaseCommandResult<Entity> {
-    entity_service::create(&super::database(&app)?, input)
+    entity_service::create(&super::database(&app)?, &super::blob_store(&app)?, input)
 }
 
 #[tauri::command]
 pub fn entity_update(app: AppHandle, id: String, patch: EntityUpdate) -> DatabaseCommandResult<()> {
-    entity_service::update(&super::database(&app)?, &id, patch)
+    entity_service::update(
+        &super::database(&app)?,
+        &super::blob_store(&app)?,
+        &id,
+        patch,
+    )
 }
 
 #[tauri::command]

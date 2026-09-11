@@ -5,12 +5,12 @@ use tauri::AppHandle;
 
 #[tauri::command]
 pub fn universe_list(app: AppHandle) -> DatabaseCommandResult<Vec<UniverseWithStats>> {
-    universe_service::list_with_stats(&super::database(&app)?)
+    universe_service::list_with_stats(&super::database(&app)?, &super::blob_store(&app)?)
 }
 
 #[tauri::command]
 pub fn universe_get(app: AppHandle, id: String) -> DatabaseCommandResult<Option<Universe>> {
-    universe_service::get(&super::database(&app)?, &id)
+    universe_service::get(&super::database(&app)?, &super::blob_store(&app)?, &id)
 }
 
 #[tauri::command]
@@ -25,7 +25,13 @@ pub fn universe_create(
     description: String,
     cover_image: String,
 ) -> DatabaseCommandResult<Universe> {
-    universe_service::create(&super::database(&app)?, &name, &description, &cover_image)
+    universe_service::create(
+        &super::database(&app)?,
+        &super::blob_store(&app)?,
+        &name,
+        &description,
+        &cover_image,
+    )
 }
 
 #[tauri::command]
@@ -34,7 +40,12 @@ pub fn universe_update(
     id: String,
     patch: UniverseUpdate,
 ) -> DatabaseCommandResult<()> {
-    universe_service::update(&super::database(&app)?, &id, patch)
+    universe_service::update(
+        &super::database(&app)?,
+        &super::blob_store(&app)?,
+        &id,
+        patch,
+    )
 }
 
 #[tauri::command]

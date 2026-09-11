@@ -1,21 +1,33 @@
+use crate::application::blob_fields;
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::canvas::{
     is_known_attachment_owner, is_known_endpoint_kind, is_known_node_kind, Attachment, CanvasEdge,
     CanvasEndpoint, CanvasEntityPosition, CanvasNode, CanvasNodePatch,
 };
 use crate::domain::ids::{new_id, now_timestamp};
+use crate::infrastructure::blob_store::BlobStore;
 use crate::infrastructure::sqlite::{canvas_repository, SqliteDatabase};
 
 pub fn list_nodes(
     database: &SqliteDatabase,
+    store: &BlobStore,
     universe_id: &str,
 ) -> DatabaseCommandResult<Vec<CanvasNode>> {
     let connection = database.read()?;
-    canvas_repository::list_nodes(&connection, universe_id)
+    let mut nodes = canvas_repository::list_nodes(&connection, universe_id)?;
+    for node in nodes.iter_mut() {
+        node.image = blob_fields::ler_asset_direto(&connection, store, "canvas_nodes", &node.id)?;
+    }
+    Ok(nodes)
 }
 
+// Oito parametros, um a mais que o limite do clippy, e o que passou do limite
+// foi o `store`. Agrupar num struct seria um refactor do contrato do comando
+// no meio do fechamento da etapa 13 -- registrado como divida (NH-070).
+#[allow(clippy::too_many_arguments)]
 pub fn create_node(
     database: &SqliteDatabase,
+    store: &BlobStore,
     universe_id: &str,
     kind: &str,
     text: &str,
@@ -41,25 +53,41 @@ pub fn create_node(
         created_at: timestamp.clone(),
         updated_at: timestamp,
     };
-    let connection = database.write()?;
-    canvas_repository::insert_node(&connection, &node)?;
+    let mut connection = database.write()?;
+    let tx = connection
+        .transaction()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    canvas_repository::insert_node(&tx, &node)?;
+    blob_fields::gravar_asset_direto(&tx, store, "canvas_nodes", &node.id, image)?;
+    tx.commit()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     Ok(node)
 }
 
 pub fn update_node(
     database: &SqliteDatabase,
+    store: &BlobStore,
     id: &str,
     patch: CanvasNodePatch,
 ) -> DatabaseCommandResult<()> {
     if patch.is_empty() {
         return Ok(());
     }
-    let connection = database.write()?;
+    let mut conexao = database.write()?;
+    let connection = conexao
+        .transaction()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     if !canvas_repository::update_node(&connection, id, &patch, &now_timestamp())? {
         return Err(DatabaseCommandError::not_found(
             "O elemento não existe mais no canvas.",
         ));
     }
+    if let Some(imagem) = patch.image.as_deref() {
+        blob_fields::gravar_asset_direto(&connection, store, "canvas_nodes", id, imagem)?;
+    }
+    connection
+        .commit()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     Ok(())
 }
 
@@ -208,17 +236,25 @@ pub fn delete_edge(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult
 
 pub fn list_attachments(
     database: &SqliteDatabase,
+    store: &BlobStore,
     universe_id: &str,
     owner_type: &str,
     owner_id: &str,
 ) -> DatabaseCommandResult<Vec<Attachment>> {
     ensure_attachment_owner(owner_type)?;
     let connection = database.read()?;
-    canvas_repository::list_attachments(&connection, universe_id, owner_type, owner_id)
+    let mut anexos =
+        canvas_repository::list_attachments(&connection, universe_id, owner_type, owner_id)?;
+    for anexo in anexos.iter_mut() {
+        anexo.data_url =
+            blob_fields::ler_asset_direto(&connection, store, "attachments", &anexo.id)?;
+    }
+    Ok(anexos)
 }
 
 pub fn create_attachment(
     database: &SqliteDatabase,
+    store: &BlobStore,
     universe_id: &str,
     owner_type: &str,
     owner_id: &str,
@@ -239,11 +275,17 @@ pub fn create_attachment(
         sort_order: 0,
         created_at: now_timestamp(),
     };
-    let connection = database.write()?;
+    let mut conexao = database.write()?;
+    let tx = conexao
+        .transaction()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     // A posição é calculada pelo banco numa subquery do `INSERT`, então ela
     // volta de lá — devolver o zero que montamos aqui mostraria a imagem no
     // começo da galeria até a próxima recarga.
-    attachment.sort_order = canvas_repository::insert_attachment(&connection, &attachment)?;
+    attachment.sort_order = canvas_repository::insert_attachment(&tx, &attachment)?;
+    blob_fields::gravar_asset_direto(&tx, store, "attachments", &attachment.id, data_url)?;
+    tx.commit()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     Ok(attachment)
 }
 
@@ -266,6 +308,23 @@ fn ensure_attachment_owner(owner_type: &str) -> DatabaseCommandResult<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Um blob store temporario para os testes.
+    ///
+    /// A raiz vive em `PathBuf` dentro do par porque soltar o diretorio
+    /// apagaria o chao debaixo do store no meio do teste.
+    fn loja_de_teste() -> (
+        std::path::PathBuf,
+        crate::infrastructure::blob_store::BlobStore,
+    ) {
+        let raiz = std::env::temp_dir().join(format!(
+            "narrahub-svc-blob-{}",
+            crate::domain::ids::new_id()
+        ));
+        std::fs::create_dir_all(&raiz).expect("criar raiz");
+        let store = crate::infrastructure::blob_store::BlobStore::new(&raiz);
+        (raiz, store)
+    }
     use super::*;
     use crate::database::error::DatabaseErrorKind;
     use crate::infrastructure::sqlite::test_support::{seed_universe, TemporaryDatabase};
@@ -294,7 +353,17 @@ mod tests {
         // arquivo, sumia da tela pelo filtro e ficava la para sempre.
         let fixture = TemporaryDatabase::new();
         seed(&fixture);
-        let node = create_node(&fixture.database, "u1", "note", "x", "", 0.0, 0.0).expect("criar");
+        let node = create_node(
+            &fixture.database,
+            &loja_de_teste().1,
+            "u1",
+            "note",
+            "x",
+            "",
+            0.0,
+            0.0,
+        )
+        .expect("criar");
 
         let error = create_edge(
             &fixture.database,
@@ -315,7 +384,17 @@ mod tests {
     fn ligacao_de_um_elemento_com_ele_mesmo_e_recusada() {
         let fixture = TemporaryDatabase::new();
         seed(&fixture);
-        let node = create_node(&fixture.database, "u1", "note", "x", "", 0.0, 0.0).expect("criar");
+        let node = create_node(
+            &fixture.database,
+            &loja_de_teste().1,
+            "u1",
+            "note",
+            "x",
+            "",
+            0.0,
+            0.0,
+        )
+        .expect("criar");
 
         let error = create_edge(
             &fixture.database,
@@ -333,8 +412,17 @@ mod tests {
         let fixture = TemporaryDatabase::new();
         seed(&fixture);
 
-        let error = create_node(&fixture.database, "u1", "desenho", "x", "", 0.0, 0.0)
-            .expect_err("deveria recusar");
+        let error = create_node(
+            &fixture.database,
+            &loja_de_teste().1,
+            "u1",
+            "desenho",
+            "x",
+            "",
+            0.0,
+            0.0,
+        )
+        .expect_err("deveria recusar");
         assert_eq!(error.kind, DatabaseErrorKind::Validation);
         assert!(error.message.contains("desenho"));
     }
@@ -343,7 +431,17 @@ mod tests {
     fn excluir_elemento_leva_as_ligacoes_e_nao_sobra_orfa() {
         let fixture = TemporaryDatabase::new();
         seed(&fixture);
-        let node = create_node(&fixture.database, "u1", "note", "x", "", 0.0, 0.0).expect("criar");
+        let node = create_node(
+            &fixture.database,
+            &loja_de_teste().1,
+            "u1",
+            "note",
+            "x",
+            "",
+            0.0,
+            0.0,
+        )
+        .expect("criar");
         create_edge(
             &fixture.database,
             "u1",
@@ -369,10 +467,26 @@ mod tests {
         let fixture = TemporaryDatabase::new();
         seed(&fixture);
 
-        let primeiro = create_attachment(&fixture.database, "u1", "entity", "e1", "data:,a", "")
-            .expect("criar");
-        let segundo = create_attachment(&fixture.database, "u1", "entity", "e1", "data:,b", "")
-            .expect("criar");
+        let primeiro = create_attachment(
+            &fixture.database,
+            &loja_de_teste().1,
+            "u1",
+            "entity",
+            "e1",
+            "data:image/png;base64,YQ==",
+            "",
+        )
+        .expect("criar");
+        let segundo = create_attachment(
+            &fixture.database,
+            &loja_de_teste().1,
+            "u1",
+            "entity",
+            "e1",
+            "data:image/png;base64,Yg==",
+            "",
+        )
+        .expect("criar");
 
         assert_eq!(primeiro.sort_order, 0);
         assert_eq!(segundo.sort_order, 1);
@@ -383,8 +497,16 @@ mod tests {
         let fixture = TemporaryDatabase::new();
         seed(&fixture);
 
-        let error = create_attachment(&fixture.database, "u1", "planning", "p1", "data:,a", "")
-            .expect_err("deveria recusar");
+        let error = create_attachment(
+            &fixture.database,
+            &loja_de_teste().1,
+            "u1",
+            "planning",
+            "p1",
+            "data:image/png;base64,YQ==",
+            "",
+        )
+        .expect_err("deveria recusar");
         assert_eq!(error.kind, DatabaseErrorKind::Validation);
     }
 
@@ -393,8 +515,16 @@ mod tests {
         let fixture = TemporaryDatabase::new();
         seed(&fixture);
 
-        let error = create_attachment(&fixture.database, "u1", "entity", "e1", "   ", "")
-            .expect_err("deveria recusar");
+        let error = create_attachment(
+            &fixture.database,
+            &loja_de_teste().1,
+            "u1",
+            "entity",
+            "e1",
+            "   ",
+            "",
+        )
+        .expect_err("deveria recusar");
         assert_eq!(error.kind, DatabaseErrorKind::Validation);
     }
 }

@@ -1,8 +1,10 @@
+use crate::application::blob_fields;
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::entity::{
     default_attributes_for, Entity, EntityAttribute, EntityUpdate, EntityWithDetails, NewEntity,
 };
 use crate::domain::ids::{new_id, now_timestamp};
+use crate::infrastructure::blob_store::BlobStore;
 use crate::infrastructure::sqlite::{entity_repository, SqliteDatabase};
 
 /// Prefixo que a tela usa para um atributo que ainda não foi gravado. Ele
@@ -10,19 +12,34 @@ use crate::infrastructure::sqlite::{entity_repository, SqliteDatabase};
 /// atualizar um id que não existe.
 const TEMPORARY_ID_PREFIX: &str = "temp_";
 
-pub fn list(database: &SqliteDatabase, universe_id: &str) -> DatabaseCommandResult<Vec<Entity>> {
+pub fn list(
+    database: &SqliteDatabase,
+    store: &BlobStore,
+    universe_id: &str,
+) -> DatabaseCommandResult<Vec<Entity>> {
     let connection = database.read()?;
-    entity_repository::list(&connection, universe_id)
+    let mut entidades = entity_repository::list(&connection, universe_id)?;
+    // A imagem vem do blob store, reconstruída como transporte. Ver
+    // `blob_fields`, e a dívida `NH-069`: uma lista grande paga uma leitura de
+    // disco por entidade com imagem, e o caminho definitivo é o frontend
+    // resolver por hash.
+    for entidade in entidades.iter_mut() {
+        entidade.image =
+            blob_fields::ler_asset_direto(&connection, store, "entities", &entidade.id)?;
+    }
+    Ok(entidades)
 }
 
 pub fn get_with_details(
     database: &SqliteDatabase,
+    store: &BlobStore,
     id: &str,
 ) -> DatabaseCommandResult<Option<EntityWithDetails>> {
     let connection = database.read()?;
-    let Some(entity) = entity_repository::get(&connection, id)? else {
+    let Some(mut entity) = entity_repository::get(&connection, id)? else {
         return Ok(None);
     };
+    entity.image = blob_fields::ler_asset_direto(&connection, store, "entities", id)?;
     let attributes = entity_repository::list_attributes(&connection, id)?;
     let relations = entity_repository::list_relations_for_entity(&connection, &entity)?;
     let mentions = entity_repository::list_mentions_for_entity(&connection, id)?;
@@ -44,7 +61,11 @@ pub fn get_with_details(
 /// A ordem dos atributos importa e é a mesma de antes: primeiro os padrões do
 /// tipo, depois os templates do universo que o padrão não cobre, e por último
 /// o que veio no formulário.
-pub fn create(database: &SqliteDatabase, input: NewEntity) -> DatabaseCommandResult<Entity> {
+pub fn create(
+    database: &SqliteDatabase,
+    store: &BlobStore,
+    input: NewEntity,
+) -> DatabaseCommandResult<Entity> {
     let name = input.name.trim();
     if name.is_empty() {
         return Err(DatabaseCommandError::validation(
@@ -72,6 +93,9 @@ pub fn create(database: &SqliteDatabase, input: NewEntity) -> DatabaseCommandRes
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
 
     entity_repository::insert(&transaction, &entity)?;
+    // Na mesma transação do `INSERT`: os bytes que chegaram na coluna legada
+    // são trocados por referência antes de qualquer commit.
+    blob_fields::gravar_asset_direto(&transaction, store, "entities", &entity.id, &input.image)?;
 
     let defaults = default_attributes_for(&input.entity_type);
     for (index, key) in defaults.iter().enumerate() {
@@ -123,6 +147,7 @@ pub fn create(database: &SqliteDatabase, input: NewEntity) -> DatabaseCommandRes
 
 pub fn update(
     database: &SqliteDatabase,
+    store: &BlobStore,
     id: &str,
     patch: EntityUpdate,
 ) -> DatabaseCommandResult<()> {
@@ -138,10 +163,18 @@ pub fn update(
             "A entidade precisa de um nome.",
         ));
     }
-    let connection = database.write()?;
-    if !entity_repository::update(&connection, id, &patch, &now_timestamp())? {
+    let mut connection = database.write()?;
+    let tx = connection
+        .transaction()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    if !entity_repository::update(&tx, id, &patch, &now_timestamp())? {
         return Err(DatabaseCommandError::not_found("Entidade não encontrada."));
     }
+    if let Some(imagem) = patch.image.as_deref() {
+        blob_fields::gravar_asset_direto(&tx, store, "entities", id, imagem)?;
+    }
+    tx.commit()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     Ok(())
 }
 
@@ -213,6 +246,23 @@ pub fn remove_attribute(database: &SqliteDatabase, id: &str) -> DatabaseCommandR
 
 #[cfg(test)]
 mod tests {
+
+    /// Um blob store temporario para os testes.
+    ///
+    /// A raiz vive em `PathBuf` dentro do par porque soltar o diretorio
+    /// apagaria o chao debaixo do store no meio do teste.
+    fn loja_de_teste() -> (
+        std::path::PathBuf,
+        crate::infrastructure::blob_store::BlobStore,
+    ) {
+        let raiz = std::env::temp_dir().join(format!(
+            "narrahub-svc-blob-{}",
+            crate::domain::ids::new_id()
+        ));
+        std::fs::create_dir_all(&raiz).expect("criar raiz");
+        let store = crate::infrastructure::blob_store::BlobStore::new(&raiz);
+        (raiz, store)
+    }
     use super::*;
     use crate::database::error::DatabaseErrorKind;
     use crate::domain::entity::NewEntityAttribute;
@@ -234,9 +284,13 @@ mod tests {
         let fixture = TemporaryDatabase::new();
         seed_universe(&fixture.connection(), "u1");
 
-        let entity =
-            create(&fixture.database, new_entity("Personagem", "Frodo")).expect("criar entidade");
-        let details = get_with_details(&fixture.database, &entity.id)
+        let entity = create(
+            &fixture.database,
+            &loja_de_teste().1,
+            new_entity("Personagem", "Frodo"),
+        )
+        .expect("criar entidade");
+        let details = get_with_details(&fixture.database, &loja_de_teste().1, &entity.id)
             .expect("buscar ficha")
             .expect("ficha existe");
 
@@ -256,8 +310,12 @@ mod tests {
         // deixar lixo no arquivo do usuario.
         let fixture = TemporaryDatabase::new();
 
-        let error = create(&fixture.database, new_entity("Personagem", "Orfa"))
-            .expect_err("universo inexistente deveria falhar");
+        let error = create(
+            &fixture.database,
+            &loja_de_teste().1,
+            new_entity("Personagem", "Orfa"),
+        )
+        .expect_err("universo inexistente deveria falhar");
         assert_eq!(error.kind, DatabaseErrorKind::Conflict);
 
         let connection = fixture.connection();
@@ -282,8 +340,13 @@ mod tests {
             )
             .expect("semear templates");
 
-        let entity = create(&fixture.database, new_entity("Lugar", "Condado")).expect("criar");
-        let details = get_with_details(&fixture.database, &entity.id)
+        let entity = create(
+            &fixture.database,
+            &loja_de_teste().1,
+            new_entity("Lugar", "Condado"),
+        )
+        .expect("criar");
+        let details = get_with_details(&fixture.database, &loja_de_teste().1, &entity.id)
             .expect("buscar")
             .expect("existe");
 
@@ -319,9 +382,9 @@ mod tests {
             key: " Idade ".into(),
             value: " 50 ".into(),
         }];
-        let entity = create(&fixture.database, input).expect("criar");
+        let entity = create(&fixture.database, &loja_de_teste().1, input).expect("criar");
 
-        let details = get_with_details(&fixture.database, &entity.id)
+        let details = get_with_details(&fixture.database, &loja_de_teste().1, &entity.id)
             .expect("buscar")
             .expect("existe");
         let idade = details
@@ -346,8 +409,12 @@ mod tests {
         let fixture = TemporaryDatabase::new();
         seed_universe(&fixture.connection(), "u1");
 
-        let error = create(&fixture.database, new_entity("Personagem", "   "))
-            .expect_err("nome vazio deveria falhar");
+        let error = create(
+            &fixture.database,
+            &loja_de_teste().1,
+            new_entity("Personagem", "   "),
+        )
+        .expect_err("nome vazio deveria falhar");
         assert_eq!(error.kind, DatabaseErrorKind::Validation);
     }
 
@@ -357,7 +424,12 @@ mod tests {
         // gravado sem carimbar a ficha some do proximo sync.
         let fixture = TemporaryDatabase::new();
         seed_universe(&fixture.connection(), "u1");
-        let entity = create(&fixture.database, new_entity("Personagem", "Frodo")).expect("criar");
+        let entity = create(
+            &fixture.database,
+            &loja_de_teste().1,
+            new_entity("Personagem", "Frodo"),
+        )
+        .expect("criar");
 
         let attribute = EntityAttribute {
             id: "temp_novo".into(),
@@ -379,7 +451,7 @@ mod tests {
 
         save_attribute(&fixture.database, attribute).expect("salvar atributo");
 
-        let details = get_with_details(&fixture.database, &entity.id)
+        let details = get_with_details(&fixture.database, &loja_de_teste().1, &entity.id)
             .expect("buscar")
             .expect("existe");
         assert!(details.attributes.iter().any(|a| a.key == "Apelido"));
@@ -393,7 +465,12 @@ mod tests {
     fn atributo_que_nao_existe_mais_avisa_em_vez_de_gravar_no_vazio() {
         let fixture = TemporaryDatabase::new();
         seed_universe(&fixture.connection(), "u1");
-        let entity = create(&fixture.database, new_entity("Personagem", "Frodo")).expect("criar");
+        let entity = create(
+            &fixture.database,
+            &loja_de_teste().1,
+            new_entity("Personagem", "Frodo"),
+        )
+        .expect("criar");
 
         let attribute = EntityAttribute {
             id: "fantasma".into(),

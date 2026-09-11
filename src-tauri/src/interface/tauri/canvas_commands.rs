@@ -7,7 +7,11 @@ use tauri::AppHandle;
 
 #[tauri::command]
 pub fn canvas_nodes(app: AppHandle, universe_id: String) -> DatabaseCommandResult<Vec<CanvasNode>> {
-    canvas_service::list_nodes(&super::database(&app)?, &universe_id)
+    canvas_service::list_nodes(
+        &super::database(&app)?,
+        &super::blob_store(&app)?,
+        &universe_id,
+    )
 }
 
 #[tauri::command]
@@ -22,6 +26,7 @@ pub fn canvas_node_create(
 ) -> DatabaseCommandResult<CanvasNode> {
     canvas_service::create_node(
         &super::database(&app)?,
+        &super::blob_store(&app)?,
         &universe_id,
         &kind,
         &text,
@@ -37,7 +42,12 @@ pub fn canvas_node_update(
     id: String,
     patch: CanvasNodePatch,
 ) -> DatabaseCommandResult<()> {
-    canvas_service::update_node(&super::database(&app)?, &id, patch)
+    canvas_service::update_node(
+        &super::database(&app)?,
+        &super::blob_store(&app)?,
+        &id,
+        patch,
+    )
 }
 
 #[tauri::command]
@@ -115,6 +125,7 @@ pub fn attachments_list(
 ) -> DatabaseCommandResult<Vec<Attachment>> {
     canvas_service::list_attachments(
         &super::database(&app)?,
+        &super::blob_store(&app)?,
         &universe_id,
         &owner_type,
         &owner_id,
@@ -132,6 +143,7 @@ pub fn attachment_create(
 ) -> DatabaseCommandResult<Attachment> {
     canvas_service::create_attachment(
         &super::database(&app)?,
+        &super::blob_store(&app)?,
         &universe_id,
         &owner_type,
         &owner_id,

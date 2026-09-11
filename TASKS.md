@@ -18,6 +18,77 @@ Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 
 ## ACTIVE
 
+### NH-068 — Colar imagem no editor deveria publicar no blob store
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4
+```
+
+Colar de um navegador traz `<img src="data:...">` no HTML da área de transferência. A 6B fechou
+isso do jeito conservador: `transformPastedHTML` **remove** o `src` inline e o escritor recebe o
+recado de usar o botão de imagem. A imagem colada não entra.
+
+O certo é publicar no blob store durante a colagem, como o botão faz. Não foi feito agora porque
+exige transformação assíncrona dentro de um handler síncrono do ProseMirror — um `Plugin` com
+`handlePaste` que insere um placeholder e o substitui quando o `blob_put` volta.
+
+Aceitar o inline não era opção: `update_chapter` recusa, então o capítulo ficaria sem poder ser
+salvo depois de uma colagem.
+
+---
+
+### NH-069 — Frontend deveria resolver as seis superfícies diretas por hash
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4
+```
+
+Capa de universo, capa de livro, imagem de entidade, node do canvas, imagem de cena e anexo
+guardam hash no banco (ADR 0010). Mas a **leitura** reconstrói a `data:` URL a partir do blob,
+em `application/blob_fields::ler_asset_direto`, para que nenhuma tela precisasse mudar no
+fechamento da etapa 13.
+
+A invariante está cumprida — os bytes não estão no SQLite. O custo é I/O: uma lista de
+entidades paga uma leitura de disco por entidade com imagem. O payload não cresceu (a coluna já
+devolvia a data URL antes), mas o caminho definitivo é o frontend chamar `BlobService.resolve()`
+como o editor já faz, e `ler_asset_direto` sair.
+
+---
+
+### NH-070 — `create_node` tem oito parâmetros
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4
+```
+
+O `store` foi o oitavo, e o clippy reclama a partir de sete. Está com
+`#[allow(clippy::too_many_arguments)]` e o motivo no código. Agrupar num struct mexeria no
+contrato do comando Tauri e no frontend, e isso não cabia no fechamento da etapa 13.
+
+---
+
+### NH-071 — Transporte de asset pelo IPC usa base64
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4
+```
+
+`blob_put` e `blob_read` carregam base64 porque o IPC do Tauri carrega texto. Isso é
+**transporte**, e o ADR 0010 é explícito: o que é proibido é persistir. O hash é o que vai ao
+banco.
+
+O caminho melhor é um protocolo customizado (`asset://` ou `register_asynchronous_uri_scheme_protocol`),
+que serviria os bytes sem passar pela serialização do IPC e sem inflar a memória em um terço.
+Nada do banco muda quando isso acontecer — a referência já é o hash.
+
 ### NH-064 — Sync V2, etapa 13: assets por hash (blob store)
 
 ```text
@@ -49,8 +120,17 @@ que o backup já varre recursivamente.
   fora do rewriter, reescreve o N-ésimo `<img>`. Documento sem imagem sai byte a byte igual.
 - `interface/writer_messages.rs` — gate contra continuação de linha perdida em mensagem.
 
-**Falta:** o backfill dos quatro documentos, as três barreiras de entrada, o lado do editor
-(`parseHTML` exige `src` hoje), o evento de attachment e o bootstrap com manifesto de blobs.
+- `infrastructure/sqlite/blob_backfill.rs` — backfill das quatro superfícies de documento,
+  com a supressão da revisão fabricada pelo gatilho.
+- `interface/tauri/blob_commands.rs` + `core/native/blob.service.ts` — a fronteira do blob
+  store, sem caminho de arquivo atravessando.
+- `application/blob_fields.rs` — as seis superfícies diretas, com **uma** implementação
+  guiada pelo catálogo: normaliza na escrita, reconstrói na leitura.
+- As três barreiras: `update_chapter`, `store_contribution` e `review(approved)`, todas
+  chamando a mesma `blob_document::exigir_blob_safe`.
+- O editor publica no blob store e resolve em runtime; o `src` nunca é serializado.
+
+**Falta:** o evento de attachment (fatia 7) e o bootstrap com manifesto de blobs (fatia 8).
 
 ---
 

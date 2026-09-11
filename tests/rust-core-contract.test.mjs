@@ -128,6 +128,10 @@ test('só as portas nativas falam com o Tauri', () => {
     // A janela é do sistema operacional, não do produto: ela não guarda o livro
     // de ninguém. Antes desta porta, `getCurrentWindow()` estava em quatro arquivos.
     'core/native/window.service.ts',
+    // Bytes de asset atravessando o IPC (ADR 0010). É plataforma, não domínio: o
+    // que ela faz é publicar bytes e devolver algo renderizável, sem nunca
+    // expor caminho de arquivo. O domínio guarda o hash, e o hash é portátil.
+    'core/native/blob.service.ts',
     // Ciclo de vida do pool SQLite: abre e fecha a conexão, não executa SQL.
     'core/services/database.service.ts',
   ];
@@ -319,5 +323,76 @@ test('a extensao do Tiptap nao serializa src de volta', () => {
     /renderHTML:\s*\(\)\s*=>\s*\(\{\}\)/u.test(declaracao),
     'o `src` voltou a ser serializado. A URL resolvida em runtime iria para o banco:\n  '
       + declaracao.trim(),
+  );
+});
+
+test('a imagem inserida pelo editor nasce como referencia de blob', () => {
+  // ADR 0010. O caminho antigo era `File → readAsDataURL → <img src="data:...">`, e ele punha
+  // os bytes dentro do texto do capitulo: o documento crescia dezenas de vezes, o gatilho de
+  // revisao copiava tudo a cada salvamento, e o evento assinado levava a base64 para todos os
+  // aparelhos.
+  //
+  // O gate e textual porque a propriedade e sobre o CAMINHO, e o caminho e uma chamada. Um
+  // teste de comportamento aqui precisaria de Tauri, FileReader e disco.
+  const editor = readFileSync(new URL('../src/app/features/writing/writing-editor.component.ts', import.meta.url), 'utf8');
+  const inicio = editor.indexOf('async importImage(');
+  assert.ok(inicio > 0, 'nao achei importImage; a varredura quebrou');
+  // Sem os comentários: a explicação do que mudou CITA o caminho antigo, e um gate que lê
+  // comentário reprovaria a própria documentação da correção.
+  const corpo = editor
+    .slice(inicio, editor.indexOf('\n  }', inicio))
+    .split('\n')
+    .filter((linha) => !linha.trim().startsWith('//'))
+    .join('\n');
+
+  assert.ok(
+    /blobs\.publish\(/u.test(corpo),
+    'a insercao de imagem tem que publicar no blob store antes de tocar no documento',
+  );
+  assert.ok(
+    /blobHash/u.test(corpo),
+    'o node inserido tem que carregar a referencia por hash',
+  );
+  assert.ok(
+    !/readAsDataURL|fileToDataUrl|data:image/u.test(corpo),
+    `a insercao voltou a produzir data URL:\n${corpo}`,
+  );
+});
+
+test('o editor nao tem mais caminho de data URL para persistencia', () => {
+  // O helper `fileToDataUrl` existia so para o caminho antigo. Deixa-lo no arquivo seria
+  // deixar a porta destrancada: a proxima pessoa que precisar inserir imagem acha a funcao
+  // pronta e usa.
+  const editor = readFileSync(new URL('../src/app/features/writing/writing-editor.component.ts', import.meta.url), 'utf8');
+  const linhas = editor
+    .split('\n')
+    .map((linha, indice) => ({ linha, numero: indice + 1 }))
+    .filter(({ linha }) => /readAsDataURL|fileToDataUrl/u.test(linha))
+    .filter(({ linha }) => !linha.trim().startsWith('//'));
+
+  assert.deepEqual(
+    linhas,
+    [],
+    'o editor voltou a ter caminho de data URL fora de comentario:\n'
+      + linhas.map(({ numero, linha }) => `  ${numero}: ${linha.trim()}`).join('\n'),
+  );
+});
+
+test('o servico de blob nao devolve caminho de arquivo ao frontend', () => {
+  // Invariante do ADR 0010: nenhum caminho absoluto atravessa a fronteira. O mesmo capitulo
+  // tem que funcionar no Windows e no Android, e caminho e exatamente o que nao viaja --
+  // restaurar um backup noutra maquina deixaria toda imagem apontando para o nada.
+  const servico = readFileSync(new URL('../src/app/core/native/blob.service.ts', import.meta.url), 'utf8');
+  assert.ok(/blob_put/u.test(servico) && /blob_read/u.test(servico), 'a varredura quebrou');
+
+  for (const proibido of ['path_for', 'app_data', 'blobPath', 'filePath']) {
+    assert.ok(
+      !servico.includes(proibido),
+      `o servico de blob menciona ${proibido}: caminho nao atravessa a fronteira`,
+    );
+  }
+  assert.ok(
+    /URL\.createObjectURL/u.test(servico),
+    'a URL de exibicao e montada em memoria, na propria aba',
   );
 });
