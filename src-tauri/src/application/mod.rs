@@ -10,6 +10,7 @@
 //! testar a regra contra um banco em memória.
 
 pub mod blob_fields;
+pub mod blob_upgrade;
 pub mod canvas_service;
 pub mod collaboration_service;
 pub mod entity_service;

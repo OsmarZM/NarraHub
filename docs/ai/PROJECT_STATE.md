@@ -113,7 +113,8 @@ diretório não o pegaria; o gate contra **colocação** pega.
 > **Etapa 13:** assets por `SHA-256` (ADR 0010). **Schema 20.** Blob store, catálogo das dez
 > superfícies, backfill das dez, transformador HTML único com `lol_html`, as três barreiras de
 > entrada, evento de attachment e bootstrap com manifesto de blobs verificados antes do seed.
-> `attachments` deixou de ser `EtapaPosterior` e passa a viajar no bundle.
+> `attachments` deixou de ser `EtapaPosterior` e passa a viajar no bundle. O backfill roda na
+> **fronteira de arranque**, entre as migrations e o primeiro consumo do acervo.
 >
 > Reconciliação fina de capítulo por bloco depende da **NH-045** e não faz parte das 14
 > etapas. O Sync V2 pode fechar com conflito seguro de capítulo inteiro.

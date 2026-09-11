@@ -396,3 +396,53 @@ test('o servico de blob nao devolve caminho de arquivo ao frontend', () => {
     'a URL de exibicao e montada em memoria, na propria aba',
   );
 });
+
+test('o arranque chama a fronteira de assets entre as migrations e o primeiro consumo', () => {
+  // ADR 0010. O backfill existia desde a fatia 5 e nao tinha chamador -- a mesma lacuna que a
+  // revisao da etapa 2.5 apontou para `load_or_create`: funciona em teste e nunca roda no
+  // aplicativo.
+  //
+  // A ordem importa e por isso o gate mede posicao, nao so presenca:
+  //
+  //   db.init()          o plugin-sql aplica as migrations
+  //   prepareAssets()    converte o legado de midia
+  //   universes.load()   primeiro consumo do acervo
+  //
+  // Chamar depois do primeiro consumo deixaria a tela ler um acervo que ainda tem base64
+  // dentro, e `update_chapter` recusaria o proximo salvamento.
+  const arranque = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
+
+  const migrations = arranque.indexOf('this.db.init()');
+  const assets = arranque.indexOf('this.blobs.prepareAssets()');
+  const consumo = arranque.indexOf('this.universes.load()');
+
+  assert.ok(migrations > 0, 'nao achei a abertura do pool; a varredura quebrou');
+  assert.ok(
+    assets > 0,
+    'o arranque nao chama `prepareAssets`. Sem isso o backfill volta a ser codigo sem '
+      + 'chamador, e um acervo antigo abre com base64 dentro do banco.',
+  );
+  assert.ok(consumo > 0, 'nao achei o primeiro consumo do acervo');
+
+  assert.ok(
+    migrations < assets && assets < consumo,
+    'a fronteira de assets tem que ficar DEPOIS das migrations e ANTES do primeiro consumo:'
+      + `\n  db.init()        em ${migrations}`
+      + `\n  prepareAssets()  em ${assets}`
+      + `\n  universes.load() em ${consumo}`,
+  );
+});
+
+test('uma falha na migracao de midia nao impede o aplicativo de abrir', () => {
+  // Pendencia de midia e problema de midia. Quem exige o contrato completo e o pareamento, e
+  // ele ja sabe recusar. Travar a abertura por uma imagem antiga ilegivel transformaria um
+  // problema de midia em perda de acesso ao texto.
+  const arranque = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
+  const inicio = arranque.indexOf('this.blobs.prepareAssets()');
+  const trecho = arranque.slice(Math.max(0, inicio - 400), inicio + 400);
+
+  assert.ok(
+    /try\s*\{/u.test(trecho) && /catch/u.test(trecho),
+    'a chamada precisa estar protegida: uma falha ali nao pode impedir a abertura.',
+  );
+});

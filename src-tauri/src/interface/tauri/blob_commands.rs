@@ -98,3 +98,21 @@ pub fn blob_read(app: AppHandle, hash: String) -> DatabaseCommandResult<BlobLido
 pub fn blob_has(app: AppHandle, hash: String) -> DatabaseCommandResult<bool> {
     super::blob_store(&app)?.has(&hash)
 }
+
+/// **A fronteira de upgrade dos assets** (ADR 0010).
+///
+/// Chamado pelo arranque do frontend, entre o `Database.load` — que é onde o
+/// `tauri-plugin-sql` aplica as migrations — e o primeiro consumo do acervo.
+///
+/// Não é passo de operação de domínio: é fronteira. O backfill é idempotente,
+/// mas varrer o acervo a cada gravação seria pagar de novo por um upgrade que
+/// já aconteceu.
+#[tauri::command]
+pub fn storage_prepare_assets(
+    app: AppHandle,
+) -> DatabaseCommandResult<crate::application::blob_upgrade::ResumoDoArranque> {
+    crate::application::blob_upgrade::preparar_assets(
+        &super::database(&app)?,
+        &super::blob_store(&app)?,
+    )
+}
