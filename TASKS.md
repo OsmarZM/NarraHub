@@ -249,6 +249,8 @@ que o backup já varre recursivamente.
 - As três barreiras: `update_chapter`, `store_contribution` e `review(approved)`, todas
   chamando a mesma `blob_document::exigir_blob_safe`.
 - O editor publica no blob store e resolve em runtime; o `src` nunca é serializado.
+- Fonte externa/desconhecida não passa em persistência nova (ver `NH-065`); no legado
+  continua preservada com pendência.
 
 - `attachment` no Sync V2: evento com metadado mais `blob_hash`, tombstone na remoção, e
   aplicação que recusa payload com bytes. A tabela deixou `EtapaPosterior` e viaja no bundle.
@@ -280,9 +282,24 @@ O formato canônico ficou fixado no ADR 0010 e em `infrastructure/blob_document.
 <img data-narrahub-blob="<64 hex>" data-mime-type="image/png" alt="rosto.png">
 ```
 
-Entregue: o transformador único (`blob_document.rs`), com os oito gates pedidos na revisão
-mais cinco. Falta o lado do editor — `parseHTML` exige `src` hoje, então o Tiptap descartaria
-o elemento novo ao carregar; está na fatia do editor, dentro da `NH-064`.
+Entregue, e **o lado do editor também** — esta frase dizia "falta o lado do editor" e ficou
+velha: `InlineImage.parseHTML` passou a casar `{ tag: 'img' }` e a ler `data-narrahub-blob` /
+`data-mime-type`, com `src: { renderHTML: () => ({}) }` para o `src` nunca ser serializado, e
+`resolverImagens()` preenchendo `src` em tempo de execução com `addToHistory: false`. O
+transformador único (`blob_document.rs`) saiu com os oito gates pedidos na revisão mais cinco.
+
+**Ajuste de semântica (2026-09-11), pedido na revisão da PR da etapa 13:** `<img>` com `src`
+externo/desconhecido — `https://`, caminho do Windows, `/home/...`, `file://`, `blob:` — não
+é mais aceito em **persistência nova**. A primeira versão de `exigir_blob_safe` aceitava, com
+o argumento de que não põe byte no SQLite; o argumento estava certo sobre tamanho e errado
+sobre o contrato, porque o ADR 0010 já listava caminho absoluto, URL temporária e `blob:`
+entre o que nunca vai ao banco. O critério é portabilidade: o mesmo HTML tem que funcionar no
+Windows e no Android.
+
+É *fail-closed*, sem comparar "externa antiga" com "externa nova": o documento legado **abre**
+normalmente, e o que ele perde é a próxima gravação, até a imagem sair ou ser reinserida pelo
+editor. O **backfill não mudou** — externa legada continua preservada byte a byte com
+`blob_migration_issue` registrada. Nenhuma URL é baixada e nenhum caminho é aberto.
 
 O ADR 0010 e o desenho aprovado da etapa 13 descrevem as superfícies 7 a 10 como documentos
 Tiptap em JSON, percorridos por árvore, com a imagem sendo um node de `attrs`. **Isso está

@@ -82,9 +82,19 @@ pub enum Imagem {
     /// `src` não vazio que não é `data:` URL: URL externa, caminho local,
     /// `blob:` de navegador, nome de arquivo.
     ///
-    /// Não põe byte nenhum no banco. Bloquear a gravação por causa dela faria
-    /// o escritor perder a capacidade de salvar um capítulo que tem uma imagem
-    /// remota antiga — e isso não é o problema que esta etapa resolve.
+    /// **Não é fonte válida para persistência nova.** O ADR 0010 já listava
+    /// caminho absoluto, URL temporária e `blob:` entre o que nunca vai ao
+    /// banco; a primeira versão de [`exigir_blob_safe`] a aceitava, e essa
+    /// aceitação era mais frouxa que o contrato.
+    ///
+    /// Ela não põe byte no SQLite, e por isso não é urgência de tamanho —
+    /// é urgência de **portabilidade**: `C:\\Users\\...` não existe no
+    /// Android, `blob:` morre com a aba, e URL externa vence. Um documento que
+    /// a contém não é reproduzível no outro aparelho.
+    ///
+    /// No legado ela é **preservada exatamente** e vira pendência. O que muda
+    /// é a entrada: um documento legado abre normalmente, mas essa imagem
+    /// precisa sair ou ser substituída antes da próxima gravação.
     ExternaOuDesconhecida { motivo: String },
     /// `data-narrahub-blob` presente e **não** canônico.
     ///
@@ -245,6 +255,8 @@ pub enum NaoEBlobSafe {
     MidiaInline { quantas: usize },
     /// Tem referência de blob que não é hash canônico.
     ReferenciaInvalida { quantas: usize },
+    /// Tem `<img>` apontando para fora: URL, caminho local, `blob:`, `file:`.
+    FonteExterna { quantas: usize },
     /// O documento não pôde ser lido.
     NaoProcessavel { motivo: String },
 }
@@ -266,6 +278,14 @@ impl std::fmt::Display for NaoEBlobSafe {
                  não reconhece. O conteúdo continua preservado como está; a gravação foi \
                  recusada para não propagar a referência quebrada aos outros aparelhos."
             ),
+            NaoEBlobSafe::FonteExterna { quantas } => write!(
+                f,
+                "Este texto tem {quantas} imagem(ns) que aponta(m) para fora do NarraHub \
+                 — endereço da internet, arquivo do computador ou imagem colada de outra \
+                 aba. Uma imagem assim não aparece nos seus outros aparelhos, porque o \
+                 endereço dela só existe aqui. O conteúdo continua preservado; para gravar, \
+                 remova ou reinsira a imagem pelo botão de imagem do editor."
+            ),
             NaoEBlobSafe::NaoProcessavel { motivo } => write!(
                 f,
                 "O texto deste capítulo não pôde ser lido como documento: {motivo}."
@@ -281,22 +301,39 @@ impl std::fmt::Display for NaoEBlobSafe {
 /// uma porta fechada e duas abertas, com a descoberta acontecendo no acervo de
 /// alguém.
 ///
-/// Blob-safe é: todo `<img>` do documento é referência canônica, é externa/
-/// desconhecida, ou não tem fonte nenhuma.
+/// Blob-safe é: todo `<img>` do documento é referência canônica **ou** não tem
+/// fonte nenhuma. Qualquer outra coisa recusa.
 ///
 /// ```text
 /// <img data-narrahub-blob="<64 hex>">   ✓  é o contrato
-/// <img src="https://cdn/x.png">         ✓  não põe byte no banco
 /// <img>                                 ✓  não é asset
 /// <img src="data:…">                    ✗  MidiaInline
 /// <img data-narrahub-blob="../etc">     ✗  ReferenciaInvalida
+/// <img src="https://cdn/x.png">         ✗  FonteExterna
+/// <img src="C:\\Users\\alguem\\x.png">      ✗  FonteExterna
+/// <img src="file:///home/x.png">        ✗  FonteExterna
+/// <img src="blob:http://localhost/…">   ✗  FonteExterna
 /// ```
 ///
-/// **A externa passa, e isso é decisão.** Ela não é o problema desta etapa:
-/// não põe bytes no SQLite, não infla o evento, não viaja no bundle. Recusá-la
-/// travaria a gravação de todo capítulo com uma imagem remota antiga — o
-/// escritor perderia a capacidade de editar aquele texto por causa de algo que
-/// o aplicativo nunca se comprometeu a resolver.
+/// # A externa recusava antes e passou a recusar
+///
+/// A primeira versão deste guard aceitava a externa, com o argumento de que
+/// ela não põe byte no SQLite. O argumento estava certo sobre tamanho e errado
+/// sobre o contrato: o ADR 0010 lista caminho absoluto, URL temporária e
+/// `blob:` entre o que **nunca** vai ao banco, e a aceitação era mais frouxa
+/// que o ADR. O critério não é só "infla o evento" — é **o mesmo HTML tem que
+/// funcionar no Windows e no Android**, e `C:\\Users\\...` não funciona.
+///
+/// A recusa é *fail-closed* de propósito, sem distinguir "externa antiga" de
+/// "externa nova": um documento legado **abre** normalmente, e o que ele
+/// perde é a próxima gravação, até a imagem sair ou ser reinserida pelo
+/// editor. Comparar o antes e o depois para tolerar a antiga exigiria guardar
+/// a lista de externas de cada documento, e isso é superfície nova para
+/// tolerar um valor que o ADR proíbe.
+///
+/// O backfill **não** mudou: externa legada continua preservada byte a byte,
+/// com `blob_migration_issue` registrada. Nenhuma URL é baixada e nenhum
+/// caminho é aberto — aqui e lá, a externa é olhada, nunca seguida.
 ///
 /// **A inline que não abre bloqueia junto com a que abre.** Ela põe bytes no
 /// banco do mesmo jeito, e é exatamente o caso que o backfill preserva com
@@ -330,6 +367,18 @@ pub fn exigir_blob_safe(html: &str) -> Result<(), NaoEBlobSafe> {
         .count();
     if tortas > 0 {
         return Err(NaoEBlobSafe::ReferenciaInvalida { quantas: tortas });
+    }
+
+    // Por último, e a ordem é decisão: inline e referência torta são piores —
+    // uma põe bytes no banco, a outra é referência que o aplicativo não
+    // resolve em aparelho nenhum. Quando um documento tem os dois problemas, a
+    // mensagem fala do mais grave, e resolver o mais grave revela o outro.
+    let externas = imagens
+        .iter()
+        .filter(|no| matches!(no.imagem, Imagem::ExternaOuDesconhecida { .. }))
+        .count();
+    if externas > 0 {
+        return Err(NaoEBlobSafe::FonteExterna { quantas: externas });
     }
 
     Ok(())
@@ -927,8 +976,6 @@ mod tests {
             String::new(),
             "<p>só texto</p>".to_string(),
             format!("<img {ATTR_BLOB}=\"{hash}\" {ATTR_MIME}=\"image/png\" alt=\"x\">"),
-            "<img src=\"https://cdn.exemplo.com/capa.png\">".to_string(),
-            "<img src=\"C:\\Users\\alguem\\capa.png\">".to_string(),
             "<img>".to_string(),
             // Prosa do escritor sobre data URLs continua prosa.
             "<p>Escreva &lt;img src=\"data:image/png;base64,AAA\"&gt; assim.</p>".to_string(),
@@ -970,6 +1017,118 @@ mod tests {
         );
     }
 
+    /// **Nenhuma das quatro formas de apontar para fora passa como documento
+    /// novo.**
+    ///
+    /// Cada linha é uma forma real de o `src` sair do contrato, e cada uma
+    /// falha no aparelho do outro por um motivo diferente:
+    ///
+    /// ```text
+    /// https://…    o servidor pode sumir, e o aparelho pode estar offline
+    /// C:\\Users\\…   o caminho não existe no Android
+    /// /home/…      idem, e nem entre dois Windows
+    /// file:///…    idem, com esquema explícito
+    /// blob:…       morre com a aba que o criou
+    /// ```
+    ///
+    /// O que o gate exige não é só "deu erro": é a **variante certa**. Se
+    /// caísse em `MidiaInline`, a mensagem mandaria o escritor para a lista de
+    /// pendências de migração, que não é onde isso se resolve.
+    ///
+    /// Nenhuma URL é buscada e nenhum caminho é aberto para decidir: a
+    /// classificação é do texto do atributo.
+    #[test]
+    fn fonte_externa_nao_passa_como_documento_novo() {
+        for fora in [
+            "https://cdn.exemplo.com/capa.png",
+            "http://exemplo.com/x.jpg",
+            "//exemplo.com/x.jpg",
+            "C:\\Users\\alguem\\capa.png",
+            "/home/alguem/capa.png",
+            "file:///home/alguem/capa.png",
+            "file:///C:/Users/alguem/capa.png",
+            "blob:http://localhost:4200/9f2c-4b1e",
+            "capa.png",
+            "../capa.png",
+            "assets/capa.png",
+        ] {
+            assert_eq!(
+                exigir_blob_safe(&format!("<img src=\"{fora}\">")),
+                Err(NaoEBlobSafe::FonteExterna { quantas: 1 }),
+                "devia recusar como fonte externa: {fora:?}"
+            );
+        }
+
+        // E conta, porque a mensagem diz quantas.
+        assert_eq!(
+            exigir_blob_safe("<img src=\"https://a/x.png\"><p>t</p><img src=\"blob:http://l/1\">"),
+            Err(NaoEBlobSafe::FonteExterna { quantas: 2 })
+        );
+    }
+
+    /// **O hash canônico continua sendo aceito.**
+    ///
+    /// O gate acima recusa nove formas de `src`. Este é a outra metade: se a
+    /// recusa tivesse ficado larga demais, o próprio formato canônico pararia
+    /// de passar — e o editor não conseguiria salvar nada.
+    #[test]
+    fn o_hash_canonico_continua_passando_depois_da_recusa_da_externa() {
+        let hash = hash_dos_bytes(b"qualquer");
+
+        for aceito in [
+            format!("<img {ATTR_BLOB}=\"{hash}\">"),
+            format!("<img {ATTR_BLOB}=\"{hash}\" {ATTR_MIME}=\"image/png\" alt=\"x\">"),
+            // Com `src` residual: o atributo de dado é que decide, e é isso
+            // que faz o resolvedor de execução poder preencher `src` sem
+            // tornar o documento ingravável.
+            format!("<img {ATTR_BLOB}=\"{hash}\" src=\"blob:http://localhost/1\">"),
+            format!("<p>a</p><img {ATTR_BLOB}=\"{hash}\"><img {ATTR_BLOB}=\"{hash}\">"),
+            "<img>".to_string(),
+            "<p>só texto</p>".to_string(),
+        ] {
+            assert_eq!(
+                exigir_blob_safe(&aceito),
+                Ok(()),
+                "devia passar: {aceito:?}"
+            );
+        }
+    }
+
+    /// **O backfill continua preservando cada uma delas, com pendência.**
+    ///
+    /// É a metade que não muda, e o gate existe porque a mudança na entrada
+    /// tornaria muito fácil "arrumar" o backfill junto — destruindo imagem
+    /// antiga de alguém em nome da coerência.
+    ///
+    /// Byte a byte: `assert_eq!` no HTML inteiro, não em conter.
+    #[test]
+    fn o_backfill_preserva_a_externa_e_registra_pendencia() {
+        let loja = Loja::nova();
+
+        for fora in [
+            "https://cdn.exemplo.com/capa.png",
+            "C:\\Users\\alguem\\capa.png",
+            "/home/alguem/capa.png",
+            "file:///home/alguem/capa.png",
+            "blob:http://localhost:4200/9f2c-4b1e",
+        ] {
+            let documento = format!("<p>antes</p><img src=\"{fora}\" alt=\"capa\"><p>depois</p>");
+            let conversao = converter(&documento, &loja.store).expect("converter");
+
+            assert_eq!(
+                conversao.html, documento,
+                "o documento legado tinha que sair idêntico: {fora:?}"
+            );
+            assert_eq!(
+                conversao.pendencias.len(),
+                1,
+                "e registrar exatamente uma pendência: {fora:?}"
+            );
+            assert_eq!(conversao.convertidas, 0, "nada a migrar: {fora:?}");
+            assert!(!conversao.mudou(), "e nada a reescrever: {fora:?}");
+        }
+    }
+
     /// A mensagem manda o escritor para onde ele resolve.
     ///
     /// Recusar a gravação do capítulo é caro para quem está escrevendo. Se a
@@ -990,6 +1149,30 @@ mod tests {
         );
     }
 
+    /// E a recusa da externa manda para outro lugar, porque o remédio é outro.
+    ///
+    /// Pendência de migração é coisa do backfill; imagem que aponta para fora
+    /// se resolve reinserindo a imagem. Mandar o escritor para a lista de
+    /// pendências aqui seria mandá-lo para uma tela onde não há o que fazer.
+    #[test]
+    fn a_recusa_da_externa_diz_o_que_fazer_e_nao_e_a_lista_de_pendencias() {
+        let erro =
+            exigir_blob_safe("<img src=\"https://cdn.exemplo.com/x.png\">").expect_err("recusa");
+        let texto = erro.to_string();
+        assert!(
+            texto.contains("outros aparelhos") && texto.contains("bot"),
+            "precisa dizer por que e o que fazer: {texto}"
+        );
+        assert!(
+            !texto.contains("pendências de mídia"),
+            "e não é a lista de pendências que resolve isto: {texto}"
+        );
+        assert!(
+            !texto.contains("blob") && !texto.contains("src") && !texto.contains("URL"),
+            "sem jargão: {texto}"
+        );
+    }
+
     /// **O que o backfill preserva é o que a entrada recusa, e isso é
     /// coerente.**
     ///
@@ -998,9 +1181,10 @@ mod tests {
     /// coisa: o aplicativo não sabe o que fazer com aquele valor, então não
     /// destrói e não propaga.
     ///
-    /// Já a externa é preservada **e** passa na entrada — ela não põe byte no
-    /// banco, e travar a gravação por causa dela custaria ao escritor a
-    /// capacidade de editar o texto.
+    /// A externa é o caso em que as duas metades **divergem de propósito**: o
+    /// backfill preserva byte a byte, e a entrada recusa. É o *fail-closed*
+    /// pedido — o documento legado abre, e a imagem que não é portável precisa
+    /// sair antes da próxima gravação.
     #[test]
     fn o_backfill_e_a_barreira_concordam_sobre_o_que_e_pendencia() {
         let loja = Loja::nova();
@@ -1020,8 +1204,8 @@ mod tests {
         assert_eq!(conversao.html, externa, "e preserva");
         assert_eq!(
             exigir_blob_safe(externa),
-            Ok(()),
-            "mas a entrada aceita: ela não põe byte no banco"
+            Err(NaoEBlobSafe::FonteExterna { quantas: 1 }),
+            "e a entrada recusa: o endereço dela não existe no outro aparelho"
         );
     }
 

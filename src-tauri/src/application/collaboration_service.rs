@@ -60,10 +60,12 @@ fn e_documento_de_capitulo(target_type: &str, field: &str) -> bool {
 /// inline inválida   →  RECUSA. Dado novo não ganha pendência de migração:
 ///                      pendência é para legado que já estava no acervo.
 /// blob inválido     →  RECUSA
-/// externa           →  passa. Legado tolerado em leitura; não põe byte no
-///                      banco. Fluxo novo não deveria criar, e o editor não
-///                      cria — mas recusar aqui rejeitaria uma proposta sobre
-///                      um capítulo que já tem imagem remota antiga.
+/// externa           →  RECUSA. Não põe byte no banco, mas o endereço dela só
+///                      existe no aparelho de quem propôs: URL vence, caminho
+///                      local não existe no Android, `blob:` morre com a aba.
+///                      Uma proposta sobre capítulo que já tem imagem remota
+///                      antiga precisa remover ou reinserir essa imagem — é o
+///                      *fail-closed* do ADR 0010.
 /// ```
 ///
 /// Sem fallback para inline: se a transformação falhar, o erro sobe. Gravar
@@ -824,6 +826,55 @@ mod tests {
         )
         .expect_err("referência torta");
         assert_eq!(erro.kind, DatabaseErrorKind::Validation);
+    }
+
+    /// **Contribuição nova não consegue persistir fonte externa.**
+    ///
+    /// O caminho da colaboração é o que mais importa fechar: o valor vem de
+    /// outro aparelho, e `original_value` chega junto — um documento legado com
+    /// imagem externa poderia atravessar a fronteira nos dois lados.
+    ///
+    /// Os dois lados são verificados, e nada é gravado: `COUNT(*) = 0`.
+    #[test]
+    fn store_contribution_recusa_fonte_externa_nos_dois_lados() {
+        for fora in [
+            "https://cdn.exemplo.com/capa.png",
+            "C:\\Users\\alguem\\capa.png",
+            "/home/alguem/capa.png",
+            "file:///home/alguem/capa.png",
+            "blob:http://localhost:4200/9f2c-4b1e",
+        ] {
+            let imagem = format!("<img src=\"{fora}\">");
+
+            for (original, proposto) in [
+                ("<p>antes</p>".to_string(), imagem.clone()),
+                (imagem.clone(), "<p>depois</p>".to_string()),
+            ] {
+                let fixture = TemporaryDatabase::new();
+                let loja = LojaDeTeste::nova();
+                seed_session(&fixture);
+
+                let erro = store_contribution(
+                    &fixture.database,
+                    &loja.store,
+                    "sess",
+                    1,
+                    proposta_de_capitulo("c1", &original, &proposto),
+                )
+                .expect_err("fonte externa não pode entrar");
+                assert_eq!(erro.kind, DatabaseErrorKind::Validation);
+
+                let quantas: i64 = fixture
+                    .connection()
+                    .query_row(
+                        "SELECT COUNT(*) FROM collaboration_contributions",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .expect("contar");
+                assert_eq!(quantas, 0, "nada podia ter sido gravado: {fora:?}");
+            }
+        }
     }
 
     /// Campo de texto comum continua texto.

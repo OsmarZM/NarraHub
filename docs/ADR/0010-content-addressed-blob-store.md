@@ -133,6 +133,31 @@ O que **nunca** vai ao banco:
 | caminho absoluto | quebra na restauração noutra máquina |
 | URL temporária | vence, e o documento fica apontando para nada |
 | `blob:` do navegador | morre com a aba |
+| URL externa (`https://`) | o servidor pode sumir, e o aparelho pode estar offline |
+
+**Nota de 2026-09-11 — a implementação estava mais frouxa que esta tabela.** A primeira versão
+de `exigir_blob_safe` aceitava `<img>` com `src` externo/desconhecido em gravação nova, com o
+argumento de que ela não põe byte no SQLite. O argumento vale para tamanho e não vale para o
+contrato: esta tabela já proibia caminho absoluto, URL temporária e `blob:`, e o critério que
+manda é **o mesmo HTML funcionar no Windows e no Android**. Corrigido: em persistência nova
+passam apenas referência canônica e `<img>` sem fonte.
+
+```text
+referência canônica          ✓
+sem fonte                    ✓
+inline (válida ou inválida)  ✗
+referência não canônica      ✗
+externa/desconhecida         ✗  em persistência NOVA
+```
+
+A recusa é *fail-closed* e não distingue externa antiga de nova: um documento legado **abre**
+normalmente e perde a próxima gravação, até a imagem sair ou ser reinserida pelo editor.
+Distinguir exigiria guardar a lista de externas de cada documento — superfície nova para
+tolerar um valor que esta tabela proíbe.
+
+**O backfill não mudou.** Externa legada continua preservada byte a byte, com
+`blob_migration_issue` registrada. Nenhuma URL é baixada e nenhum caminho local é aberto: aqui
+e lá, a fonte externa é olhada, nunca seguida.
 
 **O hash é a identidade portátil.** O mesmo HTML tem que funcionar igual no Windows e no
 Android, e é isso que a ausência de caminho garante. A resolução `hash → recurso local`
