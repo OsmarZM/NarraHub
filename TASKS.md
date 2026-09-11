@@ -18,6 +18,106 @@ Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 
 ## ACTIVE
 
+### NH-073 — Perfis de suíte (`fast` / `integration` / `slow`) e CI em paralelo
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4  (não bloqueia a etapa 14)
+```
+
+Hoje existe **uma** suíte: `cargo test --lib`, 515 testes, 17,4 min depois da otimização do
+`fsync` (era 72,7 min). Não existe forma de pedir "só o rápido".
+
+O que falta, em ordem de retorno:
+
+- **Perfis.** `fast` (sem banco em arquivo: os 95 testes que hoje rodam em 7 s),
+  `integration` (os que usam `TemporaryDatabase`), `slow` (estresse de cripto e concorrência).
+  Separação **física** por arquivo/feature, não por convenção de nome — convenção de nome
+  volta a misturar na primeira distração.
+- **CI em jobs paralelos**, um por perfil, com cache de `target/`. Hoje é um job serial.
+- **Matriz de impacto** arquivo alterado → suítes afetadas, para a regra de escolha de suíte
+  (ver abaixo) deixar de ser julgamento e passar a ser consulta.
+- **Mutação sem recompilar o mundo.** Cada mutação hoje paga a checagem de build do crate
+  inteiro. O binário de teste já construído aceita filtro de módulo — foi assim que a medição
+  por módulo foi feita —, e a mutação poderia usar o mesmo caminho.
+
+**Metas** (a alcançar, não alcançadas): `fast` < 1 min, `integration` 3–5 min, `full`
+10–15 min, `slow` fora do caminho comum.
+
+**Regra em vigor desde já, sem depender desta tarefa:** mudança local → testes do alvo;
+fatia → suíte de integração correspondente; mudança arquitetural ampla ou PR → suíte inteira.
+
+---
+
+### NH-074 — Desligar o `fsync` também nas conexões de teste
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4  (não bloqueia a etapa 14)
+```
+
+`TemporaryDatabase::new` desliga o `fsync` **só da conexão que aplica as migrations**, porque
+`synchronous` é por conexão e `fixture.connection()` abre uma nova via
+`SqliteDatabase::write()` → `apply_pragmas`. O ganho de 4362 s → 1047 s veio inteiro da
+montagem do schema; **nenhuma escrita de teste ficou sem `fsync`**.
+
+Sobra tempo nas escritas, e ele não foi pego de propósito: desligar ali alarga o alcance para
+as escritas dos testes, e aí a pergunta "qual propriedade depende de `fsync`" deixa de ter
+resposta trivial e precisa ser respondida teste a teste.
+
+O gate `test_support::testes_da_fixture::a_conexao_do_teste_nao_herda_o_synchronous_do_setup`
+reprova se alguém puser `synchronous = OFF` em `apply_pragmas` — foi verificado por mutação.
+Quem pegar esta dívida vai ter que mexer nesse gate, e é aí que a conversa acontece.
+
+---
+
+### NH-075 — `sync_snapshot`: 200 capturas concorrentes determinísticas
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4  (atacar logo depois da etapa 13)
+```
+
+`infrastructure::sqlite::sync_snapshot` é o módulo mais caro da suíte, e o custo está em
+laços de 200 capturas concorrentes que provam ausência de corrida por **repetição**. Isso é
+probabilístico nos dois sentidos: pode passar com o defeito presente, e custa minutos toda
+execução.
+
+O alvo é provar a mesma propriedade por **construção** — barreira/canal para forçar a
+intercalação exata que o teste quer, em vez de sortear intercalações. Menos iterações, mais
+garantia.
+
+**Não é para reduzir cobertura.** Se a intercalação determinística não cobrir o que as 200
+cobriam, o laço fica e a dívida continua aberta.
+
+---
+
+### NH-076 — Os 43 testes acima de 60 s
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4  (não bloqueia a etapa 14)
+```
+
+A otimização do `fsync` levou os testes marcados como `> 60 s` de **242 para 43**. Os 43 que
+sobraram não são mais gargalo de disco — são trabalho de verdade (cripto, concorrência,
+volume) ou `sleep`.
+
+O que fazer com eles, por natureza:
+
+- **`sleep` → barreira, canal ou condição.** Espera cronometrada é lenta e é frágil pelo
+  mesmo motivo.
+- **Setup caro reaproveitado** sem compartilhar estado mutável entre testes.
+- **Estresse de cripto separado da lógica de protocolo** — sem trocar cripto por mock onde a
+  cripto é justamente o que está sendo provado.
+- **SQLite em memória** onde a propriedade provada não depende de arquivo.
+
+---
+
 ### NH-072 — Transporte de blob pela rede
 
 ```text
