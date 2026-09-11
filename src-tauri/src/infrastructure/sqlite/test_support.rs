@@ -57,8 +57,26 @@ impl TemporaryDatabase {
         {
             let connection = Connection::open(&path).expect("criar banco de teste");
             connection
-                .execute_batch("PRAGMA foreign_keys = ON;")
-                .expect("ligar foreign keys");
+                .execute_batch(
+                    // `synchronous = OFF` **só em teste**, e a diferença vale a
+                    // suíte inteira.
+                    //
+                    // O banco entra em WAL na migration 1, e cada uma das 20
+                    // migrations e um `execute_batch` -- uma transação, um
+                    // `fsync`. Num SSD externo por USB o `fsync` custa centenas
+                    // de milissegundos, e o resultado medido era 17,5 s para
+                    // criar um banco de teste que não faz nada: `user 0.03s`,
+                    // `sys 0.05s`, e dezessete segundos esperando disco.
+                    //
+                    // O que `synchronous = OFF` desliga é a garantia contra
+                    // **queda de energia**, e um banco de teste que existe por
+                    // milissegundos e é apagado no `Drop` não tem o que perder
+                    // numa queda. Travamento, WAL, FK, gatilho e transação
+                    // continuam idênticos -- nada da semântica que os gates
+                    // provam depende disso.
+                    "PRAGMA synchronous = OFF; PRAGMA foreign_keys = ON;",
+                )
+                .expect("preparar o banco de teste");
             for version in 1..=LATEST_SCHEMA_VERSION {
                 connection
                     .execute_batch(sql_for_version(version).expect("migration conhecida"))
