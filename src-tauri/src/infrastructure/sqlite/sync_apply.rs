@@ -321,7 +321,8 @@ fn aplicar_anexo(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseComm
     // mais. Recusar é a última chance.
     if !anexo.data_url.is_empty() {
         return Err(DatabaseCommandError::storage(
-            "O evento de anexo traz conteúdo embutido. Ele não vai ser aplicado: o contrato              do ADR 0010 é referência por hash, e aplicar isto gravaria os bytes de volta.",
+            "O evento de anexo traz conteúdo embutido. Ele não vai ser aplicado: o contrato do \
+             ADR 0010 é referência por hash, e aplicar isto gravaria os bytes de volta.",
         ));
     }
     if !anexo.blob_hash.is_empty()

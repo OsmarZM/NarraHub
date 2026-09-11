@@ -772,7 +772,8 @@ mod tests {
 
         assert!(
             loja.1.verify(&hash).expect("integridade"),
-            "o blob não podia ser apagado: não há GC nesta etapa, e a mesma imagem pode              estar referenciada em outro lugar"
+            "o blob não podia ser apagado: não há GC nesta etapa, e a mesma imagem pode estar \
+             referenciada em outro lugar"
         );
     }
 
