@@ -19,7 +19,6 @@
         { "url": "https://*" }
       ]
     },
-    "updater:default",
     "sql:default"
   ]
 }

@@ -59,3 +59,56 @@ jobs:
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  android:
+    name: Android
+    # A etapa 14 e Windows <-> Android, e ate aqui nenhuma pipeline tinha
+    # construido nada para Android -- entao "funciona no Android" era
+    # afirmacao, nao fato. Quando este job nasceu, o alvo NAO compilava: a
+    # capability pedia `updater:default` numa plataforma onde o plugin do
+    # updater nao existe, e o build script do Tauri parava antes de verificar
+    # qualquer tipo. Sem job, isso teria sido descoberto num aparelho.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: android
+      # O Gradle do Android Gradle Plugin exige JDK 17+.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      # `aws-lc-sys` (via reqwest -> rustls -> aws-lc-rs) compila C para o alvo,
+      # e precisa do clang do NDK no PATH. O runner ja tras o NDK; o que falta
+      # e apontar `NDK_HOME` para ele.
+      - name: NDK do runner
+        run: echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+      - run: npm ci
+      # O `frontendDist` da configuracao aponta para `dist/narrahub-app/browser`,
+      # que so existe depois do build do Angular.
+      - run: npm run build
+      - name: Verificacao do core para aarch64-linux-android
+        run: |
+          export PATH="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          cargo clippy --manifest-path src-tauri/Cargo.toml --lib \
+            --target aarch64-linux-android -- -D warnings
+      # O gate de verdade: um APK. `cargo check` cru nao passa pelo Gradle, pelo
+      # manifest, nem pelas capabilities resolvidas por plataforma -- que foi
+      # exatamente onde o alvo estava quebrado.
+      - name: APK de debug
+        run: npm run android:apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: narrahub-debug-apk
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error

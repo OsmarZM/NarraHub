@@ -454,6 +454,27 @@ fn tabelas_que_bloqueiam() -> Vec<&'static str> {
 /// Roda **dentro** da transação de semeadura. Fora dela, uma escrita local
 /// entre a checagem e o `INSERT` passaria despercebida — e seria justamente a
 /// escrita que o seed apagaria.
+/// **Este aparelho está fresco o bastante para receber um bootstrap?**
+///
+/// É exatamente a checagem que [`semear`] faz dentro do `IMMEDIATE` — a mesma
+/// função, não uma cópia. Existe exposta para a sessão da etapa 14 decidir,
+/// **antes** de pedir um bundle, se este lado é receptor ou não: com dois
+/// aparelhos, o que estiver vazio recebe, e o que tiver acervo doa.
+///
+/// Não substitui a checagem do `semear`. Entre esta pergunta e a semeadura o
+/// escritor pode salvar alguma coisa, e é por isso que o `semear` pergunta de
+/// novo dentro da transação dele. Esta resposta orienta o protocolo; a de lá
+/// é a que autoriza escrever.
+pub fn receptor_elegivel(connection: &mut Connection) -> DatabaseCommandResult<bool> {
+    let tx = connection
+        .transaction()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    let elegivel = bootstrap_eligible(&tx)?.is_ok();
+    // Só leitura: a transação é descartada, não confirmada.
+    drop(tx);
+    Ok(elegivel)
+}
+
 fn bootstrap_eligible(tx: &Transaction<'_>) -> DatabaseCommandResult<Result<(), FalhaDeSemeadura>> {
     for tabela in tabelas_que_bloqueiam() {
         let linhas: i64 = tx

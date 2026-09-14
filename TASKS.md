@@ -17,6 +17,100 @@ Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 ---
 
 ## ACTIVE
+### NH-077 — Sync V2, etapa 14: Windows ↔ Android ponta a ponta
+
+```text
+Owner:  Claude
+Status: IMPLEMENTADA — falta somente o gate físico (roteiro pronto)
+ADR:    0009 §23 (última etapa da ordem)
+Fase:   4  (etapa 14 de 14)
+PR:     #54 (rascunho)
+```
+
+Levantamento em `docs/ETAPA_14_LEVANTAMENTO.md`; roteiro físico em
+`docs/ETAPA_14_ROTEIRO_FISICO.md`.
+
+**Checklist de fechamento** (definido na revisão de 2026-09-14):
+
+```text
+Android compila             ✅  capability por plataforma, identifier Android, job de CI com APK
+transporte real             ✅  sync_wire: quadros, segmentacao, tetos, tempo limite
+IPC                         ✅  sete comandos, nenhum recebe device_id nem caminho
+pareamento PIN              ✅  PIN -> SPAKE2 -> XXpsk0 -> prova Ed25519 -> admissao direta
+bootstrap real              ✅  capturar -> fio -> semear, receptor fresco nao admite
+blob real                   ✅  manifesto + transferir_blobs pela rede, SHA no destino
+incremental B -> A          ✅  gate E2E sobre TCP real
+incremental A -> B          ✅  gate E2E sobre TCP real, com B escutando
+Windows <-> Android fisico  ⏳  roteiro pronto, depende dos dois aparelhos
+```
+
+**Duas decisões do humano durante a fatia 4**, depois de o conflito ser medido — parear e depois
+semear devolvia `ReceptorNaoEstaVazio { tabela: "sync_devices" }`:
+
+- **receptor fresco não admite no pareamento**: recebe o bundle pela mesma sessão autenticada, e
+  o `semear` da etapa 12 traz o doador pelo merge do roster. A etapa 12 ficou intocada.
+- **bootstrap herda o roster inteiro do doador**: é entrar no conjunto, não parear. A
+  não-transitividade vale para pareamento e para sessão pareada — um estranho autenticado é
+  recusado pelo roster (`estranho_autenticado_nao_sincroniza`).
+
+**O V1 continua no código, congelado**, e a tela impede os dois ativos juntos. Ele sai do fluxo
+de produto quando o gate físico fechar — mas veja a `NH-079` antes disso.
+
+---
+
+### NH-078 — QR e descoberta automática, como UX sobre o protocolo provado
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4  (follow-up de UX; NÃO bloqueia o fechamento da etapa 14)
+```
+
+A antiga fatia 5 da etapa 14. Saiu do caminho crítico por decisão registrada: provar o
+transporte antes de envolver câmera, mDNS, multicast do Android e diferença entre roteadores.
+
+**Regra que acompanha a tarefa:** não muda o protocolo provado na fatia 4. O QR serializa o mesmo
+material que o PIN já transporta — endpoint, identidade pública, informação de sessão, PIN — e
+a descoberta substitui a digitação do endereço. Se alterar mensagem, handshake ou ordem, deixou
+de ser esta tarefa.
+
+---
+
+### NH-079 — Só 2 de ~47 escritas de domínio geram evento V2
+
+```text
+Owner:  não atribuída
+Status: BACKLOG — bloqueia remover o Sync V1 do fluxo de produto
+Fase:   4
+```
+
+Achado ao desenhar o E2E da etapa 14, e medido:
+
+```text
+servico                  escritas publicas   emitem evento V2
+canvas_service                  9                  1   (anexos)
+manuscript_service             10                  1   (update_chapter)
+collaboration_service           6                  0
+entity_service                  5                  0
+knowledge_service               3                  0
+planning_service                7                  0
+universe_service                3                  0
+workspace_service               4                  0
+```
+
+**Consequência:** depois do pareamento, o incremental carrega **edição de capítulo e anexos** e
+mais nada. Criar capítulo, livro, história, universo, entidade ou item de planejamento num
+aparelho **nunca chega ao outro** — só um bootstrap levaria, e bootstrap exige receptor vazio.
+
+A etapa 14 fecha mesmo assim, e está certo que feche: o cenário definido é bootstrap mais edição
+de capítulo, e os dois funcionam. Mas **"V2 como único sync normal" não é verdade enquanto isto
+existir**: remover o V1 hoje regrediria quem cria capítulo no celular esperando vê-lo no
+computador.
+
+Não é contrato novo: é cobertura. O outbox transacional da etapa 3 e o
+`append_event_in_transaction` existem; faltam os chamadores.
+
+---
 
 ### NH-073 — Perfis de suíte (`fast` / `integration` / `slow`) e CI em paralelo
 

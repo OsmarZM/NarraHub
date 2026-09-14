@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "updater-desktop",
+  "description": "Atualizacao automatica, que existe somente no desktop. O plugin do updater e restrito a macOS, Windows e Linux no Cargo.toml, entao no Android a permissao `updater:default` nao existe -- e uma capability que a pedisse sem declarar `platforms` faria o build script do Tauri parar antes de verificar qualquer tipo. Separada em arquivo proprio para a restricao ficar ao lado da permissao, em vez de escondida numa lista.",
+  "platforms": ["windows", "macOS", "linux"],
+  "windows": ["main"],
+  "permissions": ["updater:default"]
+}

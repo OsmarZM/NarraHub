@@ -297,6 +297,118 @@ pub fn introduzir_dispositivo(
     Ok(())
 }
 
+/// Admite quem acabou de parear **direto**, sem padrinho.
+///
+/// O ADR 0009 §5 lista duas portas para o roster, e nenhuma é automática:
+///
+/// ```text
+/// pareamento direto       os dois aparelhos se encontram, e um humano
+///                         mostrou o codigo no outro   ← esta funcao
+/// introducao autorizada   um `active` apresenta um terceiro
+///                         ← introduzir_dispositivo
+/// ```
+///
+/// [`introduzir_dispositivo`] exige que quem apresenta esteja `active` no
+/// roster, e é certo que exija: sem isso, parear com um aparelho significaria
+/// aceitar tudo que ele repassar. Mas no pareamento por PIN **os dois são
+/// estranhos** — nenhum está no roster do outro —, e essa exigência tornaria o
+/// primeiro pareamento impossível.
+///
+/// O que autoriza aqui não é o roster: é o **PIN**, que só saiu da tela de um
+/// aparelho para os dedos de quem tinha o outro na mão. O PAKE transforma isso
+/// em segredo de 32 bytes, o `XXpsk0` exige esse segredo, e a
+/// [`SessaoAutenticada`] só existe depois de alguém assinar o hash daquele
+/// handshake com a Ed25519 correspondente. Não há construtor a partir de um
+/// `device_id` recebido pela rede — é essa ausência que carrega a garantia, e
+/// é por isso que o parâmetro é a sessão e não um `&str`.
+///
+/// As duas recusas que continuam valendo, palavra por palavra como em
+/// [`introduzir_dispositivo`]: chave que não deriva o id, e aparelho que já
+/// saiu do conjunto. A segunda é a mais importante — um aparelho **abandonado**
+/// que reaparece é exatamente o cenário que a poda de tombstones pressupôs
+/// impossível.
+pub fn admitir_por_pareamento(
+    connection: &Connection,
+    sessao: &SessaoAutenticada,
+    nome: &str,
+) -> DatabaseCommandResult<()> {
+    let device_id = sessao.device_id();
+    let ed25519_public = sessao.ed25519_public();
+
+    // Parear consigo mesmo não é cenário hostil: é o endereço errado digitado,
+    // ou o mesmo acervo aberto duas vezes. Recusar com nome é melhor que
+    // gravar uma linha `is_self = 0` para a própria chave, que faria o roster
+    // conter este aparelho duas vezes com semânticas diferentes.
+    let eu: Option<String> = connection
+        .query_row(
+            "SELECT device_id FROM sync_devices WHERE is_self = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+
+    if eu.as_deref() == Some(device_id) {
+        return Err(DatabaseCommandError::validation(
+            "Este é o próprio aparelho. Um aparelho não pareia consigo mesmo.".to_string(),
+        ));
+    }
+
+    // SOBREVIVENTE DECLARADO (M93). Desligar esta conferência não reprova
+    // nenhum gate, e a medição diz por quê: quem produz a [`SessaoAutenticada`]
+    // é `autenticar`, que deriva o `device_id` da MESMA chave que acabou de
+    // verificar — `fingerprint(&publica)`. Pelo tipo, a condição é sempre
+    // verdadeira, e não existe construtor público a partir de valores soltos.
+    //
+    // Fica como defesa em profundidade, e não como teatro: o dia em que
+    // aparecer um segundo caminho para construir sessão — importação, teste de
+    // integração, protocolo novo —, esta linha é o que impede o roster de
+    // gravar uma chave contra o identificador errado. É barata, e a alternativa
+    // é confiar que ninguém vai criar esse caminho.
+    if !a_chave_deriva_o_id(ed25519_public, device_id) {
+        return Err(DatabaseCommandError::validation(format!(
+            "A chave apresentada para {device_id} não deriva desse identificador."
+        )));
+    }
+
+    let saida: Option<String> = connection
+        .query_row(
+            "SELECT exit_reason FROM sync_devices WHERE device_id = ?1",
+            [device_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+
+    if let Some(motivo) = saida.filter(|texto| !texto.is_empty()) {
+        return Err(DatabaseCommandError::validation(match motivo.as_str() {
+            "abandoned" => format!(
+                "O dispositivo {device_id} foi abandonado e não pode voltar ao conjunto com a \
+                 mesma identidade. A poda de exclusões já assumiu que ele não voltaria; \
+                 readmiti-lo traria de volta conteúdo que foi apagado de propósito. Reinstale \
+                 o aplicativo naquele aparelho para ele entrar como um dispositivo novo."
+            ),
+            _ => format!(
+                "O dispositivo {device_id} foi aposentado e saiu do conjunto. Para voltar, ele \
+                 precisa entrar como um dispositivo novo."
+            ),
+        }));
+    }
+
+    // `introduced_by` vazio é o que o schema documenta como pareamento direto.
+    // O nome é o que o humano vai ler na lista, e só ele é atualizado num
+    // repareamento: chave e estado não se mexem por aqui.
+    connection
+        .execute(
+            "INSERT INTO sync_devices (device_id, name, ed25519_public, introduced_by, is_self)
+             VALUES (?1, ?2, ?3, '', 0)
+             ON CONFLICT(device_id) DO UPDATE SET name = excluded.name",
+            rusqlite::params![device_id, nome, ed25519_public],
+        )
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Ok(())
+}
+
 // ── por que não existe um `mudar_estado` aqui ──────────────────────────────
 //
 // Até a revisão 11.1 este módulo exportava:

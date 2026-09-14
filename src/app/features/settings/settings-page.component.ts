@@ -45,6 +45,8 @@ export class SettingsPageComponent implements OnInit {
   deviceName = localStorage.getItem('narrahub.deviceName') || 'Meu computador';
   remoteAddress = '';
   pairingCode = '';
+  v2Address = '';
+  v2Pin = '';
   restoreConfirmation = '';
 
   ngOnInit(): void {
@@ -250,6 +252,46 @@ export class SettingsPageComponent implements OnInit {
     if (!result.ok) { if (result.error) this.showError(result.error); return; }
     const peer = result.result;
     if (peer) this.showInfo(`Sincronizado com ${peer.peer_name}: ${peer.received} recebidos, ${peer.sent} enviados, ${peer.conflicts} conflitos.`);
+  }
+
+  // ── Sync V2 (etapa 14) ───────────────────────────────────
+
+  async startSyncV2(): Promise<void> {
+    this.saveDeviceName();
+    const result = await this.store.startSyncV2(this.deviceName);
+    if (!result.ok && result.error) this.showError(result.error);
+  }
+
+  async stopSyncV2(): Promise<void> {
+    const result = await this.store.stopSyncV2();
+    if (!result.ok && result.error) this.showError(result.error);
+  }
+
+  async newSyncV2Pin(): Promise<void> {
+    const result = await this.store.newSyncV2Pin();
+    if (!result.ok && result.error) this.showError(result.error);
+  }
+
+  async pairSyncV2(): Promise<void> {
+    const result = await this.store.pairSyncV2(this.v2Address, this.v2Pin, this.deviceName);
+    if (!result.ok) { if (result.error) this.showError(result.error); return; }
+    if (result.result) this.showInfo(this.describeSyncV2(result.result));
+  }
+
+  async syncNowV2(): Promise<void> {
+    const result = await this.store.syncNowV2(this.v2Address, this.deviceName);
+    if (!result.ok) { if (result.error) this.showError(result.error); return; }
+    if (result.result) this.showInfo(this.describeSyncV2(result.result));
+  }
+
+  private describeSyncV2(r: import('../../core/native/sync-v2.service').SyncSessionResult): string {
+    const papel = r.papel === 'receptor' ? 'Acervo recebido de' : r.papel === 'doador' ? 'Acervo enviado para' : 'Sincronizado com';
+    const contar = (n: number, um: string, varios: string) => `${n} ${n === 1 ? um : varios}`;
+    return `${papel} ${r.parceiro.nome}: `
+      + `${contar(r.eventosAplicados, 'alteração recebida', 'alterações recebidas')}, `
+      + `${contar(r.eventosEnviados, 'alteração enviada', 'alterações enviadas')}, `
+      + `${contar(r.blobsRecebidos, 'imagem recebida', 'imagens recebidas')}.`
+      + (r.eventosPendentes ? ` ${contar(r.eventosPendentes, 'alteração aguarda', 'alterações aguardam')} a próxima sessão.` : '');
   }
 
   // ── Compartilhamento e colaboração ───────────────────────
