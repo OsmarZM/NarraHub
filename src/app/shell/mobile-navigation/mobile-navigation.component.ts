@@ -280,7 +280,11 @@ export class MobileNavigationComponent implements OnDestroy {
       const velocity = this.velocity();
 
       if (gesture.kind === 'pulling') {
-        this.animateOpen(settleOpen(this.open, -velocity.x) ? 1 : 0);
+        // Um toque na alça, sem arrasto, também abre. No aparelho o dedo nem sempre consegue
+        // puxar da borda — o sistema pode ficar com o gesto —, e a alça precisa responder mesmo
+        // assim.
+        const tocou = Math.abs(event.clientX - gesture.startX) < TAP_SLOP;
+        this.animateOpen(tocou || settleOpen(this.open, -velocity.x) ? 1 : 0, tocou ? () => this.focusFront() : undefined);
       } else if (gesture.kind === 'closing') {
         this.animateOpen(settleOpen(this.open, -velocity.x) ? 1 : 0);
       } else if (gesture.kind === 'wheeling') {

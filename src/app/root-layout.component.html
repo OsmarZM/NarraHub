@@ -1,4 +1,15 @@
 <app-shell [showSidebar]="false" [focusMode]="shell.focusMode()">
+  @if (viewport.isMobile()) {
+    <app-mobile-topbar
+      titlebar
+      [title]="mobileTitle()"
+      [context]="mobileContextLabel()"
+      [query]="shell.searchQuery()"
+      [workspaceMode]="workspaceMode()"
+      (queryChange)="shell.searchQuery.set($event)"
+      (homeRequested)="returnToLibrary()"
+    />
+  } @else {
   <app-titlebar
     titlebar
     [query]="shell.searchQuery()"
@@ -10,6 +21,7 @@
     (maximizeRequested)="toggleMaximizeWindow()"
     (closeRequested)="closeWindow()"
   />
+  }
 
   <div class="content-stage" data-nh-mnav-recede [class.focus-mode]="shell.focusMode()">
     @if (bootstrap.schemaIncompatible(); as incompatibilidade) {

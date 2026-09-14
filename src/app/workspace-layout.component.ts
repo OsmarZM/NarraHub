@@ -91,6 +91,8 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   readonly saveMessage = this.manuscriptStore.saveMessage;
   readonly isSaving = this.manuscriptStore.isSaving;
   readonly inspectorOpen = this.manuscriptStore.inspectorOpen;
+  /** Android: a folha com as ações do universo. No desktop as ações ficam na linha e isto não aparece. */
+  readonly mobileActionsOpen = signal(false);
   readonly isFocusMode = this.shell.focusMode;
   readonly errorMessage = this.shell.errorMessage;
   readonly infoMessage = this.shell.infoMessage;
@@ -229,6 +231,11 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   }
 
   toggleInspector(): void { this.manuscriptStore.toggleInspector(); }
+
+  /** Um toque em qualquer botão da folha de ações executa a ação e fecha a folha. */
+  closeMobileActionsFrom(event: Event): void {
+    if ((event.target as HTMLElement | null)?.closest('button')) this.mobileActionsOpen.set(false);
+  }
 
   /**
    * Mantido porque o template e o caminho de restauração de rota chamam por aqui. A carga em

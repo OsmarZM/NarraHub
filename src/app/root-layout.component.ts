@@ -8,6 +8,7 @@ import { AppNavigationService } from './core/navigation/app-navigation.service';
 import { AppNavigationId } from './core/navigation/app-navigation';
 import { MobileNavigationComponent } from './shell/mobile-navigation/mobile-navigation.component';
 import { MobileNavigationOption } from './shell/mobile-navigation/mobile-navigation.model';
+import { MobileTopbarComponent } from './shell/mobile-topbar/mobile-topbar.component';
 import { ViewportState } from './shell/state/viewport.state';
 import { AppState } from './core/state/app.state';
 import { CollaborationStore } from './features/collaboration/state/collaboration.store';
@@ -20,9 +21,9 @@ import { TitlebarComponent } from './shell/titlebar/titlebar.component';
 @Component({
   selector: 'app-root-layout',
   standalone: true,
-  imports: [RouterOutlet, AppShellComponent, TitlebarComponent, SchemaRecoveryComponent, MobileNavigationComponent],
+  imports: [RouterOutlet, AppShellComponent, TitlebarComponent, MobileTopbarComponent, SchemaRecoveryComponent, MobileNavigationComponent],
   templateUrl: './root-layout.component.html',
-  styleUrl: './root-layout.component.css',
+  styleUrls: ['./root-layout.component.css', './shell/android/android-shell.css'],
   encapsulation: ViewEncapsulation.None,
   host: { '[class.nh-mobile]': 'viewport.isMobile()' },
 })
@@ -50,7 +51,9 @@ export class RootLayoutComponent implements OnDestroy {
   );
 
   readonly mobileActiveId = computed(() => this.navigation.route().navId);
-  readonly mobileContextLabel = computed(() => this.appState.activeUniverse()?.name ?? '');
+  readonly mobileContextLabel = computed(() => (this.workspaceMode() ? this.appState.activeUniverse()?.name ?? '' : ''));
+  /** O nome da tela na barra de cima do Android: o mesmo texto do cartão da navegação gestual. */
+  readonly mobileTitle = computed(() => MOBILE_PRESENTATION[this.navigation.route().navId]?.label ?? 'NarraHub');
 
   readonly mobileOptions = computed<MobileNavigationOption[]>(() => {
     const universe = this.navigationUniverseId();

@@ -66,6 +66,27 @@ os quatro segredos de assinatura, constrói com a mesma action da CI, exige APK 
 estar nos assets. **A assinatura ainda não existe**: não havia keystore Android, e o workflow de
 release falha de propósito até os segredos serem criados. Ver `docs/RELEASE_ANDROID.md`.
 
+**Layout só para Android (2026-09-14, depois do teste no S23 / Android 16).** O humano instalou a
+`0.10.0-beta.1` e o app parecia "um navegador quebrado tentando ser app": barra de título do desktop
+por baixo da barra de status, cabeçalho do universo estourando para o lado, o resumo cobrindo o
+editor (não dava para escrever) e a alça que não abria. Decisão do humano: layout próprio do
+Android. O que mudou:
+
+- `ViewportState`: o shell do celular liga só com Android **e** tela de celular; o desktop não o
+  recebe nem com a janela estreita. Classe `nh-android` no `<html>`.
+- `MainActivity`: o conteúdo fica entre a barra de status e a de gestos e acima do teclado
+  (insets do sistema como padding), e a faixa sem "voltar" acompanha a alça.
+- `app-mobile-topbar` no lugar da barra de título: tela atual, universo, busca atrás de um botão.
+- Cabeçalho do universo sem linha própria: ações num "⋯" que abre folha de baixo.
+- Escrita: editor na tela inteira; Capítulos e Resumo são folhas; resumo começa fechado.
+- Modais viram folhas de baixo; campos com 16px (sem zoom ao focar); sem seleção por toque longo
+  fora do texto; sem rolagem elástica.
+- Alça: toque também abre; alvo maior.
+- Tudo em `src/app/shell/android/android-shell.css`, com todo seletor sob `html.nh-android`.
+
+Pendente: fontes pequenas herdadas do desktop em Configurações e fichas; confirmar o gesto de
+arrastar no aparelho.
+
 **Atualização pelo app.** O Android verifica as GitHub Releases, oferece a versão nova, baixa
 `NarraHub-Android.apk`, confere o `NarraHub-Android.apk.sha256` no download e de novo antes de
 abrir o instalador do sistema por `content://` do `FileProvider`. Nenhum comando recebe URL,

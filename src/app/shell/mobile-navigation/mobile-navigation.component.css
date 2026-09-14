@@ -36,9 +36,9 @@
   right: 0;
   /* 44px para dentro da tela: o polegar raramente começa exatamente na borda, e a faixa em que
    * o Android desliga o "voltar" (MainActivity.kt) tem 48dp — a área de toque cabe nela. */
-  width: 44px;
-  height: 112px;
-  margin-top: -56px;
+  width: 52px;
+  height: 140px;
+  margin-top: -70px;
   display: grid;
   place-items: center end;
   padding: 0 4px 0 0;
@@ -51,12 +51,12 @@
 }
 
 .nh-mnav-grip {
-  width: 3px;
-  height: 48px;
+  width: 4px;
+  height: 56px;
   border-radius: 999px;
   background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--mnav-gold) 75%, transparent), transparent);
   box-shadow: 0 0 10px color-mix(in srgb, var(--mnav-gold) 35%, transparent);
-  opacity: .7;
+  opacity: .9;
   transition: width .18s ease, height .18s ease, opacity .18s ease;
 }
 
