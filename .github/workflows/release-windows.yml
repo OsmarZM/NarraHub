@@ -3,10 +3,15 @@ name: Release Windows + Android
 # Toda release publica os dois: instalador Windows (com o manifesto assinado do updater) e APK
 # Android assinado. A ordem dos jobs é o gate:
 #
-#   android    constrói e confere o APK assinado       falhou? não existe release
+#   android    versionCode da versão, build, assinatura verificada, SHA-256
+#              falhou qualquer passo? não existe release
 #   release    Windows + cria a release como RASCUNHO
-#              anexa o APK, confere que ele está lá
+#              anexa NarraHub-Android.apk e NarraHub-Android.apk.sha256, confere os dois
 #              só então publica
+#
+# Versão com pré-release (0.10.0-beta.1) vira PRÉ-RELEASE no GitHub. O atualizador do Windows lê
+# `releases/latest`, que ignora pré-release: uma beta nunca é oferecida a quem usa a estável. O
+# atualizador do Android aplica a mesma regra pela versão instalada.
 #
 # Uma release publicada sem APK não pode acontecer: o APK é anexado e conferido enquanto a
 # release ainda é rascunho, e a publicação é o último passo.
@@ -46,6 +51,14 @@ jobs:
         with:
           node-version: '24'
 
+      # O versionCode sai da versão, com o pré-release incluído: sem isso beta.1 e beta.2 teriam o
+      # mesmo número, e a atualização entre elas dependeria de o Android aceitar número igual.
+      - name: Contrato do APK de release
+        run: node --test tests/android-release.test.mjs
+
+      - name: Configuração Android da release
+        run: node scripts/prepare-android-release-config.mjs
+
       - name: Keystore a partir dos segredos
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -63,7 +76,7 @@ jobs:
           } > src-tauri/gen/android/keystore.properties
 
       - name: APK de release
-        run: npm run android:release:apk
+        run: npx tauri android build --apk --target aarch64 --ci --config src-tauri/tauri.android-release.conf.json
 
       # O gate do artefato: existir, NÃO ser o `-unsigned`, e passar no `apksigner`. Um Gradle
       # sem assinatura gera `app-universal-release-unsigned.apk` sem erro nenhum — e esse arquivo
@@ -78,15 +91,24 @@ jobs:
           fi
           apksigner="$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)"
           "$apksigner" verify --verbose --print-certs "$apk"
-          versao="$(node -p "require('./package.json').version")"
+
+          # Nome ESTÁVEL: o app Android procura exatamente estes dois assets
+          # (src-tauri/src/application/atualizacao_android.rs). A versão está na tag da release.
           mkdir -p saida-android
-          cp "$apk" "saida-android/NarraHub-$versao-Android.apk"
+          cp "$apk" saida-android/NarraHub-Android.apk
+          (
+            cd saida-android
+            sha256sum NarraHub-Android.apk > NarraHub-Android.apk.sha256
+            sha256sum --check NarraHub-Android.apk.sha256
+          )
           ls -l saida-android
 
       - uses: actions/upload-artifact@v4
         with:
           name: narrahub-android-release
-          path: saida-android/*.apk
+          path: |
+            saida-android/NarraHub-Android.apk
+            saida-android/NarraHub-Android.apk.sha256
           if-no-files-found: error
 
       - name: Remover keystore do runner
@@ -152,6 +174,14 @@ jobs:
           TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
         run: npm run release:prepare-config
 
+      - name: Versão e canal
+        id: versao
+        shell: bash
+        run: |
+          versao="$(node -p "require('./package.json').version")"
+          echo "versao=$versao" >> "$GITHUB_OUTPUT"
+          if [[ "$versao" == *-* ]]; then echo "pre=true" >> "$GITHUB_OUTPUT"; else echo "pre=false" >> "$GITHUB_OUTPUT"; fi
+
       # A release nasce como RASCUNHO. Ela só é publicada depois de o APK estar anexado e
       # conferido, no passo seguinte.
       - name: Criar release (rascunho) e artefatos do updater
@@ -165,7 +195,7 @@ jobs:
           releaseName: 'NarraHub v__VERSION__'
           releaseBody: 'Instaladores Windows com manifesto assinado para atualização automática, e APK Android assinado.'
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ steps.versao.outputs.pre }}
           args: '--config src-tauri/tauri.release.conf.json'
 
       - uses: actions/download-artifact@v4
@@ -173,23 +203,28 @@ jobs:
           name: narrahub-android-release
           path: saida-android
 
-      - name: Anexar APK, conferir e publicar
+      - name: Anexar APK e SHA-256, conferir e publicar
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          versao="$(node -p "require('./package.json').version")"
-          tag="app-v$versao"
-          apk="saida-android/NarraHub-$versao-Android.apk"
-          test -f "$apk" || { echo "::error::O APK assinado não chegou a este job: $apk"; exit 1; }
+          tag="app-v${{ steps.versao.outputs.versao }}"
+          for arquivo in NarraHub-Android.apk NarraHub-Android.apk.sha256; do
+            test -f "saida-android/$arquivo" || { echo "::error::$arquivo não chegou a este job."; exit 1; }
+          done
+          # O SHA ainda confere depois de atravessar os jobs?
+          (cd saida-android && sha256sum --check NarraHub-Android.apk.sha256)
 
-          gh release upload "$tag" "$apk" --clobber
+          gh release upload "$tag" saida-android/NarraHub-Android.apk saida-android/NarraHub-Android.apk.sha256 --clobber
 
           # Conferir na própria release, e não só no disco: o que importa é o que o usuário baixa.
-          if ! gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx "NarraHub-$versao-Android.apk"; then
-            echo "::error::O APK não aparece nos assets da release $tag. A release continua como rascunho."
-            exit 1
-          fi
+          nomes="$(gh release view "$tag" --json assets --jq '.assets[].name')"
+          for arquivo in NarraHub-Android.apk NarraHub-Android.apk.sha256; do
+            if ! grep -qx "$arquivo" <<< "$nomes"; then
+              echo "::error::$arquivo não aparece nos assets da release $tag. A release continua como rascunho."
+              exit 1
+            fi
+          done
 
           gh release edit "$tag" --draft=false
-          echo "Release $tag publicada com instaladores Windows e APK Android assinado."
+          echo "Release $tag publicada com instaladores Windows, APK Android assinado e SHA-256."

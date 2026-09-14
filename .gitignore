@@ -27,3 +27,6 @@ Thumbs.db
 *.jks
 *.keystore
 keystore.properties
+
+# Gerado na release a partir da versão (scripts/prepare-android-release-config.mjs).
+src-tauri/tauri.android-release.conf.json

@@ -71,6 +71,7 @@ export class RootLayoutComponent implements OnDestroy {
   readonly updateInfo = this.settings.updateInfo;
   readonly updateProgress = this.settings.updateProgress;
   readonly updatePromptDismissed = this.settings.updatePromptDismissed;
+  readonly updateChannel = this.settings.updateChannel;
 
   ngOnDestroy(): void {
     this.shell.dispose();
@@ -149,7 +150,16 @@ export class RootLayoutComponent implements OnDestroy {
   }
 
   dismissUpdatePrompt(): void {
-    this.settings.dismissUpdatePrompt();
+    // No Android, "Depois" recolhe o cartão também. No desktop o comportamento fica como era:
+    // o aviso some, e Configurações continua mostrando a versão disponível.
+    if (this.updateChannel() === 'android') this.settings.postponeUpdate();
+    else this.settings.dismissUpdatePrompt();
+  }
+
+  /** Android: o APK foi baixado e conferido; o instalador é do sistema e o usuário confirma. */
+  async openAndroidInstaller(): Promise<void> {
+    const result = await this.settings.openAndroidInstaller();
+    if (!result.ok && result.error) this.shell.showError('Não foi possível abrir o instalador.', new Error(result.error));
   }
 }
 

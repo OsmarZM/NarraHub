@@ -66,6 +66,23 @@ os quatro segredos de assinatura, constrói com a mesma action da CI, exige APK 
 estar nos assets. **A assinatura ainda não existe**: não havia keystore Android, e o workflow de
 release falha de propósito até os segredos serem criados. Ver `docs/RELEASE_ANDROID.md`.
 
+**Atualização pelo app.** O Android verifica as GitHub Releases, oferece a versão nova, baixa
+`NarraHub-Android.apk`, confere o `NarraHub-Android.apk.sha256` no download e de novo antes de
+abrir o instalador do sistema por `content://` do `FileProvider`. Nenhum comando recebe URL,
+caminho ou hash da tela (gate em `tests/rust-core-contract.test.mjs`). Estável só recebe estável;
+beta recebe beta e estável. O `versionCode` distingue pré-releases
+(`scripts/prepare-android-release-config.mjs`). Nada apaga `app_data`.
+
+```text
+src-tauri/src/domain/versao.rs                        SemVer e a regra de canal
+src-tauri/src/application/atualizacao_android.rs      escolher release, baixar, conferir SHA
+src-tauri/src/interface/tauri/android_update_commands.rs
+src-tauri/gen/android/.../InstaladorPlugin.kt         permissao + instalador do sistema
+```
+
+Falta: o keystore e os quatro segredos (humano), as releases `0.10.0-beta.1` e `0.10.0-beta.2`, e
+o roteiro físico N → N+1 em `docs/ANDROID_ATUALIZACAO_ROTEIRO.md`.
+
 ---
 ### NH-077 — Sync V2, etapa 14: Windows ↔ Android ponta a ponta
 

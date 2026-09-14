@@ -14,8 +14,14 @@ import {
   SyncV2Service,
 } from '../../../core/native/sync-v2.service';
 import { AppUpdateInfo, UpdateService } from '../../../core/native/update.service';
+import { AndroidUpdateService } from '../../../core/native/android-update.service';
 
-export type UpdatePhase = 'idle' | 'checking' | 'available' | 'backing-up' | 'downloading' | 'current' | 'error';
+export type UpdatePhase =
+  | 'idle' | 'checking' | 'available' | 'backing-up' | 'downloading' | 'current' | 'error'
+  // Só no Android: o APK foi baixado e conferido, e falta o usuário abrir o instalador.
+  | 'ready'
+  // Só no Android: o sistema pede que o NarraHub seja liberado para instalar apps.
+  | 'permission';
 
 export interface SettingsActionResult {
   ok: boolean;
@@ -26,6 +32,7 @@ export interface SettingsActionResult {
 export class SettingsStore {
   private readonly backupService = inject(BackupService);
   private readonly updateService = inject(UpdateService);
+  private readonly androidUpdate = inject(AndroidUpdateService);
   private readonly syncService = inject(SyncService);
   private readonly syncV2 = inject(SyncV2Service);
   private readonly db = inject(DatabaseService);
@@ -43,6 +50,12 @@ export class SettingsStore {
   readonly updateInfo = signal<AppUpdateInfo>({ currentVersion: '0.7.4', availableVersion: null, notes: '', publishedAt: null });
   readonly updateError = signal('');
   readonly updatePromptDismissed = signal(false);
+  /**
+   * `android` quando este aparelho atualiza por APK das GitHub Releases, `desktop` quando usa o
+   * `tauri-plugin-updater`. Os dois passam pelos mesmos sinais de fase e progresso, então a tela de
+   * Configurações e o aviso de inicialização servem aos dois.
+   */
+  readonly updateChannel = signal<'desktop' | 'android'>('desktop');
 
   readonly syncStatus = signal<SyncServerStatus>({ running: false, address: null, pairing_code: null, device_name: 'Meu computador' });
   readonly syncBusy = signal(false);
@@ -174,6 +187,7 @@ export class SettingsStore {
   async primeCurrentVersion(): Promise<void> {
     const currentVersion = await this.updateService.currentVersion();
     this.updateInfo.update((info) => ({ ...info, currentVersion }));
+    if (await this.androidUpdate.supported()) this.updateChannel.set('android');
   }
 
   isUpdateConfigured(): Promise<boolean> {
@@ -183,6 +197,10 @@ export class SettingsStore {
   async checkForUpdates(silent: boolean): Promise<{ ok: boolean; message: string }> {
     if (!isTauri()) return { ok: false, message: silent ? '' : 'A atualização automática funciona somente no aplicativo instalado.' };
     if (this.updateBusy()) return { ok: false, message: '' };
+    if (this.updateChannel() === 'android' || (await this.androidUpdate.supported())) {
+      this.updateChannel.set('android');
+      return this.checkAndroidUpdate(silent);
+    }
     if (!(await this.updateService.isConfigured())) {
       return { ok: false, message: silent ? '' : 'Este build de desenvolvimento não possui um canal de atualização configurado.' };
     }
@@ -207,6 +225,7 @@ export class SettingsStore {
 
   async installUpdate(): Promise<SettingsActionResult> {
     if (!this.updateInfo().availableVersion || this.updateBusy()) return { ok: false };
+    if (this.updateChannel() === 'android') return this.downloadAndroidUpdate();
     this.updateBusy.set(true);
     this.updatePhase.set('backing-up');
     this.updateProgress.set(0);
@@ -237,6 +256,96 @@ export class SettingsStore {
 
   dismissUpdatePrompt(): void {
     this.updatePromptDismissed.set(true);
+  }
+
+  /**
+   * "Depois": a novidade continua conhecida, mas sai da frente. Em Configurações o cartão volta ao
+   * estado de verificar; o aviso de inicialização não reaparece até a próxima verificação.
+   */
+  postponeUpdate(): void {
+    this.updatePromptDismissed.set(true);
+    if (this.updatePhase() === 'available') this.updatePhase.set('idle');
+  }
+
+  // ── Android: APK assinado das GitHub Releases ─────────────
+
+  private async checkAndroidUpdate(silent: boolean): Promise<{ ok: boolean; message: string }> {
+    this.updateBusy.set(true);
+    this.updatePhase.set('checking');
+    this.updateError.set('');
+    this.updateProgress.set(0);
+    try {
+      const result = await this.androidUpdate.check();
+      const news = result.novidade;
+      this.updateInfo.set({
+        currentVersion: result.versaoAtual,
+        availableVersion: news?.versao ?? null,
+        notes: news ? news.notas || news.titulo : '',
+        publishedAt: null,
+      });
+      this.updatePhase.set(news ? 'available' : 'current');
+      if (news) this.updatePromptDismissed.set(false);
+      return { ok: true, message: news ? `Versão ${news.versao} disponível.` : 'O NarraHub está atualizado.' };
+    } catch (error) {
+      this.updatePhase.set('error');
+      this.updateError.set(this.messageOf(error));
+      return { ok: false, message: silent ? '' : this.messageOf(error) };
+    } finally {
+      this.updateBusy.set(false);
+    }
+  }
+
+  /**
+   * Backup validado, depois o download conferido por SHA-256.
+   *
+   * A mesma regra do desktop: nenhuma versão nova é instalada sem um snapshot local válido. No
+   * Android a instalação por cima preserva os dados do app, e o backup é a rede de segurança se
+   * algo der errado fora do nosso controle.
+   */
+  private async downloadAndroidUpdate(): Promise<SettingsActionResult> {
+    this.updateBusy.set(true);
+    this.updatePhase.set('backing-up');
+    this.updateProgress.set(0);
+    this.updateError.set('');
+    this.backupBusy.set(true);
+    try {
+      const backup = await this.backupService.create('pre_update');
+      const validation = await this.backupService.validate(backup.backupId);
+      this.lastBackupValidation.set(validation);
+      if (!validation.valid) throw new Error(`A atualização foi interrompida porque o backup de segurança não foi validado. ${validation.errors.join(' ')}`);
+      this.backupBusy.set(false);
+      this.updatePhase.set('downloading');
+      await this.androidUpdate.download((percent) => this.updateProgress.set(percent));
+      this.updateProgress.set(100);
+      this.updatePhase.set('ready');
+      return { ok: true };
+    } catch (error) {
+      const message = this.messageOf(error);
+      this.updatePhase.set('error');
+      this.updateError.set(message);
+      return { ok: false, error: message };
+    } finally {
+      this.updateBusy.set(false);
+      this.backupBusy.set(false);
+    }
+  }
+
+  /** Abre o instalador do Android. O usuário confirma a instalação na tela do sistema. */
+  async openAndroidInstaller(): Promise<SettingsActionResult> {
+    if (this.updateChannel() !== 'android' || this.updateBusy()) return { ok: false };
+    this.updateBusy.set(true);
+    try {
+      const state = await this.androidUpdate.install();
+      this.updatePhase.set(state === 'permissao-necessaria' ? 'permission' : 'ready');
+      return { ok: true };
+    } catch (error) {
+      const message = this.messageOf(error);
+      this.updatePhase.set('error');
+      this.updateError.set(message);
+      return { ok: false, error: message };
+    } finally {
+      this.updateBusy.set(false);
+    }
   }
 
   async refreshSyncStatus(): Promise<void> {

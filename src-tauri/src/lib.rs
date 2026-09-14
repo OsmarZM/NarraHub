@@ -42,7 +42,10 @@ pub fn run() {
         ))
         // Sync V2 (etapa 14). Estado proprio, que nao conversa com o do V1.
         .manage(interface::tauri::sync_v2_commands::EstadoV2::default())
+        .manage(interface::tauri::android_update_commands::EstadoAtualizacaoAndroid::default())
         .plugin(tauri_plugin_process::init())
+        // Abre o instalador do Android para a atualização por APK. No desktop é vazio.
+        .plugin(interface::tauri::android_update_commands::plugin_instalador())
         .plugin(tauri_plugin_http::init())
         .setup(|app| {
             // Os dois blocos deste `setup` sao `cfg(desktop)`: updater e icone de
@@ -243,6 +246,10 @@ pub fn run() {
             interface::tauri::sync_v2_commands::sync_v2_pin_novo,
             interface::tauri::sync_v2_commands::sync_v2_parear,
             interface::tauri::sync_v2_commands::sync_v2_sincronizar,
+            interface::tauri::android_update_commands::android_update_supported,
+            interface::tauri::android_update_commands::android_update_check,
+            interface::tauri::android_update_commands::android_update_download,
+            interface::tauri::android_update_commands::android_update_install,
             interface::tauri::collaboration_commands::collaboration_store_contribution,
             interface::tauri::collaboration_commands::collaboration_end_all,
             interface::tauri::collaboration_commands::collaboration_end_session,

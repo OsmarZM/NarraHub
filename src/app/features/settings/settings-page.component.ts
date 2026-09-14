@@ -228,6 +228,11 @@ export class SettingsPageComponent implements OnInit {
     this.store.dismissUpdatePrompt();
   }
 
+  async requestAndroidInstaller(): Promise<void> {
+    const result = await this.store.openAndroidInstaller();
+    if (!result.ok && result.error) this.showError(result.error);
+  }
+
   // ── Sincronização entre dispositivos ─────────────────────
 
   saveDeviceName(): void {

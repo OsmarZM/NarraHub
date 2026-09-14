@@ -35,6 +35,9 @@ jobs:
       - run: npm run test:planning
       - run: npm run test:ai
       - run: npm run share-api:test
+      # O contrato entre o workflow de release e o atualizador do Android: nomes dos assets,
+      # SHA-256, assinatura verificada, e versionCode na ordem SemVer.
+      - run: npm run test:android-release
 
   rust:
     name: Core Rust
