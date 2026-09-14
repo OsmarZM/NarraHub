@@ -59,3 +59,12 @@ test('a release publica APK com nome estavel e o SHA-256 ao lado, antes de publi
   const publicar = workflow.indexOf('--draft=false');
   assert.ok(anexar > 0 && publicar > anexar, 'a release só pode ser publicada depois de anexar APK e SHA');
 });
+
+test('pré-release ganha versão de MSI numérica; estável mantém a derivada do app', async () => {
+  const { versaoMsiDe } = await import('../scripts/prepare-android-release-config.mjs');
+  assert.equal(versaoMsiDe('0.10.0'), null);
+  assert.equal(versaoMsiDe('0.10.0-beta.1'), '0.10.0.33');
+  assert.equal(versaoMsiDe('0.10.0-beta.2'), '0.10.0.34');
+  assert.equal(versaoMsiDe('1.2.3-rc.1'), '1.2.3.65');
+  assert.throws(() => versaoMsiDe('0.10.0-nightly'));
+});

@@ -42,6 +42,17 @@ export function versionCodeDe(versao) {
   return codigo;
 }
 
+// O MSI (WiX) só aceita MAIOR.MENOR.PATCH.BUILD numérico: "0.10.0-beta.1" derruba o bundle do
+// Windows. Para pré-release o BUILD recebe o mesmo sufixo do versionCode (beta.1 -> 0.10.0.33).
+// Estável devolve null: a versão do MSI continua derivada da versão do app, como sempre foi.
+export function versaoMsiDe(versao) {
+  const codigo = versionCodeDe(versao);
+  if (!versao.includes('-')) return null;
+  const [maior, menor, patch] = versao.split('-')[0].split('.').map(Number);
+  if (maior > 255 || menor > 255) throw new Error(`"${versao}": o MSI limita maior e menor a 255.`);
+  return `${maior}.${menor}.${patch}.${codigo % 100}`;
+}
+
 async function principal() {
   const { version } = JSON.parse(await readFile('package.json', 'utf8'));
   const producao = JSON.parse(await readFile('src-tauri/tauri.production.conf.json', 'utf8'));

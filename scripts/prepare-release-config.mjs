@@ -1,5 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { versaoMsiDe } from './prepare-android-release-config.mjs';
 
 const publicKey = (process.env.TAURI_UPDATER_PUBLIC_KEY || '').trim();
 if (!publicKey) throw new Error('TAURI_UPDATER_PUBLIC_KEY não foi configurada.');
@@ -17,6 +18,13 @@ const config = {
     },
   },
 };
+
+const { version } = JSON.parse(await readFile('package.json', 'utf8'));
+const versaoMsi = versaoMsiDe(version);
+if (versaoMsi) {
+  config.bundle.windows = { wix: { version: versaoMsi } };
+  console.log(`Pré-release ${version}: MSI ${versaoMsi}.`);
+}
 
 const target = path.resolve('src-tauri/tauri.release.conf.json');
 await writeFile(target, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
