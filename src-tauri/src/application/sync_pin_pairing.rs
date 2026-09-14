@@ -66,7 +66,7 @@ use crate::domain::identity::DeviceIdentity;
 use crate::infrastructure::sqlite::{sync_trust, SqliteDatabase};
 use crate::infrastructure::sync_pake::{normalizar, Codigos, TrocaPendente};
 use crate::infrastructure::sync_transport::{
-    autenticar, provar_identidade, Handshake, ProvaDeIdentidade, SessaoAutenticada,
+    autenticar, provar_identidade, Handshake, ProvaDeIdentidade, SessaoAutenticada, Transporte,
 };
 use crate::infrastructure::sync_wire::{
     ajustar_esperas, escrever_mensagem, escrever_quadro, ler_mensagem, ler_quadro, ESPERA_PADRAO,
@@ -86,6 +86,45 @@ const ROTULO_DO_PROLOGO: &[u8] = b"narrahub.sync.v2.pin";
 pub struct Parceiro {
     pub device_id: String,
     pub nome: String,
+}
+
+/// Uma sessão autenticada que **ainda está aberta**.
+///
+/// Até a fatia 3 a autenticação admitia o outro lado e terminava. A fatia 4
+/// precisa continuar na mesma conexão — bootstrap, blobs, eventos —, e a
+/// decisão registrada é que **o receptor fresco não admite no pareamento**:
+/// ele recebe o bundle por esta sessão, e o `semear` da etapa 12 traz o doador
+/// pelo merge do roster. A etapa 12 exige receptor com só o `self`, e admitir
+/// antes a tornaria impossível — medido, não suposto.
+///
+/// Por isso a admissão saiu de dentro da autenticação e virou decisão de quem
+/// chama: [`admitir`].
+pub struct SessaoPareada {
+    pub transporte: Transporte,
+    pub sessao: SessaoAutenticada,
+    /// Já contido por [`nome_utilizavel`]. É texto de fora.
+    pub nome_do_outro: String,
+}
+
+impl SessaoPareada {
+    pub fn parceiro(&self) -> Parceiro {
+        Parceiro {
+            device_id: self.sessao.device_id().to_string(),
+            nome: self.nome_do_outro.clone(),
+        }
+    }
+}
+
+/// Admite o outro lado por pareamento direto (ADR 0009 §5).
+///
+/// Não é chamado pelo receptor fresco de um bootstrap — ver [`SessaoPareada`].
+pub fn admitir(
+    database: &SqliteDatabase,
+    pareada: &SessaoPareada,
+) -> DatabaseCommandResult<Parceiro> {
+    let connection = database.write()?;
+    sync_trust::admitir_por_pareamento(&connection, &pareada.sessao, &pareada.nome_do_outro)?;
+    Ok(pareada.parceiro())
 }
 
 /// O que cada lado manda pelo canal cifrado.
@@ -127,11 +166,10 @@ fn estatica_da_conexao() -> [u8; 32] {
     bytes
 }
 
-/// Lado de quem **mostra** o PIN: atende uma conexão e pareia.
+/// Lado de quem **mostra** o PIN: atende uma conexão, pareia e admite.
 ///
-/// Recebe o `TcpStream` já aceito, e não o `TcpListener`: quem decide aceitar,
-/// em que thread, e quantas vezes é a camada de cima. Assim este corpo é
-/// testável com um socket de teste e não precisa de um servidor inteiro.
+/// É [`anfitriao_autentica`] seguido de [`admitir`] — o pareamento entre dois
+/// aparelhos que não vão fazer bootstrap um do outro.
 pub fn anfitriao_atende(
     fluxo: &mut TcpStream,
     codigos: &mut Codigos,
@@ -140,6 +178,21 @@ pub fn anfitriao_atende(
     database: &SqliteDatabase,
     espera: Duration,
 ) -> DatabaseCommandResult<Parceiro> {
+    let pareada = anfitriao_autentica(fluxo, codigos, identidade, nome_local, espera)?;
+    admitir(database, &pareada)
+}
+
+/// Lado de quem **mostra** o PIN: autentica e devolve a sessão aberta.
+///
+/// Recebe o `TcpStream` já aceito, e não o `TcpListener`: quem decide aceitar,
+/// em que thread, e quantas vezes é a camada de cima.
+pub fn anfitriao_autentica(
+    fluxo: &mut TcpStream,
+    codigos: &mut Codigos,
+    identidade: &DeviceIdentity,
+    nome_local: &str,
+    espera: Duration,
+) -> DatabaseCommandResult<SessaoPareada> {
     ajustar_esperas(fluxo, espera).map_err(falha)?;
 
     // A tentativa é contada aqui, na chegada. Ver o cabeçalho.
@@ -167,15 +220,16 @@ pub fn anfitriao_atende(
     let m3 = ler_quadro(fluxo).map_err(falha)?;
     aperto.ler(&m3)?;
 
-    let parceiro = trocar_identidades(fluxo, aperto, identidade, nome_local, database, false)?;
+    let pareada = trocar_identidades(fluxo, aperto, identidade, nome_local, false)?;
 
-    // O código só é consumido depois de o pareamento dar certo. Consumir antes
-    // queimaria o PIN por ruído de rede, e o escritor teria que gerar outro.
+    // O código só é consumido depois de a autenticação dar certo. Consumir
+    // antes queimaria o PIN por ruído de rede, e o escritor teria que gerar
+    // outro.
     codigos.consumir(&id_do_codigo);
-    Ok(parceiro)
+    Ok(pareada)
 }
 
-/// Lado de quem **digitou** o PIN: conecta e pareia.
+/// Lado de quem **digitou** o PIN: conecta, pareia e admite.
 pub fn visitante_pareia(
     fluxo: &mut TcpStream,
     pin_digitado: &str,
@@ -184,6 +238,18 @@ pub fn visitante_pareia(
     database: &SqliteDatabase,
     espera: Duration,
 ) -> DatabaseCommandResult<Parceiro> {
+    let pareada = visitante_autentica(fluxo, pin_digitado, identidade, nome_local, espera)?;
+    admitir(database, &pareada)
+}
+
+/// Lado de quem **digitou** o PIN: autentica e devolve a sessão aberta.
+pub fn visitante_autentica(
+    fluxo: &mut TcpStream,
+    pin_digitado: &str,
+    identidade: &DeviceIdentity,
+    nome_local: &str,
+    espera: Duration,
+) -> DatabaseCommandResult<SessaoPareada> {
     ajustar_esperas(fluxo, espera).map_err(falha)?;
     let pin = normalizar(pin_digitado).map_err(falha)?;
 
@@ -209,7 +275,49 @@ pub fn visitante_pareia(
     let m3 = aperto.escrever(&[])?;
     escrever_quadro(fluxo, &m3).map_err(falha)?;
 
-    trocar_identidades(fluxo, aperto, identidade, nome_local, database, true)
+    trocar_identidades(fluxo, aperto, identidade, nome_local, true)
+}
+
+/// Sessão entre aparelhos **já pareados**, do lado de quem atende.
+///
+/// Sem PIN: `XX` sem `psk`, o handshake da etapa 8 usado para o que ele foi
+/// feito. O `XX` autentica a conexão, a prova Ed25519 amarra a identidade, e
+/// **quem autoriza é o roster** — conferido por quem chama, antes de trocar um
+/// byte de acervo. Uma sessão autenticada de um estranho é só isso: alguém que
+/// provou quem é, não alguém com quem se sincroniza.
+pub fn anfitriao_autentica_pareado(
+    fluxo: &mut TcpStream,
+    identidade: &DeviceIdentity,
+    nome_local: &str,
+    espera: Duration,
+) -> DatabaseCommandResult<SessaoPareada> {
+    ajustar_esperas(fluxo, espera).map_err(falha)?;
+    let mut aperto = Handshake::ouvinte(&estatica_da_conexao())?;
+    let m1 = ler_quadro(fluxo).map_err(falha)?;
+    aperto.ler(&m1)?;
+    let m2 = aperto.escrever(&[])?;
+    escrever_quadro(fluxo, &m2).map_err(falha)?;
+    let m3 = ler_quadro(fluxo).map_err(falha)?;
+    aperto.ler(&m3)?;
+    trocar_identidades(fluxo, aperto, identidade, nome_local, false)
+}
+
+/// Sessão entre aparelhos **já pareados**, do lado de quem conecta.
+pub fn visitante_autentica_pareado(
+    fluxo: &mut TcpStream,
+    identidade: &DeviceIdentity,
+    nome_local: &str,
+    espera: Duration,
+) -> DatabaseCommandResult<SessaoPareada> {
+    ajustar_esperas(fluxo, espera).map_err(falha)?;
+    let mut aperto = Handshake::conector(&estatica_da_conexao())?;
+    let m1 = aperto.escrever(&[])?;
+    escrever_quadro(fluxo, &m1).map_err(falha)?;
+    let m2 = ler_quadro(fluxo).map_err(falha)?;
+    aperto.ler(&m2)?;
+    let m3 = aperto.escrever(&[])?;
+    escrever_quadro(fluxo, &m3).map_err(falha)?;
+    trocar_identidades(fluxo, aperto, identidade, nome_local, true)
 }
 
 /// A metade final, idêntica dos dois lados menos a ordem de fala.
@@ -222,9 +330,8 @@ fn trocar_identidades(
     aperto: Handshake,
     identidade: &DeviceIdentity,
     nome_local: &str,
-    database: &SqliteDatabase,
     escrevo_primeiro: bool,
-) -> DatabaseCommandResult<Parceiro> {
+) -> DatabaseCommandResult<SessaoPareada> {
     let hash = aperto.hash_do_handshake();
     let minha = provar_identidade(identidade, &hash);
     let mut transporte = aperto.concluir()?;
@@ -255,18 +362,15 @@ fn trocar_identidades(
     )
     .map_err(falha)?;
 
-    let nome = nome_utilizavel(&dele.nome);
-    let connection = database.write()?;
-    sync_trust::admitir_por_pareamento(&connection, &sessao, &nome)?;
-
-    Ok(Parceiro {
-        device_id: sessao.device_id().to_string(),
-        nome,
+    Ok(SessaoPareada {
+        transporte,
+        sessao,
+        nome_do_outro: nome_utilizavel(&dele.nome),
     })
 }
 
 fn ler_apresentacao(
-    transporte: &mut crate::infrastructure::sync_transport::Transporte,
+    transporte: &mut Transporte,
     fluxo: &mut TcpStream,
 ) -> DatabaseCommandResult<Apresentacao> {
     let bytes = ler_mensagem(transporte, fluxo).map_err(falha)?;

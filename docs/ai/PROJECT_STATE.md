@@ -118,9 +118,14 @@ diretório não o pegaria; o gate contra **colocação** pega.
 > PR, `exigir_blob_safe` foi alinhado ao ADR 0010: fonte externa ou desconhecida
 > (`https://`, caminho do Windows, `file://`, `blob:`) **não passa em persistência nova**, e o
 > legado continua preservado byte a byte com pendência registrada.
-> **Etapa 14 — em levantamento.** Ver `docs/ETAPA_14_LEVANTAMENTO.md` e `NH-077`: o Sync V2
-> ainda não tem comando algum no `invoke_handler` nem socket próprio, e o que o usuário
-> alcança hoje continua sendo o Sync V1 (`src-tauri/src/sync.rs`).
+> **Etapa 14 — implementada, falta o gate físico.** O Sync V2 atravessa TCP real: enquadramento,
+> PIN por SPAKE2 com `XXpsk0`, admissão direta, bootstrap pela rede com blobs conferidos por SHA
+> e incremental nas duas direções, provado por gate E2E com dois bancos, duas identidades e dois
+> blob stores. Sete comandos na fronteira e um cartão mínimo em Configurações. O alvo Android
+> compila e o CI constrói o APK. Falta executar `docs/ETAPA_14_ROTEIRO_FISICO.md` em Windows e
+> Android reais. O Sync V1 continua no código, congelado e travado na tela contra uso simultâneo.
+> **Atenção à `NH-079`:** só 2 de ~47 escritas de domínio geram evento V2 — criar conteúdo depois
+> do pareamento não propaga, e isso bloqueia remover o V1 do fluxo de produto.
 >
 > Reconciliação fina de capítulo por bloco depende da **NH-045** e não faz parte das 14
 > etapas. O Sync V2 pode fechar com conflito seguro de capítulo inteiro.

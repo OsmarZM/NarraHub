@@ -269,29 +269,30 @@ Fica um aviso pré-existente, do projeto gerado, que **não** foi mexido porque 
 regeneraria `gen/android`: o Tauri recomenda não terminar o identifier em `.app`, por
 conflitar com a extensão de bundle do macOS. Não afeta Windows nem Android.
 
-### Fatia 1 — Transporte com enquadramento
+### Fatia 1 — Transporte com enquadramento — **entregue**
 
-Camada de socket com enquadramento por tamanho, teto explícito, tempo limite, e um teste que
+`infrastructure/sync_wire.rs`. Camada de socket com enquadramento por tamanho, teto explícito, tempo limite, e um teste que
 faz dois `SessaoAutenticada` conversarem por **`TcpListener` de verdade** em `127.0.0.1`.
 
 > Gate: mensagem maior que o limite do Noise atravessa íntegra; mensagem maior que o teto é
 > recusada sem alocar; peer que abre e não fala é derrubado pelo tempo limite.
 
-### Fatia 2 — A ponte de IPC
+### Fatia 2 — A ponte de IPC — **entregue**
 
-Comandos para: estado do dispositivo, iniciar/parar a escuta, iniciar pareamento por PIN,
+`interface/tauri/sync_v2_commands.rs`, `application/sync_panorama.rs`,
+`core/native/sync-v2.service.ts`. Comandos para: estado do dispositivo, iniciar/parar a escuta, iniciar pareamento por PIN,
 responder pareamento, sincronizar com um peer, ler pendências. Nenhum caminho de arquivo e
 nenhum segredo atravessando a fronteira — a regra que a etapa 13 já aplicou aos blobs.
 
 > Gate: um comando por caminho do motor, e a prova de que `device_id` não é parâmetro de
 > entrada em nenhum deles. Quem fala não escolhe quem é.
 
-### Fatia 3 — Pareamento por PIN na interface
+### Fatia 3 — Pareamento por PIN — **entregue**
 
-A tela mínima nos dois sistemas: mostrar o PIN num lado, digitar no outro, ver o resultado.
-QR fica para a fatia 5, porque depende de câmera.
+`application/sync_pin_pairing.rs` e `sync_trust::admitir_por_pareamento` — a porta de
+"pareamento direto" que o ADR 0009 §5 já previa e o código não tinha. A tela entrou na fatia 4.
 
-### Fatia 4 — O E2E, e o escopo é obrigatório
+### Fatia 4 — O E2E, e o escopo é obrigatório — **automatizado entregue; físico pendente**
 
 Três cenários, e a etapa **não** fecha com menos:
 
@@ -322,7 +323,40 @@ de blobs da etapa 13 incluído.
 > não "a imagem apareceu". É o único gate da etapa que não é automatizável hoje, e isso fica
 > declarado em vez de disfarçado.
 
-### Fatia 5 — QR e descoberta, como UX sobre protocolo provado
+**O que foi entregue.** `application/sync_sessao.rs` costura, sem mudar nenhum dos contratos:
+o fio da fatia 1, o PIN da fatia 3, `capturar`/`semear` da etapa 12, `transferir_blobs` da
+etapa 13, `eventos_para` da etapa 6 e `receber_eventos` da etapa 5. O bundle da etapa 12 não
+tinha `serde`; ele atravessa por `infrastructure/sync_bundle_wire.rs`, um codec de ida e volta
+sem perda — o `REAL` viaja como padrão de bits, porque o `serde_json` transformaria `inf` em
+`null`.
+
+**O conflito que parou a fatia, e como foi resolvido.** Parear e depois semear, na ordem do
+cenário, devolvia — medido — `ReceptorNaoEstaVazio { tabela: "sync_devices", linhas: 1 }`: a
+fatia 3 admitia o doador no roster do receptor, e a etapa 12 exige receptor só com o `self`.
+Decisão do humano: **receptor fresco não admite**; recebe o bundle na mesma sessão
+autenticada, e o `semear` traz o doador pelo merge do roster. Segunda decisão: **o bootstrap
+herda o roster inteiro do doador** — é entrar no conjunto, não parear.
+
+**O gate automatizado principal:**
+`sync_sessao::tests::windows_e_android_convergem_ponta_a_ponta_sobre_tcp_real`. Dois
+aparelhos, cada um com banco, identidade em arquivo e `BlobStore` próprios, e socket TCP real.
+Nenhuma função de troca é chamada por fora do fio. Na fase 2 a edição de B traz uma imagem que
+A nunca viu, para a puxada de blobs do incremental ser exercida e não só existir.
+
+**Sete mutações, sete mortas:** receptor fresco admitindo (M95), bootstrap sem puxar blobs
+(M96), bytes que não conferem com o hash (M97), eventos recebidos sem aplicar (M98), sessão
+pareada autorizando quem não está no roster (M99), papéis invertidos (M100), incremental sem
+puxar blobs (M101).
+
+**A UI mínima** é um cartão a mais em Configurações → Dispositivos, com as classes que já
+existiam. Ela trava o V1 enquanto a escuta do V2 está ligada e vice-versa — a trava fica na
+tela porque o Rust do V2 não pode depender do V1.
+
+**O roteiro físico** está em `docs/ETAPA_14_ROTEIRO_FISICO.md`.
+
+### Fatia 5 — QR e descoberta — **fora do fechamento da etapa, `NH-078`**
+
+Decisão de 2026-09-14: não bloqueia o fechamento da etapa 14 e virou follow-up de UX.
 
 **Não muda o protocolo provado na fatia 4.** O QR serializa o mesmo material de conexão que o
 PIN já usa, e a descoberta automática substitui a digitação do endereço — nada além disso. Se
@@ -353,3 +387,13 @@ Parar para decisão **somente** se algo exigir alterar: modelo causal do V2, ide
 handshake criptográfico, bootstrap da etapa 12, contrato de blobs da etapa 13, ou o modelo de
 confiança entre aparelhos. Framing, comandos Tauri, organização de tarefa assíncrona, formato
 de mensagem e divisão de módulos: decidir e seguir.
+
+---
+
+## 6. Achado da fatia 4 que não fecha aqui
+
+**Só 2 de ~47 escritas de domínio geram evento V2** — `update_chapter` e os anexos do canvas.
+Criar capítulo, livro, universo, entidade ou item de planejamento não gera evento, e só chega a
+outro aparelho por bootstrap. O cenário da etapa 14 é bootstrap mais edição de capítulo, e os
+dois funcionam; mas remover o V1 do fluxo de produto antes de resolver isto regrediria quem cria
+conteúdo no celular. Registrado como `NH-079`, marcado como bloqueio da remoção do V1.

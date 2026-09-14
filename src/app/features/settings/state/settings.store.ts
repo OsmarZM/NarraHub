@@ -7,6 +7,12 @@ import { BackupManifest, BackupService, BackupValidation, DatabaseHealthReport, 
 // pool lifecycle, not the SQL-vs-Rust boundary the other LegacyXGateway adapters abstract.
 import { DatabaseService } from '../../../core/services/database.service';
 import { SyncService } from '../../../core/native/sync.service';
+import {
+  SYNC_V2_DEFAULT_PORT,
+  SyncSessionResult,
+  SyncV2ListenState,
+  SyncV2Service,
+} from '../../../core/native/sync-v2.service';
 import { AppUpdateInfo, UpdateService } from '../../../core/native/update.service';
 
 export type UpdatePhase = 'idle' | 'checking' | 'available' | 'backing-up' | 'downloading' | 'current' | 'error';
@@ -21,6 +27,7 @@ export class SettingsStore {
   private readonly backupService = inject(BackupService);
   private readonly updateService = inject(UpdateService);
   private readonly syncService = inject(SyncService);
+  private readonly syncV2 = inject(SyncV2Service);
   private readonly db = inject(DatabaseService);
 
   readonly backupBusy = signal(false);
@@ -39,6 +46,19 @@ export class SettingsStore {
 
   readonly syncStatus = signal<SyncServerStatus>({ running: false, address: null, pairing_code: null, device_name: 'Meu computador' });
   readonly syncBusy = signal(false);
+
+  // Sync V2 (etapa 14). O V1 acima continua no código só até o E2E físico
+  // fechar; os dois nunca ficam ativos juntos — ver `syncV2Blocked`.
+  readonly syncV2State = signal<SyncV2ListenState>({
+    escutando: false,
+    porta: null,
+    enderecos: [],
+    pin: null,
+    ultimoResultado: null,
+    ultimoErro: null,
+  });
+  readonly syncV2Busy = signal(false);
+  readonly syncV2Port = SYNC_V2_DEFAULT_PORT;
 
   async refreshBackupStatus(): Promise<void> {
     if (!isTauri() || this.backupBusy()) return;
@@ -221,6 +241,85 @@ export class SettingsStore {
 
   async refreshSyncStatus(): Promise<void> {
     this.syncStatus.set(await this.syncService.status());
+    const v2 = await this.syncV2.listenState();
+    if (v2) this.syncV2State.set(v2);
+  }
+
+  /**
+   * V1 e V2 não podem estar ativos ao mesmo tempo no mesmo acervo.
+   *
+   * Decisão registrada: congelar o V1 e substituí-lo, sem coexistir. Um acervo
+   * com parte das escritas vindas do snapshot do V1 e parte da causalidade do
+   * V2 teria estado cuja origem o V2 não explica. A trava fica na tela, e não
+   * no Rust, porque o código do V2 não pode depender do V1.
+   */
+  syncV1Blocked(): boolean {
+    return this.syncV2State().escutando;
+  }
+
+  syncV2Blocked(): boolean {
+    return this.syncStatus().running;
+  }
+
+  async startSyncV2(deviceName: string): Promise<SettingsActionResult> {
+    return this.runSyncV2(async () => {
+      this.syncV2State.set(await this.syncV2.startListening(this.syncV2Port, deviceName));
+    });
+  }
+
+  async stopSyncV2(): Promise<SettingsActionResult> {
+    return this.runSyncV2(async () => {
+      this.syncV2State.set(await this.syncV2.stopListening());
+    });
+  }
+
+  async newSyncV2Pin(): Promise<SettingsActionResult> {
+    return this.runSyncV2(async () => {
+      this.syncV2State.set(await this.syncV2.newPin());
+    });
+  }
+
+  async pairSyncV2(address: string, pin: string, deviceName: string): Promise<{ ok: boolean; result?: SyncSessionResult; error?: string }> {
+    const digits = pin.replace(/\D/gu, '');
+    if (!address.trim() || digits.length !== 8) {
+      return { ok: false, error: 'Informe o endereço e o código de oito dígitos.' };
+    }
+    return this.sessionSyncV2(() => this.syncV2.pair(address.trim(), digits, deviceName));
+  }
+
+  async syncNowV2(address: string, deviceName: string): Promise<{ ok: boolean; result?: SyncSessionResult; error?: string }> {
+    if (!address.trim()) return { ok: false, error: 'Informe o endereço do outro aparelho.' };
+    return this.sessionSyncV2(() => this.syncV2.syncWith(address.trim(), deviceName));
+  }
+
+  private async runSyncV2(action: () => Promise<void>): Promise<SettingsActionResult> {
+    if (!isTauri()) return { ok: false, error: 'A sincronização de rede só funciona no aplicativo instalado.' };
+    if (this.syncV2Blocked()) return { ok: false, error: 'Pare a sincronização antiga antes de usar a nova.' };
+    this.syncV2Busy.set(true);
+    try {
+      await action();
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: this.messageOf(error) };
+    } finally {
+      this.syncV2Busy.set(false);
+    }
+  }
+
+  private async sessionSyncV2(run: () => Promise<SyncSessionResult>): Promise<{ ok: boolean; result?: SyncSessionResult; error?: string }> {
+    if (!isTauri()) return { ok: false, error: 'A sincronização de rede só funciona no aplicativo instalado.' };
+    if (this.syncV2Blocked()) return { ok: false, error: 'Pare a sincronização antiga antes de usar a nova.' };
+    this.syncV2Busy.set(true);
+    try {
+      const result = await run();
+      return { ok: true, result };
+    } catch (error) {
+      return { ok: false, error: this.messageOf(error) };
+    } finally {
+      this.syncV2Busy.set(false);
+      const v2 = await this.syncV2.listenState().catch(() => null);
+      if (v2) this.syncV2State.set(v2);
+    }
   }
 
   async startSync(deviceName: string): Promise<SettingsActionResult> {

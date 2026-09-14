@@ -20,5 +20,6 @@ pub mod planning_service;
 pub mod sync_bootstrap;
 pub mod sync_panorama;
 pub mod sync_pin_pairing;
+pub mod sync_sessao;
 pub mod universe_service;
 pub mod workspace_service;

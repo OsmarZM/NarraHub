@@ -5,6 +5,7 @@ pub mod blob_document;
 pub mod blob_store;
 pub mod identity_store;
 pub mod sqlite;
+pub mod sync_bundle_wire;
 pub mod sync_pairing;
 pub mod sync_pake;
 pub mod sync_transport;

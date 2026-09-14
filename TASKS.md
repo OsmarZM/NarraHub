@@ -21,46 +21,96 @@ Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 
 ```text
 Owner:  Claude
-Status: EM LEVANTAMENTO — plano escrito, nada implementado
+Status: IMPLEMENTADA — falta somente o gate físico (roteiro pronto)
 ADR:    0009 §23 (última etapa da ordem)
 Fase:   4  (etapa 14 de 14)
+PR:     #54 (rascunho)
 ```
 
-Levantamento completo em `docs/ETAPA_14_LEVANTAMENTO.md`. O achado que redefine o tamanho da
-etapa:
+Levantamento em `docs/ETAPA_14_LEVANTAMENTO.md`; roteiro físico em
+`docs/ETAPA_14_ROTEIRO_FISICO.md`.
 
-**O Sync V2 não tem nenhuma porta para o frontend.** O `lib.rs` registra 108 comandos e
-nenhum é do V2 — sem pareamento, sem troca, sem roster, sem bootstrap. O que o aplicativo
-chama quando o usuário sincroniza é o **V1** (`src-tauri/src/sync.rs`), que tem socket e
-descoberta próprios e copia 17 tabelas inteiras.
+**Checklist de fechamento** (definido na revisão de 2026-09-14):
 
-E o V2 **nunca atravessou um socket**: `TcpListener`/`TcpStream`/`UdpSocket` não aparecem em
-nenhum módulo dele. O Noise da etapa 8 fala com buffers em memória, e os "três aparelhos" da
-etapa 6 são três bancos no mesmo processo.
+```text
+Android compila             ✅  capability por plataforma, identifier Android, job de CI com APK
+transporte real             ✅  sync_wire: quadros, segmentacao, tetos, tempo limite
+IPC                         ✅  sete comandos, nenhum recebe device_id nem caminho
+pareamento PIN              ✅  PIN -> SPAKE2 -> XXpsk0 -> prova Ed25519 -> admissao direta
+bootstrap real              ✅  capturar -> fio -> semear, receptor fresco nao admite
+blob real                   ✅  manifesto + transferir_blobs pela rede, SHA no destino
+incremental B -> A          ✅  gate E2E sobre TCP real
+incremental A -> B          ✅  gate E2E sobre TCP real, com B escutando
+Windows <-> Android fisico  ⏳  roteiro pronto, depende dos dois aparelhos
+```
 
-Então a etapa 14 não é empacotamento nem teste em dois aparelhos: ela contém três trabalhos
-que não existem no repositório — transporte real com enquadramento, descoberta, e a ponte de
-IPC/interface — mais a decisão do destino do V1.
+**Duas decisões do humano durante a fatia 4**, depois de o conflito ser medido — parear e depois
+semear devolvia `ReceptorNaoEstaVazio { tabela: "sync_devices" }`:
 
-**O que já está pronto do lado do Android:** `src-tauri/gen/android` versionado (42 arquivos),
-`com.narrahub.app`, minSdk 24, `INTERNET` no manifest, scripts `android:*` no `package.json`,
-os quatro alvos Rust instalados, `cfg(mobile)`/`cfg(desktop)` já em uso e o updater restrito a
-desktop no `Cargo.toml`. **O que não existe:** nenhum job de CI para Android — e a medição da
-fatia 0 mostrou que **hoje o alvo não compila**: a capability `main-capability` pede
-`updater:default` sem declarar `platforms`, e o plugin do updater é restrito a desktop no
-`Cargo.toml`, então o `build.rs` do Tauri para antes de verificar tipo algum. As dependências
-nativas todas atravessaram.
+- **receptor fresco não admite no pareamento**: recebe o bundle pela mesma sessão autenticada, e
+  o `semear` da etapa 12 traz o doador pelo merge do roster. A etapa 12 ficou intocada.
+- **bootstrap herda o roster inteiro do doador**: é entrar no conjunto, não parear. A
+  não-transitividade vale para pareamento e para sessão pareada — um estranho autenticado é
+  recusado pelo roster (`estranho_autenticado_nao_sincroniza`).
 
-**Fatias planejadas:** 0 o alvo compila + job de CI · 1 transporte com enquadramento ·
-2 ponte de IPC · 3 pareamento por PIN na interface · 4 o primeiro E2E de verdade, com imagem ·
-5 descoberta e QR (candidata a sair do escopo).
-
-**Quatro decisões pendentes do humano** antes da fatia 2: destino do V1 (substituir, conviver
-ou congelar), descoberta (mDNS, broadcast ou só endereço/QR), primeiro pareamento (PIN ou QR),
-e escopo do E2E. Só a fatia 0 anda sem elas, porque não decide nada — só mede.
+**O V1 continua no código, congelado**, e a tela impede os dois ativos juntos. Ele sai do fluxo
+de produto quando o gate físico fechar — mas veja a `NH-079` antes disso.
 
 ---
 
+### NH-078 — QR e descoberta automática, como UX sobre o protocolo provado
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   4  (follow-up de UX; NÃO bloqueia o fechamento da etapa 14)
+```
+
+A antiga fatia 5 da etapa 14. Saiu do caminho crítico por decisão registrada: provar o
+transporte antes de envolver câmera, mDNS, multicast do Android e diferença entre roteadores.
+
+**Regra que acompanha a tarefa:** não muda o protocolo provado na fatia 4. O QR serializa o mesmo
+material que o PIN já transporta — endpoint, identidade pública, informação de sessão, PIN — e
+a descoberta substitui a digitação do endereço. Se alterar mensagem, handshake ou ordem, deixou
+de ser esta tarefa.
+
+---
+
+### NH-079 — Só 2 de ~47 escritas de domínio geram evento V2
+
+```text
+Owner:  não atribuída
+Status: BACKLOG — bloqueia remover o Sync V1 do fluxo de produto
+Fase:   4
+```
+
+Achado ao desenhar o E2E da etapa 14, e medido:
+
+```text
+servico                  escritas publicas   emitem evento V2
+canvas_service                  9                  1   (anexos)
+manuscript_service             10                  1   (update_chapter)
+collaboration_service           6                  0
+entity_service                  5                  0
+knowledge_service               3                  0
+planning_service                7                  0
+universe_service                3                  0
+workspace_service               4                  0
+```
+
+**Consequência:** depois do pareamento, o incremental carrega **edição de capítulo e anexos** e
+mais nada. Criar capítulo, livro, história, universo, entidade ou item de planejamento num
+aparelho **nunca chega ao outro** — só um bootstrap levaria, e bootstrap exige receptor vazio.
+
+A etapa 14 fecha mesmo assim, e está certo que feche: o cenário definido é bootstrap mais edição
+de capítulo, e os dois funcionam. Mas **"V2 como único sync normal" não é verdade enquanto isto
+existir**: remover o V1 hoje regrediria quem cria capítulo no celular esperando vê-lo no
+computador.
+
+Não é contrato novo: é cobertura. O outbox transacional da etapa 3 e o
+`append_event_in_transaction` existem; faltam os chamadores.
+
+---
 
 ### NH-073 — Perfis de suíte (`fast` / `integration` / `slow`) e CI em paralelo
 

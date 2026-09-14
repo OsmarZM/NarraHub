@@ -40,6 +40,8 @@ pub fn run() {
         .manage(std::sync::Mutex::new(
             online_share::OnlineShareState::default(),
         ))
+        // Sync V2 (etapa 14). Estado proprio, que nao conversa com o do V1.
+        .manage(interface::tauri::sync_v2_commands::EstadoV2::default())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_http::init())
         .setup(|app| {
@@ -235,6 +237,12 @@ pub fn run() {
             interface::tauri::blob_commands::blob_has,
             interface::tauri::blob_commands::storage_prepare_assets,
             interface::tauri::sync_v2_commands::sync_v2_panorama,
+            interface::tauri::sync_v2_commands::sync_v2_estado,
+            interface::tauri::sync_v2_commands::sync_v2_escuta_iniciar,
+            interface::tauri::sync_v2_commands::sync_v2_escuta_parar,
+            interface::tauri::sync_v2_commands::sync_v2_pin_novo,
+            interface::tauri::sync_v2_commands::sync_v2_parear,
+            interface::tauri::sync_v2_commands::sync_v2_sincronizar,
             interface::tauri::collaboration_commands::collaboration_store_contribution,
             interface::tauri::collaboration_commands::collaboration_end_all,
             interface::tauri::collaboration_commands::collaboration_end_session,
