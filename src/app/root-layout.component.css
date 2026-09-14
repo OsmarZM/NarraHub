@@ -264,3 +264,21 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 @media (max-width:760px) { .share-universe-list { grid-template-columns:1fr; }.collaboration-layout { grid-template-columns:1fr; }.collaboration-sessions { grid-template-columns:repeat(2,minmax(0,1fr)); border-right:0; border-bottom:1px solid var(--line); }.contribution-diff { grid-template-columns:1fr; } }
 @media (max-width:680px) { .restore-summary { grid-template-columns:1fr; }.backup-row { align-items:flex-start; flex-direction:column; }.backup-row-actions { align-self:flex-end; } }
 
+/* ── Navegação gestual do celular ────────────────────────────────────────────
+ * Só vale abaixo do breakpoint do `ViewportState`. O desktop não é tocado.
+ *
+ * A sidebar do universo sai: no celular quem navega é o gesto, e uma sidebar espremida numa
+ * tela de 380px é exatamente o que esta navegação existe para não ser. */
+app-root-layout.nh-mobile app-universe-sidebar { display: none; }
+
+/* O fundo do celular é a arte em retrato, não a nebulosa em paisagem do desktop: centro vazio
+ * para o conteúdo, decoração nos cantos. Sem o arquivo, a cor de reserva segura a tela. */
+app-root-layout.nh-mobile {
+  --nh-bg-nebula-img: var(--nh-mobile-bg-img);
+  --nh-bg-nebula-color: var(--nh-mobile-bg-color);
+}
+
+/* Enquanto o navegador abre, o conteúdo recua um pouco. Quem escreve o `transform` é o
+ * componente, no elemento marcado com `data-nh-mnav-recede`, e só enquanto está visível — aqui
+ * fica apenas a origem, que não muda. */
+app-root-layout.nh-mobile [data-nh-mnav-recede] { transform-origin: 0% 50%; }

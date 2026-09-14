@@ -22,3 +22,8 @@ src-tauri/binaries/cloudflared-*.exe
 .vscode/
 Thumbs.db
 .DS_Store
+
+# Assinatura Android: keystore e senhas vêm de GitHub Secrets, nunca do repositório.
+*.jks
+*.keystore
+keystore.properties

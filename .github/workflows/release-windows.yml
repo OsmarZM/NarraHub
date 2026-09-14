@@ -1,5 +1,15 @@
-name: Release Windows
+name: Release Windows + Android
 
+# Toda release publica os dois: instalador Windows (com o manifesto assinado do updater) e APK
+# Android assinado. A ordem dos jobs é o gate:
+#
+#   android    constrói e confere o APK assinado       falhou? não existe release
+#   release    Windows + cria a release como RASCUNHO
+#              anexa o APK, confere que ele está lá
+#              só então publica
+#
+# Uma release publicada sem APK não pode acontecer: o APK é anexado e conferido enquanto a
+# release ainda é rascunho, e a publicação é o último passo.
 on:
   workflow_dispatch:
 
@@ -7,7 +17,85 @@ permissions:
   contents: write
 
 jobs:
+  android:
+    name: Android assinado
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Antes de gastar dez minutos de build: sem assinatura não há APK de release. O APK de
+      # debug da CI NÃO serve de substituto — ele não é assinado para distribuição e não pode
+      # ser chamado de release.
+      - name: Exigir segredos de assinatura
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          faltando=""
+          for nome in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            [ -n "${!nome}" ] || faltando="$faltando $nome"
+          done
+          if [ -n "$faltando" ]; then
+            echo "::error::Assinatura Android ausente. Segredos faltando:$faltando. Ver docs/RELEASE_ANDROID.md."
+            exit 1
+          fi
+
+      - uses: ./.github/actions/android-toolchain
+        with:
+          node-version: '24'
+
+      - name: Keystore a partir dos segredos
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          # O keystore vive só no diretório temporário do runner, fora do checkout.
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/narrahub-release.jks"
+          {
+            printf 'storeFile=%s\n' "$RUNNER_TEMP/narrahub-release.jks"
+            printf 'storePassword=%s\n' "$ANDROID_KEYSTORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$ANDROID_KEY_ALIAS"
+            printf 'keyPassword=%s\n' "$ANDROID_KEY_PASSWORD"
+          } > src-tauri/gen/android/keystore.properties
+
+      - name: APK de release
+        run: npm run android:release:apk
+
+      # O gate do artefato: existir, NÃO ser o `-unsigned`, e passar no `apksigner`. Um Gradle
+      # sem assinatura gera `app-universal-release-unsigned.apk` sem erro nenhum — e esse arquivo
+      # não instala em aparelho algum.
+      - name: Conferir APK assinado
+        run: |
+          apk="$(find src-tauri/gen/android/app/build/outputs/apk -name '*release*.apk' ! -name '*unsigned*' | head -n 1)"
+          if [ -z "$apk" ]; then
+            echo "::error::Nenhum APK de release assinado foi gerado."
+            find src-tauri/gen/android/app/build/outputs -name '*.apk' || true
+            exit 1
+          fi
+          apksigner="$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)"
+          "$apksigner" verify --verbose --print-certs "$apk"
+          versao="$(node -p "require('./package.json').version")"
+          mkdir -p saida-android
+          cp "$apk" "saida-android/NarraHub-$versao-Android.apk"
+          ls -l saida-android
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: narrahub-android-release
+          path: saida-android/*.apk
+          if-no-files-found: error
+
+      - name: Remover keystore do runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/narrahub-release.jks" src-tauri/gen/android/keystore.properties
+
   release:
+    name: Windows e publicação
+    needs: android
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -64,7 +152,9 @@ jobs:
           TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
         run: npm run release:prepare-config
 
-      - name: Criar release e artefatos do updater
+      # A release nasce como RASCUNHO. Ela só é publicada depois de o APK estar anexado e
+      # conferido, no passo seguinte.
+      - name: Criar release (rascunho) e artefatos do updater
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -73,7 +163,33 @@ jobs:
         with:
           tagName: app-v__VERSION__
           releaseName: 'NarraHub v__VERSION__'
-          releaseBody: 'Instaladores Windows e manifesto assinado para atualização automática.'
-          releaseDraft: false
+          releaseBody: 'Instaladores Windows com manifesto assinado para atualização automática, e APK Android assinado.'
+          releaseDraft: true
           prerelease: false
           args: '--config src-tauri/tauri.release.conf.json'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: narrahub-android-release
+          path: saida-android
+
+      - name: Anexar APK, conferir e publicar
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          versao="$(node -p "require('./package.json').version")"
+          tag="app-v$versao"
+          apk="saida-android/NarraHub-$versao-Android.apk"
+          test -f "$apk" || { echo "::error::O APK assinado não chegou a este job: $apk"; exit 1; }
+
+          gh release upload "$tag" "$apk" --clobber
+
+          # Conferir na própria release, e não só no disco: o que importa é o que o usuário baixa.
+          if ! gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx "NarraHub-$versao-Android.apk"; then
+            echo "::error::O APK não aparece nos assets da release $tag. A release continua como rascunho."
+            exit 1
+          fi
+
+          gh release edit "$tag" --draft=false
+          echo "Release $tag publicada com instaladores Windows e APK Android assinado."

@@ -28,6 +28,18 @@
   --nh-shadow-soft: 0 8px 24px rgba(64, 43, 32, .08);
   /* A arte clara otimizada preserva contraste sem compor a nebulosa escura em runtime. */
   --nh-bg-nebula-img: url('/backgrounds/cosmic-nebula-light.webp');
+  /* Celular (referência: public/backgrounds/mobile-light.webp). Céu branco-azulado, dourado
+   * fino como único acento, texto azul-marinho. */
+  --nh-mobile-bg-img: url('/backgrounds/mobile-light.webp');
+  --nh-mobile-bg-color: #f3f6fb;
+  --nh-mobile-gold: #b48c45;
+  --nh-mobile-ink: #1c2537;
+  --nh-mobile-muted: rgb(28 37 55 / 60%);
+  --nh-mobile-glass: rgb(255 255 255 / 62%);
+  --nh-mobile-glass-strong: rgb(255 255 255 / 80%);
+  --nh-mobile-line: rgb(180 140 69 / 30%);
+  --nh-mobile-shadow: 0 18px 40px rgb(70 90 130 / 16%);
+  --nh-mobile-scrim: rgb(243 246 251 / 90%);
   --nh-bg-nebula-color: #f7f2e9;
   --nh-glass-panel: rgba(255, 250, 242, 0.86);
   --nh-glass-panel-subtle: rgba(255, 250, 242, 0.74);
@@ -60,6 +72,18 @@
   --nh-shadow: 0 24px 70px rgba(0, 0, 0, .55);
   --nh-shadow-soft: 0 10px 30px rgba(0, 0, 0, .35);
   --nh-bg-nebula-img: url('/backgrounds/cosmic-nebula.webp');
+  /* Celular (referência: public/backgrounds/mobile-dark.webp). Azul-marinho quase preto,
+   * dourado fino como único acento, texto branco quente. */
+  --nh-mobile-bg-img: url('/backgrounds/mobile-dark.webp');
+  --nh-mobile-bg-color: #0a0f1c;
+  --nh-mobile-gold: #d8b772;
+  --nh-mobile-ink: #ede7d9;
+  --nh-mobile-muted: rgb(237 231 217 / 58%);
+  --nh-mobile-glass: rgb(12 18 33 / 64%);
+  --nh-mobile-glass-strong: rgb(16 23 40 / 82%);
+  --nh-mobile-line: rgb(216 183 114 / 22%);
+  --nh-mobile-shadow: 0 24px 48px rgb(0 0 0 / 46%);
+  --nh-mobile-scrim: rgb(8 12 22 / 92%);
   --nh-bg-nebula-color: #0b0813;
   --nh-glass-panel-subtle: rgba(14, 11, 24, 0.55);
   --nh-glass-border: rgba(255, 255, 255, 0.09);
@@ -92,6 +116,18 @@
     --nh-shadow: 0 24px 70px rgba(0, 0, 0, .55);
     --nh-shadow-soft: 0 10px 30px rgba(0, 0, 0, .35);
     --nh-bg-nebula-img: url('/backgrounds/cosmic-nebula.webp');
+  /* Celular (referência: public/backgrounds/mobile-dark.webp). Azul-marinho quase preto,
+   * dourado fino como único acento, texto branco quente. */
+  --nh-mobile-bg-img: url('/backgrounds/mobile-dark.webp');
+  --nh-mobile-bg-color: #0a0f1c;
+  --nh-mobile-gold: #d8b772;
+  --nh-mobile-ink: #ede7d9;
+  --nh-mobile-muted: rgb(237 231 217 / 58%);
+  --nh-mobile-glass: rgb(12 18 33 / 64%);
+  --nh-mobile-glass-strong: rgb(16 23 40 / 82%);
+  --nh-mobile-line: rgb(216 183 114 / 22%);
+  --nh-mobile-shadow: 0 24px 48px rgb(0 0 0 / 46%);
+  --nh-mobile-scrim: rgb(8 12 22 / 92%);
     --nh-bg-nebula-color: #0b0813;
     --nh-glass-panel-subtle: rgba(14, 11, 24, 0.55);
     --nh-glass-border: rgba(255, 255, 255, 0.09);

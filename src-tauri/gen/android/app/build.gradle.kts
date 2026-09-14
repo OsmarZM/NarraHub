@@ -13,6 +13,19 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Assinatura de release. O keystore e as senhas NUNCA entram no Git: o arquivo
+// `keystore.properties` (ignorado em gen/android/.gitignore) e escrito pela pipeline
+// de release a partir de GitHub Secrets — ver docs/RELEASE_ANDROID.md.
+//
+// Sem o arquivo, o build de release NAO e assinado, e a pipeline de release falha
+// antes de publicar em vez de anexar um APK que nao instala.
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+
 android {
     compileSdk = 36
     namespace = "com.narrahub.app"
@@ -23,6 +36,16 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (keystorePropertiesFile.exists()) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -37,6 +60,9 @@ android {
             }
         }
         getByName("release") {
+            if (keystorePropertiesFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
