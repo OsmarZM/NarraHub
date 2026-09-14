@@ -67,12 +67,26 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           # O keystore vive só no diretório temporário do runner, fora do checkout.
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/narrahub-release.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "$RUNNER_TEMP/narrahub-release.jks"
+          # Segredo colado com espaço ou quebra de linha no fim vira outro alias. Nas senhas, só CR/LF.
+          alias="$(printf '%s' "$ANDROID_KEY_ALIAS" | tr -d '[:space:]')"
+          senha_store="$(printf '%s' "$ANDROID_KEYSTORE_PASSWORD" | tr -d '\r\n')"
+          senha_chave="$(printf '%s' "$ANDROID_KEY_PASSWORD" | tr -d '\r\n')"
+          # Conferir antes dos minutos de build: o keystore abre e o alias existe nele.
+          if ! lista="$(keytool -list -keystore "$RUNNER_TEMP/narrahub-release.jks" -storepass "$senha_store" 2>&1)"; then
+            echo "::error::O keystore não abriu: ANDROID_KEYSTORE_BASE64 ou ANDROID_KEYSTORE_PASSWORD não conferem."
+            exit 1
+          fi
+          if ! keytool -list -keystore "$RUNNER_TEMP/narrahub-release.jks" -storepass "$senha_store" -alias "$alias" > /dev/null 2>&1; then
+            echo "::error::ANDROID_KEY_ALIAS não existe neste keystore. Aliases que ele contém:"
+            printf '%s\n' "$lista" | grep -E '^[^ ]+, ' | cut -d, -f1
+            exit 1
+          fi
           {
             printf 'storeFile=%s\n' "$RUNNER_TEMP/narrahub-release.jks"
-            printf 'storePassword=%s\n' "$ANDROID_KEYSTORE_PASSWORD"
-            printf 'keyAlias=%s\n' "$ANDROID_KEY_ALIAS"
-            printf 'keyPassword=%s\n' "$ANDROID_KEY_PASSWORD"
+            printf 'storePassword=%s\n' "$senha_store"
+            printf 'keyAlias=%s\n' "$alias"
+            printf 'keyPassword=%s\n' "$senha_chave"
           } > src-tauri/gen/android/keystore.properties
 
       - name: APK de release
