@@ -22,4 +22,5 @@ pub mod manuscript;
 pub mod planning;
 pub mod sync;
 pub mod universe;
+pub mod versao;
 pub mod workspace;

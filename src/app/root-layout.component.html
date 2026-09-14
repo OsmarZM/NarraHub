@@ -1,4 +1,15 @@
 <app-shell [showSidebar]="false" [focusMode]="shell.focusMode()">
+  @if (viewport.isMobile()) {
+    <app-mobile-topbar
+      titlebar
+      [title]="mobileTitle()"
+      [context]="mobileContextLabel()"
+      [query]="shell.searchQuery()"
+      [workspaceMode]="workspaceMode()"
+      (queryChange)="shell.searchQuery.set($event)"
+      (homeRequested)="returnToLibrary()"
+    />
+  } @else {
   <app-titlebar
     titlebar
     [query]="shell.searchQuery()"
@@ -10,8 +21,9 @@
     (maximizeRequested)="toggleMaximizeWindow()"
     (closeRequested)="closeWindow()"
   />
+  }
 
-  <div class="content-stage" [class.focus-mode]="shell.focusMode()">
+  <div class="content-stage" data-nh-mnav-recede [class.focus-mode]="shell.focusMode()">
     @if (bootstrap.schemaIncompatible(); as incompatibilidade) {
       <!-- Banco mais novo que este executável: nada da aplicação pode subir, porque nenhuma
            tela funciona sem o pool. A recuperação substitui o conteúdo inteiro. -->
@@ -21,13 +33,23 @@
     @if (shell.errorMessage()) { <div class="alert error-alert" role="alert"><span>{{ shell.errorMessage() }}</span><button type="button" (click)="shell.errorMessage.set('')">×</button></div> }
     @if (shell.infoMessage()) { <div class="toast" role="status">{{ shell.infoMessage() }}</div> }
 
-    @if ((updatePhase() === 'available' && !updatePromptDismissed()) || updatePhase() === 'backing-up' || updatePhase() === 'downloading') {
+    @if ((updatePhase() === 'available' && !updatePromptDismissed()) || updatePhase() === 'backing-up' || updatePhase() === 'downloading' || updatePhase() === 'ready' || updatePhase() === 'permission') {
       <aside class="startup-update" aria-live="polite">
         <span class="startup-update-icon">⇧</span>
         <div class="startup-update-copy">
           @if (updatePhase() === 'backing-up') {
             <strong>Criando backup de segurança</strong>
             <span>A atualização só começa depois que o snapshot local for validado.</span>
+          } @else if (updatePhase() === 'downloading' && updateChannel() === 'android') {
+            <strong>Baixando atualização…</strong>
+            <span>NarraHub {{ updateInfo().availableVersion }}. O arquivo é conferido antes de instalar.</span>
+            <div class="startup-update-progress" role="progressbar" [attr.aria-valuenow]="updateProgress()" aria-valuemin="0" aria-valuemax="100"><i [style.width.%]="updateProgress()"></i></div>
+          } @else if (updatePhase() === 'ready') {
+            <strong>Atualização pronta.</strong>
+            <span>Abrir instalador? O Android pede a sua confirmação, e seus dados continuam no aparelho.</span>
+          } @else if (updatePhase() === 'permission') {
+            <strong>Falta uma permissão</strong>
+            <span>Libere o NarraHub em “Instalar apps desconhecidos” e toque em Abrir instalador de novo.</span>
           } @else if (updatePhase() === 'downloading') {
             <strong>Instalando NarraHub {{ updateInfo().availableVersion }}</strong>
             <span>Download e assinatura em validação. O aplicativo será reiniciado ao concluir.</span>
@@ -38,7 +60,9 @@
           }
         </div>
         @if (updatePhase() === 'available') {
-          <div class="startup-update-actions"><button type="button" class="text-button" (click)="dismissUpdatePrompt()">Agora não</button><button type="button" class="primary-button" [disabled]="updateBusy()" (click)="installUpdate()">Atualizar e reiniciar</button></div>
+          <div class="startup-update-actions"><button type="button" class="text-button" (click)="dismissUpdatePrompt()">{{ updateChannel() === 'android' ? 'Depois' : 'Agora não' }}</button><button type="button" class="primary-button" [disabled]="updateBusy()" (click)="installUpdate()">{{ updateChannel() === 'android' ? 'Atualizar agora' : 'Atualizar e reiniciar' }}</button></div>
+        } @else if (updatePhase() === 'ready' || updatePhase() === 'permission') {
+          <div class="startup-update-actions"><button type="button" class="primary-button" [disabled]="updateBusy()" (click)="openAndroidInstaller()">Abrir instalador</button></div>
         } @else if (updatePhase() === 'backing-up') { <b class="startup-update-percent">BACKUP</b> }
         @else { <b class="startup-update-percent">{{ updateProgress() }}%</b> }
       </aside>
@@ -48,3 +72,12 @@
     }
   </div>
 </app-shell>
+
+@if (viewport.isMobile() && !bootstrap.schemaIncompatible()) {
+  <app-mobile-navigation
+    [options]="mobileOptions()"
+    [activeId]="mobileActiveId()"
+    [contextLabel]="mobileContextLabel()"
+    (selected)="navigateFromMobile($event)"
+  />
+}

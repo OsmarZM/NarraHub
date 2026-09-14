@@ -1,5 +1,22 @@
-name: Release Windows
+name: Release Windows + Android
 
+# Dois caminhos, escolhidos pela versão do package.json — nunca pela mão de quem dispara:
+#
+#   android              versão e canal, versionCode, build, assinatura verificada, SHA-256
+#                        falhou qualquer passo? não existe release
+#
+#   ESTÁVEL (0.10.0)     job release: Windows (MSI + NSIS + manifesto do updater) cria a release
+#                        como RASCUNHO, anexa APK e SHA-256, confere, e só então publica
+#
+#   PRÉ-RELEASE          job android-prerelease: release SÓ Android — APK assinado e SHA-256,
+#   (0.10.0-beta.1)      marcada como pré-release. Sem MSI, sem NSIS, sem latest.json.
+#
+# Por que pré-release não gera Windows: o Windows Installer compara upgrades só por
+# MAIOR.MENOR.PATCH e não aceita sufixo. Uma beta no MSI teria de fingir ser 0.10.0 — e colidiria
+# com a estável. Betas existem para o Android; o Windows só recebe versão estável.
+#
+# Nenhuma release é publicada sem APK: ele é anexado e conferido enquanto a release ainda é
+# rascunho, e a publicação é o último passo dos dois caminhos.
 on:
   workflow_dispatch:
 
@@ -7,7 +24,138 @@ permissions:
   contents: write
 
 jobs:
+  android:
+    name: Android assinado
+    runs-on: ubuntu-latest
+    outputs:
+      versao: ${{ steps.versao.outputs.versao }}
+      pre: ${{ steps.versao.outputs.pre }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versão e canal
+        id: versao
+        run: |
+          versao="$(node -p "require('./package.json').version")"
+          echo "versao=$versao" >> "$GITHUB_OUTPUT"
+          if [[ "$versao" == *-* ]]; then pre=true; else pre=false; fi
+          echo "pre=$pre" >> "$GITHUB_OUTPUT"
+          if gh release view "app-v$versao" > /dev/null 2>&1; then
+            echo "::error::A release app-v$versao já existe. Suba a versão antes de disparar."
+            exit 1
+          fi
+          echo "Versão $versao, pré-release: $pre"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Antes de gastar dez minutos de build: sem assinatura não há APK de release. O APK de
+      # debug da CI NÃO serve de substituto — ele não é assinado para distribuição e não pode
+      # ser chamado de release.
+      - name: Exigir segredos de assinatura
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          faltando=""
+          for nome in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            [ -n "${!nome}" ] || faltando="$faltando $nome"
+          done
+          if [ -n "$faltando" ]; then
+            echo "::error::Assinatura Android ausente. Segredos faltando:$faltando. Ver docs/RELEASE_ANDROID.md."
+            exit 1
+          fi
+
+      - uses: ./.github/actions/android-toolchain
+        with:
+          node-version: '24'
+
+      # O versionCode sai da versão, com o pré-release incluído: sem isso beta.1 e beta.2 teriam o
+      # mesmo número, e a atualização entre elas dependeria de o Android aceitar número igual.
+      - name: Contrato do APK de release e versão consistente
+        run: |
+          node --test tests/android-release.test.mjs
+          npm run release:validate-version
+
+      - name: Configuração Android da release
+        run: node scripts/prepare-android-release-config.mjs
+
+      - name: Keystore a partir dos segredos
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          # O keystore vive só no diretório temporário do runner, fora do checkout.
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "$RUNNER_TEMP/narrahub-release.jks"
+          # Segredo colado com espaço ou quebra de linha no fim vira outro alias. Nas senhas, só CR/LF.
+          alias="$(printf '%s' "$ANDROID_KEY_ALIAS" | tr -d '[:space:]')"
+          senha_store="$(printf '%s' "$ANDROID_KEYSTORE_PASSWORD" | tr -d '\r\n')"
+          senha_chave="$(printf '%s' "$ANDROID_KEY_PASSWORD" | tr -d '\r\n')"
+          # Conferir antes dos minutos de build: o keystore abre e o alias existe nele.
+          if ! lista="$(keytool -list -keystore "$RUNNER_TEMP/narrahub-release.jks" -storepass "$senha_store" 2>&1)"; then
+            echo "::error::O keystore não abriu: ANDROID_KEYSTORE_BASE64 ou ANDROID_KEYSTORE_PASSWORD não conferem."
+            exit 1
+          fi
+          if ! keytool -list -keystore "$RUNNER_TEMP/narrahub-release.jks" -storepass "$senha_store" -alias "$alias" > /dev/null 2>&1; then
+            echo "::error::ANDROID_KEY_ALIAS não existe neste keystore. Aliases que ele contém:"
+            printf '%s\n' "$lista" | grep -E '^[^ ]+, ' | cut -d, -f1
+            exit 1
+          fi
+          {
+            printf 'storeFile=%s\n' "$RUNNER_TEMP/narrahub-release.jks"
+            printf 'storePassword=%s\n' "$senha_store"
+            printf 'keyAlias=%s\n' "$alias"
+            printf 'keyPassword=%s\n' "$senha_chave"
+          } > src-tauri/gen/android/keystore.properties
+
+      - name: APK de release
+        run: npx tauri android build --apk --target aarch64 --ci --config src-tauri/tauri.android-release.conf.json
+
+      # O gate do artefato: existir, NÃO ser o `-unsigned`, e passar no `apksigner`. Um Gradle
+      # sem assinatura gera `app-universal-release-unsigned.apk` sem erro nenhum — e esse arquivo
+      # não instala em aparelho algum.
+      - name: Conferir APK assinado
+        run: |
+          apk="$(find src-tauri/gen/android/app/build/outputs/apk -name '*release*.apk' ! -name '*unsigned*' | head -n 1)"
+          if [ -z "$apk" ]; then
+            echo "::error::Nenhum APK de release assinado foi gerado."
+            find src-tauri/gen/android/app/build/outputs -name '*.apk' || true
+            exit 1
+          fi
+          apksigner="$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)"
+          "$apksigner" verify --verbose --print-certs "$apk"
+
+          # Nome ESTÁVEL: o app Android procura exatamente estes dois assets
+          # (src-tauri/src/application/atualizacao_android.rs). A versão está na tag da release.
+          mkdir -p saida-android
+          cp "$apk" saida-android/NarraHub-Android.apk
+          (
+            cd saida-android
+            sha256sum NarraHub-Android.apk > NarraHub-Android.apk.sha256
+            sha256sum --check NarraHub-Android.apk.sha256
+          )
+          ls -l saida-android
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: narrahub-android-release
+          path: |
+            saida-android/NarraHub-Android.apk
+            saida-android/NarraHub-Android.apk.sha256
+          if-no-files-found: error
+
+      - name: Remover keystore do runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/narrahub-release.jks" src-tauri/gen/android/keystore.properties
+
   release:
+    name: Windows e publicação
+    needs: android
+    # Só estável. Pré-release é publicada pelo job android-prerelease, sem Windows.
+    if: needs.android.outputs.pre == 'false'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -64,7 +212,9 @@ jobs:
           TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
         run: npm run release:prepare-config
 
-      - name: Criar release e artefatos do updater
+      # A release nasce como RASCUNHO. Ela só é publicada depois de o APK estar anexado e
+      # conferido, no passo seguinte.
+      - name: Criar release (rascunho) e artefatos do updater
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -73,7 +223,87 @@ jobs:
         with:
           tagName: app-v__VERSION__
           releaseName: 'NarraHub v__VERSION__'
-          releaseBody: 'Instaladores Windows e manifesto assinado para atualização automática.'
-          releaseDraft: false
+          releaseBody: 'Instaladores Windows com manifesto assinado para atualização automática, e APK Android assinado.'
+          releaseDraft: true
           prerelease: false
           args: '--config src-tauri/tauri.release.conf.json'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: narrahub-android-release
+          path: saida-android
+
+      - name: Anexar APK e SHA-256, conferir e publicar
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="app-v${{ needs.android.outputs.versao }}"
+          for arquivo in NarraHub-Android.apk NarraHub-Android.apk.sha256; do
+            test -f "saida-android/$arquivo" || { echo "::error::$arquivo não chegou a este job."; exit 1; }
+          done
+          # O SHA ainda confere depois de atravessar os jobs?
+          (cd saida-android && sha256sum --check NarraHub-Android.apk.sha256)
+
+          gh release upload "$tag" saida-android/NarraHub-Android.apk saida-android/NarraHub-Android.apk.sha256 --clobber
+
+          # Conferir na própria release, e não só no disco: o que importa é o que o usuário baixa.
+          nomes="$(gh release view "$tag" --json assets --jq '.assets[].name')"
+          for arquivo in NarraHub-Android.apk NarraHub-Android.apk.sha256; do
+            if ! grep -qx "$arquivo" <<< "$nomes"; then
+              echo "::error::$arquivo não aparece nos assets da release $tag. A release continua como rascunho."
+              exit 1
+            fi
+          done
+
+          gh release edit "$tag" --draft=false
+          echo "Release $tag publicada com instaladores Windows, APK Android assinado e SHA-256."
+
+  android-prerelease:
+    name: Pré-release só Android
+    needs: android
+    if: needs.android.outputs.pre == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: narrahub-android-release
+          path: saida-android
+
+      - name: Criar pré-release (rascunho), anexar APK e SHA-256, conferir e publicar
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSAO: ${{ needs.android.outputs.versao }}
+        run: |
+          tag="app-v$VERSAO"
+          case "$VERSAO" in
+            *-*) ;;
+            *) echo "::error::$VERSAO é estável: estável passa pelo job Windows, nunca por aqui."; exit 1 ;;
+          esac
+          for arquivo in NarraHub-Android.apk NarraHub-Android.apk.sha256; do
+            test -f "saida-android/$arquivo" || { echo "::error::$arquivo não chegou a este job."; exit 1; }
+          done
+          (cd saida-android && sha256sum --check NarraHub-Android.apk.sha256)
+
+          gh release create "$tag" --draft --prerelease --target "$GITHUB_SHA" \
+            --title "NarraHub v$VERSAO (Android)" \
+            --notes "Pré-release só Android, para teste: APK assinado e SHA-256. Sem instaladores Windows — o Windows recebe só versões estáveis."
+
+          gh release upload "$tag" saida-android/NarraHub-Android.apk saida-android/NarraHub-Android.apk.sha256
+
+          # Conferir na própria release: exatamente os dois assets do Android, nada de Windows.
+          nomes="$(gh release view "$tag" --json assets --jq '.assets[].name' | sort)"
+          esperado="$(printf '%s\n' NarraHub-Android.apk NarraHub-Android.apk.sha256 | sort)"
+          if [ "$nomes" != "$esperado" ]; then
+            echo "::error::Assets inesperados na pré-release $tag (ela continua como rascunho):"
+            echo "$nomes"
+            exit 1
+          fi
+
+          gh release edit "$tag" --draft=false --prerelease
+          if [ "$(gh release view "$tag" --json isPrerelease --jq .isPrerelease)" != "true" ]; then
+            echo "::error::$tag foi publicada sem a marca de pré-release."
+            exit 1
+          fi
+          echo "Pré-release $tag publicada: APK Android assinado e SHA-256."

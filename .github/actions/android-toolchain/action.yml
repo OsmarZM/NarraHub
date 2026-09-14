@@ -1,0 +1,58 @@
+name: Toolchain Android do NarraHub
+description: >
+  Prepara Node, Rust com o alvo Android, JDK e NDK, instala dependências e compila o Angular.
+  Usado pelo job Android da CI (APK de debug) e pelo job Android da release (APK assinado) —
+  a mesma preparação nos dois, para o APK da release não ser construído por um caminho que a CI
+  nunca exercitou.
+
+inputs:
+  node-version:
+    description: Versão do Node.
+    default: '22'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+        targets: aarch64-linux-android
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: src-tauri
+        key: android
+
+    # O Gradle do Android Gradle Plugin exige JDK 17+.
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 17
+
+    # `aws-lc-sys` (via reqwest -> rustls -> aws-lc-rs) compila C para o alvo e precisa do clang
+    # do NDK no PATH. O runner já traz o NDK; falta apontar `NDK_HOME` para ele.
+    - name: NDK do runner
+      shell: bash
+      run: |
+        echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+        echo "$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+
+    - name: Dependências
+      shell: bash
+      run: npm ci
+
+    # O `frontendDist` aponta para `dist/narrahub-app/browser`, que só existe depois do build.
+    - name: Build do Angular
+      shell: bash
+      run: npm run build
+
+    - name: Verificação do core para aarch64-linux-android
+      shell: bash
+      run: |
+        cargo clippy --manifest-path src-tauri/Cargo.toml --lib \
+          --target aarch64-linux-android -- -D warnings

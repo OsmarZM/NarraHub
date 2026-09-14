@@ -17,6 +17,94 @@ Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 ---
 
 ## ACTIVE
+
+### NH-080 — NarraHub Mobile: navegação gestual e APK assinado nas releases
+
+```text
+Owner:  Claude
+Status: PRIMEIRA ENTREGA — shell visual funcional, aguardando teste no aparelho
+Fase:   produto (interrompe temporariamente NH-079 / NH-053)
+Branch: mobile-navegacao-gestual (empilhada sobre a etapa 14)
+```
+
+**A navegação.** No celular não há menu lateral nem hambúrguer. Uma alça dourada quase invisível
+fica na borda direita, na altura do polegar. Puxada para a esquerda, abre uma pilha de cartões em
+profundidade; arrastar na vertical gira a pilha como a roda de um seletor de horário; empurrar
+para a direita fecha. Tocar no cartão da frente navega.
+
+```text
+src/app/shell/mobile-navigation/
+  mobile-navigation.model.ts       fisica pura: abertura, encaixe, peteleco, pose dos cartoes
+  mobile-navigation.component.*    gesto fora do Angular, transform e opacity por quadro
+src/app/shell/state/viewport.state.ts   o breakpoint do celular (760px)
+```
+
+O componente recebe as opções e emite o id escolhido; não conhece Router nem store. Quem monta as
+opções e navega é o `RootLayoutComponent`, a partir dos `navigationItems` que as rotas já
+declaram, pelo mesmo caminho dos botões do desktop (salvar o capítulo, `AppNavigationService`,
+guards). No desktop nada muda: medido em 1280px, o componente não monta.
+
+**Temas.** As duas referências do humano viraram `public/backgrounds/mobile-dark.webp` e
+`mobile-light.webp` (66 KB cada, contra 1,7 MB do JPG) e os tokens `--nh-mobile-*`: centro vazio,
+decoração nos cantos, dourado fino como único acento.
+
+**Destinos conectados:** Universos, História, Personagens, Conexões, Timeline, Planejamento,
+Histórico, Configurações — todas as rotas que existem.
+
+**Pendentes nesta primeira entrega:**
+
+- destinos que ainda não são rota: Conhecimento, Canvas, Compartilhamento, e Livros/Capítulos
+  como destinos próprios;
+- o cabeçalho do desktop (logo e busca) continua no topo do celular — as telas em si não foram
+  adaptadas, só a navegação;
+- o botão voltar do Android ainda não fecha o navegador aberto;
+- a tela não recarrega sozinha depois de uma sincronização.
+
+**APK nas releases.** O workflow de release passou a ter um job `android` antes do Windows: exige
+os quatro segredos de assinatura, constrói com a mesma action da CI, exige APK assinado (não o
+`-unsigned`) e passa no `apksigner`. A release nasce rascunho e só é publicada depois de o APK
+estar nos assets. **A assinatura ainda não existe**: não havia keystore Android, e o workflow de
+release falha de propósito até os segredos serem criados. Ver `docs/RELEASE_ANDROID.md`.
+
+**Layout só para Android (2026-09-14, depois do teste no S23 / Android 16).** O humano instalou a
+`0.10.0-beta.1` e o app parecia "um navegador quebrado tentando ser app": barra de título do desktop
+por baixo da barra de status, cabeçalho do universo estourando para o lado, o resumo cobrindo o
+editor (não dava para escrever) e a alça que não abria. Decisão do humano: layout próprio do
+Android. O que mudou:
+
+- `ViewportState`: o shell do celular liga só com Android **e** tela de celular; o desktop não o
+  recebe nem com a janela estreita. Classe `nh-android` no `<html>`.
+- `MainActivity`: o conteúdo fica entre a barra de status e a de gestos e acima do teclado
+  (insets do sistema como padding), e a faixa sem "voltar" acompanha a alça.
+- `app-mobile-topbar` no lugar da barra de título: tela atual, universo, busca atrás de um botão.
+- Cabeçalho do universo sem linha própria: ações num "⋯" que abre folha de baixo.
+- Escrita: editor na tela inteira; Capítulos e Resumo são folhas; resumo começa fechado.
+- Modais viram folhas de baixo; campos com 16px (sem zoom ao focar); sem seleção por toque longo
+  fora do texto; sem rolagem elástica.
+- Alça: toque também abre; alvo maior.
+- Tudo em `src/app/shell/android/android-shell.css`, com todo seletor sob `html.nh-android`.
+
+Pendente: fontes pequenas herdadas do desktop em Configurações e fichas; confirmar o gesto de
+arrastar no aparelho.
+
+**Atualização pelo app.** O Android verifica as GitHub Releases, oferece a versão nova, baixa
+`NarraHub-Android.apk`, confere o `NarraHub-Android.apk.sha256` no download e de novo antes de
+abrir o instalador do sistema por `content://` do `FileProvider`. Nenhum comando recebe URL,
+caminho ou hash da tela (gate em `tests/rust-core-contract.test.mjs`). Estável só recebe estável;
+beta recebe beta e estável. O `versionCode` distingue pré-releases
+(`scripts/prepare-android-release-config.mjs`). Nada apaga `app_data`.
+
+```text
+src-tauri/src/domain/versao.rs                        SemVer e a regra de canal
+src-tauri/src/application/atualizacao_android.rs      escolher release, baixar, conferir SHA
+src-tauri/src/interface/tauri/android_update_commands.rs
+src-tauri/gen/android/.../InstaladorPlugin.kt         permissao + instalador do sistema
+```
+
+Falta: o keystore e os quatro segredos (humano), as releases `0.10.0-beta.1` e `0.10.0-beta.2`, e
+o roteiro físico N → N+1 em `docs/ANDROID_ATUALIZACAO_ROTEIRO.md`.
+
+---
 ### NH-077 — Sync V2, etapa 14: Windows ↔ Android ponta a ponta
 
 ```text

@@ -222,6 +222,35 @@
       </article>
 
       <article class="surface-card settings-wide-card update-card" [hidden]="section() !== 'updates'">
+        @if (store.updateChannel() === 'android') {
+          <!-- Android: APK assinado das GitHub Releases, com SHA-256 conferido. O instalador é o do
+               sistema, e o usuário confirma. -->
+          <div class="card-head"><div><div class="card-icon">⇧</div><h2>Atualizações do aplicativo</h2></div><span class="status-badge" [class.online]="store.updatePhase() === 'current'">v{{ store.updateInfo().currentVersion }}</span></div>
+          <p>Versão atual: <strong>{{ store.updateInfo().currentVersion }}</strong></p>
+          @if (store.updatePhase() === 'available') {
+            <h3>Nova versão disponível</h3><p><strong>{{ store.updateInfo().availableVersion }}</strong></p>
+            @if (store.updateInfo().notes) { <p>{{ store.updateInfo().notes }}</p> }
+            <div class="field-row">
+              <button type="button" class="primary-button" [disabled]="store.updateBusy()" (click)="requestUpdateInstall()">Atualizar agora</button>
+              <button type="button" class="secondary-button" [disabled]="store.updateBusy()" (click)="store.postponeUpdate()">Depois</button>
+            </div>
+          } @else if (store.updatePhase() === 'backing-up') {
+            <p>Criando um backup de segurança antes de baixar a versão {{ store.updateInfo().availableVersion }}…</p><div class="update-progress indeterminate" role="progressbar"><span></span></div>
+          } @else if (store.updatePhase() === 'downloading') {
+            <p>Baixando atualização…</p><div class="update-progress" role="progressbar" [attr.aria-valuenow]="store.updateProgress()" aria-valuemin="0" aria-valuemax="100"><span [style.width.%]="store.updateProgress()"></span></div><small>{{ store.updateProgress() }}%</small>
+          } @else if (store.updatePhase() === 'ready') {
+            <h3>Atualização pronta.</h3><p>A versão {{ store.updateInfo().availableVersion }} foi baixada e conferida. Abrir instalador?</p>
+            <button type="button" class="primary-button" [disabled]="store.updateBusy()" (click)="requestAndroidInstaller()">Abrir instalador</button>
+            <small class="security-note">O Android pede a sua confirmação. Seus universos e configurações continuam no aparelho.</small>
+          } @else if (store.updatePhase() === 'permission') {
+            <h3>Falta uma permissão</h3><p>Libere o NarraHub em “Instalar apps desconhecidos”, volte aqui e toque em Abrir instalador de novo.</p>
+            <button type="button" class="primary-button" [disabled]="store.updateBusy()" (click)="requestAndroidInstaller()">Abrir instalador</button>
+          } @else {
+            <p>{{ store.updatePhase() === 'current' ? 'Você está usando a versão mais recente publicada.' : 'O NarraHub procura versões novas nas releases oficiais do GitHub.' }}</p>
+            @if (store.updateError()) { <div class="security-callout warning"><strong>Verificação indisponível</strong><span>{{ store.updateError() }}</span></div> }
+            <button type="button" class="secondary-button" [disabled]="store.updateBusy()" (click)="requestUpdateCheck()">{{ store.updatePhase() === 'checking' ? 'Verificando…' : 'Verificar atualizações' }}</button>
+          }
+        } @else {
         <div class="card-head"><div><div class="card-icon">⇧</div><h2>Atualizações do aplicativo</h2></div><span class="status-badge" [class.online]="store.updatePhase() === 'current'">v{{ store.updateInfo().currentVersion }}</span></div>
         @if (store.updatePhase() === 'available') {
           <h3>Versão {{ store.updateInfo().availableVersion }} disponível</h3><p>{{ store.updateInfo().notes || 'Nova versão assinada disponível no canal oficial.' }}</p>
@@ -236,6 +265,7 @@
           <button type="button" class="secondary-button" [disabled]="store.updateBusy()" (click)="requestUpdateCheck()">{{ store.updatePhase() === 'checking' ? 'Verificando…' : 'Verificar agora' }}</button>
         }
         <small class="security-note">Uma atualização só é instalada depois que a assinatura Tauri é validada. Push comum no GitHub não atualiza aplicativos instalados.</small>
+              }
       </article>
     </div>
   </div>

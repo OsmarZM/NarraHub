@@ -1,5 +1,14 @@
-<div class="writing-layout" [class.inspector-open]="store.inspectorOpen()">
+<div class="writing-layout" [class.inspector-open]="store.inspectorOpen()" [class.tree-open]="mobileTreeOpen()">
+  <!-- Android: barra da escrita. Capítulos à esquerda, o que está aberto no meio, resumo à direita.
+       No desktop ela não aparece (android-shell.css). -->
+  <nav class="writing-mobile-bar" aria-label="Capítulo em edição">
+    <button type="button" class="writing-mobile-chapters" [attr.aria-expanded]="mobileTreeOpen()" (click)="mobileTreeOpen.set(!mobileTreeOpen())"><span aria-hidden="true">☰</span> Capítulos</button>
+    <strong>{{ mobileBarTitle() }}</strong>
+    <button type="button" class="writing-mobile-summary" [class.active]="store.inspectorOpen()" [disabled]="!store.activeChapter()" (click)="store.toggleInspector()">Resumo</button>
+  </nav>
+  @if (mobileTreeOpen() || store.inspectorOpen()) { <div class="writing-sheet-backdrop" (click)="mobileTreeOpen.set(false); store.inspectorOpen() && store.toggleInspector()"></div> }
   <aside class="project-tree">
+    <div class="writing-sheet-grip" aria-hidden="true"></div>
     <div class="panel-heading"><div><span class="eyebrow">PROJETO</span><h2>Livros e capítulos</h2></div><button type="button" aria-label="Nova história" (click)="openCreateStory()">＋</button></div>
     @if (store.stories().length === 0) { <div class="tree-empty"><p>Nenhuma história criada.</p><button type="button" class="text-button" (click)="openCreateStory()">＋ Criar história</button></div> }
     @for (story of store.stories(); track story.id) {

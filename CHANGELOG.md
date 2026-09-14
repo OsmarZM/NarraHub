@@ -2,6 +2,24 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.1 — 2026-09-14 (pré-release)
+
+Pré-release só Android, para teste: não há instalador Windows nesta versão, e quem usa a 0.9.2 no Windows continua nela.
+
+### NarraHub no Android
+
+- **Navegação gestual**: uma alça discreta na borda direita abre uma pilha de cartões com os
+  destinos; arrastar na vertical gira a pilha, tocar no cartão da frente navega.
+- **Temas claro e escuro** próprios do celular.
+- **Atualização pelo próprio app**: o NarraHub verifica as releases do GitHub, baixa o APK
+  assinado, confere o SHA-256 e abre o instalador do Android. Seus dados continuam no aparelho.
+- A release passa a trazer `NarraHub-Android.apk` e `NarraHub-Android.apk.sha256`.
+
+### Sincronização Windows ↔ Android (Sync V2)
+
+- Pareamento por endereço e PIN, bootstrap do acervo com imagens e sincronização incremental nos
+  dois sentidos. Em validação no aparelho.
+
 ## 0.9.2 — 2026-09-01
 
 ### Quando o aplicativo é mais antigo que os seus dados

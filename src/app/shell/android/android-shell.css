@@ -1,0 +1,328 @@
+/*
+ * Layout do NarraHub no celular Android.
+ *
+ * TODO seletor aqui começa por `html.nh-android` — a classe só existe no Android com tela de
+ * celular (`ViewportState`). O desktop não carrega nenhuma regra deste arquivo, nem com a janela
+ * estreita.
+ *
+ * O princípio: no celular a tela é de UMA coisa por vez. Nada de painéis lado a lado espremidos.
+ *   - barra de cima própria (app-mobile-topbar), abaixo da barra de status — o MainActivity põe
+ *     o conteúdo entre as barras do sistema e acima do teclado;
+ *   - navegação pela alça gestual, sem barra lateral nem barra de baixo;
+ *   - ações secundárias numa folha que sobe de baixo;
+ *   - na escrita, o editor ocupa a tela; capítulos e resumo são folhas.
+ */
+
+/* ── comportamento de app, não de página ──────────────────────────────────── */
+html.nh-android,
+html.nh-android body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Toque longo não seleciona botões, cartões e títulos; só onde se escreve. */
+html.nh-android body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+html.nh-android :is(input, textarea, [contenteditable="true"], .ProseMirror, .ProseMirror *) {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+/* Campo com fonte abaixo de 16px faz o WebView dar zoom ao focar. */
+html.nh-android :is(input, textarea, select) { font-size: 16px !important; }
+
+/* ── o quadro: barra de cima + conteúdo que ocupa o resto ─────────────────── */
+html.nh-android .nh-app-shell {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+html.nh-android .nh-app-frame,
+html.nh-android .nh-app-shell.focus-mode .nh-app-frame {
+  height: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+  /* Sem camada própria: o botão de ações sobe para a barra de cima, e as folhas cobrem a barra. */
+  z-index: auto;
+}
+html.nh-android .nh-app-shell.has-sidebar .nh-content { padding-bottom: 0; }
+
+/* A barra antiga do desktop (quando uma tela ainda a desenha) e a sidebar do universo saem. */
+html.nh-android :is(.navigation, app-universe-sidebar) { display: none !important; }
+html.nh-android .content { padding-bottom: 0; }
+
+/* Rolagem com inércia dentro das telas, sem esticar a página. */
+html.nh-android :is(.nh-content, .workspace-route-content, .content-stage) { overscroll-behavior: contain; }
+
+/* Espaço para a alça gestual não cobrir conteúdo encostado na borda direita. */
+html.nh-android .workspace-route-content { padding: 0; }
+
+/* ── avisos ─────────────────────────────────────────────────────────────────── */
+html.nh-android .startup-update {
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  width: auto;
+  grid-template-columns: auto 1fr;
+}
+html.nh-android .startup-update-actions { grid-column: 1 / -1; justify-content: flex-end; }
+html.nh-android .toast { right: 12px; bottom: 16px; left: 12px; max-width: none; }
+
+/* ── modais viram folhas de baixo ─────────────────────────────────────────── */
+html.nh-android .modal-backdrop { place-items: end stretch; padding: 0; }
+html.nh-android .modal {
+  width: 100%;
+  max-height: 92%;
+  padding: 14px 18px 22px;
+  border-width: 1px 0 0;
+  border-radius: 22px 22px 0 0;
+  animation: nh-android-sheet-up .22s ease-out;
+}
+html.nh-android .modal header h2 { font-size: 20px; }
+html.nh-android .modal footer { flex-wrap: wrap; }
+html.nh-android .modal footer > button { min-height: 46px; flex: 1 1 140px; }
+
+@keyframes nh-android-sheet-up { from { transform: translateY(24px); opacity: .6; } }
+
+/* ── cabeçalho do universo ───────────────────────────────────────────────── */
+/* A linha do cabeçalho some: universo e tela já estão na barra de cima. O botão de ações sobe
+ * para a barra de cima, ao lado da busca. */
+html.nh-android .workspace-header {
+  height: 0;
+  flex: 0 0 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: visible;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html.nh-android .breadcrumb { display: none; }
+
+html.nh-android .workspace-more {
+  position: fixed;
+  z-index: 45;
+  top: 6px;
+  right: 8px;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: var(--nh-mobile-ink, #ede7d9);
+  background: transparent;
+  font-size: 22px;
+  line-height: 1;
+}
+html.nh-android app-root-layout:has(.workspace-more) .nh-mtop:not(.searching) { padding-right: 58px; }
+html.nh-android .workspace-more:active { background: rgb(255 255 255 / 8%); }
+
+/* As ações: fora da linha. Fechadas não existem; abertas são uma folha de baixo. */
+html.nh-android .workspace-actions { display: none; }
+html.nh-android .workspace-header.actions-open .workspace-actions {
+  position: fixed;
+  z-index: 950;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 18px 14px 22px;
+  border-top: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 22px 22px 0 0;
+  background: var(--nh-mobile-glass-strong, rgb(16 23 40 / 96%));
+  box-shadow: 0 -20px 50px rgb(0 0 0 / 45%);
+  animation: nh-android-sheet-up .2s ease-out;
+}
+html.nh-android .workspace-header.actions-open .workspace-actions button {
+  height: 52px;
+  justify-content: flex-start;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  box-shadow: none;
+  font-size: 16px;
+  text-align: left;
+}
+html.nh-android .workspace-header.actions-open .workspace-actions button:active { background: rgb(255 255 255 / 8%); }
+html.nh-android .workspace-header.actions-open .save-state { padding: 0 16px 10px; font-size: 13px; }
+html.nh-android .workspace-actions-backdrop { position: fixed; z-index: 940; inset: 0; background: rgb(5 4 10 / 55%); }
+/* No desktop o botão e o fundo não existem. */
+html:not(.nh-android) :is(.workspace-more, .workspace-actions-backdrop, .writing-mobile-bar, .writing-sheet-backdrop, .writing-sheet-grip) { display: none !important; }
+
+/* ── escrita ──────────────────────────────────────────────────────────────── */
+/* Itens de flex encolhem até 0: sem isso a barra de ferramentas numa linha alarga a tela inteira. */
+html.nh-android :is(app-writing-page, .writing-layout, .editor-panel, app-writing-editor) { min-width: 0; max-width: 100%; }
+
+html.nh-android .writing-layout,
+html.nh-android .writing-layout:not(.inspector-open) {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+html.nh-android .writing-mobile-bar {
+  flex: 0 0 52px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-bottom: 1px solid rgb(255 255 255 / 8%);
+}
+html.nh-android .writing-mobile-bar strong {
+  overflow: hidden;
+  color: var(--nh-ink, #ede7d9);
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+html.nh-android .writing-mobile-bar button {
+  height: 40px;
+  padding: 0 14px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 20px;
+  color: var(--nh-ink, #ede7d9);
+  background: rgb(255 255 255 / 5%);
+  font-size: 14px;
+  font-weight: 600;
+}
+html.nh-android .writing-mobile-bar button.active,
+html.nh-android .writing-mobile-bar button[aria-expanded="true"] {
+  border-color: var(--nh-mobile-gold, #d8b772);
+  color: var(--nh-mobile-gold, #d8b772);
+}
+html.nh-android .writing-mobile-bar button:disabled { opacity: .4; }
+
+html.nh-android .editor-panel { min-height: 0; flex: 1 1 auto; }
+
+/* Folhas: árvore de capítulos e resumo. Fechadas, fora da tela; abertas, sobem de baixo. */
+html.nh-android .writing-sheet-backdrop { position: fixed; z-index: 60; inset: 0; background: rgb(5 4 10 / 55%); }
+
+html.nh-android .writing-layout .project-tree,
+html.nh-android .writing-layout.inspector-open .writing-inspector {
+  position: fixed;
+  z-index: 70;
+  top: auto;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: auto;
+  height: 82%;
+  max-height: none;
+  margin: 0;
+  padding: 10px 16px 24px;
+  border-width: 1px 0 0;
+  border-radius: 22px 22px 0 0;
+  background: var(--nh-mobile-glass-strong, rgb(16 23 40 / 97%));
+  box-shadow: 0 -20px 50px rgb(0 0 0 / 45%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  overflow-y: auto;
+  animation: nh-android-sheet-up .22s ease-out;
+}
+html.nh-android .writing-layout:not(.tree-open) .project-tree { display: none; }
+html.nh-android .writing-layout.tree-open .project-tree { display: block; }
+html.nh-android .writing-layout.inspector-open .writing-inspector { display: block; padding: 0; }
+
+html.nh-android .writing-sheet-grip {
+  width: 40px;
+  height: 4px;
+  margin: 0 auto 14px;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 24%);
+}
+
+/* Árvore com alvos de dedo: linhas altas, ações sempre visíveis. */
+html.nh-android .project-tree .panel-heading h2 { font-size: 18px; }
+html.nh-android .project-tree .panel-heading button { width: 44px; height: 44px; font-size: 20px; }
+html.nh-android :is(.tree-story-row, .tree-book-row) { grid-template-columns: 36px minmax(0, 1fr) 40px 40px 40px; }
+html.nh-android .tree-chapter-row { grid-template-columns: minmax(0, 1fr) 40px 40px 40px; }
+html.nh-android :is(.tree-story, .tree-book, .tree-chapter) { min-height: 56px; font-size: 15px; }
+html.nh-android :is(.tree-story strong, .tree-book-copy strong, .chapter-copy strong) { font-size: 15px; }
+html.nh-android :is(.tree-book-copy small, .chapter-copy small, .tree-story small) { font-size: 12px; }
+html.nh-android :is(.tree-rename, .tree-meta, .tree-delete) { width: 40px; height: 44px; font-size: 15px; opacity: .8; }
+html.nh-android .tree-expander { width: 36px; height: 48px; }
+html.nh-android .tree-chapter .reorder,
+html.nh-android .tree-chapter .drag-handle { display: none; }
+html.nh-android .add-tree-item { min-height: 48px; font-size: 15px; }
+
+/* Resumo com texto legível. */
+html.nh-android .writing-inspector :is(.eyebrow) { font-size: 11px; }
+html.nh-android .writing-inspector h3 { font-size: 20px; }
+html.nh-android .writing-inspector :is(.chapter-summary-label, .scene-route label, .inspector-places p, .character-presence > p) { font-size: 13px; }
+html.nh-android .writing-inspector :is(.inspector-places header, .character-presence > header) { font-size: 14px; }
+html.nh-android .writing-inspector :is(.summary-ai-button, .metadata-panel-button) { min-height: 46px; font-size: 14px; }
+html.nh-android .writing-inspector .inspector-title button { width: 44px; height: 44px; }
+
+/* Editor: a tela inteira para o texto. Ferramentas numa linha que rola para o lado. */
+html.nh-android .nh-editor-toolbar {
+  max-height: none;
+  flex-wrap: nowrap;
+  gap: 2px;
+  margin: 0;
+  padding: 4px 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  scrollbar-width: none;
+}
+html.nh-android .nh-editor-toolbar::-webkit-scrollbar { display: none; }
+html.nh-android .nh-toolbar-group { flex: 0 0 auto; border-right: 0; }
+html.nh-android .nh-toolbar-group button { min-width: 40px; height: 40px; font-size: 15px; white-space: nowrap; }
+html.nh-android .nh-toolbar-group select { height: 40px; font-size: 15px; }
+/* Modo foco e tela cheia são do desktop: no celular o editor já é a tela. */
+html.nh-android :is(.view-tools, .nh-editor-spacer) { display: none; }
+
+html.nh-android .nh-document-scroll { padding: 0 0 32px; }
+html.nh-android .nh-document {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 20px 18px 64px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+html.nh-android .nh-rich-editor .ProseMirror { min-height: 50vh; font-size: 18px; line-height: 1.7; }
+
+html.nh-android .editor-status { padding: 6px 16px; font-size: 12px; }
+html.nh-android .editor-status span:nth-child(2),
+html.nh-android .editor-status span:nth-child(3) { display: none; }
+
+html.nh-android .editor-empty { padding: 32px 24px; }
+html.nh-android .editor-empty h2 { font-size: 24px; }
+html.nh-android .editor-empty p { font-size: 15px; }
+html.nh-android .editor-empty .primary-button { min-height: 48px; padding: 0 24px; font-size: 15px; }
+
+/* ── biblioteca de universos ─────────────────────────────────────────────── */
+html.nh-android .universe-library { padding: 20px 16px 48px; }
+html.nh-android .library-hero { margin-bottom: 22px; text-align: left; }
+html.nh-android .library-hero .library-kicker { font-size: 11px; }
+html.nh-android .library-hero h1 { font-size: 30px; line-height: 1.12; letter-spacing: -.02em; }
+html.nh-android .library-hero > p:last-child { margin-top: 8px; font-size: 14px; }
+html.nh-android .library-heading h2 { font-size: 22px; }
+html.nh-android :is(.universe-portal, .portal-art, .create-portal) { min-height: 260px; }
+
+/* A animação de entrada das telas usa `transform` e fica aplicada (fill `both`). Um ancestral com
+ * transform vira a referência de `position: fixed` — as folhas e o botão de ações passariam a se
+ * posicionar dentro da tela, não na janela. No celular a tela entra sem esse deslocamento. */
+html.nh-android .page-enter { animation: none; }

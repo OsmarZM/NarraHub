@@ -1,0 +1,53 @@
+<button
+  #handle
+  type="button"
+  class="nh-mnav-handle"
+  aria-label="Abrir navegação"
+  [attr.aria-expanded]="isOpen()"
+  aria-controls="nh-mnav-layer"
+  (click)="onHandleClick($event)"
+>
+  <span class="nh-mnav-grip" aria-hidden="true"></span>
+</button>
+
+<div
+  #layer
+  id="nh-mnav-layer"
+  class="nh-mnav-layer"
+  role="dialog"
+  aria-modal="true"
+  aria-label="Navegação do NarraHub"
+  [attr.aria-hidden]="!isOpen()"
+  (keydown)="onLayerKeydown($event)"
+>
+  <div class="nh-mnav-sky" aria-hidden="true"><i></i><i></i></div>
+
+  <header #caption class="nh-mnav-caption" aria-hidden="true">
+    <span>NARRAHUB</span>
+    @if (contextLabel()) { <strong>{{ contextLabel() }}</strong> }
+  </header>
+
+  <div class="nh-mnav-stage">
+    @for (option of options(); track option.id; let index = $index) {
+      <button
+        #card
+        type="button"
+        class="nh-mnav-card"
+        [class.nh-mnav-active]="option.id === activeId()"
+        [class.nh-mnav-needs-context]="option.needsContext"
+        [attr.data-index]="index"
+        [attr.aria-current]="option.id === activeId() ? 'page' : null"
+        (click)="onCardClick($event, index)"
+      >
+        <span class="nh-mnav-icon" aria-hidden="true">{{ option.icon }}</span>
+        <span class="nh-mnav-text">
+          <strong>{{ option.label }}</strong>
+          <small>{{ option.description }}</small>
+        </span>
+        @if (option.id === activeId()) { <span class="nh-mnav-here">aqui</span> }
+      </button>
+    }
+  </div>
+
+  <p class="nh-mnav-hint" aria-hidden="true">arraste para cima ou para baixo · empurre para a direita para fechar</p>
+</div>

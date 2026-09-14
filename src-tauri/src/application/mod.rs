@@ -9,6 +9,7 @@
 //! 4 pede exatamente isso, e ter as duas coisas separadas é o que permite
 //! testar a regra contra um banco em memória.
 
+pub mod atualizacao_android;
 pub mod blob_fields;
 pub mod blob_upgrade;
 pub mod canvas_service;

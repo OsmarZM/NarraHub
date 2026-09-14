@@ -1,0 +1,266 @@
+/*
+ * Navegação gestual do celular.
+ *
+ * Linguagem das duas referências de tema (public/backgrounds/mobile-light.webp e
+ * mobile-dark.webp): centro vazio, decoração nos cantos, dourado fino como único acento. As cores
+ * vêm dos tokens `--nh-mobile-*` do styles.css, então o navegador segue o tema claro ou escuro
+ * sem saber qual está ativo.
+ *
+ * Regra de desempenho para o arquivo inteiro: nada que muda durante o gesto dispara layout. O
+ * componente escreve só `transform`, `opacity` e `z-index` por quadro. Sem `backdrop-filter` —
+ * num Android modesto ele sozinho derruba o quadro —, e o vidro dos cartões é translucidez sobre
+ * a arte de fundo, não desfoque do que está atrás.
+ */
+
+:host {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  pointer-events: none;
+  --mnav-gold: var(--nh-mobile-gold, #d8b772);
+  --mnav-ink: var(--nh-mobile-ink, #ede7d9);
+  --mnav-muted: var(--nh-mobile-muted, rgb(237 231 217 / 58%));
+  --mnav-glass: var(--nh-mobile-glass, rgb(12 18 33 / 64%));
+  --mnav-glass-strong: var(--nh-mobile-glass-strong, rgb(16 23 40 / 82%));
+  --mnav-line: var(--nh-mobile-line, rgb(216 183 114 / 22%));
+  --mnav-shadow: var(--nh-mobile-shadow, 0 24px 48px rgb(0 0 0 / 46%));
+}
+
+/* ── a alça ─────────────────────────────────────────────────────────────────
+ * Visualmente uma cápsula de 3px com um brilho dourado; o alvo de toque tem 44×112px, que é o
+ * que um polegar precisa. Fica a 58% da altura — a faixa que o polegar alcança segurando o
+ * aparelho com uma mão. */
+.nh-mnav-handle {
+  position: absolute;
+  top: 58%;
+  right: 0;
+  /* 44px para dentro da tela: o polegar raramente começa exatamente na borda, e a faixa em que
+   * o Android desliga o "voltar" (MainActivity.kt) tem 48dp — a área de toque cabe nela. */
+  width: 52px;
+  height: 140px;
+  margin-top: -70px;
+  display: grid;
+  place-items: center end;
+  padding: 0 4px 0 0;
+  border: 0;
+  background: transparent;
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  will-change: transform, opacity;
+}
+
+.nh-mnav-grip {
+  width: 4px;
+  height: 56px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--mnav-gold) 75%, transparent), transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--mnav-gold) 35%, transparent);
+  opacity: .9;
+  transition: width .18s ease, height .18s ease, opacity .18s ease;
+}
+
+/* Tocando: cresce e acende. É a resposta que o dedo espera antes de o navegador aparecer. */
+:host(.nh-mnav-pulling) .nh-mnav-grip,
+.nh-mnav-handle:focus-visible .nh-mnav-grip {
+  width: 5px;
+  height: 72px;
+  opacity: 1;
+}
+
+.nh-mnav-handle:focus-visible { outline: none; }
+
+/* ── a camada ───────────────────────────────────────────────────────────────
+ * A arte de fundo do tema, com um véu por cima para os cartões lerem bem. O centro da arte já é
+ * vazio; o véu só reforça. */
+.nh-mnav-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  visibility: hidden;
+  opacity: 0;
+  color: var(--mnav-ink);
+  background-color: var(--nh-mobile-bg-color, #0a0f1c);
+  touch-action: none;
+  will-change: opacity;
+}
+
+:host(.nh-mnav-open) .nh-mnav-layer { pointer-events: auto; }
+
+.nh-mnav-sky,
+.nh-mnav-sky i {
+  position: absolute;
+  inset: 0;
+}
+
+.nh-mnav-sky {
+  background-image: var(--nh-mobile-bg-img);
+  background-position: center;
+  background-size: cover;
+}
+
+/* Véu radial: mais forte no centro, onde a pilha fica, e transparente nos cantos, onde a arte
+ * tem planetas e nebulosa. */
+.nh-mnav-sky i:first-child {
+  background: radial-gradient(70% 48% at 50% 50%, var(--nh-mobile-scrim, rgb(8 12 22 / 92%)), transparent 100%);
+  opacity: .72;
+}
+
+/* Brilhos dourados muito discretos por cima da arte. O brilho é animação só de `opacity` —
+ * compositor, não layout. */
+.nh-mnav-sky i:last-child {
+  background-image:
+    radial-gradient(1.5px 1.5px at 14% 22%, var(--mnav-gold), transparent 60%),
+    radial-gradient(1px 1px at 78% 30%, var(--mnav-gold), transparent 60%),
+    radial-gradient(1.5px 1.5px at 86% 72%, var(--mnav-gold), transparent 60%),
+    radial-gradient(1px 1px at 24% 80%, var(--mnav-gold), transparent 60%);
+  animation: nh-mnav-twinkle 6s ease-in-out infinite alternate;
+}
+
+@keyframes nh-mnav-twinkle {
+  from { opacity: .15; }
+  to { opacity: .75; }
+}
+
+.nh-mnav-caption {
+  position: absolute;
+  top: max(30px, env(safe-area-inset-top));
+  left: 28px;
+  right: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.nh-mnav-caption span {
+  color: var(--mnav-gold);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .24em;
+}
+
+.nh-mnav-caption strong {
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── a pilha ─────────────────────────────────────────────────────────────── */
+.nh-mnav-stage {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  perspective: 900px;
+  perspective-origin: 50% 50%;
+}
+
+.nh-mnav-card {
+  position: absolute;
+  width: min(84vw, 380px);
+  min-height: 92px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 20px;
+  border: 1px solid var(--mnav-line);
+  border-radius: 22px;
+  color: var(--mnav-ink);
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--mnav-gold) 7%, transparent), transparent 55%),
+    var(--mnav-glass);
+  box-shadow: var(--mnav-shadow);
+  text-align: left;
+  transform-origin: 50% 50%;
+  will-change: transform, opacity;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+}
+
+.nh-mnav-card:focus-visible {
+  outline: 2px solid var(--mnav-gold);
+  outline-offset: 3px;
+}
+
+.nh-mnav-card.nh-mnav-active {
+  border-color: color-mix(in srgb, var(--mnav-gold) 60%, transparent);
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--mnav-gold) 14%, transparent), transparent 60%),
+    var(--mnav-glass-strong);
+  box-shadow: var(--mnav-shadow), 0 0 0 1px color-mix(in srgb, var(--mnav-gold) 18%, transparent) inset;
+}
+
+/* O ícone fica num anel dourado fino, como os planetas presos às órbitas da arte. */
+.nh-mnav-icon {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--mnav-gold) 55%, transparent);
+  border-radius: 50%;
+  color: var(--mnav-gold);
+  background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--mnav-gold) 18%, transparent), transparent 70%);
+  font-size: 21px;
+}
+
+.nh-mnav-needs-context .nh-mnav-icon {
+  border-color: var(--mnav-line);
+  color: var(--mnav-muted);
+  background: transparent;
+}
+
+.nh-mnav-text {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.nh-mnav-text strong {
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -.02em;
+}
+
+.nh-mnav-text small {
+  overflow: hidden;
+  color: var(--mnav-muted);
+  font-size: 12.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nh-mnav-here {
+  padding: 4px 9px;
+  border: 1px solid color-mix(in srgb, var(--mnav-gold) 60%, transparent);
+  border-radius: 999px;
+  color: var(--mnav-gold);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.nh-mnav-hint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: max(26px, env(safe-area-inset-bottom));
+  margin: 0;
+  color: var(--mnav-muted);
+  font-size: 11px;
+  letter-spacing: .02em;
+  text-align: center;
+  opacity: .8;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nh-mnav-sky i:last-child { animation: none; opacity: .45; }
+  .nh-mnav-grip { transition: none; }
+}

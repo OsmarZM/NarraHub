@@ -12,6 +12,7 @@ import { WorkspaceSyncService } from '../../application/workspace-sync.service';
 import { EntityStore } from '../entities/state/entity.store';
 import { KnowledgeStore } from '../knowledge/state/knowledge.store';
 import { ShellState } from '../../shell/state/shell.state';
+import { ViewportState } from '../../shell/state/viewport.state';
 import { fileToDataUrl } from '../../shared/utils/file-to-data-url';
 import { ContextualInspectorComponent } from '../../shell/contextual-inspector/contextual-inspector.component';
 import { AiWritingRequest, WritingEditorComponent } from '../writing/writing-editor.component';
@@ -60,6 +61,20 @@ export class WritingPageComponent implements OnChanges {
   private readonly knowledgeStore = inject(KnowledgeStore);
   private readonly sync = inject(WorkspaceSyncService);
   private readonly router = inject(Router);
+  readonly viewport = inject(ViewportState);
+
+  /**
+   * Android: a árvore de livros e capítulos abre como uma folha por cima do editor.
+   *
+   * No celular não cabem árvore, editor e resumo lado a lado. O editor ocupa a tela; a árvore e o
+   * resumo são folhas que o escritor abre e fecha. O resumo começa fechado no celular — aberto,
+   * ele cobre o texto que a pessoa veio escrever.
+   */
+  readonly mobileTreeOpen = signal(false);
+
+  mobileBarTitle(): string {
+    return this.store.activeChapter()?.title || this.store.activeBook()?.name || this.store.activeStory()?.name || 'Escolha um capítulo';
+  }
 
   get universeName(): string { return this.appState.activeUniverse()?.name ?? ''; }
   get universeDescription(): string { return this.appState.activeUniverse()?.description ?? ''; }
@@ -113,6 +128,7 @@ export class WritingPageComponent implements OnChanges {
   @ViewChild(WritingEditorComponent) private writingEditor?: WritingEditorComponent;
 
   constructor() {
+    if (this.viewport.isMobile() && this.store.inspectorOpen()) this.store.inspectorOpen.set(false);
     // Salvar um capítulo mexe em menções e estatísticas — domínios de fora.
     // O application service centraliza isso; o store não conhece nenhum deles.
     this.store.onChapterPersisted = (chapterId, content) =>
@@ -141,6 +157,7 @@ export class WritingPageComponent implements OnChanges {
    * trocar de capítulo é seleção, não navegação entre telas.
    */
   async selectChapter(chapter: ChapterOption): Promise<void> {
+    this.mobileTreeOpen.set(false);
     if (!await this.store.openChapterOption(chapter)) return;
     await this.router.navigate(['/workspace', this.universeId, 'writing', chapter.id], { replaceUrl: true });
   }

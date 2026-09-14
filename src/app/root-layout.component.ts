@@ -5,6 +5,11 @@ import { AppBootstrapService } from './bootstrap/app-bootstrap.service';
 import { NativeWindowService } from './core/native/window.service';
 import { SchemaRecoveryComponent } from './bootstrap/schema-recovery.component';
 import { AppNavigationService } from './core/navigation/app-navigation.service';
+import { AppNavigationId } from './core/navigation/app-navigation';
+import { MobileNavigationComponent } from './shell/mobile-navigation/mobile-navigation.component';
+import { MobileNavigationOption } from './shell/mobile-navigation/mobile-navigation.model';
+import { MobileTopbarComponent } from './shell/mobile-topbar/mobile-topbar.component';
+import { ViewportState } from './shell/state/viewport.state';
 import { AppState } from './core/state/app.state';
 import { CollaborationStore } from './features/collaboration/state/collaboration.store';
 import { ManuscriptStore } from './features/manuscript/state/manuscript.store';
@@ -16,10 +21,11 @@ import { TitlebarComponent } from './shell/titlebar/titlebar.component';
 @Component({
   selector: 'app-root-layout',
   standalone: true,
-  imports: [RouterOutlet, AppShellComponent, TitlebarComponent, SchemaRecoveryComponent],
+  imports: [RouterOutlet, AppShellComponent, TitlebarComponent, MobileTopbarComponent, SchemaRecoveryComponent, MobileNavigationComponent],
   templateUrl: './root-layout.component.html',
-  styleUrl: './root-layout.component.css',
+  styleUrls: ['./root-layout.component.css', './shell/android/android-shell.css'],
   encapsulation: ViewEncapsulation.None,
+  host: { '[class.nh-mobile]': 'viewport.isMobile()' },
 })
 export class RootLayoutComponent implements OnDestroy {
   readonly bootstrap = inject(AppBootstrapService);
@@ -30,13 +36,45 @@ export class RootLayoutComponent implements OnDestroy {
   private readonly collaboration = inject(CollaborationStore);
   private readonly manuscript = inject(ManuscriptStore);
   private readonly settings = inject(SettingsStore);
+  readonly viewport = inject(ViewportState);
 
   readonly workspaceMode = computed(() => this.navigation.route().universeId !== null);
+
+  /**
+   * O universo que a navegação gestual usa para destinos que precisam de um.
+   *
+   * O da rota primeiro; se a tela atual é global (Universos, Configurações), o último aberto —
+   * é o que deixa "Configurações → Personagens" funcionar sem voltar à biblioteca.
+   */
+  private readonly navigationUniverseId = computed(
+    () => this.navigation.route().universeId ?? this.appState.activeUniverseId(),
+  );
+
+  readonly mobileActiveId = computed(() => this.navigation.route().navId);
+  readonly mobileContextLabel = computed(() => (this.workspaceMode() ? this.appState.activeUniverse()?.name ?? '' : ''));
+  /** O nome da tela na barra de cima do Android: o mesmo texto do cartão da navegação gestual. */
+  readonly mobileTitle = computed(() => MOBILE_PRESENTATION[this.navigation.route().navId]?.label ?? 'NarraHub');
+
+  readonly mobileOptions = computed<MobileNavigationOption[]>(() => {
+    const universe = this.navigationUniverseId();
+    return this.navigation.navigationItems.map((item) => {
+      const presentation = MOBILE_PRESENTATION[item.navigationId];
+      const needsContext = item.needsUniverse && !universe;
+      return {
+        id: item.navigationId,
+        label: presentation.label,
+        icon: item.icon,
+        description: needsContext ? 'Abra um universo primeiro' : presentation.description,
+        needsContext,
+      };
+    });
+  });
   readonly updateBusy = this.settings.updateBusy;
   readonly updatePhase = this.settings.updatePhase;
   readonly updateInfo = this.settings.updateInfo;
   readonly updateProgress = this.settings.updateProgress;
   readonly updatePromptDismissed = this.settings.updatePromptDismissed;
+  readonly updateChannel = this.settings.updateChannel;
 
   ngOnDestroy(): void {
     this.shell.dispose();
@@ -64,6 +102,25 @@ export class RootLayoutComponent implements OnDestroy {
     await this.manuscript.saveNow();
     this.shell.clearWorkspaceUi();
     await this.navigation.navigate('configuracoes', null);
+  }
+
+  /**
+   * A escolha feita no navegador gestual.
+   *
+   * O mesmo caminho dos botões do desktop: salva o capítulo antes de sair e navega pelo
+   * `AppNavigationService`, que respeita os guards da rota. O navegador não sabe nada disso.
+   */
+  async navigateFromMobile(id: string): Promise<void> {
+    const navId = id as AppNavigationId;
+    await this.manuscript.saveNow();
+    if (navId === 'inicio') {
+      this.appState.goHome();
+      this.shell.clearWorkspaceUi();
+      await this.navigation.navigate('inicio', null);
+      return;
+    }
+    if (navId === 'configuracoes') this.shell.clearWorkspaceUi();
+    await this.navigation.navigate(navId, navId === 'configuracoes' ? null : this.navigationUniverseId());
   }
 
   async minimizeWindow(): Promise<void> {
@@ -96,6 +153,33 @@ export class RootLayoutComponent implements OnDestroy {
   }
 
   dismissUpdatePrompt(): void {
-    this.settings.dismissUpdatePrompt();
+    // No Android, "Depois" recolhe o cartão também. No desktop o comportamento fica como era:
+    // o aviso some, e Configurações continua mostrando a versão disponível.
+    if (this.updateChannel() === 'android') this.settings.postponeUpdate();
+    else this.settings.dismissUpdatePrompt();
+  }
+
+  /** Android: o APK foi baixado e conferido; o instalador é do sistema e o usuário confirma. */
+  async openAndroidInstaller(): Promise<void> {
+    const result = await this.settings.openAndroidInstaller();
+    if (!result.ok && result.error) this.shell.showError('Não foi possível abrir o instalador.', new Error(result.error));
   }
 }
+
+/**
+ * Como cada destino se apresenta no celular.
+ *
+ * Os ids e ícones continuam vindo das rotas; isto é só texto de cartão. "História" e
+ * "Personagens" são os nomes que o escritor usa, e cabem num cartão grande onde "Escrita" e
+ * "Entidades" parecem jargão de ferramenta.
+ */
+const MOBILE_PRESENTATION: Record<AppNavigationId, { label: string; description: string }> = {
+  inicio: { label: 'Universos', description: 'Todos os seus mundos' },
+  escrita: { label: 'História', description: 'Livros e capítulos' },
+  entidades: { label: 'Personagens', description: 'Personagens, lugares e objetos' },
+  conexoes: { label: 'Conexões', description: 'Quem se liga a quem' },
+  timeline: { label: 'Timeline', description: 'Os eventos no tempo' },
+  planejamento: { label: 'Planejamento', description: 'Cards e quadros' },
+  historico: { label: 'Histórico', description: 'O que mudou e quando' },
+  configuracoes: { label: 'Configurações', description: 'Aparelho, backup e sincronização' },
+};

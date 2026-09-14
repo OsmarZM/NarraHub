@@ -138,6 +138,9 @@ test('só as portas nativas falam com o Tauri', () => {
     // ESTE APARELHO -- identidade, roster, cursor, pendência --, e não conteúdo do
     // escritor. Distinta de `sync.service.ts`, que é a porta do V1 e está congelada.
     'core/native/sync-v2.service.ts',
+    // Atualização do Android por APK das GitHub Releases. É plataforma: baixa e abre o instalador do
+    // sistema, e não recebe URL nem caminho da tela -- o Rust usa o que ele próprio verificou.
+    'core/native/android-update.service.ts',
   ];
 
   const infratores = [];
@@ -637,4 +640,58 @@ test('a tela nao deixa o Sync V1 e o Sync V2 ativos ao mesmo tempo', () => {
       && /syncV2Blocked\(\): boolean \{\s*return this\.syncStatus\(\)\.running;/u.test(store),
     'as travas precisam olhar o estado real de cada mecanismo.',
   );
+});
+
+test('os tipos da atualizacao do Android tem os mesmos campos no Rust e no TypeScript', () => {
+  // Mesmo motivo dos outros espelhos: o IPC serializa em camelCase e nenhum compilador compara.
+  // Aqui um campo divergente faria a tela dizer "atualizado" com versao nova publicada.
+  const ler = (relativo) => readFileSync(new URL(relativo, import.meta.url), 'utf8');
+  const ts = ler('../src/app/core/native/android-update.service.ts');
+  const camposRust = (fonte, nome) => {
+    const inicio = fonte.indexOf(`pub struct ${nome} {`);
+    assert.ok(inicio >= 0, `nao achei o struct ${nome}`);
+    const linhas = fonte.slice(inicio, fonte.indexOf('\n}', inicio)).split('\n');
+    const campos = [];
+    for (let i = 0; i < linhas.length; i += 1) {
+      const campo = /^\s{4}pub ([a-z0-9_]+):/u.exec(linhas[i]);
+      // Campo com #[serde(skip)] nao viaja para a tela.
+      if (campo && !/#\[serde\(skip\)\]/u.test(linhas[i - 1] || '')) campos.push(campo[1]);
+    }
+    return campos;
+  };
+  const camposTs = (nome) => {
+    const inicio = ts.indexOf(`export interface ${nome} {`);
+    assert.ok(inicio >= 0, `nao achei a interface ${nome}`);
+    const corpo = ts.slice(inicio, ts.indexOf('\n}', inicio));
+    return [...corpo.matchAll(/^\s{2}([A-Za-z0-9_]+)\??:/gmu)].map((m) => m[1]);
+  };
+  const camel = (snake) => snake.replace(/_([a-z0-9])/gu, (_, c) => c.toUpperCase());
+  for (const [arquivo, nomeRust, nomeTs] of [
+    ['../src-tauri/src/application/atualizacao_android.rs', 'Novidade', 'AndroidUpdateNews'],
+    ['../src-tauri/src/interface/tauri/android_update_commands.rs', 'VerificacaoAndroid', 'AndroidUpdateCheck'],
+    ['../src-tauri/src/interface/tauri/android_update_commands.rs', 'ProgressoDoDownload', 'AndroidUpdateProgress'],
+  ]) {
+    assert.deepStrictEqual(
+      camposTs(nomeTs).sort(),
+      camposRust(ler(arquivo), nomeRust).map(camel).sort(),
+      `${nomeRust} (Rust) e ${nomeTs} (TypeScript) divergiram`,
+    );
+  }
+});
+
+test('os comandos de atualizacao do Android nao recebem URL, caminho nem hash da tela', () => {
+  // O Rust baixa e instala o que ele proprio verificou. Se a tela pudesse passar URL ou caminho,
+  // um frontend comprometido faria o app baixar ou instalar um arquivo arbitrario.
+  const fonte = readFileSync(new URL('../src-tauri/src/interface/tauri/android_update_commands.rs', import.meta.url), 'utf8');
+  const assinaturas = fonte.split('#[tauri::command]').slice(1).map((resto) => resto.split('{')[0].split('->')[0]);
+  assert.equal(assinaturas.length, 4, 'esperava os quatro comandos da atualizacao do Android');
+  for (const assinatura of assinaturas) {
+    for (const proibido of [/\burl\b/iu, /\bcaminho\b/iu, /\bpath\b/iu, /\bsha/iu, /\bhash\b/iu, /:\s*String\b/u]) {
+      assert.ok(!proibido.test(assinatura), `um comando passou a receber ${proibido} da tela:\n${assinatura}`);
+    }
+  }
+  const lib = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+  for (const comando of ['android_update_supported', 'android_update_check', 'android_update_download', 'android_update_install']) {
+    assert.ok(lib.includes(`android_update_commands::${comando}`), `${comando} fora do invoke_handler`);
+  }
 });
