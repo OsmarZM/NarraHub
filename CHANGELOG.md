@@ -4,7 +4,7 @@ As alterações relevantes do NarraHub são registradas neste arquivo. O projeto
 
 ## 0.10.0-beta.1 — 2026-09-14 (pré-release)
 
-Versão de teste, publicada como pré-release: quem usa a 0.9.2 no Windows não a recebe.
+Pré-release só Android, para teste: não há instalador Windows nesta versão, e quem usa a 0.9.2 no Windows continua nela.
 
 ### NarraHub no Android
 

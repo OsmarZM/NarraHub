@@ -1,20 +1,22 @@
 name: Release Windows + Android
 
-# Toda release publica os dois: instalador Windows (com o manifesto assinado do updater) e APK
-# Android assinado. A ordem dos jobs é o gate:
+# Dois caminhos, escolhidos pela versão do package.json — nunca pela mão de quem dispara:
 #
-#   android    versionCode da versão, build, assinatura verificada, SHA-256
-#              falhou qualquer passo? não existe release
-#   release    Windows + cria a release como RASCUNHO
-#              anexa NarraHub-Android.apk e NarraHub-Android.apk.sha256, confere os dois
-#              só então publica
+#   android              versão e canal, versionCode, build, assinatura verificada, SHA-256
+#                        falhou qualquer passo? não existe release
 #
-# Versão com pré-release (0.10.0-beta.1) vira PRÉ-RELEASE no GitHub. O atualizador do Windows lê
-# `releases/latest`, que ignora pré-release: uma beta nunca é oferecida a quem usa a estável. O
-# atualizador do Android aplica a mesma regra pela versão instalada.
+#   ESTÁVEL (0.10.0)     job release: Windows (MSI + NSIS + manifesto do updater) cria a release
+#                        como RASCUNHO, anexa APK e SHA-256, confere, e só então publica
 #
-# Uma release publicada sem APK não pode acontecer: o APK é anexado e conferido enquanto a
-# release ainda é rascunho, e a publicação é o último passo.
+#   PRÉ-RELEASE          job android-prerelease: release SÓ Android — APK assinado e SHA-256,
+#   (0.10.0-beta.1)      marcada como pré-release. Sem MSI, sem NSIS, sem latest.json.
+#
+# Por que pré-release não gera Windows: o Windows Installer compara upgrades só por
+# MAIOR.MENOR.PATCH e não aceita sufixo. Uma beta no MSI teria de fingir ser 0.10.0 — e colidiria
+# com a estável. Betas existem para o Android; o Windows só recebe versão estável.
+#
+# Nenhuma release é publicada sem APK: ele é anexado e conferido enquanto a release ainda é
+# rascunho, e a publicação é o último passo dos dois caminhos.
 on:
   workflow_dispatch:
 
@@ -25,8 +27,26 @@ jobs:
   android:
     name: Android assinado
     runs-on: ubuntu-latest
+    outputs:
+      versao: ${{ steps.versao.outputs.versao }}
+      pre: ${{ steps.versao.outputs.pre }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Versão e canal
+        id: versao
+        run: |
+          versao="$(node -p "require('./package.json').version")"
+          echo "versao=$versao" >> "$GITHUB_OUTPUT"
+          if [[ "$versao" == *-* ]]; then pre=true; else pre=false; fi
+          echo "pre=$pre" >> "$GITHUB_OUTPUT"
+          if gh release view "app-v$versao" > /dev/null 2>&1; then
+            echo "::error::A release app-v$versao já existe. Suba a versão antes de disparar."
+            exit 1
+          fi
+          echo "Versão $versao, pré-release: $pre"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Antes de gastar dez minutos de build: sem assinatura não há APK de release. O APK de
       # debug da CI NÃO serve de substituto — ele não é assinado para distribuição e não pode
@@ -53,8 +73,10 @@ jobs:
 
       # O versionCode sai da versão, com o pré-release incluído: sem isso beta.1 e beta.2 teriam o
       # mesmo número, e a atualização entre elas dependeria de o Android aceitar número igual.
-      - name: Contrato do APK de release
-        run: node --test tests/android-release.test.mjs
+      - name: Contrato do APK de release e versão consistente
+        run: |
+          node --test tests/android-release.test.mjs
+          npm run release:validate-version
 
       - name: Configuração Android da release
         run: node scripts/prepare-android-release-config.mjs
@@ -132,6 +154,8 @@ jobs:
   release:
     name: Windows e publicação
     needs: android
+    # Só estável. Pré-release é publicada pelo job android-prerelease, sem Windows.
+    if: needs.android.outputs.pre == 'false'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -188,14 +212,6 @@ jobs:
           TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
         run: npm run release:prepare-config
 
-      - name: Versão e canal
-        id: versao
-        shell: bash
-        run: |
-          versao="$(node -p "require('./package.json').version")"
-          echo "versao=$versao" >> "$GITHUB_OUTPUT"
-          if [[ "$versao" == *-* ]]; then echo "pre=true" >> "$GITHUB_OUTPUT"; else echo "pre=false" >> "$GITHUB_OUTPUT"; fi
-
       # A release nasce como RASCUNHO. Ela só é publicada depois de o APK estar anexado e
       # conferido, no passo seguinte.
       - name: Criar release (rascunho) e artefatos do updater
@@ -209,7 +225,7 @@ jobs:
           releaseName: 'NarraHub v__VERSION__'
           releaseBody: 'Instaladores Windows com manifesto assinado para atualização automática, e APK Android assinado.'
           releaseDraft: true
-          prerelease: ${{ steps.versao.outputs.pre }}
+          prerelease: false
           args: '--config src-tauri/tauri.release.conf.json'
 
       - uses: actions/download-artifact@v4
@@ -222,7 +238,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="app-v${{ steps.versao.outputs.versao }}"
+          tag="app-v${{ needs.android.outputs.versao }}"
           for arquivo in NarraHub-Android.apk NarraHub-Android.apk.sha256; do
             test -f "saida-android/$arquivo" || { echo "::error::$arquivo não chegou a este job."; exit 1; }
           done
@@ -242,3 +258,52 @@ jobs:
 
           gh release edit "$tag" --draft=false
           echo "Release $tag publicada com instaladores Windows, APK Android assinado e SHA-256."
+
+  android-prerelease:
+    name: Pré-release só Android
+    needs: android
+    if: needs.android.outputs.pre == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: narrahub-android-release
+          path: saida-android
+
+      - name: Criar pré-release (rascunho), anexar APK e SHA-256, conferir e publicar
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSAO: ${{ needs.android.outputs.versao }}
+        run: |
+          tag="app-v$VERSAO"
+          case "$VERSAO" in
+            *-*) ;;
+            *) echo "::error::$VERSAO é estável: estável passa pelo job Windows, nunca por aqui."; exit 1 ;;
+          esac
+          for arquivo in NarraHub-Android.apk NarraHub-Android.apk.sha256; do
+            test -f "saida-android/$arquivo" || { echo "::error::$arquivo não chegou a este job."; exit 1; }
+          done
+          (cd saida-android && sha256sum --check NarraHub-Android.apk.sha256)
+
+          gh release create "$tag" --draft --prerelease --target "$GITHUB_SHA" \
+            --title "NarraHub v$VERSAO (Android)" \
+            --notes "Pré-release só Android, para teste: APK assinado e SHA-256. Sem instaladores Windows — o Windows recebe só versões estáveis."
+
+          gh release upload "$tag" saida-android/NarraHub-Android.apk saida-android/NarraHub-Android.apk.sha256
+
+          # Conferir na própria release: exatamente os dois assets do Android, nada de Windows.
+          nomes="$(gh release view "$tag" --json assets --jq '.assets[].name' | sort)"
+          esperado="$(printf '%s\n' NarraHub-Android.apk NarraHub-Android.apk.sha256 | sort)"
+          if [ "$nomes" != "$esperado" ]; then
+            echo "::error::Assets inesperados na pré-release $tag (ela continua como rascunho):"
+            echo "$nomes"
+            exit 1
+          fi
+
+          gh release edit "$tag" --draft=false --prerelease
+          if [ "$(gh release view "$tag" --json isPrerelease --jq .isPrerelease)" != "true" ]; then
+            echo "::error::$tag foi publicada sem a marca de pré-release."
+            exit 1
+          fi
+          echo "Pré-release $tag publicada: APK Android assinado e SHA-256."

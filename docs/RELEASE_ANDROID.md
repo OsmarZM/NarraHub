@@ -1,13 +1,25 @@
 # Release Android — APK assinado, SHA-256 e atualização pelo app
 
-Toda execução do workflow **Release Windows + Android** (`.github/workflows/release-windows.yml`)
-publica na mesma release do GitHub:
+O workflow **Release Windows + Android** (`.github/workflows/release-windows.yml`) escolhe o
+caminho pela versão do `package.json`:
 
 ```text
-instaladores Windows              (tauri-action, com o manifesto assinado do updater)
-NarraHub-Android.apk              assinado com o keystore de release
-NarraHub-Android.apk.sha256       SHA-256 do APK, no formato do sha256sum
+versão estável (0.10.0)          release normal
+  instaladores Windows           MSI + NSIS + manifesto assinado do updater
+  NarraHub-Android.apk           assinado com o keystore de release
+  NarraHub-Android.apk.sha256    SHA-256 do APK, no formato do sha256sum
+
+pré-release (0.10.0-beta.1)      pré-release SÓ Android
+  NarraHub-Android.apk
+  NarraHub-Android.apk.sha256
+  (sem MSI, sem NSIS, sem latest.json)
 ```
+
+**Por que beta não gera Windows.** O Windows Installer compara upgrades só por
+`MAIOR.MENOR.PATCH` e não aceita sufixo de pré-release. Uma beta com MSI teria de se passar por
+`0.10.0` e colidiria com a estável. Betas existem para testar o Android; o Windows só recebe
+versão estável. O teste `tests/android-release.test.mjs` reprova se o job de pré-release passar a
+gerar qualquer artefato Windows, ou se aparecer um ajuste de versão do WiX.
 
 Os dois nomes do Android são **estáveis de propósito**: o app procura exatamente eles
 (`src-tauri/src/application/atualizacao_android.rs`). A versão está na tag da release
@@ -29,15 +41,19 @@ usar nomes diferentes.
 ## O gate da release
 
 ```text
-job android    exige os quatro segredos                          faltou algum? para
-               contrato: nomes dos assets e ordem do versionCode  reprovou? para
-               versionCode calculado da versão
-               build de release, APK *não* -unsigned, apksigner verify
-               SHA-256 do APK final, conferido com sha256sum --check
-job release    só roda se o android passou
-               cria a release como RASCUNHO (pré-release se a versão tiver sufixo)
-               anexa APK e SHA-256, confere o SHA de novo e os dois nos assets
-               só então publica
+job android             versão e canal; a tag já existe? para
+                        exige os quatro segredos                     faltou algum? para
+                        contrato dos assets, versionCode, versão consistente
+                        keystore abre e o alias existe                não? para em segundos
+                        build de release, APK *não* -unsigned, apksigner verify
+                        SHA-256 do APK final, conferido com sha256sum --check
+job release             só versão ESTÁVEL, só se o android passou
+                        Windows cria a release como RASCUNHO
+                        anexa APK e SHA-256, confere, só então publica
+job android-prerelease  só PRÉ-RELEASE, só se o android passou
+                        cria rascunho marcado como pré-release, sem nada do Windows
+                        anexa APK e SHA-256; exige exatamente esses dois assets
+                        só então publica, e confere a marca de pré-release
 ```
 
 Se qualquer passo falhar, **a release não é publicada**: o APK e o SHA são anexados e conferidos
@@ -58,10 +74,10 @@ Pré-releases aceitas: `alpha.N`, `beta.N`, `rc.N`, com N de 1 a 32.
 
 ## Canal: estável e beta
 
-Versão com sufixo (`0.10.0-beta.1`) é publicada como **pré-release** no GitHub.
+Versão com sufixo (`0.10.0-beta.1`) é publicada como **pré-release só Android** no GitHub.
 
-- O **atualizador do Windows** lê `releases/latest`, que ignora pré-release: quem usa a estável no
-  desktop nunca recebe beta.
+- O **Windows** não recebe beta: a pré-release não tem instalador nem `latest.json`, e o
+  atualizador do Windows lê `releases/latest`, que ignora pré-release.
 - O **atualizador do Android** aplica a mesma regra pela versão instalada: estável só recebe
   estável; beta recebe betas mais novas e, depois, a estável.
 
@@ -106,10 +122,10 @@ O `.gitignore` da raiz recusa `*.jks`, `*.keystore` e `keystore.properties`.
 
 ## Estado atual
 
-- **Assinatura de release: não configurada.** Não havia keystore Android no projeto nem nesta
-  máquina. `D:\DevTools\NarraHubSigning\narrahub.key` é a chave **minisign do updater do Tauri**,
-  outra coisa, e não serve para Android.
-- Até os quatro segredos existirem, o workflow de release **falha no job `android`**, de propósito.
+- **Assinatura de release: configurada** (2026-09-14). Keystore criado pelo humano, fora do
+  repositório; os quatro segredos existem, com o alias `narrahub`.
+- `D:\DevTools\NarraHubSigning\narrahub.key` é a chave **minisign do updater do Tauri**, outra
+  coisa, e não serve para Android.
 
 ## A atualização pelo app
 

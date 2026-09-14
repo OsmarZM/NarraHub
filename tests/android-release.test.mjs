@@ -55,16 +55,34 @@ test('a release publica APK com nome estavel e o SHA-256 ao lado, antes de publi
   assert.ok(/sha256sum\s+NarraHub-Android\.apk\s*>\s*NarraHub-Android\.apk\.sha256/u.test(workflow), 'o SHA-256 precisa ser calculado sobre o APK final');
   assert.ok(/apksigner"?\s+verify/u.test(workflow), 'a assinatura precisa ser verificada antes de publicar');
 
-  const anexar = workflow.indexOf('gh release upload');
-  const publicar = workflow.indexOf('--draft=false');
-  assert.ok(anexar > 0 && publicar > anexar, 'a release só pode ser publicada depois de anexar APK e SHA');
+  for (const nome of ['release', 'android-prerelease']) {
+    const bloco = jobDoWorkflow(workflow, nome);
+    const anexar = bloco.indexOf('gh release upload');
+    const publicar = bloco.indexOf('--draft=false');
+    assert.ok(anexar > 0 && publicar > anexar, `${nome}: a release só pode ser publicada depois de anexar APK e SHA`);
+  }
 });
 
-test('pré-release ganha versão de MSI numérica; estável mantém a derivada do app', async () => {
-  const { versaoMsiDe } = await import('../scripts/prepare-android-release-config.mjs');
-  assert.equal(versaoMsiDe('0.10.0'), null);
-  assert.equal(versaoMsiDe('0.10.0-beta.1'), '0.10.0.33');
-  assert.equal(versaoMsiDe('0.10.0-beta.2'), '0.10.0.34');
-  assert.equal(versaoMsiDe('1.2.3-rc.1'), '1.2.3.65');
-  assert.throws(() => versaoMsiDe('0.10.0-nightly'));
+function jobDoWorkflow(workflow, nome) {
+  const inicio = workflow.indexOf(`\n  ${nome}:\n`);
+  assert.ok(inicio >= 0, `job ${nome} não existe`);
+  const resto = workflow.slice(inicio + 1);
+  const proximo = resto.slice(1).search(/\n  [a-z][a-z0-9-]*:\n/u);
+  return proximo < 0 ? resto : resto.slice(0, proximo + 1);
+}
+
+test('pré-release é só Android; Windows só recebe versão estável', () => {
+  // O Windows Installer não distingue 0.10.0-beta.1 de 0.10.0. Uma beta com MSI criaria dívida de
+  // versão no Windows; por isso o caminho é escolhido pela versão, e cada caminho recusa o outro.
+  const workflow = readFileSync(new URL('../.github/workflows/release-windows.yml', import.meta.url), 'utf8');
+  const windows = jobDoWorkflow(workflow, 'release');
+  const pre = jobDoWorkflow(workflow, 'android-prerelease');
+
+  assert.match(windows, /if: needs\.android\.outputs\.pre == 'false'/u);
+  assert.match(windows, /prerelease: false/u);
+  assert.match(pre, /if: needs\.android\.outputs\.pre == 'true'/u);
+  assert.match(pre, /--prerelease/u);
+  assert.doesNotMatch(pre, /tauri-action|TAURI_SIGNING|latest\.json|msi|nsis/iu, 'a pré-release não pode gerar nada do Windows');
+  assert.match(pre, /\*\) echo "::error::\$VERSAO é estável/u, 'o job de pré-release recusa versão estável');
+  assert.doesNotMatch(workflow, /wix/iu, 'nenhum ajuste de versão do MSI: beta não passa pelo Windows');
 });
