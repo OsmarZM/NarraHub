@@ -989,3 +989,216 @@ fn ordem_concorrente_vira_decisao_e_nao_e_superada() {
         vec![(arvore.universo.clone(), "concurrent".to_string())]
     );
 }
+
+/// **Ponte de ordem: nenhuma revisão corrente sem materialização.** Eventos assinados de três origens
+/// confiáveis (X, Y, Z) chegando a um receptor com `c1` e `c4` legados no livro `b1`.
+mod ponte_de_ordem {
+    use super::*;
+    use crate::application::mutacao::tests::Aparelho as Receptor;
+    use crate::domain::sync::EventEnvelope;
+    use crate::infrastructure::sqlite::sync_codec::manuscrito::{
+        CapituloCanonico, OrdemDosCapitulos,
+    };
+    use crate::infrastructure::sqlite::test_support::origem_remota_confiavel;
+
+    struct Cena {
+        receptor: Receptor,
+        x: DeviceIdentity,
+        y: DeviceIdentity,
+        z: DeviceIdentity,
+    }
+
+    fn cena() -> Cena {
+        let receptor = Receptor::novo();
+        let connection = receptor.banco.database.write().expect("escrita");
+        connection
+            .execute_batch(
+                "INSERT INTO chapters (id, book_id, title, sort_order) VALUES ('c4', 'b1', 'Quatro', 1);
+                 INSERT INTO books (id, story_id, name) VALUES ('b2', 's1', 'Outro');",
+            )
+            .expect("legado");
+        let x = origem_remota_confiavel(&connection, &receptor.eu);
+        let y = origem_remota_confiavel(&connection, &receptor.eu);
+        let z = origem_remota_confiavel(&connection, &receptor.eu);
+        drop(connection);
+        Cena { receptor, x, y, z }
+    }
+
+    fn assinado(
+        origem: &DeviceIdentity,
+        seq: i64,
+        tipo: &str,
+        id: &str,
+        payload: &str,
+        base: &str,
+    ) -> EventEnvelope {
+        let mut envelope = envelope_de_origem(
+            origem.device_id(),
+            seq,
+            "u1",
+            &AggregateRef::new(tipo, id),
+            Operation::Upsert,
+            payload,
+            base,
+        );
+        envelope.signature = origem.sign(&envelope);
+        envelope
+    }
+
+    fn ordem(origem: &DeviceIdentity, seq: i64, base: &str, ids: &[&str]) -> EventEnvelope {
+        let payload = sync_codec::para_json(&OrdemDosCapitulos {
+            book_id: "b1".into(),
+            chapter_ids: ids.iter().map(|c| c.to_string()).collect(),
+        })
+        .expect("json");
+        assinado(origem, seq, "chapter_order", "b1", &payload, base)
+    }
+
+    fn capitulo(origem: &DeviceIdentity, seq: i64, id: &str, livro: &str) -> EventEnvelope {
+        let payload = sync_codec::para_json(&CapituloCanonico {
+            id: id.into(),
+            book_id: livro.into(),
+            title: id.into(),
+            content: String::new(),
+            summary: String::new(),
+            scene_origin: String::new(),
+            scene_destination: String::new(),
+            status: "IDEIA".into(),
+            canon_status: "CANON".into(),
+            custom_fields: vec![],
+        })
+        .expect("json");
+        assinado(origem, seq, "chapter", id, &payload, "")
+    }
+
+    impl Cena {
+        fn receber(&self, eventos: &[EventEnvelope]) -> Relatorio {
+            receber_eventos(&mut self.receptor.banco.connection(), eventos).expect("receber")
+        }
+        fn aplicado(&self, evento: &EventEnvelope) -> bool {
+            self.receptor
+                .conexao()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sync_applied_events WHERE event_id = ?1)",
+                    [&evento.event_id],
+                    |row| row.get(0),
+                )
+                .expect("aplicado")
+        }
+        fn revisao_da_ordem(&self) -> Option<String> {
+            self.receptor.estado_causal("chapter_order", "b1")
+        }
+        fn ordem_materializada(&self) -> String {
+            sync_codec::ler_canonico(
+                &self.receptor.conexao(),
+                &AggregateRef::new("chapter_order", "b1"),
+            )
+            .expect("ler")
+            .expect("existe")
+            .payload
+        }
+    }
+
+    /// Rc não materializa; o sucessor Ra também não (cita c5, que não chegou). A ponte não fecha:
+    /// nada fica aplicado, e a revisão corrente continua sendo a do domínio. Quando c5 chega, a
+    /// cadeia Rc → Ra fecha e Ra materializa.
+    #[test]
+    fn ponte_que_nao_fecha_desfaz_tudo_e_fecha_quando_a_dependencia_chega() {
+        let cena = cena();
+        let rc = ordem(&cena.x, 1, "", &["c1"]);
+        let ra = ordem(&cena.y, 1, &rc.new_rev, &["c1", "c4", "c5"]);
+
+        let relatorio = cena.receber(&[rc.clone(), ra.clone()]);
+        assert_eq!(relatorio.superados, 0, "{relatorio:?}");
+        assert_eq!(relatorio.pendentes, 2, "{relatorio:?}");
+        assert!(!cena.aplicado(&rc), "Rc ficou aplicada sem materializar");
+        assert!(!cena.aplicado(&ra));
+        assert_eq!(
+            cena.revisao_da_ordem(),
+            None,
+            "revisão corrente que o domínio nunca teve"
+        );
+        let historia: i64 = cena
+            .receptor
+            .conexao()
+            .query_row(
+                "SELECT COUNT(*) FROM sync_revision_history WHERE aggregate_type = 'chapter_order'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("história");
+        assert_eq!(historia, 0, "a ponte desfeita deixou revisão na história");
+
+        let c5 = capitulo(&cena.z, 1, "c5", "b1");
+        let relatorio = cena.receber(&[c5]);
+        assert_eq!(relatorio.superados, 1, "{relatorio:?}");
+        assert_eq!(relatorio.pendentes, 0, "{relatorio:?}");
+        assert!(cena.aplicado(&rc) && cena.aplicado(&ra));
+        assert_eq!(
+            cena.revisao_da_ordem().as_deref(),
+            Some(ra.new_rev.as_str())
+        );
+        assert_eq!(cena.ordem_materializada(), ra.payload);
+        cena.receptor.coerente("chapter_order", "b1");
+    }
+
+    /// O sucessor está no log, mas a origem dele tem lacuna antes dele: não é caminho ainda.
+    #[test]
+    fn sucessor_com_lacuna_na_origem_nao_fecha_a_ponte() {
+        let cena = cena();
+        let rc = ordem(&cena.x, 1, "", &["c1"]);
+        let y1 = capitulo(&cena.y, 1, "c9", "b2");
+        let ra = ordem(&cena.y, 2, &rc.new_rev, &["c1", "c4"]);
+
+        let relatorio = cena.receber(&[rc.clone(), ra.clone()]);
+        assert_eq!(relatorio.superados, 0, "{relatorio:?}");
+        assert!(!cena.aplicado(&rc));
+        assert_eq!(cena.revisao_da_ordem(), None);
+
+        let relatorio = cena.receber(&[y1]);
+        assert_eq!(relatorio.superados, 1, "{relatorio:?}");
+        assert!(cena.aplicado(&rc) && cena.aplicado(&ra));
+        assert_eq!(
+            cena.revisao_da_ordem().as_deref(),
+            Some(ra.new_rev.as_str())
+        );
+        assert_eq!(cena.ordem_materializada(), ra.payload);
+    }
+
+    /// Ponte que não fechou, e o escritor reordena aqui: a escrita local parte da revisão que o
+    /// domínio realmente tem, nunca de Rc.
+    #[test]
+    fn reorder_local_depois_de_ponte_desfeita_parte_do_estado_real() {
+        let cena = cena();
+        let rc = ordem(&cena.x, 1, "", &["c1"]);
+        let ra = ordem(&cena.y, 1, &rc.new_rev, &["c1", "c4", "c5"]);
+        cena.receber(&[rc.clone(), ra]);
+        assert_eq!(cena.revisao_da_ordem(), None);
+
+        manuscript_service::reorder_chapters(
+            &cena.receptor.banco.database,
+            &cena.receptor.eu,
+            "b1",
+            &["c4".to_string(), "c1".to_string()],
+        )
+        .expect("reordenar");
+
+        let base: String = cena
+            .receptor
+            .conexao()
+            .query_row(
+                "SELECT base_rev FROM sync_events
+                  WHERE device_id = ?1 AND aggregate_type = 'chapter_order' ORDER BY seq DESC LIMIT 1",
+                [cena.receptor.eu.device_id()],
+                |row| row.get(0),
+            )
+            .expect("evento local");
+        assert_eq!(
+            base, "",
+            "a escrita local partiu de uma revisão nunca materializada"
+        );
+        assert_ne!(base, rc.new_rev);
+        assert!(!cena.aplicado(&rc));
+        cena.receptor.coerente("chapter_order", "b1");
+    }
+}

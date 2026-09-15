@@ -39,7 +39,7 @@ revisões / eventos
 | --- | --- | --- |
 | **B1** | integrada | fronteira `Mutacao`; `attachment` create e delete; exclusão remota bloqueada e a resolução dela (4.4.1); fronteira com o blob store (4.4.2); migration 21 (`sync_divergences.kind`) |
 | **B2** | integrada (#59) | `universe` create/update; `story`, `book`, `chapter` create/update/delete; `chapter_order` (create/delete de capítulo e reorder); campos personalizados dentro desses agregados; `tag_assignment` apagado pelos gatilhos do manuscrito; impacto de exclusão `Excluido`/`Reescrito`/`Bloqueado` (4.3); catálogo de efeitos com gate (3); payload canônico definitivo (8); dependência de criação pai → filho na aplicação remota; capa de livro pelo blob store |
-| **B2.1** | implementada (branch `sync-b2-1-ordem`), em revisão | `story_order(universe)` e `book_order(story)` com o contrato de `chapter_order`; revisão de ordem **superada** (8.1), que destrava ordens entre três origens — inclusive o travamento que existia em `chapter_order` desde a B2 |
+| **B2.1** | implementada (branch `sync-b2-1-ordem`), em revisão | `story_order(universe)` e `book_order(story)` com o contrato de `chapter_order`; **ponte de ordem** transacional (8.1), que destrava ordens entre três origens sem nunca confirmar revisão corrente não materializada — inclusive o travamento que existia em `chapter_order` desde a B2 |
 | B3–B6 | não iniciadas | ver seção 7 |
 
 **Fora da B2, dito às claras:**
@@ -510,12 +510,35 @@ B recebe tudo:  c4 aplica · Ra espera (base Rc desconhecida) · c3 aplica · Rc
 ```
 
 `c4` é causalmente posterior a `Rc`, mas eventos de agregados diferentes não carregam essa relação; a
-história da própria ordem carrega: há no log um evento cuja base é `Rc`. Regra: ordem **sequencial** que não
-pode ser materializada **e** tem sucessor guardado (`base_rev == new_rev` dela) entra na história como
-revisão corrente, marcada como aplicada, **sem escrever no domínio** (`Applied::Superado`). O sucessor vira
-sequencial e materializa exatamente. Sem sucessor, continua esperando. Ordem concorrente (mesma base que a
-daqui) continua virando decisão — superar não é merge. Só vale para agregado de ordem. Uma superada não é
-`Aplicado`: a asserção por evento não se aplica a ela, e em repouso a revisão corrente já é a do sucessor.
+história da própria ordem carrega. **Ponte de ordem** (`atravessar_ponte`), só para agregado de ordem:
+
+```text
+Rc sequencial, não materializável
+SAVEPOINT ponte_de_ordem
+  Rc → revisão corrente e "aplicada" PROVISÓRIAS (domínio intocado)
+  sucessor alcançável de Rc?
+    mesmo agregado · base_rev == new_rev(Rc) · ainda não aplicado · guardado (já passou pela confiança)
+    alcançável: toda seq da origem dele entre o cursor e ele já aplicada — lacuna → não é caminho
+  sequencial contra a história provisória?
+  dependências do sucessor:
+    presentes              → aplica, confere materialização exata → RELEASE   (Applied::Superado)
+    faltando               → atravessa o sucessor também (até 64 revisões)
+    inconsistência (erro)  → não é caminho
+  não chegou a uma revisão materializada → ROLLBACK TO: nada da tentativa sobrevive; Rc continua pendente
+```
+
+**Invariante estrutural:** `sync_aggregate_state.current_rev` só é confirmado apontando para uma revisão
+materializada — nunca para conhecimento causal apenas. Por isso nenhuma escrita local parte de uma
+revisão que o domínio nunca teve. Os envelopes continuam guardados no log; só não ficam falsamente
+aplicados. No fim de `receber_eventos`, todo agregado tocado na sessão, sem decisão aberta nem evento
+pendente, é conferido: revisão corrente presente ⇒ `ler_canonico == payload(revisão corrente)`; diferente,
+a sessão inteira não é confirmada.
+
+Ordem concorrente (mesma base que a daqui) continua virando decisão — a ponte não é merge.
+
+Testes: `ponte_de_ordem::ponte_que_nao_fecha_desfaz_tudo_e_fecha_quando_a_dependencia_chega`,
+`sucessor_com_lacuna_na_origem_nao_fecha_a_ponte`, `reorder_local_depois_de_ponte_desfeita_parte_do_estado_real`,
+e os A/B/C de `story_order` e `chapter_order`.
 
 Se mover capítulo entre livros virar funcionalidade, o contrato muda para "atualiza a FK na mesma
 transação" — e a checagem de materialização continua a mesma.
