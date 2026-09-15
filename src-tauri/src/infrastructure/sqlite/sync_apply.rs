@@ -34,7 +34,7 @@ use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::sync::{
     classify, compute_revision, AggregateRef, Causality, EventEnvelope, Operation,
 };
-use crate::infrastructure::sqlite::canvas_repository;
+use crate::infrastructure::sqlite::sync_codec::{self, Impacto};
 use crate::infrastructure::sqlite::sync_repository::aggregate_history;
 use rusqlite::{OptionalExtension, Transaction};
 
@@ -106,29 +106,29 @@ pub fn apply_remote_event(
             Ok(Applied::JaAplicado)
         }
         Causality::Sequential => {
-            // Preflight causal da exclusão remota, ANTES de qualquer SQL destrutivo.
-            //
-            // A origem que apagou este pai emitiu, antes, a exclusão de cada descendente que ela
-            // conhecia; esses já chegaram e já saíram. Se ainda existe descendente aqui, ele é algo
-            // que a origem não conhecia ou não apagou — trabalho concorrente. Deixar a chave
-            // estrangeira ou um gatilho apagá-lo seria perda silenciosa causada pelo banco, não
-            // pelo protocolo. Corrigir depois da cascata é impossível: a linha já não existe.
-            if envelope.operation == Operation::Delete {
-                if let Some(id) = bloquear_exclusao_do_pai(tx, envelope, &aggregate, &historia)? {
-                    return Ok(Applied::ExclusaoDoPaiBloqueada { id_divergencia: id });
+            match envelope.operation {
+                // Preflight causal da exclusão remota, ANTES de qualquer SQL destrutivo.
+                //
+                // A origem que apagou este agregado emitiu, antes, a exclusão de cada descendente
+                // que ela conhecia. Se ainda existe descendente aqui, ou se um sobrevivente tem
+                // decisão ou alteração pendente, é trabalho concorrente — e a FK ou o gatilho o
+                // destruiriam em silêncio. Depois da cascata não há como corrigir.
+                Operation::Delete => {
+                    if let Some(motivo) = motivo_para_bloquear_exclusao_remota(tx, envelope)? {
+                        let id = bloquear_exclusao(tx, envelope, &historia, &motivo)?;
+                        return Ok(Applied::ExclusaoDoPaiBloqueada { id_divergencia: id });
+                    }
+                }
+                // Dependências: pai ou capítulo citado que ainda não chegou é história incompleta.
+                // Não aplica, não marca; o cursor espera. Pai divergente é erro (pai imutável).
+                Operation::Upsert => {
+                    if sync_codec::dependencias(tx, envelope)?.is_some() {
+                        return Ok(Applied::PrecisaReconciliar);
+                    }
                 }
             }
-            aplicar_no_agregado(tx, envelope)?;
-            if envelope.operation == Operation::Upsert {
-                // Upsert sequencial sobre tombstone é a restauração explícita (base = revisão da
-                // exclusão). O agregado voltou; o tombstone deixaria domínio e estado causal
-                // dizendo coisas opostas.
-                tx.execute(
-                    "DELETE FROM sync_tombstones WHERE aggregate_type = ?1 AND aggregate_id = ?2",
-                    [&envelope.aggregate_type, &envelope.aggregate_id],
-                )
-                .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-            }
+            aplicar_com_estado_causal(tx, envelope)?;
+            conferir_materializacao(tx, envelope)?;
             registrar_revisao(tx, envelope)?;
             marcar_aplicado(tx, &envelope.event_id)?;
             Ok(Applied::Aplicado)
@@ -160,24 +160,95 @@ pub fn apply_remote_event(
     }
 }
 
-/// Recusa a exclusão de um pai que ainda tem descendente vivo, registrando a divergência.
+/// Por que a exclusão remota não pode rodar agora, ou `None`.
 ///
-/// Devolve o id da divergência quando bloqueou; `None` quando a exclusão pode seguir.
-fn bloquear_exclusao_do_pai(
+/// ```text
+/// Bloqueado(motivo)        efeito sobre agregado ainda não coberto        → bloqueia
+/// Excluido(filho) vivo     a origem não apagou este filho                  → bloqueia
+/// Reescrito(sobrevivente)  com divergência aberta ou evento pendente aqui → bloqueia; sem isso,
+///                          a reescrita dele chega da origem como o evento seguinte
+/// ```
+///
+/// Um filho de existência derivada (`chapter_order`) só conta como vivo se ainda tiver revisão
+/// corrente: a linha que o sustenta é a do pai, e a origem já emitiu a exclusão dele.
+pub fn motivo_para_bloquear_exclusao_remota(
     tx: &Transaction<'_>,
     envelope: &EventEnvelope,
-    aggregate: &AggregateRef,
-    historia: &crate::domain::sync::AggregateHistory,
 ) -> DatabaseCommandResult<Option<String>> {
-    if !crate::infrastructure::sqlite::sync_codec::coberto(&aggregate.aggregate_type) {
+    let agregado = AggregateRef::new(&envelope.aggregate_type, &envelope.aggregate_id);
+    if !sync_codec::coberto(&agregado.aggregate_type) {
+        // A aplicação falha fechada logo em seguida; não há o que simular.
         return Ok(None);
     }
-    let vivos = crate::infrastructure::sqlite::sync_codec::descendentes(tx, aggregate)?;
-    if vivos.is_empty() {
-        return Ok(None);
+    for impacto in sync_codec::impactos_da_exclusao(tx, &agregado)? {
+        match impacto {
+            Impacto::Bloqueado(motivo) => return Ok(Some(motivo)),
+            Impacto::Excluido(filho) => {
+                let vivo = !sync_codec::existencia_derivada(&filho.aggregate_type)
+                    || sync_codec::revisao_corrente(tx, &filho)?.is_some();
+                if vivo {
+                    return Ok(Some(format!(
+                        "{} {} ainda existe aqui e não foi apagado pelo outro aparelho",
+                        filho.aggregate_type, filho.aggregate_id
+                    )));
+                }
+            }
+            // O sobrevivente muda com a exclusão; a reescrita dele vem da origem logo depois, como
+            // evento próprio. O que não pode é ele ter decisão ou história pendente aqui: aí a
+            // mudança atropelaria trabalho concorrente.
+            Impacto::Reescrito(sobrevivente) => {
+                if sync_codec::estado_concorrente_para_evento(tx, &sobrevivente, envelope)?
+                    .is_some()
+                {
+                    return Ok(Some(format!(
+                        "{} {} tem decisão ou alteração pendente aqui e seria alterado pela exclusão",
+                        sobrevivente.aggregate_type, sobrevivente.aggregate_id
+                    )));
+                }
+            }
+        }
     }
-    // A revisão da exclusão entra na história: um evento posterior que parta dela precisa ser
-    // reconhecido. O agregado continua corrente — ele não foi apagado.
+    Ok(None)
+}
+
+/// **Invariante do apply:** depois de aplicar, o estado materializado É o evento.
+///
+/// ```text
+/// upsert   ler_canonico(agregado).payload == envelope.payload
+/// delete   ler_canonico(agregado) == None      (exceto existência derivada: some com o pai)
+/// ```
+///
+/// Falhar aqui desfaz tudo (a sessão para): registrar a revisão com outro estado no domínio seria o
+/// estado "revisão diz X, banco tem Y" que nenhuma sincronização seguinte consegue detectar.
+fn conferir_materializacao(
+    tx: &Transaction<'_>,
+    envelope: &EventEnvelope,
+) -> DatabaseCommandResult<()> {
+    let agregado = AggregateRef::new(&envelope.aggregate_type, &envelope.aggregate_id);
+    let materializado = sync_codec::ler_canonico(tx, &agregado)?.map(|estado| estado.payload);
+    let coerente = match envelope.operation {
+        Operation::Upsert => materializado.as_deref() == Some(envelope.payload.as_str()),
+        Operation::Delete => {
+            materializado.is_none() || sync_codec::existencia_derivada(&agregado.aggregate_type)
+        }
+    };
+    if !coerente {
+        return Err(DatabaseCommandError::storage(format!(
+            "Depois de aplicar {} {}, o estado no banco não é o do evento. Nada foi confirmado.",
+            agregado.aggregate_type, agregado.aggregate_id
+        )));
+    }
+    Ok(())
+}
+
+/// Registra a exclusão bloqueada: a revisão entra na história (um evento posterior que parta dela
+/// precisa ser reconhecido), o evento fica aplicado como decisão pendente, e o agregado continua.
+fn bloquear_exclusao(
+    tx: &Transaction<'_>,
+    envelope: &EventEnvelope,
+    historia: &crate::domain::sync::AggregateHistory,
+    _motivo: &str,
+) -> DatabaseCommandResult<String> {
     registrar_revisao(tx, envelope)?;
     marcar_aplicado(tx, &envelope.event_id)?;
     let id = registrar_divergencia(tx, envelope, &envelope.base_rev, historia)?;
@@ -186,14 +257,65 @@ fn bloquear_exclusao_do_pai(
         [&id],
     )
     .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(Some(id))
+    Ok(id)
+}
+
+/// Domínio (pelo codec) e estado causal do agregado, juntos.
+///
+/// ```text
+/// upsert   revisão corrente = new_rev; tombstone sai (restauração que viu a exclusão)
+/// delete   tombstone com new_rev; revisão corrente sai
+/// ```
+fn aplicar_com_estado_causal(
+    tx: &Transaction<'_>,
+    envelope: &EventEnvelope,
+) -> DatabaseCommandResult<()> {
+    sync_codec::aplicar(tx, envelope)?;
+    let tipo = &envelope.aggregate_type;
+    let id = &envelope.aggregate_id;
+    let resultado = match envelope.operation {
+        Operation::Upsert => tx
+            .execute(
+                "INSERT INTO sync_aggregate_state (aggregate_type, aggregate_id, current_rev)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(aggregate_type, aggregate_id)
+                 DO UPDATE SET current_rev = excluded.current_rev",
+                rusqlite::params![tipo, id, &envelope.new_rev],
+            )
+            .and_then(|_| {
+                tx.execute(
+                    "DELETE FROM sync_tombstones WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+                    [tipo, id],
+                )
+            }),
+        Operation::Delete => tx
+            .execute(
+                "INSERT INTO sync_tombstones
+                    (aggregate_type, aggregate_id, deleted_rev, origin_device_id, origin_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(aggregate_type, aggregate_id)
+                 DO UPDATE SET deleted_rev = excluded.deleted_rev,
+                               origin_device_id = excluded.origin_device_id,
+                               origin_seq = excluded.origin_seq",
+                rusqlite::params![tipo, id, &envelope.new_rev, &envelope.device_id, envelope.seq],
+            )
+            .and_then(|_| {
+                tx.execute(
+                    "DELETE FROM sync_aggregate_state WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+                    [tipo, id],
+                )
+            }),
+    };
+    resultado.map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Ok(())
 }
 
 /// Aplica no domínio a exclusão remota que ficou bloqueada, quando o escritor a aceita.
 ///
 /// O evento já está no log, marcado como aplicado, e a revisão dele já está na história — o que
 /// faltava era o `DELETE` físico e o tombstone. Nenhum evento novo nasce: a revisão da exclusão já
-/// é a mesma em todos os aparelhos. Quem chama já conferiu que não sobrou descendente vivo.
+/// é a mesma em todos os aparelhos. O preflight da exclusão roda de novo AGORA: o que era verdade
+/// no bloqueio não autoriza a cascata.
 pub fn aplicar_exclusao_bloqueada(
     tx: &Transaction<'_>,
     event_id: &str,
@@ -235,7 +357,14 @@ pub fn aplicar_exclusao_bloqueada(
             "O evento {event_id} não é uma exclusão; aceitar não pode apagar nada."
         )));
     }
-    aplicar_no_agregado(tx, &envelope)
+    if let Some(motivo) = motivo_para_bloquear_exclusao_remota(tx, &envelope)? {
+        return Err(DatabaseCommandError::conflict(format!(
+            "Não dá para aceitar a exclusão de {} {}: {motivo}. Resolva isso antes. Nada foi apagado.",
+            envelope.aggregate_type, envelope.aggregate_id
+        )));
+    }
+    aplicar_com_estado_causal(tx, &envelope)?;
+    conferir_materializacao(tx, &envelope)
 }
 
 fn guardar_envelope(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {
@@ -338,203 +467,6 @@ fn registrar_divergencia(
     Ok(id)
 }
 
-/// Escreve o estado novo na tabela do agregado.
-///
-/// **Falha fechada em tipo desconhecido.** Ignorar um agregado que ainda não
-/// sabemos aplicar produziria o pior estado possível: o cursor avançaria, o
-/// evento constaria como aplicado, e o dado nunca chegaria — sem nada
-/// registrando a falta. Recusar faz a sessão parar e o problema aparecer.
-fn aplicar_no_agregado(
-    tx: &Transaction<'_>,
-    envelope: &EventEnvelope,
-) -> DatabaseCommandResult<()> {
-    match envelope.aggregate_type.as_str() {
-        "chapter" => aplicar_capitulo(tx, envelope),
-        "attachment" => aplicar_anexo(tx, envelope),
-        outro => Err(DatabaseCommandError::storage(format!(
-            "Agregado '{outro}' ainda não tem aplicação de evento implementada. A sessão para \
-             aqui de propósito: avançar marcaria o evento como aplicado sem que o dado tivesse \
-             chegado, e ninguém saberia que faltou."
-        ))),
-    }
-}
-
-/// Aplica um evento de anexo (ADR 0010, fatia 7).
-///
-/// ## O cursor não espera o arquivo
-///
-/// O payload carrega `blob_hash`, e o blob pode não estar aqui ainda — a
-/// transferência é separada do log causal (item 7 do contrato). O evento é
-/// aplicado, a linha materializa com a referência, e o cursor avança.
-///
-/// ```text
-/// evento aplicado   →  linha com blob_hash   →  cursor avança
-/// blob ausente      →  a tela mostra indisponível
-/// blob chega depois →  a mesma linha passa a renderizar
-/// ```
-///
-/// Travar o cursor por arquivo faltando pararia a replicação **inteira** do
-/// aparelho por causa de uma imagem: capítulos, entidades e planejamento
-/// deixariam de convergir. O contrário — aplicar e representar a ausência — é
-/// o que a fatia 8 vai reforçar no bootstrap, onde a exigência é outra.
-fn aplicar_anexo(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {
-    if envelope.operation == Operation::Delete {
-        tx.execute(
-            "DELETE FROM attachments WHERE id = ?1",
-            [&envelope.aggregate_id],
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-        tx.execute(
-            "INSERT INTO sync_tombstones
-                (aggregate_type, aggregate_id, deleted_rev, origin_device_id, origin_seq)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(aggregate_type, aggregate_id)
-             DO UPDATE SET deleted_rev = excluded.deleted_rev,
-                           origin_device_id = excluded.origin_device_id,
-                           origin_seq = excluded.origin_seq",
-            rusqlite::params![
-                &envelope.aggregate_type,
-                &envelope.aggregate_id,
-                &envelope.new_rev,
-                &envelope.device_id,
-                envelope.seq,
-            ],
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-        tx.execute(
-            "DELETE FROM sync_aggregate_state WHERE aggregate_type = ?1 AND aggregate_id = ?2",
-            [&envelope.aggregate_type, &envelope.aggregate_id],
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-        return Ok(());
-    }
-
-    let anexo: crate::domain::canvas::Attachment = serde_json::from_str(&envelope.payload)
-        .map_err(|error| {
-            DatabaseCommandError::storage(format!(
-                "O payload do anexo não descreve um anexo: {error}"
-            ))
-        })?;
-    if anexo.id != envelope.aggregate_id {
-        return Err(DatabaseCommandError::storage(
-            "O payload descreve um anexo diferente do agregado do envelope.",
-        ));
-    }
-    // Bytes num evento de anexo é o defeito que a etapa 13 existe para
-    // impedir, e o log é assinado e append-only: o que entra aqui não sai
-    // mais. Recusar é a última chance.
-    if !anexo.data_url.is_empty() {
-        return Err(DatabaseCommandError::storage(
-            "O evento de anexo traz conteúdo embutido. Ele não vai ser aplicado: o contrato do \
-             ADR 0010 é referência por hash, e aplicar isto gravaria os bytes de volta.",
-        ));
-    }
-    if !anexo.blob_hash.is_empty()
-        && !crate::infrastructure::blob_store::e_hash_canonico(&anexo.blob_hash)
-    {
-        return Err(DatabaseCommandError::storage(
-            "O evento de anexo traz uma referência que não é um SHA-256 canônico.",
-        ));
-    }
-
-    canvas_repository::upsert_attachment_from_event(tx, &anexo)
-}
-
-fn aplicar_capitulo(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {
-    if envelope.operation == Operation::Delete {
-        tx.execute(
-            "DELETE FROM chapters WHERE id = ?1",
-            [&envelope.aggregate_id],
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-        tx.execute(
-            "INSERT INTO sync_tombstones
-                (aggregate_type, aggregate_id, deleted_rev, origin_device_id, origin_seq)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(aggregate_type, aggregate_id)
-             DO UPDATE SET deleted_rev = excluded.deleted_rev,
-                           origin_device_id = excluded.origin_device_id,
-                           origin_seq = excluded.origin_seq",
-            rusqlite::params![
-                &envelope.aggregate_type,
-                &envelope.aggregate_id,
-                &envelope.new_rev,
-                &envelope.device_id,
-                envelope.seq,
-            ],
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-        tx.execute(
-            "DELETE FROM sync_aggregate_state WHERE aggregate_type = ?1 AND aggregate_id = ?2",
-            [&envelope.aggregate_type, &envelope.aggregate_id],
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-        return Ok(());
-    }
-
-    let capitulo: crate::domain::manuscript::Chapter = serde_json::from_str(&envelope.payload)
-        .map_err(|error| {
-            DatabaseCommandError::storage(format!(
-                "O payload do capítulo não descreve um capítulo: {error}"
-            ))
-        })?;
-
-    if capitulo.id != envelope.aggregate_id {
-        return Err(DatabaseCommandError::storage(
-            "O payload descreve um capítulo diferente do agregado do envelope.",
-        ));
-    }
-
-    tx.execute(
-        "INSERT INTO chapters
-            (id, book_id, title, content, summary, scene_origin, scene_destination,
-             word_count, status, canon_status, sort_order, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-         ON CONFLICT(id) DO UPDATE SET
-            book_id = excluded.book_id,
-            title = excluded.title,
-            content = excluded.content,
-            summary = excluded.summary,
-            scene_origin = excluded.scene_origin,
-            scene_destination = excluded.scene_destination,
-            word_count = excluded.word_count,
-            status = excluded.status,
-            canon_status = excluded.canon_status,
-            sort_order = excluded.sort_order,
-            updated_at = excluded.updated_at",
-        rusqlite::params![
-            &capitulo.id,
-            &capitulo.book_id,
-            &capitulo.title,
-            &capitulo.content,
-            &capitulo.summary,
-            &capitulo.scene_origin,
-            &capitulo.scene_destination,
-            capitulo.word_count,
-            &capitulo.status,
-            &capitulo.canon_status,
-            capitulo.sort_order,
-            &capitulo.created_at,
-            &capitulo.updated_at,
-        ],
-    )
-    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-
-    tx.execute(
-        "INSERT INTO sync_aggregate_state (aggregate_type, aggregate_id, current_rev)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT(aggregate_type, aggregate_id)
-         DO UPDATE SET current_rev = excluded.current_rev",
-        rusqlite::params![
-            &envelope.aggregate_type,
-            &envelope.aggregate_id,
-            &envelope.new_rev,
-        ],
-    )
-    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
-}
-
 /// Monta o envelope que a origem produziria — usado para construir eventos de
 /// teste sem duplicar a regra de cálculo da revisão.
 pub fn envelope_de_origem(
@@ -564,6 +496,7 @@ pub fn envelope_de_origem(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::error::DatabaseCommandResult;
     use crate::infrastructure::sqlite::test_support::{seed_universe, TemporaryDatabase};
     use rusqlite::{Connection, TransactionBehavior};
 
@@ -585,12 +518,23 @@ mod tests {
 
     fn capitulo(titulo: &str, conteudo: &str) -> String {
         format!(
-            r#"{{"id":"cap-1","book_id":"b1","title":"{titulo}","content":"{conteudo}",
-                 "summary":"","scene_origin":"","scene_destination":"","word_count":3,
-                 "status":"rascunho","canon_status":"canon","sort_order":0,
-                 "created_at":"2026-01-01 00:00:00","updated_at":"2026-01-02 00:00:00"}}"#
+            r#"{{"id":"cap-1","bookId":"b1","title":"{titulo}","content":"{conteudo}",
+                 "summary":"","sceneOrigin":"","sceneDestination":"",
+                 "status":"rascunho","canonStatus":"canon","customFields":[]}}"#
         )
         .replace('\n', "")
+        .replace("                 ", "")
+    }
+
+    fn ordem(capitulos: &[&str]) -> String {
+        format!(
+            r#"{{"bookId":"b1","chapterIds":[{}]}}"#,
+            capitulos
+                .iter()
+                .map(|c| format!("\"{c}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
     }
 
     fn agregado() -> AggregateRef {
@@ -975,7 +919,6 @@ mod tests {
             "",
         );
         aplicar(&mut connection, &criacao);
-
         let exclusao = envelope_de_origem(
             ORIGEM,
             2,
@@ -1072,7 +1015,7 @@ mod tests {
             .expect("transação");
         let erro = apply_remote_event(&tx, &envelope).expect_err("payload de outro agregado");
         assert!(
-            erro.to_string().contains("capítulo diferente"),
+            erro.to_string().contains("e o envelope é de cap-1"),
             "recusou pelo motivo errado: {erro}"
         );
     }
@@ -1089,6 +1032,7 @@ mod tests {
                  "created_at":"2026-01-01 00:00:00"}}"#
         )
         .replace('\n', "")
+        .replace("                 ", "")
     }
 
     /// **Evento de anexo com bytes dentro é recusado.**
@@ -1222,5 +1166,218 @@ mod tests {
             })
             .expect("contar");
         assert_eq!(aplicados, 1);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // B2: dependências, pai imutável e ordem exata
+    // ═══════════════════════════════════════════════════════════════════════
+
+    fn ordem_env(seq: i64, base: &str, capitulos: &[&str]) -> EventEnvelope {
+        envelope_de_origem(
+            ORIGEM,
+            seq,
+            "u1",
+            &AggregateRef::new("chapter_order", "b1"),
+            Operation::Upsert,
+            &ordem(capitulos),
+            base,
+        )
+    }
+
+    fn semear_capitulos(connection: &Connection, livro: &str, ids: &[&str]) {
+        for (i, id) in ids.iter().enumerate() {
+            connection
+                .execute(
+                    "INSERT INTO chapters (id, book_id, title, sort_order) VALUES (?1, ?2, ?1, ?3)",
+                    rusqlite::params![id, livro, i as i64],
+                )
+                .expect("capítulo");
+        }
+    }
+
+    fn marcado(connection: &Connection, envelope: &EventEnvelope) -> bool {
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_applied_events WHERE event_id = ?1)",
+                [&envelope.event_id],
+                |row| row.get(0),
+            )
+            .expect("marcado")
+    }
+
+    fn aplicar_tentando(
+        connection: &mut Connection,
+        envelope: &EventEnvelope,
+    ) -> DatabaseCommandResult<Applied> {
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("transação");
+        let resultado = apply_remote_event(&tx, envelope)?;
+        tx.commit().expect("commit");
+        Ok(resultado)
+    }
+
+    fn materializado(connection: &Connection, tipo: &str, id: &str) -> Option<String> {
+        sync_codec::ler_canonico(connection, &AggregateRef::new(tipo, id))
+            .expect("ler")
+            .map(|estado| estado.payload)
+    }
+
+    #[test]
+    fn ordem_aplicada_e_exatamente_o_payload() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        semear_capitulos(&connection, "b1", &["c1", "c2", "c3"]);
+
+        let envelope = ordem_env(1, "", &["c3", "c1", "c2"]);
+        assert_eq!(aplicar(&mut connection, &envelope), Applied::Aplicado);
+        assert_eq!(
+            materializado(&connection, "chapter_order", "b1").as_deref(),
+            Some(envelope.payload.as_str())
+        );
+    }
+
+    #[test]
+    fn ordem_com_capitulo_inexistente_espera_sem_marcar() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        semear_capitulos(&connection, "b1", &["c1"]);
+
+        let envelope = ordem_env(1, "", &["c1", "c-ainda-nao-chegou"]);
+        assert_eq!(
+            aplicar(&mut connection, &envelope),
+            Applied::PrecisaReconciliar
+        );
+        assert!(
+            !marcado(&connection, &envelope),
+            "ordem incompleta marcada como aplicada"
+        );
+        assert_eq!(
+            materializado(&connection, "chapter_order", "b1").as_deref(),
+            Some(r#"{"bookId":"b1","chapterIds":["c1"]}"#),
+            "a ordem foi mexida"
+        );
+    }
+
+    #[test]
+    fn ordem_que_nao_cita_capitulo_daqui_espera_sem_marcar() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        semear_capitulos(&connection, "b1", &["c1", "c2"]);
+
+        let envelope = ordem_env(1, "", &["c2"]);
+        assert_eq!(
+            aplicar(&mut connection, &envelope),
+            Applied::PrecisaReconciliar
+        );
+        assert!(!marcado(&connection, &envelope));
+    }
+
+    #[test]
+    fn ordem_com_capitulo_repetido_ou_de_outro_livro_e_recusada() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        connection
+            .execute(
+                "INSERT INTO books (id, story_id, name) VALUES ('b2', 's1', 'Outro')",
+                [],
+            )
+            .expect("livro 2");
+        semear_capitulos(&connection, "b1", &["c1", "c2"]);
+        semear_capitulos(&connection, "b2", &["x1"]);
+
+        let repetido = ordem_env(1, "", &["c1", "c2", "c1"]);
+        let erro = aplicar_tentando(&mut connection, &repetido).expect_err("repetido");
+        assert!(erro.message.contains("duas vezes"), "{}", erro.message);
+        assert!(!marcado(&connection, &repetido));
+
+        let de_outro = ordem_env(1, "", &["c1", "c2", "x1"]);
+        let erro = aplicar_tentando(&mut connection, &de_outro).expect_err("outro livro");
+        assert!(
+            erro.message.contains("que é do livro b2"),
+            "{}",
+            erro.message
+        );
+        assert!(!marcado(&connection, &de_outro));
+    }
+
+    /// Pai imutável: capítulo, livro e história que já existem aqui com outro pai.
+    #[test]
+    fn evento_que_troca_o_pai_e_recusado_e_nao_marca() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        connection
+            .execute_batch(
+                "INSERT INTO stories (id, universe_id, name) VALUES ('s2', 'u1', 'Outra');
+                 INSERT INTO books (id, story_id, name) VALUES ('b2', 's1', 'Livro 2');",
+            )
+            .expect("semear");
+        crate::infrastructure::sqlite::test_support::seed_universe(&connection, "u2");
+        semear_capitulos(&connection, "b1", &["cap-1"]);
+
+        let casos = [
+            (
+                AggregateRef::new("chapter", "cap-1"),
+                capitulo("Movido", "texto").replace("\"bookId\":\"b1\"", "\"bookId\":\"b2\""),
+                "book_id",
+            ),
+            (
+                AggregateRef::new("book", "b1"),
+                r#"{"id":"b1","storyId":"s2","name":"Livro","description":"","coverBlobHash":"","coverMimeType":"","customFields":[]}"#.to_string(),
+                "story_id",
+            ),
+            (
+                AggregateRef::new("story", "s1"),
+                r#"{"id":"s1","universeId":"u2","name":"Historia","description":"","customFields":[]}"#.to_string(),
+                "universe_id",
+            ),
+        ];
+        for (agregado, payload, coluna) in casos {
+            let envelope =
+                envelope_de_origem(ORIGEM, 1, "u1", &agregado, Operation::Upsert, &payload, "");
+            let erro = aplicar_tentando(&mut connection, &envelope).expect_err("pai trocado");
+            assert!(
+                erro.message.contains("imutável") && erro.message.contains(coluna),
+                "{}",
+                erro.message
+            );
+            assert!(!marcado(&connection, &envelope));
+        }
+    }
+
+    /// Após todo `Aplicado`, o estado materializado do agregado é o payload do evento — para cada
+    /// tipo coberto pela B2.
+    #[test]
+    fn todo_aplicado_da_b2_materializa_exatamente_o_payload() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        let eventos = [
+            ("universe", "u9", r#"{"id":"u9","name":"Novo","description":"d","coverBlobHash":"","coverMimeType":"","customFields":[{"key":"Tom","value":"frio"}]}"#.to_string()),
+            ("story", "s9", r#"{"id":"s9","universeId":"u9","name":"S","description":"","customFields":[]}"#.to_string()),
+            ("book", "b9", r#"{"id":"b9","storyId":"s9","name":"L","description":"","coverBlobHash":"","coverMimeType":"","customFields":[{"key":"Série","value":"I"}]}"#.to_string()),
+            ("chapter", "c9", r#"{"id":"c9","bookId":"b9","title":"T","content":"<p>um dois</p>","summary":"","sceneOrigin":"","sceneDestination":"","status":"IDEIA","canonStatus":"CANON","customFields":[]}"#.to_string()),
+            ("chapter_order", "b9", r#"{"bookId":"b9","chapterIds":["c9"]}"#.to_string()),
+        ];
+        for (seq, (tipo, id, payload)) in eventos.iter().enumerate() {
+            let envelope = envelope_de_origem(
+                ORIGEM,
+                seq as i64 + 1,
+                "u9",
+                &AggregateRef::new(*tipo, *id),
+                Operation::Upsert,
+                payload,
+                "",
+            );
+            assert_eq!(
+                aplicar(&mut connection, &envelope),
+                Applied::Aplicado,
+                "{tipo}"
+            );
+            assert_eq!(
+                materializado(&connection, tipo, id).as_deref(),
+                Some(payload.as_str()),
+                "{tipo} {id}: materializado difere do payload"
+            );
+        }
     }
 }

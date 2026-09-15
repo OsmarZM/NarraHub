@@ -142,14 +142,32 @@ pub fn receber_eventos(
         origens.insert(origem, ());
     }
 
-    for origem in origens.keys() {
-        drenar_origem(&tx, origem, &mut relatorio)?;
+    // Até não haver progresso. Uma origem pode depender de outra (a ordem de A cita um capítulo
+    // que é de C): drenar cada uma uma vez, na ordem das chaves, deixaria A pendente se ela viesse
+    // antes de C. Cada volta só termina quando nenhuma origem aplicou nada; como cada evento é
+    // aplicado no máximo uma vez, isto termina.
+    loop {
+        let aplicados_antes = contar_aplicados(&tx)?;
+        relatorio.precisam_reconciliar.clear();
+        for origem in origens.keys() {
+            drenar_origem(&tx, origem, &mut relatorio)?;
+        }
+        if contar_aplicados(&tx)? == aplicados_antes {
+            break;
+        }
     }
     relatorio.pendentes = contar_pendentes(&tx)?;
 
     tx.commit()
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     Ok(relatorio)
+}
+
+fn contar_aplicados(tx: &Transaction<'_>) -> DatabaseCommandResult<i64> {
+    tx.query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+        row.get(0)
+    })
+    .map_err(|error| DatabaseCommandError::storage(error.to_string()))
 }
 
 /// Aplica, em ordem, tudo o que estiver contíguo a partir do cursor.
@@ -357,7 +375,7 @@ mod tests {
 
     fn capitulo(id: &str, titulo: &str) -> String {
         format!(
-            r#"{{"id":"{id}","book_id":"b1","title":"{titulo}","content":"texto","summary":"","scene_origin":"","scene_destination":"","word_count":1,"status":"rascunho","canon_status":"canon","sort_order":0,"created_at":"2026-01-01 00:00:00","updated_at":"2026-01-02 00:00:00"}}"#
+            r#"{{"id":"{id}","bookId":"b1","title":"{titulo}","content":"texto","summary":"","sceneOrigin":"","sceneDestination":"","status":"rascunho","canonStatus":"canon","customFields":[]}}"#
         )
     }
 

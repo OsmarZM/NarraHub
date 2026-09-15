@@ -1,6 +1,8 @@
 # NH-079 — cobertura do Sync V2: agregados, fronteira `Mutacao` e exclusão
 
-> Documento de arquitetura da etapa B. Revisão 2 (2026-09-15), com os ajustes da revisão humana:
+> Documento de arquitetura da etapa B. Revisão 3 (2026-09-15): modelo de impacto de exclusão
+> (`Excluido` / `Reescrito` / `Bloqueado`), auditoria completa de FK e gatilhos (seção 3), payloads
+> canônicos do manuscrito (seção 8) e B2. Revisão 2, com os ajustes da revisão humana:
 > agregado = unidade de consistência e conflito; exclusão com preflight **antes** do SQL destrutivo;
 > gatilhos classificados; canvas autoral × efêmero; negociação de canonicalização. Medido no código
 > e no schema final (20 migrations aplicadas).
@@ -8,15 +10,15 @@
 ## 1. Onde o domínio é escrito
 
 Todo comando de escrita passa por um serviço de `application/`; nenhum comando Tauri chama repositório
-direto. **50 funções públicas de escrita em 8 serviços.** Hoje só capítulo (edição) e anexo geram evento.
+direto. **50 funções públicas de escrita em 8 serviços.** Com a B2, manuscrito, universo (exceto exclusão) e anexos geram evento.
 
 | serviço | escritas | com transação | geram evento V2 |
 | --- | --- | --- | --- |
-| `manuscript_service` | 10 | 2 | 1 (`update_chapter`) |
-| `canvas_service` | 11 | 5 | 1 (anexos) |
+| `manuscript_service` | 10 | 10 (`Mutacao`, B2) | 10 |
+| `canvas_service` | 11 | 5 | 2 (anexos, B1) |
 | `entity_service` | 5 | 3 | 0 |
 | `planning_service` | 8 | 4 | 0 |
-| `universe_service` | 3 | 2 | 0 |
+| `universe_service` | 3 | 2 (`Mutacao`, B2) | 2 (`delete` recusa até B5) |
 | `workspace_service` | 5 | 0 | 0 |
 | `knowledge_service` | 4 | 1 | 0 |
 | `collaboration_service` | 6 | 2 | 0 |
@@ -35,15 +37,21 @@ revisões / eventos
 
 | etapa | status | o que cobre |
 | --- | --- | --- |
-| **B1** | implementada (PR da branch `sync-b1-mutacao`) | fronteira `Mutacao`; `chapter` update e **delete** (com os anexos por gatilho); `attachment` create e delete; exclusão remota de pai bloqueada e a resolução dela (4.4.1); fronteira com o blob store (4.4.2); migration 21 (`sync_divergences.kind`) |
-| B2–B6 | não iniciadas | ver seção 7 |
+| **B1** | integrada | fronteira `Mutacao`; `attachment` create e delete; exclusão remota bloqueada e a resolução dela (4.4.1); fronteira com o blob store (4.4.2); migration 21 (`sync_divergences.kind`) |
+| **B2** | implementada (branch `sync-b2-manuscrito`), em revisão | `universe` create/update; `story`, `book`, `chapter` create/update/delete; `chapter_order` (create/delete de capítulo e reorder); campos personalizados dentro desses agregados; `tag_assignment` apagado pelos gatilhos do manuscrito; impacto de exclusão `Excluido`/`Reescrito`/`Bloqueado` (4.3); catálogo de efeitos com gate (3); payload canônico definitivo (8); dependência de criação pai → filho na aplicação remota; capa de livro pelo blob store |
+| B3–B6 | não iniciadas | ver seção 7 |
 
-**Limite conhecido da B1, dito às claras:** excluir um capítulo ainda apaga, pelo gatilho
-`trg_chapter_metadata_delete`, as atribuições de tag e os campos personalizados dele sem evento — esses
-agregados só entram na B2. A B1 prova a infraestrutura; não declara o capítulo como totalmente coberto.
+**Fora da B2, dito às claras:**
 
-Criar capítulo (`create_chapter`) também continua sem evento até a B2, e o payload do capítulo ainda
-carrega `sort_order`, que sai para o agregado `chapter_order` na B2.
+- `delete_universe` **recusa sempre** com "Esta operação ainda depende de tipos que estão sendo migrados
+  para o Sync V2." A cascata do universo atinge entidades, relações, linha do tempo, planejamento, tags e
+  canvas, que ainda não têm codec. Uma exclusão de universo recebida de outro aparelho vira
+  `parent_deletion_blocked` e não apaga nada. Volta quando a última dessas etapas integrar (B5).
+- Excluir capítulo ligado a card do planejamento, ou história usada num campo de card, é **recusado**
+  (seção 3.2). Volta na B4, quando `planning_item` tiver codec e o efeito virar `Reescrito`.
+- Marcar e desmarcar tag (`knowledge_service::set_tag`) ainda não emite evento (B5). A B2 só emite o fim
+  das marcações que os gatilhos do manuscrito apagam.
+- `attachment` mantém o payload da B1 (com `created_at` e `sortOrder`); a revisão dele é da B5.
 
 ## 2. Agregados
 
@@ -59,8 +67,8 @@ e concorrência próprias.
 | `universe` | `universes`, `content_custom_fields` do universo | `universes.id` | — | raiz de tudo |
 | `story` | `stories`, `content_custom_fields` (owner story) | `stories.id` | universe | |
 | `book` | `books`, `content_custom_fields` (owner book) | `books.id` | story | |
-| `chapter` | `chapters` (sem `position`), `content_custom_fields` (owner chapter) | `chapters.id` | book | conteúdo, título, status, resumo |
-| `chapter_order` | `chapters.position` de um livro | `book.id` | book, chapters | **só a ordem**; reordenar não conflita com texto |
+| `chapter` | `chapters` (sem `sort_order`), `content_custom_fields` (owner chapter) | `chapters.id` | book | conteúdo, título, status, resumo |
+| `chapter_order` | `chapters.sort_order` de um livro | `book.id` | book, chapters | **só a ordem**; reordenar não conflita com texto |
 | `entity` | `entities`, `entity_attributes`, `content_custom_fields` (owner entity) | `entities.id` | universe | atributos são internos |
 | `relation` | `relations` | `relations.id` | 2 entities | independente da entidade |
 | `timeline_event` | `timeline_events` | `timeline_events.id` | universe; entity (opcional, `SET NULL`) | |
@@ -111,28 +119,88 @@ tabela sincronizável guarda estado de viewport.
 | `devices`, `blob_migration_issues` | locais |
 | `sync_*`; `sync_peers`, `sync_conflicts` (V1) | protocolo |
 
-## 3. Gatilhos
+## 3. Efeitos de exclusão: toda FK com ação e todo gatilho que escreve
 
-11 gatilhos **escrevem**; 5 só validam (`RAISE`). Nenhuma escrita por gatilho pode ser invisível à
-fronteira.
+Medido no schema migrado (21 migrations), não no texto das migrations. A tabela é a mesma de
+`src-tauri/src/infrastructure/sqlite/sync_codec/catalogo.rs`, e o gate
+`toda_fk_com_acao_e_todo_gatilho_que_escreve_estao_no_catalogo` reprova FK ou gatilho novo sem
+classificação, ou classificação que não existe mais no schema. Não há `ON DELETE SET DEFAULT` nem
+`RESTRICT` no schema; as FKs `NO ACTION` são todas das tabelas `sync_*`.
 
-| gatilho | dispara em | escreve em | classificação | tratamento |
-| --- | --- | --- | --- | --- |
-| `trg_chapter_revision` | UPDATE `chapters` | `chapter_revisions` | local, fora do sync | nenhum |
-| `trg_chapter_history_insert` / `_update` | INSERT/UPDATE `chapters` | `change_log` | local | nenhum |
-| `trg_entity_history_insert` / `_update` | INSERT/UPDATE `entities` | `change_log` | local | nenhum |
-| `trg_story_metadata_delete` | DELETE `stories` | `content_tag_assignments`, `content_custom_fields` | **outro agregado** (`tag_assignment`) + interno | preflight inclui as atribuições |
-| `trg_book_metadata_delete` | DELETE `books` | idem | idem | idem |
-| `trg_chapter_metadata_delete` | DELETE `chapters` | idem | idem | idem |
-| `trg_entity_metadata_delete` | DELETE `entities` | idem | idem | idem |
-| `trg_timeline_metadata_delete` | DELETE `timeline_events` | `content_tag_assignments` | **outro agregado** | preflight |
-| `trg_planning_metadata_delete` | DELETE `planning_items` | `content_tag_assignments` | **outro agregado** | preflight |
-| `trg_chapter_attachments_delete` | DELETE `chapters` | `attachments` | **outro agregado** (`attachment`) | preflight — **coberto na B1** |
-| `trg_entity_attachments_delete` | DELETE `entities` | `attachments` | **outro agregado** | preflight (B3) |
-| `trg_planning_field_definition_delete` | DELETE `planning_field_definitions` | `planning_items.custom_field_values` **e `updated_at = datetime('now')`** | **reescreve outros agregados** (todos os cards com o campo) | a exclusão de campo declara upsert de cada card afetado; o `updated_at` por relógio local fica fora do payload canônico (B4) |
+Efeito: **Delete** = o agregado atingido some; **Rewrite** = sobrevive com outro estado; **Interno** =
+estado do próprio agregado de origem, sem identidade própria; **Local** = tabela fora do sync.
 
-Validação apenas: `trg_planning_field_scope_insert`, `_scope_update`, `trg_planning_field_link_validate`,
-`trg_sync_events_*`, gatilhos de `sync_devices` / `sync_peer_vectors`.
+### 3.1 Tabela
+
+| origem da exclusão | agregado afetado | mecanismo | efeito | etapa | enquanto não coberto |
+| --- | --- | --- | --- | --- | --- |
+| universe | story | FK `stories.universe_id` CASCADE | Delete | B2 | universe delete recusado |
+| universe | attachment | FK `attachments.universe_id` CASCADE | Delete | B1 | universe delete recusado |
+| universe | (interno de universe/story/book/chapter/entity) | FK `content_custom_fields.universe_id` CASCADE | Interno | B2 / B3 | universe delete recusado |
+| universe | entity | FK `entities.universe_id` CASCADE | Delete | B3 | universe delete recusado |
+| universe | entity_template | FK `entity_templates.universe_id` CASCADE | Delete | B3 | universe delete recusado |
+| universe | relation | FK `relations.universe_id` CASCADE | Delete | B3 | universe delete recusado |
+| universe | timeline_event | FK `timeline_events.universe_id` CASCADE | Delete | B3 | universe delete recusado |
+| universe | canvas_entity_position | FK `canvas_entity_positions.universe_id` CASCADE | Delete | B3 | universe delete recusado |
+| universe | planning_item | FK `planning_items.universe_id` CASCADE | Delete | B4 | universe delete recusado |
+| universe | planning_field_definition | FK `planning_field_definitions.universe_id` CASCADE | Delete | B4 | universe delete recusado |
+| universe | content_tag | FK `content_tags.universe_id` CASCADE | Delete | B5 | universe delete recusado |
+| universe | canvas_node | FK `canvas_nodes.universe_id` CASCADE | Delete | B5 | universe delete recusado |
+| universe | canvas_edge | FK `canvas_edges.universe_id` CASCADE | Delete | B5 | universe delete recusado |
+| story | book | FK `books.story_id` CASCADE | Delete | B2 | — |
+| story | planning_item (link interno) | FK `planning_field_links.story_id` CASCADE | **Rewrite** | B4 | **exclusão da história recusada** enquanto houver card com a história num campo |
+| story | tag_assignment | gatilho `trg_story_metadata_delete` | Delete | B2 | — |
+| story | (interno) | gatilho `trg_story_metadata_delete` → `content_custom_fields` | Interno | B2 | — |
+| book | chapter | FK `chapters.book_id` CASCADE | Delete | B2 | — |
+| book | chapter_order(book) | derivado (a ordem existe enquanto o livro existe) | Delete | B2 | — |
+| book | tag_assignment | gatilho `trg_book_metadata_delete` | Delete | B2 | — |
+| book | (interno) | gatilho `trg_book_metadata_delete` → `content_custom_fields` | Interno | B2 | — |
+| chapter | planning_item | FK `planning_items.chapter_id` **SET NULL** | **Rewrite** | B4 | **exclusão do capítulo recusada** enquanto houver card ligado |
+| chapter | chapter_order(book) | derivado (a lista perde o id) | **Rewrite** | B2 | — |
+| chapter | attachment | gatilho `trg_chapter_attachments_delete` | Delete | B1 | — |
+| chapter | tag_assignment | gatilho `trg_chapter_metadata_delete` | Delete | B2 | — |
+| chapter | (interno) | gatilho `trg_chapter_metadata_delete` → `content_custom_fields` | Interno | B2 | — |
+| chapter | — | FK `chapter_revisions.chapter_id` CASCADE | Local | fora | — |
+| chapter | — | FK `mentions.chapter_id` CASCADE | Local | fora | — |
+| entity | (interno) | FK `entity_attributes.entity_id` CASCADE | Interno | B3 | entity_service fora da Mutacao até B3 |
+| entity | relation | FK `relations.source_id` / `target_id` CASCADE | Delete | B3 | idem |
+| entity | timeline_event | FK `timeline_events.entity_id` **SET NULL** | **Rewrite** | B3 | idem |
+| entity | canvas_entity_position | FK `canvas_entity_positions.entity_id` CASCADE | Delete | B3 | idem |
+| entity | planning_item (link interno) | FK `planning_field_links.entity_id` CASCADE | **Rewrite** | B4 | idem; na B3, recusa enquanto houver link |
+| entity | attachment | gatilho `trg_entity_attachments_delete` | Delete | B3 | idem |
+| entity | tag_assignment | gatilho `trg_entity_metadata_delete` | Delete | B3 | idem |
+| entity | (interno) | gatilho `trg_entity_metadata_delete` → `content_custom_fields` | Interno | B3 | idem |
+| entity | — | FK `mentions.entity_id` CASCADE | Local | fora | — |
+| timeline_event | tag_assignment | gatilho `trg_timeline_metadata_delete` | Delete | B3 | fora da Mutacao até B3 |
+| planning_item | (interno) | FK `planning_field_links.planning_item_id` CASCADE | Interno | B4 | planning_service fora da Mutacao até B4 |
+| planning_item | planning_field_definition | FK `planning_field_definitions.owner_item_id` CASCADE | Delete | B4 | idem |
+| planning_item | tag_assignment | gatilho `trg_planning_metadata_delete` | Delete | B4 | idem |
+| planning_field_definition | planning_item | FK `planning_field_links.field_definition_id` CASCADE | **Rewrite** | B4 | idem |
+| planning_field_definition | planning_item | gatilho `trg_planning_field_definition_delete` (`custom_field_values`) | **Rewrite** | B4 | idem |
+| content_tag | tag_assignment | FK `content_tag_assignments.tag_id` CASCADE | Delete | B5 | knowledge_service fora da Mutacao até B5 |
+| content_tag | planning_item (link interno) | FK `planning_field_links.tag_id` CASCADE | **Rewrite** | B4 | idem |
+| collaboration_session | — | FK `collaboration_contributions.session_id` CASCADE | Local | fora | — |
+
+Gatilhos que escrevem sem ser exclusão, todos locais: `trg_chapter_history_insert`/`_update`,
+`trg_chapter_revision`, `trg_entity_history_insert`/`_update`. Os demais gatilhos só validam (`RAISE`).
+
+**Referências sem FK** (ids em texto polimórfico): `attachments.owner_id`, `content_tag_assignments.owner_id`
+e `content_custom_fields.owner_id` são cobertos pelos gatilhos acima; `canvas_edges.source_id/target_id`
+(entity ou nó) não têm FK nem gatilho — a exclusão de entidade deixa aresta pendurada, e isso é da B3/B5.
+
+### 3.2 Estratégia para efeito sobre agregado ainda não coberto: fail closed
+
+Para `chapter DELETE → planning_items.chapter_id SET NULL` a escolha foi **bloquear até a B4** (opção 2),
+não trazer `planning_item` para a B2. O payload canônico de `planning_item` inclui `custom_field_values`
+(reescrito por gatilho), `planning_field_links` internos, imagem por blob e a separação entre card e
+`planning_order` (status + posição). Trazer "a parte mínima" obrigaria a fixar esse formato agora — e a
+gênese da etapa C reutiliza o formato; fixar metade dele é o que produziria revisões diferentes para o
+mesmo card. O bloqueio custa pouco ao escritor (desvincular o card antes) e não altera nada em silêncio.
+
+```text
+local   m.excluir(chapter) → Bloqueado("…ligado a N card(s) do planejamento…") → erro, nada muda, nenhum evento
+remoto  exclusão de chapter chega → mesmo impacto → parent_deletion_blocked; o card continua ligado
+```
 
 ## 4. A fronteira `Mutacao`
 
@@ -172,26 +240,52 @@ Regras de implementação:
 - `Mutacao::executar` dentro de outra `Mutacao` é erro (não há savepoint silencioso).
 - Um agregado declarado duas vezes vira **uma** revisão (a do estado final).
 
-### 4.3 Exclusão: preflight antes do SQL
+### 4.3 Exclusão: impactos e preflight antes do SQL
 
-Depois de `DELETE FROM parent`, a cascata de chave estrangeira e os gatilhos já apagaram os descendentes —
-ninguém consegue mais lê-los. Por isso a exclusão é outra sequência, **dentro da mesma transação**:
+**A fronteira não assume que todo agregado afetado some.** O codec devolve os impactos diretos:
 
 ```text
-BEGIN IMMEDIATE
-  m.excluir(agregado)
-    1 identificar afetados    Codec::descendentes: filhos por FK + agregados apagados por gatilho
-    2 carregar causal         current_rev de cada afetado (para o base_rev do delete)
-    3 preflight               algum afetado com divergência aberta ou evento pendente (Unknown)?
-                                → recusa a exclusão local (erro claro; nada é apagado)
-    4 preparar                eventos delete: filhos antes do pai, do mais profundo para cima
-  serviço executa o DELETE    cascata e gatilhos apagam as linhas
-  fim: confere que cada afetado sumiu (se não sumiu, ROLLBACK)
-  persiste tombstones + eventos
+Excluido(agregado)    some junto (FK CASCADE, gatilho, existência derivada)
+Reescrito(agregado)   sobrevive com outro estado (SET NULL, lista que perde um item)
+Bloqueado(motivo)     atinge agregado ainda não coberto → recusa a exclusão inteira
+```
+
+```text
+m.excluir(parent)
+  preflight (antes do SQL):
+    coleta recursiva pelos Excluido; Reescrito acumulado; Bloqueado em qualquer nível → erro
+    excluir vence reescrever (o mesmo agregado nos dois → só Excluido)
+    TODO afetado — Excluido e Reescrito — com divergência aberta ou evento pendente → erro
+    universe_id de todo afetado lido agora; vazio → erro
+serviço executa o DELETE
+fim da transação:
+  Excluido  → precisa ter sumido → evento delete (descendentes antes do pai)
+  Reescrito → precisa continuar existindo → estado canônico relido → evento upsert
+  excluídos são emitidos ANTES dos reescritos
+  agregado cujo canônico já é o payload da revisão corrente → nenhum evento
 COMMIT
 ```
 
-**Proibido:** descobrir os afetados depois da cascata.
+Na B2 o `Reescrito` real é `chapter_order(livro)` quando um capítulo é excluído. Os `Reescrito` por
+`SET NULL` (planning, timeline) são `Bloqueado` até a etapa que cobre o agregado.
+
+**Por que excluídos antes dos reescritos.** Quem recebe materializa cada evento exatamente (seção 8.1).
+A ordem do livro sem o capítulo só pode ser materializada quando o capítulo já saiu; se a reescrita viesse
+antes, ela esperaria um capítulo sumir que ainda está no banco.
+
+**Exclusão remota com sobrevivente.** Quem recebe a exclusão não bloqueia porque o sobrevivente vai mudar —
+a reescrita dele é o evento seguinte da mesma origem. Bloqueia se o sobrevivente tem **decisão aberta** ou
+**evento pendente de outra história** aqui (`estado_concorrente_para_evento`). Eventos da mesma origem com
+`seq` maior não contam: o lote é guardado inteiro antes de aplicar, e eles são a continuação da mesma
+mutação. Entre os dois eventos, o sobrevivente fica momentaneamente diferente da revisão dele; a asserção
+geral de materialização vale em repouso (8.1).
+
+**Ordem da cascata do livro:** `chapter_order` (excluído, existência derivada) sai primeiro, depois os capítulos. Quando a exclusão de um
+capítulo chega, a ordem já está excluída causalmente (sem revisão corrente) e não conta como sobrevivente
+nem como filho vivo.
+
+Depois de `DELETE FROM parent`, a cascata e os gatilhos já apagaram os descendentes — ninguém consegue mais
+lê-los. **Proibido:** descobrir os afetados depois da cascata.
 
 ### 4.4 Exclusão remota: nunca deixar a FK apagar um filho concorrente
 
@@ -230,6 +324,8 @@ contrato é recusado; em especial, divergência `concurrent` **não** é resolvi
 ManterLocal     pai e descendentes ficam
                 nasce upsert do pai com base_rev = revisão da exclusão remota
                 nos outros aparelhos: base == deleted_rev → Sequential → o pai volta, tombstone sai
+                sobreviventes que a exclusão reescreveria (a ordem do livro) também são declarados:
+                a ordem daqui, que cita o capítulo, vira revisão — a do outro lado, sem ele, vira decisão
 AceitarRemoto   preflight de descendentes refeito AGORA
                   sobrou filho vivo              → recusa; nada muda; divergência continua aberta
                   pai alterado depois do bloqueio → recusa
@@ -278,6 +374,22 @@ Testes: `mutacao::tests::rollback_depois_do_blob_deixa_so_o_arquivo_orfao_e_repe
    a geração do evento → nada persiste; repetir a operação produz uma revisão só.
 5. **Escopo e posse:** afetado sem `universe_id` derruba a transação inteira (nunca evento com universo
    vazio); a coleta de descendentes marca visitado antes de descer e recusa ciclo de posse.
+6. **Catálogo de efeitos (B2):** toda FK com ação e todo gatilho que escreve está classificado
+   (`sync_codec::catalogo`); FK/gatilho novo sem classificação reprova, e efeito sobre agregado não coberto
+   precisa declarar a ação enquanto isso.
+7. **Manuscrito inteiro pela fronteira (B2):** `escritas_do_manuscrito_passam_todas_pela_mutacao` varre toda
+   função pública de `manuscript_service` e `universe_service`; a única exceção nomeada é
+   `universe_service::delete`, que recusa e não escreve.
+8. **Dois aparelhos (B2):** `application::sync_manuscrito_testes` — PC → Android e Android → PC para
+   universo, história, livro, capítulo, edição, reorder, exclusão de capítulo/livro/história; união de
+   conteúdo independente; pai excluído com filho concorrente; exclusão que reescreveria card (`SET NULL`)
+   recusada nos dois lados; reescrita de agregado em divergência recusa a exclusão; exclusão de universo
+   recusada local e remotamente; salvar o mesmo estado não gera revisão. Convergência = payload canônico
+   igual nos dois **e** igual ao payload da revisão corrente de cada um.
+9. **Materialização exata (B2):** cada evento aplicado um por vez com o estado conferido
+   (`cada_aplicado_materializa_o_proprio_evento`); asserção geral em repouso depois de toda sessão dos testes
+   de dois aparelhos; causalidade cruzada A/B/C (`ordem_que_cita_capitulo_de_outra_origem_espera_o_capitulo_chegar`);
+   ordem com capítulo repetido, de outro livro, inexistente e não citado; pai trocado em `story`/`book`/`chapter`.
 
 ## 5. Negociação de compatibilidade (etapa E)
 
@@ -308,8 +420,89 @@ Nenhuma PR declara cobertura completa; cada uma atualiza as suas linhas da seç�
 B1  infraestrutura: Mutacao, exclusão com preflight, exclusão remota bloqueada;
     chapter (update, delete) + attachment migrados; gates 1–4        — sem cobertura nova além disso
 B2  manuscrito: universe, story, book, chapter create, chapter_order, custom fields, tag assignments por gatilho
+B2.1 (proposta) story_order(universe), book_order(story) — antes da C
 B3  entidades: entity (+atributos), relation, timeline_event, canvas_entity_position
 B4  planejamento: planning_item, planning_order, planning_field_definition (gatilho que reescreve cards)
 B5  conhecimento e canvas: content_tag, tag_assignment, canvas_node, canvas_edge; gate autoral × efêmero
 B6  conteúdo final de colaboração aprovada e conversões de legado pela Mutacao; gate de cobertura total
 ```
+
+## 8. Payload canônico do manuscrito (B2)
+
+Um formato, uma função por tipo: `sync_codec::ler_canonico` é usada pela `Mutacao` e será usada pela
+gênese (etapa C). **Mesmo estado ⇒ mesmo payload ⇒ mesma revisão.** O formato está fixado por vetor em
+`manuscrito::tests::formato_canonico_fixado_por_vetor`; mudá-lo exige `canonicalFormatVersion` novo (seção 5).
+
+Regras comuns: JSON compacto de `serde_json`, campos na ordem abaixo, nomes em camelCase, strings como
+estão no banco (sem normalização Unicode), campo desconhecido **recusado** na leitura (`deny_unknown_fields`).
+Campos personalizados: `[{key, value}]` na ordem `sort_order, key`.
+
+| tipo | id do agregado | payload | fica de fora |
+| --- | --- | --- | --- |
+| `universe` | `universes.id` | `{id, name, description, coverBlobHash, coverMimeType, customFields}` | `created_at`, `updated_at`, `cover_image` (bytes legados) |
+| `story` | `stories.id` | `{id, universeId, name, description, customFields}` | `sort_order` (posição local; não há reordenação), timestamps |
+| `book` | `books.id` | `{id, storyId, name, description, coverBlobHash, coverMimeType, customFields}` | `sort_order`, timestamps, `cover_image` |
+| `chapter` | `chapters.id` | `{id, bookId, title, content, summary, sceneOrigin, sceneDestination, status, canonStatus, customFields}` | `sort_order` (→ `chapter_order`), `word_count` (derivável), timestamps |
+| `chapter_order` | `books.id` | `{bookId, chapterIds}` — ids na ordem `sort_order, id` | posições numéricas |
+| `tag_assignment` | `tagId:ownerType:ownerId` | `{tagId, ownerType, ownerId}` | `id` da linha (local), `created_at` |
+
+Decisões que valem conferir na revisão:
+
+- **`word_count` fora.** Quem recebe recalcula em Rust com a mesma regra do editor
+  (`sync_codec/palavras.rs`); a paridade é conferida pelos dois lados sobre
+  `src-tauri/fixtures/contagem_de_palavras.json` (Rust e `tests/word-count-parity.test.mjs`).
+- **Ordem de história e livro: fora do payload, e isso NÃO é estado local definitivo.** Decisão: a ordem
+  vai ser sincronizada como agregado próprio, no padrão de `chapter_order`:
+
+  ```text
+  story_order(universe)   {universeId, storyIds}
+  book_order(story)       {storyId, bookIds}
+  ```
+
+  Até lá, dois aparelhos podem convergir causalmente e **mostrar histórias/livros em ordens diferentes**
+  (a posição é a de chegada em cada um). É divergência visível e conhecida, não perda de dado. Proposta de
+  etapa: **B2.1, antes da C**, para a gênese já adotar a ordem em vez de nascer sem ela. Hoje o app não
+  tem reordenação de história nem de livro, então nenhuma escrita fica sem evento enquanto isso.
+- **Capa legada bloqueia.** Capa ainda em base64 (`hash` vazio) não vira payload: a leitura canônica recusa
+  e a mutação falha sem alterar nada, até o backfill converter.
+- **`chapter_order` existe enquanto o livro existe**, inclusive vazia. `create_book` emite a ordem vazia;
+  `create_chapter`/`delete_chapter` a reescrevem na mesma mutação; `reorder_chapters` altera só ela.
+
+### 8.1 Contrato da aplicação remota (upsert)
+
+```text
+dependencias(evento)                         ANTES de escrever
+  Err(inconsistência)   nunca fica válida    → erro; a sessão para; nada é marcado
+  Ok(Some(falta))       ainda pode chegar    → PrecisaReconciliar; não aplica, não marca, cursor espera
+  Ok(None)              → aplica
+conferir_materializacao(evento)              DEPOIS de escrever, na mesma transação
+  ler_canonico(agregado).payload == envelope.payload   (delete: ler_canonico == None)
+  diferente → erro; a transação inteira desfaz
+```
+
+| caso | resultado |
+| --- | --- |
+| pai ainda não existe (`story` sem universo, `book` sem história, `chapter`/`chapter_order` sem livro, `tag_assignment` sem tag ou dono) | `PrecisaReconciliar` |
+| agregado já existe aqui com **outro pai** (`story.universeId`, `book.storyId`, `chapter.bookId`) | erro — **o pai é imutável**: nenhuma escrita do app move história, livro ou capítulo; um evento que diga outro pai descreve outra árvore |
+| `chapter_order` cita capítulo que não existe aqui | `PrecisaReconciliar` (pode ser de outra origem que ainda não chegou) |
+| `chapter_order` cita capítulo repetido | erro |
+| `chapter_order` cita capítulo de outro livro | erro (pai imutável: nunca fica válido) |
+| existe capítulo deste livro que `chapter_order` não cita | `PrecisaReconciliar` — a ordem não descreve o livro inteiro; no caminho causal não acontece, porque a origem exclui o capítulo antes de reescrever a ordem |
+| tudo presente | a ordem materializada é **exatamente** a lista; nada é ignorado nem anexado ao fim |
+
+Se mover capítulo entre livros virar funcionalidade, o contrato muda para "atualiza a FK na mesma
+transação" — e a checagem de materialização continua a mesma.
+
+**Asserção geral de materialização:**
+
+- **Por evento (em produção):** após todo `Applied::Aplicado`, o agregado aplicado é o payload do evento.
+  Existência derivada (`chapter_order`) é exceção só no delete: ela some com o livro, que vem depois.
+- **Em repouso (nos testes):** depois de cada sessão, todo agregado da B2 com revisão corrente e sem decisão
+  aberta nem evento pendente tem `ler_canonico == payload da revisão corrente`. Não vale **entre** dois
+  eventos de uma mesma mutação para os OUTROS agregados dela (capítulo já excluído, ordem ainda por chegar):
+  uma mutação vira vários eventos, e o receptor os aplica um de cada vez. Tornar isso atômico exige agrupar
+  eventos por mutação no protocolo — fica registrado para a etapa E.
+
+**Sessão com dependência entre origens.** A drenagem repete as origens até nenhuma aplicar nada. Antes,
+cada origem era drenada uma vez em ordem de `device_id`: a ordem de A que cita um capítulo de C ficava
+pendente até a sessão seguinte se A viesse antes de C. O teste de três aparelhos encontrou isso.

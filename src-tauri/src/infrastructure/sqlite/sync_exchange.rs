@@ -263,7 +263,7 @@ mod tests {
 
         fn escrever(&self, id: &str, titulo: &str) -> EventEnvelope {
             let payload = format!(
-                r#"{{"id":"{id}","book_id":"b1","title":"{titulo}","content":"texto","summary":"","scene_origin":"","scene_destination":"","word_count":1,"status":"rascunho","canon_status":"canon","sort_order":0,"created_at":"2026-01-01 00:00:00","updated_at":"2026-01-02 00:00:00"}}"#
+                r#"{{"id":"{id}","bookId":"b1","title":"{titulo}","content":"texto","summary":"","sceneOrigin":"","sceneDestination":"","status":"rascunho","canonStatus":"canon","customFields":[]}}"#
             );
             let mut connection = self.banco.database.write().expect("abrir escrita");
             // A linha do agregado entra junto, como o serviço de domínio faz.
