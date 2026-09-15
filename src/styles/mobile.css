@@ -1,0 +1,64 @@
+/*
+ * Base mobile de página inteira: viewport, zoom, altura dinâmica, safe area, alvos de toque.
+ *
+ * Só vale com `html.nh-mobile` (ViewportState, critério em shell/state/breakpoints.ts). O desktop
+ * lê apenas os tokens de :root, que não mudam nada nele.
+ *
+ * Arquitetura em docs/mobile/README.md.
+ */
+
+:root {
+  /* Altura da área do app. `100vh` no Android inclui as barras do sistema e não encolhe com o
+   * teclado; `100dvh` acompanha as duas coisas. */
+  --nh-app-height: 100vh;
+
+  /* Safe area. No APK o MainActivity já aplica as barras do sistema, o recorte da câmera e o
+   * teclado como padding NATIVO da WebView (a fonte da verdade são os insets do Android): lá
+   * dentro estes valores são 0 e nada fica atrás das barras. Num navegador móvel comum, `env()`
+   * traz os valores reais. Todo componente mobile usa estas variáveis, nunca `env()` direto. */
+  --nh-safe-top: env(safe-area-inset-top, 0px);
+  --nh-safe-right: env(safe-area-inset-right, 0px);
+  --nh-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --nh-safe-left: env(safe-area-inset-left, 0px);
+
+  /* Alvo mínimo de toque (Material e WCAG 2.5.8 recomendam 44–48). */
+  --nh-touch-target: 44px;
+}
+
+@supports (height: 100dvh) {
+  :root { --nh-app-height: 100dvh; }
+}
+
+html.nh-mobile,
+html.nh-mobile body {
+  height: var(--nh-app-height);
+  overflow: hidden;
+  /* A página não estica nem "puxa para atualizar"; quem rola é o conteúdo de cada tela. */
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/*
+ * Sem zoom na interface, de três lados — nenhum deles sozinho basta:
+ *
+ *   1. meta viewport (index.html): `interactive-widget=resizes-content` faz o teclado encolher a
+ *      área em vez de sobrepor, e `viewport-fit=cover` usa a tela inteira;
+ *   2. WebView (MainActivity.kt): `setSupportZoom(false)` — pinça e duplo toque não escalam;
+ *   3. aqui: `touch-action` do `<html>` só permite rolar. A ação de toque efetiva de um elemento
+ *      é a interseção com a dos ancestrais, então isto vale para a página inteira: pinça e duplo
+ *      toque não fazem zoom, rolar com um dedo continua. Elementos que tratam gesto próprio (a
+ *      alça da navegação, `touch-action: none`) continuam recebendo o toque inteiro.
+ *
+ * Sem `user-scalable=no` como solução global: ele é ignorado por navegadores com acessibilidade
+ * de zoom forçada, e aqui o zoom já está fechado nas camadas que o Android respeita.
+ */
+html.nh-mobile { touch-action: pan-x pan-y; }
+
+/* Toque longo não seleciona botões, cartões e títulos; só onde se escreve. */
+html.nh-mobile body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+html.nh-mobile :is(input, textarea, [contenteditable="true"], .ProseMirror, .ProseMirror *) {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}

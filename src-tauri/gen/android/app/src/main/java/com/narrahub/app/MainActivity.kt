@@ -5,6 +5,7 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.view.View
+import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -18,6 +19,19 @@ class MainActivity : TauriActivity() {
     // para as barras do sistema parecerem parte da tela e não uma moldura branca.
     window.decorView.setBackgroundColor(Color.parseColor("#0B0813"))
     encaixarNasBarrasDoSistema()
+  }
+
+  /**
+   * Sem zoom na interface: o NarraHub é um app, não uma página.
+   *
+   * Pinça e duplo toque não escalam a WebView. É uma das três camadas — as outras são a meta
+   * viewport (index.html) e o `touch-action` de `src/styles/mobile.css`; ver docs/mobile/README.md.
+   * Rolar, selecionar texto e os gestos da navegação não passam por aqui.
+   */
+  override fun onWebViewCreate(webView: WebView) {
+    webView.settings.setSupportZoom(false)
+    webView.settings.builtInZoomControls = false
+    webView.settings.displayZoomControls = false
   }
 
   /**
