@@ -1343,7 +1343,7 @@ mod tests {
 
         fn escrever(&self, id: &str, titulo: &str) -> EventEnvelope {
             let payload = format!(
-                r#"{{"id":"{id}","book_id":"b1","title":"{titulo}","content":"texto","summary":"","scene_origin":"","scene_destination":"","word_count":1,"status":"rascunho","canon_status":"canon","sort_order":0,"created_at":"2026-01-01 00:00:00","updated_at":"2026-01-02 00:00:00"}}"#
+                r#"{{"id":"{id}","bookId":"b1","title":"{titulo}","content":"texto","summary":"","sceneOrigin":"","sceneDestination":"","status":"rascunho","canonStatus":"canon","customFields":[]}}"#
             );
             // Dado e evento na MESMA transação, como `update_chapter` faz.
             //
@@ -1788,7 +1788,7 @@ mod tests {
                 while !parar.load(std::sync::atomic::Ordering::Relaxed) {
                     let id = format!("cap-conc-{i}");
                     let payload = format!(
-                        r#"{{"id":"{id}","book_id":"b1","title":"Concorrente","content":"texto","summary":"","scene_origin":"","scene_destination":"","word_count":1,"status":"rascunho","canon_status":"canon","sort_order":0,"created_at":"2026-01-01 00:00:00","updated_at":"2026-01-02 00:00:00"}}"#
+                        r#"{{"id":"{id}","bookId":"b1","title":"Concorrente","content":"texto","summary":"","sceneOrigin":"","sceneDestination":"","status":"rascunho","canonStatus":"canon","customFields":[]}}"#
                     );
                     let mut connection = banco.write().expect("escrita concorrente");
                     let tx = connection.transaction().expect("transação");

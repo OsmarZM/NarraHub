@@ -34,7 +34,7 @@ use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::sync::{
     classify, compute_revision, AggregateRef, Causality, EventEnvelope, Operation,
 };
-use crate::infrastructure::sqlite::canvas_repository;
+use crate::infrastructure::sqlite::sync_codec::{self, Impacto};
 use crate::infrastructure::sqlite::sync_repository::aggregate_history;
 use rusqlite::{OptionalExtension, Transaction};
 
@@ -106,29 +106,28 @@ pub fn apply_remote_event(
             Ok(Applied::JaAplicado)
         }
         Causality::Sequential => {
-            // Preflight causal da exclusão remota, ANTES de qualquer SQL destrutivo.
-            //
-            // A origem que apagou este pai emitiu, antes, a exclusão de cada descendente que ela
-            // conhecia; esses já chegaram e já saíram. Se ainda existe descendente aqui, ele é algo
-            // que a origem não conhecia ou não apagou — trabalho concorrente. Deixar a chave
-            // estrangeira ou um gatilho apagá-lo seria perda silenciosa causada pelo banco, não
-            // pelo protocolo. Corrigir depois da cascata é impossível: a linha já não existe.
-            if envelope.operation == Operation::Delete {
-                if let Some(id) = bloquear_exclusao_do_pai(tx, envelope, &aggregate, &historia)? {
-                    return Ok(Applied::ExclusaoDoPaiBloqueada { id_divergencia: id });
+            match envelope.operation {
+                // Preflight causal da exclusão remota, ANTES de qualquer SQL destrutivo.
+                //
+                // A origem que apagou este agregado emitiu, antes, a exclusão de cada descendente
+                // e a reescrita de cada sobrevivente que ela conhecia. Se ainda existe descendente
+                // aqui, ou se um sobrevivente mudaria sem revisão, é trabalho concorrente — e a FK
+                // ou o gatilho o destruiriam em silêncio. Depois da cascata não há como corrigir.
+                Operation::Delete => {
+                    if let Some(motivo) = motivo_para_bloquear_exclusao_remota(tx, envelope)? {
+                        let id = bloquear_exclusao(tx, envelope, &historia, &motivo)?;
+                        return Ok(Applied::ExclusaoDoPaiBloqueada { id_divergencia: id });
+                    }
+                }
+                // Dependência de criação: filho antes do pai é história incompleta, não erro.
+                // Não aplica, não marca; o cursor espera o pai chegar.
+                Operation::Upsert => {
+                    if sync_codec::pai_ausente(tx, envelope)?.is_some() {
+                        return Ok(Applied::PrecisaReconciliar);
+                    }
                 }
             }
-            aplicar_no_agregado(tx, envelope)?;
-            if envelope.operation == Operation::Upsert {
-                // Upsert sequencial sobre tombstone é a restauração explícita (base = revisão da
-                // exclusão). O agregado voltou; o tombstone deixaria domínio e estado causal
-                // dizendo coisas opostas.
-                tx.execute(
-                    "DELETE FROM sync_tombstones WHERE aggregate_type = ?1 AND aggregate_id = ?2",
-                    [&envelope.aggregate_type, &envelope.aggregate_id],
-                )
-                .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-            }
+            aplicar_com_estado_causal(tx, envelope)?;
             registrar_revisao(tx, envelope)?;
             marcar_aplicado(tx, &envelope.event_id)?;
             Ok(Applied::Aplicado)
@@ -160,24 +159,82 @@ pub fn apply_remote_event(
     }
 }
 
-/// Recusa a exclusão de um pai que ainda tem descendente vivo, registrando a divergência.
+/// Por que a exclusão remota não pode rodar agora, ou `None`.
 ///
-/// Devolve o id da divergência quando bloqueou; `None` quando a exclusão pode seguir.
-fn bloquear_exclusao_do_pai(
+/// ```text
+/// Bloqueado(motivo)        efeito sobre agregado ainda não coberto        → bloqueia
+/// Excluido(filho) vivo     a origem não apagou este filho                  → bloqueia
+/// Reescrito(sobrevivente)  a exclusão é simulada num SAVEPOINT; se o sobrevivente tem revisão
+///                          corrente e o estado canônico dele deixaria de ser o dela → bloqueia
+/// ```
+///
+/// Um filho de existência derivada (`chapter_order`) só conta como vivo se ainda tiver revisão
+/// corrente: a linha que o sustenta é a do pai, e a origem já emitiu a exclusão dele.
+pub fn motivo_para_bloquear_exclusao_remota(
     tx: &Transaction<'_>,
     envelope: &EventEnvelope,
-    aggregate: &AggregateRef,
-    historia: &crate::domain::sync::AggregateHistory,
 ) -> DatabaseCommandResult<Option<String>> {
-    if !crate::infrastructure::sqlite::sync_codec::coberto(&aggregate.aggregate_type) {
+    let agregado = AggregateRef::new(&envelope.aggregate_type, &envelope.aggregate_id);
+    if !sync_codec::coberto(&agregado.aggregate_type) {
+        // A aplicação falha fechada logo em seguida; não há o que simular.
         return Ok(None);
     }
-    let vivos = crate::infrastructure::sqlite::sync_codec::descendentes(tx, aggregate)?;
-    if vivos.is_empty() {
+    let mut reescritos = Vec::new();
+    for impacto in sync_codec::impactos_da_exclusao(tx, &agregado)? {
+        match impacto {
+            Impacto::Bloqueado(motivo) => return Ok(Some(motivo)),
+            Impacto::Excluido(filho) => {
+                let vivo = !sync_codec::existencia_derivada(&filho.aggregate_type)
+                    || sync_codec::revisao_corrente(tx, &filho)?.is_some();
+                if vivo {
+                    return Ok(Some(format!(
+                        "{} {} ainda existe aqui e não foi apagado pelo outro aparelho",
+                        filho.aggregate_type, filho.aggregate_id
+                    )));
+                }
+            }
+            Impacto::Reescrito(sobrevivente) => reescritos.push(sobrevivente),
+        }
+    }
+    if reescritos.is_empty() {
         return Ok(None);
     }
-    // A revisão da exclusão entra na história: um evento posterior que parta dela precisa ser
-    // reconhecido. O agregado continua corrente — ele não foi apagado.
+
+    tx.execute_batch("SAVEPOINT exclusao_remota")
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    let simulado = (|| -> DatabaseCommandResult<Option<String>> {
+        sync_codec::aplicar(tx, envelope)?;
+        for sobrevivente in &reescritos {
+            // Sem revisão corrente, o sobrevivente nunca entrou no Sync V2 (ou já foi excluído
+            // causalmente): não há estado causal que a exclusão contradiga. A gênese (etapa C)
+            // adota o que estiver no banco.
+            let Some(registrado) = sync_codec::payload_da_revisao_corrente(tx, sobrevivente)?
+            else {
+                continue;
+            };
+            let depois = sync_codec::ler_canonico(tx, sobrevivente)?.map(|estado| estado.payload);
+            if depois.as_deref() != Some(registrado.as_str()) {
+                return Ok(Some(format!(
+                    "{} {} mudaria sem revisão: há alteração aqui que o outro aparelho não viu",
+                    sobrevivente.aggregate_type, sobrevivente.aggregate_id
+                )));
+            }
+        }
+        Ok(None)
+    })();
+    tx.execute_batch("ROLLBACK TO exclusao_remota; RELEASE exclusao_remota")
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    simulado
+}
+
+/// Registra a exclusão bloqueada: a revisão entra na história (um evento posterior que parta dela
+/// precisa ser reconhecido), o evento fica aplicado como decisão pendente, e o agregado continua.
+fn bloquear_exclusao(
+    tx: &Transaction<'_>,
+    envelope: &EventEnvelope,
+    historia: &crate::domain::sync::AggregateHistory,
+    _motivo: &str,
+) -> DatabaseCommandResult<String> {
     registrar_revisao(tx, envelope)?;
     marcar_aplicado(tx, &envelope.event_id)?;
     let id = registrar_divergencia(tx, envelope, &envelope.base_rev, historia)?;
@@ -186,14 +243,65 @@ fn bloquear_exclusao_do_pai(
         [&id],
     )
     .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(Some(id))
+    Ok(id)
+}
+
+/// Domínio (pelo codec) e estado causal do agregado, juntos.
+///
+/// ```text
+/// upsert   revisão corrente = new_rev; tombstone sai (restauração que viu a exclusão)
+/// delete   tombstone com new_rev; revisão corrente sai
+/// ```
+fn aplicar_com_estado_causal(
+    tx: &Transaction<'_>,
+    envelope: &EventEnvelope,
+) -> DatabaseCommandResult<()> {
+    sync_codec::aplicar(tx, envelope)?;
+    let tipo = &envelope.aggregate_type;
+    let id = &envelope.aggregate_id;
+    let resultado = match envelope.operation {
+        Operation::Upsert => tx
+            .execute(
+                "INSERT INTO sync_aggregate_state (aggregate_type, aggregate_id, current_rev)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(aggregate_type, aggregate_id)
+                 DO UPDATE SET current_rev = excluded.current_rev",
+                rusqlite::params![tipo, id, &envelope.new_rev],
+            )
+            .and_then(|_| {
+                tx.execute(
+                    "DELETE FROM sync_tombstones WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+                    [tipo, id],
+                )
+            }),
+        Operation::Delete => tx
+            .execute(
+                "INSERT INTO sync_tombstones
+                    (aggregate_type, aggregate_id, deleted_rev, origin_device_id, origin_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(aggregate_type, aggregate_id)
+                 DO UPDATE SET deleted_rev = excluded.deleted_rev,
+                               origin_device_id = excluded.origin_device_id,
+                               origin_seq = excluded.origin_seq",
+                rusqlite::params![tipo, id, &envelope.new_rev, &envelope.device_id, envelope.seq],
+            )
+            .and_then(|_| {
+                tx.execute(
+                    "DELETE FROM sync_aggregate_state WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+                    [tipo, id],
+                )
+            }),
+    };
+    resultado.map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Ok(())
 }
 
 /// Aplica no domínio a exclusão remota que ficou bloqueada, quando o escritor a aceita.
 ///
 /// O evento já está no log, marcado como aplicado, e a revisão dele já está na história — o que
 /// faltava era o `DELETE` físico e o tombstone. Nenhum evento novo nasce: a revisão da exclusão já
-/// é a mesma em todos os aparelhos. Quem chama já conferiu que não sobrou descendente vivo.
+/// é a mesma em todos os aparelhos. O preflight da exclusão roda de novo AGORA: o que era verdade
+/// no bloqueio não autoriza a cascata.
 pub fn aplicar_exclusao_bloqueada(
     tx: &Transaction<'_>,
     event_id: &str,
@@ -235,7 +343,13 @@ pub fn aplicar_exclusao_bloqueada(
             "O evento {event_id} não é uma exclusão; aceitar não pode apagar nada."
         )));
     }
-    aplicar_no_agregado(tx, &envelope)
+    if let Some(motivo) = motivo_para_bloquear_exclusao_remota(tx, &envelope)? {
+        return Err(DatabaseCommandError::conflict(format!(
+            "Não dá para aceitar a exclusão de {} {}: {motivo}. Resolva isso antes. Nada foi apagado.",
+            envelope.aggregate_type, envelope.aggregate_id
+        )));
+    }
+    aplicar_com_estado_causal(tx, &envelope)
 }
 
 fn guardar_envelope(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {
@@ -338,203 +452,6 @@ fn registrar_divergencia(
     Ok(id)
 }
 
-/// Escreve o estado novo na tabela do agregado.
-///
-/// **Falha fechada em tipo desconhecido.** Ignorar um agregado que ainda não
-/// sabemos aplicar produziria o pior estado possível: o cursor avançaria, o
-/// evento constaria como aplicado, e o dado nunca chegaria — sem nada
-/// registrando a falta. Recusar faz a sessão parar e o problema aparecer.
-fn aplicar_no_agregado(
-    tx: &Transaction<'_>,
-    envelope: &EventEnvelope,
-) -> DatabaseCommandResult<()> {
-    match envelope.aggregate_type.as_str() {
-        "chapter" => aplicar_capitulo(tx, envelope),
-        "attachment" => aplicar_anexo(tx, envelope),
-        outro => Err(DatabaseCommandError::storage(format!(
-            "Agregado '{outro}' ainda não tem aplicação de evento implementada. A sessão para \
-             aqui de propósito: avançar marcaria o evento como aplicado sem que o dado tivesse \
-             chegado, e ninguém saberia que faltou."
-        ))),
-    }
-}
-
-/// Aplica um evento de anexo (ADR 0010, fatia 7).
-///
-/// ## O cursor não espera o arquivo
-///
-/// O payload carrega `blob_hash`, e o blob pode não estar aqui ainda — a
-/// transferência é separada do log causal (item 7 do contrato). O evento é
-/// aplicado, a linha materializa com a referência, e o cursor avança.
-///
-/// ```text
-/// evento aplicado   →  linha com blob_hash   →  cursor avança
-/// blob ausente      →  a tela mostra indisponível
-/// blob chega depois →  a mesma linha passa a renderizar
-/// ```
-///
-/// Travar o cursor por arquivo faltando pararia a replicação **inteira** do
-/// aparelho por causa de uma imagem: capítulos, entidades e planejamento
-/// deixariam de convergir. O contrário — aplicar e representar a ausência — é
-/// o que a fatia 8 vai reforçar no bootstrap, onde a exigência é outra.
-fn aplicar_anexo(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {
-    if envelope.operation == Operation::Delete {
-        tx.execute(
-            "DELETE FROM attachments WHERE id = ?1",
-            [&envelope.aggregate_id],
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-        tx.execute(
-            "INSERT INTO sync_tombstones
-                (aggregate_type, aggregate_id, deleted_rev, origin_device_id, origin_seq)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(aggregate_type, aggregate_id)
-             DO UPDATE SET deleted_rev = excluded.deleted_rev,
-                           origin_device_id = excluded.origin_device_id,
-                           origin_seq = excluded.origin_seq",
-            rusqlite::params![
-                &envelope.aggregate_type,
-                &envelope.aggregate_id,
-                &envelope.new_rev,
-                &envelope.device_id,
-                envelope.seq,
-            ],
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-        tx.execute(
-            "DELETE FROM sync_aggregate_state WHERE aggregate_type = ?1 AND aggregate_id = ?2",
-            [&envelope.aggregate_type, &envelope.aggregate_id],
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-        return Ok(());
-    }
-
-    let anexo: crate::domain::canvas::Attachment = serde_json::from_str(&envelope.payload)
-        .map_err(|error| {
-            DatabaseCommandError::storage(format!(
-                "O payload do anexo não descreve um anexo: {error}"
-            ))
-        })?;
-    if anexo.id != envelope.aggregate_id {
-        return Err(DatabaseCommandError::storage(
-            "O payload descreve um anexo diferente do agregado do envelope.",
-        ));
-    }
-    // Bytes num evento de anexo é o defeito que a etapa 13 existe para
-    // impedir, e o log é assinado e append-only: o que entra aqui não sai
-    // mais. Recusar é a última chance.
-    if !anexo.data_url.is_empty() {
-        return Err(DatabaseCommandError::storage(
-            "O evento de anexo traz conteúdo embutido. Ele não vai ser aplicado: o contrato do \
-             ADR 0010 é referência por hash, e aplicar isto gravaria os bytes de volta.",
-        ));
-    }
-    if !anexo.blob_hash.is_empty()
-        && !crate::infrastructure::blob_store::e_hash_canonico(&anexo.blob_hash)
-    {
-        return Err(DatabaseCommandError::storage(
-            "O evento de anexo traz uma referência que não é um SHA-256 canônico.",
-        ));
-    }
-
-    canvas_repository::upsert_attachment_from_event(tx, &anexo)
-}
-
-fn aplicar_capitulo(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {
-    if envelope.operation == Operation::Delete {
-        tx.execute(
-            "DELETE FROM chapters WHERE id = ?1",
-            [&envelope.aggregate_id],
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-        tx.execute(
-            "INSERT INTO sync_tombstones
-                (aggregate_type, aggregate_id, deleted_rev, origin_device_id, origin_seq)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(aggregate_type, aggregate_id)
-             DO UPDATE SET deleted_rev = excluded.deleted_rev,
-                           origin_device_id = excluded.origin_device_id,
-                           origin_seq = excluded.origin_seq",
-            rusqlite::params![
-                &envelope.aggregate_type,
-                &envelope.aggregate_id,
-                &envelope.new_rev,
-                &envelope.device_id,
-                envelope.seq,
-            ],
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-        tx.execute(
-            "DELETE FROM sync_aggregate_state WHERE aggregate_type = ?1 AND aggregate_id = ?2",
-            [&envelope.aggregate_type, &envelope.aggregate_id],
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-        return Ok(());
-    }
-
-    let capitulo: crate::domain::manuscript::Chapter = serde_json::from_str(&envelope.payload)
-        .map_err(|error| {
-            DatabaseCommandError::storage(format!(
-                "O payload do capítulo não descreve um capítulo: {error}"
-            ))
-        })?;
-
-    if capitulo.id != envelope.aggregate_id {
-        return Err(DatabaseCommandError::storage(
-            "O payload descreve um capítulo diferente do agregado do envelope.",
-        ));
-    }
-
-    tx.execute(
-        "INSERT INTO chapters
-            (id, book_id, title, content, summary, scene_origin, scene_destination,
-             word_count, status, canon_status, sort_order, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-         ON CONFLICT(id) DO UPDATE SET
-            book_id = excluded.book_id,
-            title = excluded.title,
-            content = excluded.content,
-            summary = excluded.summary,
-            scene_origin = excluded.scene_origin,
-            scene_destination = excluded.scene_destination,
-            word_count = excluded.word_count,
-            status = excluded.status,
-            canon_status = excluded.canon_status,
-            sort_order = excluded.sort_order,
-            updated_at = excluded.updated_at",
-        rusqlite::params![
-            &capitulo.id,
-            &capitulo.book_id,
-            &capitulo.title,
-            &capitulo.content,
-            &capitulo.summary,
-            &capitulo.scene_origin,
-            &capitulo.scene_destination,
-            capitulo.word_count,
-            &capitulo.status,
-            &capitulo.canon_status,
-            capitulo.sort_order,
-            &capitulo.created_at,
-            &capitulo.updated_at,
-        ],
-    )
-    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-
-    tx.execute(
-        "INSERT INTO sync_aggregate_state (aggregate_type, aggregate_id, current_rev)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT(aggregate_type, aggregate_id)
-         DO UPDATE SET current_rev = excluded.current_rev",
-        rusqlite::params![
-            &envelope.aggregate_type,
-            &envelope.aggregate_id,
-            &envelope.new_rev,
-        ],
-    )
-    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
-}
-
 /// Monta o envelope que a origem produziria — usado para construir eventos de
 /// teste sem duplicar a regra de cálculo da revisão.
 pub fn envelope_de_origem(
@@ -585,12 +502,23 @@ mod tests {
 
     fn capitulo(titulo: &str, conteudo: &str) -> String {
         format!(
-            r#"{{"id":"cap-1","book_id":"b1","title":"{titulo}","content":"{conteudo}",
-                 "summary":"","scene_origin":"","scene_destination":"","word_count":3,
-                 "status":"rascunho","canon_status":"canon","sort_order":0,
-                 "created_at":"2026-01-01 00:00:00","updated_at":"2026-01-02 00:00:00"}}"#
+            r#"{{"id":"cap-1","bookId":"b1","title":"{titulo}","content":"{conteudo}",
+                 "summary":"","sceneOrigin":"","sceneDestination":"",
+                 "status":"rascunho","canonStatus":"canon","customFields":[]}}"#
         )
         .replace('\n', "")
+        .replace("                 ", "")
+    }
+
+    fn ordem(capitulos: &[&str]) -> String {
+        format!(
+            r#"{{"bookId":"b1","chapterIds":[{}]}}"#,
+            capitulos
+                .iter()
+                .map(|c| format!("\"{c}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
     }
 
     fn agregado() -> AggregateRef {
@@ -975,10 +903,21 @@ mod tests {
             "",
         );
         aplicar(&mut connection, &criacao);
+        // A origem que exclui o capítulo reescreve a ordem do livro antes (Mutacao, B2).
+        let ordem_sem = envelope_de_origem(
+            ORIGEM,
+            2,
+            "u1",
+            &AggregateRef::new("chapter_order", "b1"),
+            Operation::Upsert,
+            &ordem(&[]),
+            "",
+        );
+        assert_eq!(aplicar(&mut connection, &ordem_sem), Applied::Aplicado);
 
         let exclusao = envelope_de_origem(
             ORIGEM,
-            2,
+            3,
             "u1",
             &agregado(),
             Operation::Delete,
@@ -1072,7 +1011,7 @@ mod tests {
             .expect("transação");
         let erro = apply_remote_event(&tx, &envelope).expect_err("payload de outro agregado");
         assert!(
-            erro.to_string().contains("capítulo diferente"),
+            erro.to_string().contains("e o envelope é de cap-1"),
             "recusou pelo motivo errado: {erro}"
         );
     }

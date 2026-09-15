@@ -2,7 +2,7 @@ use crate::database::error::DatabaseCommandResult;
 use crate::domain::manuscript::{
     Book, BookOption, BookUpdate, Chapter, ChapterOption, ChapterUpdate, Story, StoryUpdate,
 };
-use rusqlite::{Connection, Row, Transaction};
+use rusqlite::{Connection, Row};
 
 use super::connection::map_sqlite_error;
 
@@ -381,7 +381,7 @@ pub fn update_chapter(
 /// Reordena os capítulos de um livro. Devolve quantos foram atingidos para
 /// quem chama poder recusar a operação quando a lista não bate com o livro.
 pub fn reorder_chapters(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     book_id: &str,
     chapter_ids: &[String],
 ) -> DatabaseCommandResult<usize> {

@@ -21,6 +21,8 @@ pub mod mutacao;
 pub mod planning_service;
 pub mod resolucao_divergencia;
 pub mod sync_bootstrap;
+#[cfg(test)]
+mod sync_manuscrito_testes;
 pub mod sync_panorama;
 pub mod sync_pin_pairing;
 pub mod sync_sessao;

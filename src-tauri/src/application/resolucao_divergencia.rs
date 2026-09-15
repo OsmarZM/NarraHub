@@ -137,7 +137,7 @@ fn manter_local(
     divergencia: &Divergencia,
 ) -> DatabaseCommandResult<Resolucao> {
     let agregado = &divergencia.agregado;
-    if sync_codec::ler(m.tx(), agregado)?.is_none() {
+    if sync_codec::ler_canonico(m.tx(), agregado)?.is_none() {
         return Err(DatabaseCommandError::storage(format!(
             "{} {} não existe mais aqui; não há o que manter. Nada foi alterado.",
             agregado.aggregate_type, agregado.aggregate_id
@@ -173,24 +173,6 @@ fn aceitar_exclusao(
     divergencia: &Divergencia,
 ) -> DatabaseCommandResult<Resolucao> {
     let agregado = &divergencia.agregado;
-
-    // Preflight de novo, agora: o que era verdade no bloqueio não autoriza a cascata.
-    let vivos = sync_codec::descendentes(m.tx(), agregado)?;
-    if let Some(filho) = vivos.first() {
-        return Err(DatabaseCommandError::conflict(format!(
-            "Não dá para aceitar a exclusão de {} {}: {} {} ainda existe e não foi apagado pelo \
-             outro aparelho{}. Resolva esse item antes. Nada foi apagado.",
-            agregado.aggregate_type,
-            agregado.aggregate_id,
-            filho.aggregate_type,
-            filho.aggregate_id,
-            if vivos.len() > 1 {
-                format!(" (e mais {})", vivos.len() - 1)
-            } else {
-                String::new()
-            }
-        )));
-    }
 
     let atual: Option<String> = m
         .tx()
@@ -231,6 +213,8 @@ fn aceitar_exclusao(
         )));
     }
 
+    // O preflight da exclusão (filho vivo, sobrevivente que mudaria, efeito bloqueado) roda de novo
+    // lá dentro, AGORA: o que era verdade no bloqueio não autoriza a cascata.
     sync_apply::aplicar_exclusao_bloqueada(m.tx(), &divergencia.remote_event_id)?;
     marcar_resolvida(m, id, "remote")?;
     Ok(Resolucao::ExclusaoConcluida)
@@ -240,7 +224,7 @@ fn aceitar_exclusao(
 mod tests {
     use super::*;
     use crate::application::canvas_service;
-    use crate::application::mutacao::tests::Aparelho;
+    use crate::application::mutacao::tests::{ordem_remota, Aparelho};
     use crate::domain::identity::DeviceIdentity;
     use crate::domain::sync::{EventEnvelope, Operation};
     use crate::infrastructure::sqlite::sync_apply::envelope_de_origem;
@@ -268,9 +252,10 @@ mod tests {
                 let connection = aparelho.banco.database.write().expect("escrita");
                 origem_remota_confiavel(&connection, &aparelho.eu)
             };
+            let ordem = ordem_remota(&outra, 1, "", &[]);
             let mut exclusao = envelope_de_origem(
                 outra.device_id(),
-                1,
+                2,
                 "u1",
                 &AggregateRef::new("chapter", "c1"),
                 Operation::Delete,
@@ -284,7 +269,7 @@ mod tests {
                 exclusao,
                 rev_conhecida,
             };
-            let relatorio = cenario.entregar(std::slice::from_ref(&cenario.exclusao));
+            let relatorio = cenario.entregar(&[ordem, cenario.exclusao.clone()]);
             assert_eq!(relatorio.divergencias, 1, "a exclusão tinha que bloquear");
             cenario
         }
@@ -349,7 +334,7 @@ mod tests {
         let cenario = Cenario::bloqueado();
         assert_eq!(
             cenario.cursor(),
-            1,
+            2,
             "o cursor não pode travar na exclusão bloqueada"
         );
         assert_eq!(cenario.divergencias_abertas().len(), 1);
@@ -362,7 +347,7 @@ mod tests {
             1,
             "divergência duplicada"
         );
-        assert_eq!(cenario.cursor(), 1);
+        assert_eq!(cenario.cursor(), 2);
         assert!(cenario.aparelho.existe("chapters", "c1"));
         assert!(cenario.aparelho.existe("attachments", "a-concorrente"));
     }
@@ -513,18 +498,20 @@ mod tests {
         let aparelho = Aparelho::novo();
         aparelho.editar("conhecida").expect("editar");
         let rev = aparelho.estado_causal("chapter", "c1").expect("revisão");
-        let payload = sync_codec::ler(&aparelho.conexao(), &AggregateRef::new("chapter", "c1"))
-            .expect("ler")
-            .expect("existe")
-            .payload;
+        let payload =
+            sync_codec::ler_canonico(&aparelho.conexao(), &AggregateRef::new("chapter", "c1"))
+                .expect("ler")
+                .expect("existe")
+                .payload;
         let outra = {
             let connection = aparelho.banco.database.write().expect("escrita");
             origem_remota_confiavel(&connection, &aparelho.eu)
         };
         let agregado = AggregateRef::new("chapter", "c1");
+        let ordem = ordem_remota(&outra, 1, "", &[]);
         let mut exclusao = envelope_de_origem(
             outra.device_id(),
-            1,
+            2,
             "u1",
             &agregado,
             Operation::Delete,
@@ -534,7 +521,7 @@ mod tests {
         exclusao.signature = outra.sign(&exclusao);
         let mut restauracao = envelope_de_origem(
             outra.device_id(),
-            2,
+            3,
             "u1",
             &agregado,
             Operation::Upsert,
@@ -544,7 +531,7 @@ mod tests {
         restauracao.signature = outra.sign(&restauracao);
 
         let mut connection = aparelho.banco.database.write().expect("escrita");
-        receber_eventos(&mut connection, &[exclusao]).expect("exclusão");
+        receber_eventos(&mut connection, &[ordem, exclusao]).expect("exclusão");
         drop(connection);
         assert!(!aparelho.existe("chapters", "c1"));
 

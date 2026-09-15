@@ -816,15 +816,36 @@ mod tests {
         let b = Aparelho::novo("Celular");
 
         // ── o acervo de A ───────────────────────────────────────────────────
-        let universo = universe_service::create(&a.banco.database, &a.store, "Terra Média", "", "")
-            .expect("universo");
-        let historia = manuscript_service::create_story(&a.banco.database, &universo.id, "Saga")
-            .expect("história");
-        let livro = manuscript_service::create_book(&a.banco.database, &historia.id, "Livro I")
-            .expect("livro");
-        let capitulo =
-            manuscript_service::create_chapter(&a.banco.database, &livro.id, "Capítulo 1")
-                .expect("capítulo");
+        let universo = universe_service::create(
+            &a.banco.database,
+            &a.store,
+            &a.identidade,
+            "Terra Média",
+            "",
+            "",
+        )
+        .expect("universo");
+        let historia = manuscript_service::create_story(
+            &a.banco.database,
+            &a.identidade,
+            &universo.id,
+            "Saga",
+        )
+        .expect("história");
+        let livro = manuscript_service::create_book(
+            &a.banco.database,
+            &a.identidade,
+            &historia.id,
+            "Livro I",
+        )
+        .expect("livro");
+        let capitulo = manuscript_service::create_chapter(
+            &a.banco.database,
+            &a.identidade,
+            &livro.id,
+            "Capítulo 1",
+        )
+        .expect("capítulo");
 
         let imagem: Vec<u8> = (0..4096_u32).map(|i| (i * 31 % 251) as u8).collect();
         let hash = a.store.put(&imagem).expect("publicar imagem");

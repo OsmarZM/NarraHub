@@ -1,4 +1,4 @@
-//! A fronteira única entre mutação de domínio e Sync V2 (NH-079, etapa B1).
+//! A fronteira única entre mutação de domínio e Sync V2 (NH-079, etapas B1 e B2).
 //!
 //! ## Invariante
 //!
@@ -19,11 +19,25 @@
 //!   closure:
 //!     m.tx()                  a transação; repositórios recebem ESTA, e só ela
 //!     m.gravou(tipo, id)      create/update — o estado é lido no fim, depois da escrita
-//!     m.excluir(tipo, id)     ANTES do DELETE: afetados, estado causal, preflight, eventos preparados
+//!     m.excluir(tipo, id)     ANTES do DELETE: impactos, estado causal, preflight, eventos preparados
 //!   fim:
-//!     exclusões: confere que cada afetado sumiu
-//!     emite eventos na ordem declarada (descendentes antes do pai)
+//!     reescritos: confere que continuam existindo, relê o estado canônico → upsert
+//!     excluídos:  confere que sumiram → delete (descendentes antes do pai)
+//!     agregado cujo estado canônico já é o da revisão corrente não gera evento
 //!   COMMIT
+//! ```
+//!
+//! ## Excluir não é só apagar
+//!
+//! ```text
+//! m.excluir(pai)
+//!   preflight (antes do SQL):
+//!     Excluido(filho A), Excluido(filho B)   → precisam sumir     → eventos delete
+//!     Reescrito(sobrevivente C)              → precisa continuar  → relido depois → evento upsert
+//!     Bloqueado(motivo)                      → efeito sobre tipo ainda não coberto → recusa tudo
+//!   cada afetado: divergência aberta ou evento pendente → recusa (nada de alteração silenciosa)
+//! serviço executa o DELETE
+//! fim: reescritos antes dos excluídos, tudo na mesma transação
 //! ```
 //!
 //! **Uma ação, um conjunto coerente de revisões.** O serviço declara agregados, não SQLs: cinco
@@ -66,7 +80,7 @@ use rusqlite::{Transaction, TransactionBehavior};
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::identity::DeviceIdentity;
 use crate::domain::sync::{AggregateRef, Operation};
-use crate::infrastructure::sqlite::sync_codec::{self, EstadoConcorrente};
+use crate::infrastructure::sqlite::sync_codec::{self, EstadoConcorrente, Impacto};
 use crate::infrastructure::sqlite::sync_repository::{append_event_in_transaction, LocalChange};
 use crate::infrastructure::sqlite::SqliteDatabase;
 
@@ -98,7 +112,10 @@ impl Drop for Marca {
 
 #[derive(Debug, Clone)]
 enum Operacao {
+    /// Declarado pelo serviço: criado ou alterado.
     Gravou(AggregateRef),
+    /// Sobrevivente de uma exclusão: mudou por FK/gatilho/derivação e continua existindo.
+    Reescreveu(AggregateRef),
     Excluiu {
         agregado: AggregateRef,
         universe_id: String,
@@ -157,33 +174,43 @@ impl<'t, 'c> Mutacao<'t, 'c> {
 
     /// Prepara a exclusão **antes** do SQL destrutivo.
     ///
-    /// Descobre o agregado e tudo o que a exclusão apagaria por chave estrangeira ou gatilho,
-    /// recusa se algum deles tiver estado concorrente, e registra as exclusões na ordem em que os
-    /// eventos precisam sair: do descendente mais profundo até o próprio agregado.
-    ///
-    /// Depois desta chamada, o serviço executa o `DELETE`.
+    /// Percorre os impactos: o que some junto (`Excluido`, recursivo), o que sobrevive mudado
+    /// (`Reescrito`) e o que ainda não pode ser tocado (`Bloqueado`, que recusa tudo). Todo afetado
+    /// passa pelo preflight de estado concorrente. Depois desta chamada, o serviço executa o
+    /// `DELETE`.
     pub fn excluir(&mut self, tipo: &str, id: &str) -> DatabaseCommandResult<()> {
+        if !sync_codec::coberto(tipo) {
+            return Err(sync_codec::nao_coberto(tipo));
+        }
         let raiz = AggregateRef::new(tipo, id);
-        if sync_codec::ler(self.tx, &raiz)?.is_none() {
+        if sync_codec::ler_canonico(self.tx, &raiz)?.is_none() {
             return Err(DatabaseCommandError::not_found(format!(
                 "Não há {tipo} {id} para excluir."
             )));
         }
 
-        let ordem = coletar(&raiz, |agregado| {
-            sync_codec::descendentes(self.tx, agregado)
+        let coleta = coletar(&raiz, |agregado| {
+            sync_codec::impactos_da_exclusao(self.tx, agregado)
         })?;
 
         // O escopo de cada afetado é lido AGORA, com todos ainda vivos. Afetado sem universo não
         // vira evento com `universe_id` vazio: é inconsistência, e a transação inteira falha.
-        let mut preparados = Vec::with_capacity(ordem.len());
-        for agregado in ordem {
-            let estado = sync_codec::ler(self.tx, &agregado)?;
+        let mut preparados = Vec::with_capacity(coleta.excluidos.len());
+        for agregado in coleta.excluidos {
+            let estado = sync_codec::ler_canonico(self.tx, &agregado)?;
             let universe_id = universo_do_afetado(&agregado, estado)?;
             preparados.push((agregado, universe_id));
         }
+        for agregado in &coleta.reescritos {
+            universo_do_afetado(agregado, sync_codec::ler_canonico(self.tx, agregado)?)?;
+        }
 
-        for (agregado, _) in &preparados {
+        let afetados = coleta
+            .reescritos
+            .iter()
+            .map(|agregado| (agregado, "alterado"))
+            .chain(preparados.iter().map(|(agregado, _)| (agregado, "apagado")));
+        for (agregado, efeito) in afetados {
             if let Some(motivo) = sync_codec::estado_concorrente(self.tx, agregado)? {
                 let por_que = match motivo {
                     EstadoConcorrente::DivergenciaAberta => {
@@ -194,12 +221,23 @@ impl<'t, 'c> Mutacao<'t, 'c> {
                     }
                 };
                 return Err(DatabaseCommandError::conflict(format!(
-                    "Não dá para excluir agora: {} {} {por_que}. Resolva isso antes; nada foi apagado.",
+                    "Não dá para excluir agora: {} {} seria {efeito} e {por_que}. Resolva isso \
+                     antes; nada foi apagado.",
                     agregado.aggregate_type, agregado.aggregate_id
                 )));
             }
         }
 
+        // Reescritos antes dos excluídos: o sobrevivente deixa de apontar para o que vai sumir
+        // antes de o que vai sumir sumir, também nos outros aparelhos.
+        for agregado in coleta.reescritos {
+            let ja = self.operacoes.iter().any(
+                |operacao| matches!(operacao, Operacao::Reescreveu(existente) if existente == &agregado),
+            );
+            if !ja {
+                self.operacoes.push(Operacao::Reescreveu(agregado));
+            }
+        }
         for (agregado, universe_id) in preparados {
             let ja = self.operacoes.iter().any(|operacao| {
                 matches!(operacao, Operacao::Excluiu { agregado: existente, .. } if existente == &agregado)
@@ -223,26 +261,38 @@ impl<'t, 'c> Mutacao<'t, 'c> {
             .iter()
             .filter_map(|operacao| match operacao {
                 Operacao::Excluiu { agregado, .. } => Some(agregado),
-                Operacao::Gravou(_) => None,
+                _ => None,
             })
             .collect();
 
         let mut emitidos: Vec<AggregateRef> = Vec::new();
+        let mut eventos = 0usize;
         for operacao in &self.operacoes {
             match operacao {
-                Operacao::Gravou(agregado) => {
+                Operacao::Gravou(agregado) | Operacao::Reescreveu(agregado) => {
                     // Gravado e depois excluído na mesma ação: só a exclusão existe para os outros.
                     if excluidos.contains(&agregado) || emitidos.contains(agregado) {
                         continue;
                     }
-                    let estado = sync_codec::ler(self.tx, agregado)?.ok_or_else(|| {
+                    let estado = sync_codec::ler_canonico(self.tx, agregado)?.ok_or_else(|| {
+                        let como = match operacao {
+                            Operacao::Reescreveu(_) => "como sobrevivente de uma exclusão",
+                            _ => "como gravado",
+                        };
                         DatabaseCommandError::storage(format!(
-                            "A mutação declarou {} {} como gravado, e ele não existe no fim da \
+                            "A mutação declarou {} {} {como}, e ele não existe no fim da \
                              transação. Nada foi confirmado.",
                             agregado.aggregate_type, agregado.aggregate_id
                         ))
                     })?;
                     let universe_id = universo_do_afetado(agregado, Some(estado.clone()))?;
+                    emitidos.push(agregado.clone());
+                    // Mesmo estado, mesmo payload: nada a revisar.
+                    if sync_codec::payload_da_revisao_corrente(self.tx, agregado)?.as_deref()
+                        == Some(estado.payload.as_str())
+                    {
+                        continue;
+                    }
                     append_event_in_transaction(
                         self.tx,
                         identidade,
@@ -253,19 +303,19 @@ impl<'t, 'c> Mutacao<'t, 'c> {
                             payload: &estado.payload,
                         },
                     )?;
-                    emitidos.push(agregado.clone());
                 }
                 Operacao::Excluiu {
                     agregado,
                     universe_id,
                 } => {
-                    if sync_codec::ler(self.tx, agregado)?.is_some() {
+                    if sync_codec::ler_canonico(self.tx, agregado)?.is_some() {
                         return Err(DatabaseCommandError::storage(format!(
                             "A mutação preparou a exclusão de {} {}, e ele continua existindo no fim \
                              da transação. Nada foi confirmado.",
                             agregado.aggregate_type, agregado.aggregate_id
                         )));
                     }
+                    emitidos.push(agregado.clone());
                     append_event_in_transaction(
                         self.tx,
                         identidade,
@@ -276,10 +326,10 @@ impl<'t, 'c> Mutacao<'t, 'c> {
                             payload: "",
                         },
                     )?;
-                    emitidos.push(agregado.clone());
                 }
             }
-            if emitidos.len() == 1 {
+            eventos += 1;
+            if eventos == 1 {
                 falha::verificar(falha::Ponto::DuranteOsEventos)?;
             }
         }
@@ -309,24 +359,33 @@ fn universo_do_afetado(
     }
 }
 
-/// Todos os afetados pela exclusão de `raiz`: **descendentes primeiro**, a raiz por último.
+/// O resultado da coleta de impactos de uma exclusão.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Coleta {
+    /// Descendentes primeiro, a raiz por último.
+    excluidos: Vec<AggregateRef>,
+    /// Sobreviventes, sem os que também são excluídos (excluir vence reescrever).
+    reescritos: Vec<AggregateRef>,
+}
+
+/// Todos os impactos da exclusão de `raiz`.
 ///
 /// Resiste a ciclo e a filho compartilhado. Cada agregado é marcado como visitado **antes** de
 /// descer nele, então nada é visitado duas vezes. Um filho que já está no caminho atual é um ciclo
 /// de posse — dado corrompido —, e a exclusão é recusada em vez de escolher uma ordem arbitrária.
+/// Um `Bloqueado` em qualquer nível recusa a exclusão inteira.
 fn coletar(
     raiz: &AggregateRef,
-    mut descendentes: impl FnMut(&AggregateRef) -> DatabaseCommandResult<Vec<AggregateRef>>,
-) -> DatabaseCommandResult<Vec<AggregateRef>> {
-    type Descendentes<'f> =
-        dyn FnMut(&AggregateRef) -> DatabaseCommandResult<Vec<AggregateRef>> + 'f;
+    mut impactos: impl FnMut(&AggregateRef) -> DatabaseCommandResult<Vec<Impacto>>,
+) -> DatabaseCommandResult<Coleta> {
+    type Impactos<'f> = dyn FnMut(&AggregateRef) -> DatabaseCommandResult<Vec<Impacto>> + 'f;
 
     fn visitar(
         agregado: &AggregateRef,
-        descendentes: &mut Descendentes<'_>,
+        impactos: &mut Impactos<'_>,
         visitados: &mut HashSet<(String, String)>,
         caminho: &mut Vec<AggregateRef>,
-        ordem: &mut Vec<AggregateRef>,
+        coleta: &mut Coleta,
     ) -> DatabaseCommandResult<()> {
         let chave = (
             agregado.aggregate_type.clone(),
@@ -343,25 +402,41 @@ fn coletar(
             return Ok(());
         }
         caminho.push(agregado.clone());
-        for filho in descendentes(agregado)? {
-            visitar(&filho, descendentes, visitados, caminho, ordem)?;
+        for impacto in impactos(agregado)? {
+            match impacto {
+                Impacto::Excluido(filho) => visitar(&filho, impactos, visitados, caminho, coleta)?,
+                Impacto::Reescrito(sobrevivente) => {
+                    if !coleta.reescritos.contains(&sobrevivente) {
+                        coleta.reescritos.push(sobrevivente);
+                    }
+                }
+                Impacto::Bloqueado(motivo) => {
+                    return Err(DatabaseCommandError::conflict(format!(
+                        "Não dá para excluir agora: {motivo}. Nada foi apagado."
+                    )))
+                }
+            }
         }
         caminho.pop();
-        ordem.push(agregado.clone());
+        coleta.excluidos.push(agregado.clone());
         Ok(())
     }
 
     let mut visitados = HashSet::new();
     let mut caminho = Vec::new();
-    let mut ordem = Vec::new();
+    let mut coleta = Coleta::default();
     visitar(
         raiz,
-        &mut descendentes,
+        &mut impactos,
         &mut visitados,
         &mut caminho,
-        &mut ordem,
+        &mut coleta,
     )?;
-    Ok(ordem)
+    let excluidos = coleta.excluidos.clone();
+    coleta
+        .reescritos
+        .retain(|sobrevivente| !excluidos.contains(sobrevivente));
+    Ok(coleta)
 }
 
 /// Falha injetada nos pontos críticos da fronteira. Só existe em build de teste; em produção é
@@ -548,7 +623,7 @@ pub(crate) mod tests {
         pub(crate) fn coerente(&self, tipo: &str, id: &str) {
             let connection = self.conexao();
             let agregado = AggregateRef::new(tipo, id);
-            match sync_codec::ler(&connection, &agregado).expect("ler") {
+            match sync_codec::ler_canonico(&connection, &agregado).expect("ler") {
                 Some(estado) => {
                     let rev = self.estado_causal(tipo, id).unwrap_or_else(|| {
                         panic!("{tipo} {id} existe no domínio sem revisão corrente")
@@ -582,16 +657,21 @@ pub(crate) mod tests {
     #[test]
     fn coletar_resiste_a_ciclo_e_a_filho_compartilhado() {
         let r = |id: &str| AggregateRef::new("chapter", id);
+        let x = |id: &str| Impacto::Excluido(AggregateRef::new("chapter", id));
         // a → b, a → c, b → d, c → d (diamante)
-        let diamante = |agregado: &AggregateRef| -> DatabaseCommandResult<Vec<AggregateRef>> {
+        let diamante = |agregado: &AggregateRef| -> DatabaseCommandResult<Vec<Impacto>> {
             Ok(match agregado.aggregate_id.as_str() {
-                "a" => vec![r("b"), r("c")],
-                "b" | "c" => vec![r("d")],
+                "a" => vec![x("b"), x("c")],
+                "b" | "c" => vec![x("d")],
                 _ => vec![],
             })
         };
-        let ordem = coletar(&r("a"), diamante).expect("diamante");
-        let ids: Vec<&str> = ordem.iter().map(|a| a.aggregate_id.as_str()).collect();
+        let coleta = coletar(&r("a"), diamante).expect("diamante");
+        let ids: Vec<&str> = coleta
+            .excluidos
+            .iter()
+            .map(|a| a.aggregate_id.as_str())
+            .collect();
         assert_eq!(
             ids,
             vec!["d", "b", "c", "a"],
@@ -600,12 +680,12 @@ pub(crate) mod tests {
 
         // a → b → a: sem marcar visitado antes da descida, isto nunca terminaria.
         let mut chamadas = 0;
-        let ciclo = |agregado: &AggregateRef| -> DatabaseCommandResult<Vec<AggregateRef>> {
+        let ciclo = |agregado: &AggregateRef| -> DatabaseCommandResult<Vec<Impacto>> {
             chamadas += 1;
             assert!(chamadas < 10, "a coleta entrou em laço");
             Ok(match agregado.aggregate_id.as_str() {
-                "a" => vec![r("b")],
-                _ => vec![r("a")],
+                "a" => vec![x("b")],
+                _ => vec![x("a")],
             })
         };
         let erro = coletar(&r("a"), ciclo).expect_err("ciclo é inconsistência");
@@ -613,8 +693,36 @@ pub(crate) mod tests {
 
         // Auto-referência.
         let proprio =
-            |_: &AggregateRef| -> DatabaseCommandResult<Vec<AggregateRef>> { Ok(vec![r("a")]) };
+            |_: &AggregateRef| -> DatabaseCommandResult<Vec<Impacto>> { Ok(vec![x("a")]) };
         assert!(coletar(&r("a"), proprio).is_err());
+    }
+
+    /// Reescrito sai da lista quando o mesmo agregado também é excluído; Bloqueado recusa tudo.
+    #[test]
+    fn coletar_separa_reescrito_de_excluido_e_bloqueio_recusa() {
+        let ordem = AggregateRef::new("chapter_order", "b1");
+        let livro = |agregado: &AggregateRef| -> DatabaseCommandResult<Vec<Impacto>> {
+            Ok(match agregado.aggregate_type.as_str() {
+                "book" => vec![
+                    Impacto::Excluido(ordem.clone()),
+                    Impacto::Excluido(AggregateRef::new("chapter", "c1")),
+                ],
+                "chapter" => vec![Impacto::Reescrito(ordem.clone())],
+                _ => vec![],
+            })
+        };
+        let coleta = coletar(&AggregateRef::new("book", "b1"), livro).expect("livro");
+        assert!(coleta.reescritos.is_empty(), "excluir vence reescrever");
+        assert_eq!(coleta.excluidos.len(), 3);
+
+        let so_capitulo = coletar(&AggregateRef::new("chapter", "c1"), livro).expect("capítulo");
+        assert_eq!(so_capitulo.reescritos, vec![ordem.clone()]);
+
+        let bloqueado = |_: &AggregateRef| -> DatabaseCommandResult<Vec<Impacto>> {
+            Ok(vec![Impacto::Bloqueado("card ligado".into())])
+        };
+        let erro = coletar(&AggregateRef::new("chapter", "c1"), bloqueado).expect_err("bloqueio");
+        assert!(erro.message.contains("card ligado"), "{}", erro.message);
     }
 
     /// Afetado sem universo derruba a exclusão inteira; nunca sai evento com `universe_id` vazio.
@@ -647,6 +755,31 @@ pub(crate) mod tests {
         let erro = universo_do_afetado(&AggregateRef::new("attachment", "x"), None)
             .expect_err("afetado sumido");
         assert!(erro.message.contains("não existe"), "{}", erro.message);
+    }
+
+    /// A reescrita de `chapter_order(b1)` que uma origem emite antes de excluir capítulo (B2).
+    pub(crate) fn ordem_remota(
+        origem: &DeviceIdentity,
+        seq: i64,
+        base: &str,
+        capitulos: &[&str],
+    ) -> crate::domain::sync::EventEnvelope {
+        let payload = sync_codec::para_json(&sync_codec::manuscrito::OrdemDosCapitulos {
+            book_id: "b1".into(),
+            chapter_ids: capitulos.iter().map(|c| c.to_string()).collect(),
+        })
+        .expect("json");
+        let mut envelope = envelope_de_origem(
+            origem.device_id(),
+            seq,
+            "u1",
+            &AggregateRef::new("chapter_order", "b1"),
+            Operation::Upsert,
+            &payload,
+            base,
+        );
+        envelope.signature = origem.sign(&envelope);
+        envelope
     }
 
     #[test]
@@ -958,9 +1091,10 @@ pub(crate) mod tests {
             let connection = aparelho.banco.database.write().expect("escrita");
             origem_remota_confiavel(&connection, &aparelho.eu)
         };
+        let ordem = ordem_remota(&outra, 1, "", &[]);
         let mut exclusao = envelope_de_origem(
             outra.device_id(),
-            1,
+            2,
             "u1",
             &AggregateRef::new("chapter", "c1"),
             Operation::Delete,
@@ -970,7 +1104,7 @@ pub(crate) mod tests {
         exclusao.signature = outra.sign(&exclusao);
 
         let mut connection = aparelho.banco.database.write().expect("escrita");
-        let relatorio = receber_eventos(&mut connection, &[exclusao]).expect("receber");
+        let relatorio = receber_eventos(&mut connection, &[ordem, exclusao]).expect("receber");
         drop(connection);
 
         assert_eq!(relatorio.divergencias, 1);
@@ -1010,9 +1144,10 @@ pub(crate) mod tests {
             let connection = aparelho.banco.database.write().expect("escrita");
             origem_remota_confiavel(&connection, &aparelho.eu)
         };
+        let ordem = ordem_remota(&outra, 1, "", &[]);
         let mut exclusao = envelope_de_origem(
             outra.device_id(),
-            1,
+            2,
             "u1",
             &AggregateRef::new("chapter", "c1"),
             Operation::Delete,
@@ -1022,7 +1157,7 @@ pub(crate) mod tests {
         exclusao.signature = outra.sign(&exclusao);
 
         let mut connection = aparelho.banco.database.write().expect("escrita");
-        let relatorio = receber_eventos(&mut connection, &[exclusao]).expect("receber");
+        let relatorio = receber_eventos(&mut connection, &[ordem, exclusao]).expect("receber");
         drop(connection);
 
         assert_eq!(relatorio.divergencias, 0);
@@ -1102,8 +1237,20 @@ mod gate_estrutural {
                 include_str!("../infrastructure/sqlite/canvas_repository.rs"),
             ),
             (
-                "sync_codec",
-                include_str!("../infrastructure/sqlite/sync_codec.rs"),
+                "sync_codec/mod",
+                include_str!("../infrastructure/sqlite/sync_codec/mod.rs"),
+            ),
+            (
+                "sync_codec/manuscrito",
+                include_str!("../infrastructure/sqlite/sync_codec/manuscrito.rs"),
+            ),
+            (
+                "sync_codec/anexo",
+                include_str!("../infrastructure/sqlite/sync_codec/anexo.rs"),
+            ),
+            (
+                "universe_repository",
+                include_str!("../infrastructure/sqlite/universe_repository.rs"),
             ),
             ("blob_fields", include_str!("blob_fields.rs")),
         ] {
@@ -1121,5 +1268,68 @@ mod gate_estrutural {
                 );
             }
         }
+    }
+
+    /// **Nenhuma escrita sincronizável do manuscrito fica fora da `Mutacao` (gate da B2).**
+    ///
+    /// Varre TODA função pública de `manuscript_service` e de `universe_service`. Leitura
+    /// (`list_*`, `get*`, `stats`) é dispensada pelo nome; qualquer outra precisa passar pela
+    /// fronteira, ou estar em `FORA_DE_PROPOSITO` com o motivo. Uma função nova que escreva por conta
+    /// própria reprova aqui sem ninguém precisar lembrar de listá-la.
+    #[test]
+    fn escritas_do_manuscrito_passam_todas_pela_mutacao() {
+        const FORA_DE_PROPOSITO: &[(&str, &str)] = &[(
+            "delete",
+            "universe_service::delete recusa sempre (a árvore do universo ainda não é coberta) e não escreve",
+        )];
+        let leitura =
+            |nome: &str| nome.starts_with("list_") || nome.starts_with("get") || nome == "stats";
+        let mut conferidas = 0;
+        for (servico, fonte) in [
+            ("manuscript_service", include_str!("manuscript_service.rs")),
+            ("universe_service", include_str!("universe_service.rs")),
+        ] {
+            let codigo = sem_testes(fonte);
+            let mut resto = codigo;
+            while let Some(inicio) = resto.find("\npub fn ") {
+                let assinatura = &resto[inicio + "\npub fn ".len()..];
+                let nome = &assinatura[..assinatura.find('(').expect("assinatura")];
+                resto = &resto[inicio + 1..];
+                if leitura(nome) {
+                    continue;
+                }
+                let corpo = corpo(codigo, nome);
+                if let Some((_, motivo)) = FORA_DE_PROPOSITO
+                    .iter()
+                    .find(|(fora, _)| *fora == nome && servico == "universe_service")
+                {
+                    for proibido in ["database.write()", ".execute(", "Mutacao::executar("] {
+                        assert!(
+                            !corpo.contains(proibido),
+                            "{servico}::{nome} está fora da Mutacao ({motivo}) e passou a escrever"
+                        );
+                    }
+                    continue;
+                }
+                assert!(
+                    corpo.contains("Mutacao::executar("),
+                    "{servico}::{nome} escreve fora da Mutacao"
+                );
+                for proibido in [
+                    "database.write()",
+                    ".transaction(",
+                    "transaction_with_behavior",
+                    "append_event_in_transaction",
+                ] {
+                    assert!(
+                        !corpo.contains(proibido),
+                        "{servico}::{nome} usa `{proibido}` por fora da fronteira"
+                    );
+                }
+                conferidas += 1;
+            }
+        }
+        // 10 do manuscrito + create/update do universo. Se cair, o gate perdeu funções de vista.
+        assert_eq!(conferidas, 12, "o gate conferiu {conferidas} escritas");
     }
 }
