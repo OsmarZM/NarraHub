@@ -61,6 +61,10 @@ pub enum Applied {
     /// `base_rev` que não conhecemos. Não é conflito: falta história
     /// intermediária, e o agregado precisa de reconciliação.
     PrecisaReconciliar,
+    /// Revisão de ordem que não pode ser materializada aqui, atravessada por uma **ponte** que
+    /// terminou, na mesma transação, numa revisão sucessora materializada exatamente. Ela entra na
+    /// história e fica aplicada; a revisão corrente é a do fim da ponte. Ver `atravessar_ponte`.
+    Superado,
 }
 
 /// Aplica um evento recebido, dentro de uma transação que já existe.
@@ -123,6 +127,9 @@ pub fn apply_remote_event(
                 // Não aplica, não marca; o cursor espera. Pai divergente é erro (pai imutável).
                 Operation::Upsert => {
                     if sync_codec::dependencias(tx, envelope)?.is_some() {
+                        if atravessar_ponte(tx, envelope)? {
+                            return Ok(Applied::Superado);
+                        }
                         return Ok(Applied::PrecisaReconciliar);
                     }
                 }
@@ -209,6 +216,233 @@ pub fn motivo_para_bloquear_exclusao_remota(
         }
     }
     Ok(None)
+}
+
+/// **Ponte de ordem.** Uma ordem sequencial que não pode ser materializada só é superada se a cadeia
+/// de sucessores dela chegar, NESTA transação, a uma revisão que materializa exatamente.
+///
+/// O travamento que isto destrava, sem inventar merge:
+///
+/// ```text
+/// C cria c3 e reescreve a ordem          ordem Rc = [c1, c2, c3]
+/// A recebe, cria c4 e reescreve a ordem  ordem Ra = [c1, c2, c3, c4], base Rc
+/// B recebe tudo:  c4 aplica · Ra espera (base Rc desconhecida) · c3 aplica · Rc espera (c4 não citado)
+/// ```
+///
+/// `c4` é causalmente posterior a `Rc`, mas eventos de agregados diferentes não carregam essa relação;
+/// a história da ordem carrega. A ponte:
+///
+/// ```text
+/// SAVEPOINT ponte_de_ordem
+///   Rc → revisão corrente provisória, aplicada provisoriamente (sem tocar o domínio)
+///   sucessor alcançável de Rc?          não → ROLLBACK TO: Rc continua pendente, como antes
+///   dependências do sucessor presentes? sim → aplica, confere materialização → RELEASE
+///   sucessor também não materializa?    atravessa ele também (até o limite)
+///   inconsistência permanente no sucessor → ROLLBACK TO (o erro aparece quando ele for drenado)
+/// ```
+///
+/// **Invariante estrutural preservada:** `sync_aggregate_state.current_rev` só é confirmado apontando
+/// para uma revisão materializada. Nenhuma escrita local parte de uma revisão que o domínio nunca teve:
+/// se a ponte não fecha, nada dela sobrevive ao `ROLLBACK TO`. Os envelopes continuam no log.
+fn atravessar_ponte(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<bool> {
+    if !sync_codec::existencia_derivada(&envelope.aggregate_type) {
+        return Ok(false);
+    }
+    let sql = |comando: &str| {
+        tx.execute_batch(comando)
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))
+    };
+    sql("SAVEPOINT ponte_de_ordem")?;
+    match avancar_ponte(tx, envelope, 0) {
+        Ok(true) => {
+            sql("RELEASE ponte_de_ordem")?;
+            Ok(true)
+        }
+        Ok(false) => {
+            sql("ROLLBACK TO ponte_de_ordem; RELEASE ponte_de_ordem")?;
+            Ok(false)
+        }
+        Err(erro) => {
+            sql("ROLLBACK TO ponte_de_ordem; RELEASE ponte_de_ordem")?;
+            Err(erro)
+        }
+    }
+}
+
+/// Quantas revisões intermediárias uma ponte atravessa, no máximo.
+const LIMITE_DA_PONTE: usize = 64;
+
+fn avancar_ponte(
+    tx: &Transaction<'_>,
+    intermediaria: &EventEnvelope,
+    profundidade: usize,
+) -> DatabaseCommandResult<bool> {
+    if profundidade >= LIMITE_DA_PONTE {
+        return Ok(false);
+    }
+    // Provisório: só sobrevive se a ponte fechar.
+    registrar_revisao(tx, intermediaria)?;
+    marcar_aplicado(tx, &intermediaria.event_id)?;
+    tx.execute(
+        "INSERT INTO sync_aggregate_state (aggregate_type, aggregate_id, current_rev)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(aggregate_type, aggregate_id) DO UPDATE SET current_rev = excluded.current_rev",
+        rusqlite::params![
+            &intermediaria.aggregate_type,
+            &intermediaria.aggregate_id,
+            &intermediaria.new_rev
+        ],
+    )
+    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+
+    let Some(sucessor) = sucessor_alcancavel(tx, intermediaria)? else {
+        return Ok(false);
+    };
+    let agregado = AggregateRef::new(&sucessor.aggregate_type, &sucessor.aggregate_id);
+    let historia = aggregate_history(tx, &agregado)?;
+    if classify(&historia, &sucessor.base_rev, &sucessor.new_rev) != Causality::Sequential {
+        return Ok(false);
+    }
+    match sync_codec::dependencias(tx, &sucessor) {
+        // Inconsistência permanente: não é caminho. O erro aparece quando o sucessor for drenado.
+        Err(_) => Ok(false),
+        Ok(Some(_)) => avancar_ponte(tx, &sucessor, profundidade + 1),
+        Ok(None) => {
+            aplicar_com_estado_causal(tx, &sucessor)?;
+            conferir_materializacao(tx, &sucessor)?;
+            registrar_revisao(tx, &sucessor)?;
+            marcar_aplicado(tx, &sucessor.event_id)?;
+            Ok(true)
+        }
+    }
+}
+
+/// O evento que parte desta revisão e que a sessão poderia aplicar agora.
+///
+/// ```text
+/// mesmo agregado, base_rev == new_rev da intermediária, ainda não aplicado
+/// guardado no log  → já passou pela cadeia de confiança (verificar_origem vem antes de guardar)
+/// alcançável       → todas as seq da origem dele entre o cursor e ele já estão aplicadas
+///                     (as marcações provisórias desta ponte contam); lacuna → não é caminho
+/// ```
+fn sucessor_alcancavel(
+    tx: &Transaction<'_>,
+    intermediaria: &EventEnvelope,
+) -> DatabaseCommandResult<Option<EventEnvelope>> {
+    let erro = |error: rusqlite::Error| DatabaseCommandError::storage(error.to_string());
+    let candidatos: Vec<String> = tx
+        .prepare(
+            "SELECT e.event_id FROM sync_events e
+              WHERE e.aggregate_type = ?1 AND e.aggregate_id = ?2 AND e.base_rev = ?3
+                AND NOT EXISTS (SELECT 1 FROM sync_applied_events a WHERE a.event_id = e.event_id)
+              ORDER BY e.device_id, e.seq",
+        )
+        .map_err(erro)?
+        .query_map(
+            rusqlite::params![
+                &intermediaria.aggregate_type,
+                &intermediaria.aggregate_id,
+                &intermediaria.new_rev
+            ],
+            |row| row.get(0),
+        )
+        .map_err(erro)?
+        .collect::<Result<_, _>>()
+        .map_err(erro)?;
+    for event_id in candidatos {
+        let Some(candidato) = envelope_guardado(tx, &event_id)? else {
+            continue;
+        };
+        let cursor: i64 = tx
+            .query_row(
+                "SELECT last_seq_applied FROM sync_cursors WHERE origin_device_id = ?1",
+                [&candidato.device_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(erro)?
+            .unwrap_or(0);
+        let antes_aplicados: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM sync_events e
+                   JOIN sync_applied_events a ON a.event_id = e.event_id
+                  WHERE e.device_id = ?1 AND e.seq > ?2 AND e.seq < ?3",
+                rusqlite::params![&candidato.device_id, cursor, candidato.seq],
+                |row| row.get(0),
+            )
+            .map_err(erro)?;
+        if candidato.seq > cursor && antes_aplicados == candidato.seq - cursor - 1 {
+            return Ok(Some(candidato));
+        }
+    }
+    Ok(None)
+}
+
+/// Um envelope guardado no log, pelo id.
+fn envelope_guardado(
+    tx: &Transaction<'_>,
+    event_id: &str,
+) -> DatabaseCommandResult<Option<EventEnvelope>> {
+    let linha = tx
+        .query_row(
+            "SELECT event_id, device_id, seq, universe_id, aggregate_type, aggregate_id,
+                    operation, payload, base_rev, new_rev, signature
+               FROM sync_events WHERE event_id = ?1",
+            [event_id],
+            |row| {
+                Ok((
+                    EventEnvelope {
+                        event_id: row.get(0)?,
+                        device_id: row.get(1)?,
+                        seq: row.get(2)?,
+                        universe_id: row.get(3)?,
+                        aggregate_type: row.get(4)?,
+                        aggregate_id: row.get(5)?,
+                        operation: Operation::Upsert,
+                        payload: row.get(7)?,
+                        base_rev: row.get(8)?,
+                        new_rev: row.get(9)?,
+                        signature: row.get(10)?,
+                    },
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    let Some((mut envelope, operacao)) = linha else {
+        return Ok(None);
+    };
+    envelope.operation = Operation::parse(&operacao).ok_or_else(|| {
+        DatabaseCommandError::storage(format!(
+            "Operação desconhecida no log para o evento {event_id}: {operacao:?}"
+        ))
+    })?;
+    Ok(Some(envelope))
+}
+
+/// **Invariante estrutural no fim da sessão:** para um agregado coberto, sem decisão aberta nem
+/// evento pendente, revisão corrente presente ⇒ o domínio é o payload dela.
+pub fn conferir_revisao_corrente(
+    tx: &Transaction<'_>,
+    agregado: &AggregateRef,
+) -> DatabaseCommandResult<()> {
+    if !sync_codec::coberto(&agregado.aggregate_type)
+        || sync_codec::estado_concorrente(tx, agregado)?.is_some()
+    {
+        return Ok(());
+    }
+    let Some(registrado) = sync_codec::payload_da_revisao_corrente(tx, agregado)? else {
+        return Ok(());
+    };
+    let materializado = sync_codec::ler_canonico(tx, agregado)?.map(|estado| estado.payload);
+    if materializado.as_deref() != Some(registrado.as_str()) {
+        return Err(DatabaseCommandError::storage(format!(
+            "{} {}: a revisão corrente não é o estado do banco. A sessão não é confirmada.",
+            agregado.aggregate_type, agregado.aggregate_id
+        )));
+    }
+    Ok(())
 }
 
 /// **Invariante do apply:** depois de aplicar, o estado materializado É o evento.
@@ -1293,11 +1527,7 @@ mod tests {
 
         let de_outro = ordem_env(1, "", &["c1", "c2", "x1"]);
         let erro = aplicar_tentando(&mut connection, &de_outro).expect_err("outro livro");
-        assert!(
-            erro.message.contains("que é do livro b2"),
-            "{}",
-            erro.message
-        );
+        assert!(erro.message.contains("que é de b2"), "{}", erro.message);
         assert!(!marcado(&connection, &de_outro));
     }
 
@@ -1378,6 +1608,135 @@ mod tests {
                 Some(payload.as_str()),
                 "{tipo} {id}: materializado difere do payload"
             );
+        }
+    }
+
+    /// `story_order` e `book_order` seguem o contrato de `chapter_order` (B2.1).
+    #[test]
+    fn ordem_de_historias_e_de_livros_tem_o_mesmo_contrato() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        crate::infrastructure::sqlite::test_support::seed_universe(&connection, "u2");
+        connection
+            .execute_batch(
+                "INSERT INTO stories (id, universe_id, name, sort_order) VALUES ('s2', 'u1', 'S2', 1);
+                 INSERT INTO stories (id, universe_id, name) VALUES ('s-outro', 'u2', 'Outro');
+                 INSERT INTO books (id, story_id, name, sort_order) VALUES ('b2', 's1', 'L2', 1);
+                 INSERT INTO books (id, story_id, name) VALUES ('b-outro', 's2', 'Outro');",
+            )
+            .expect("semear");
+        let evento = |seq: i64, tipo: &str, pai: &str, payload: &str, base: &str| {
+            envelope_de_origem(
+                ORIGEM,
+                seq,
+                "u1",
+                &AggregateRef::new(tipo, pai),
+                Operation::Upsert,
+                payload,
+                base,
+            )
+        };
+
+        // Exato.
+        let historias = evento(
+            1,
+            "story_order",
+            "u1",
+            r#"{"universeId":"u1","storyIds":["s2","s1"]}"#,
+            "",
+        );
+        assert_eq!(aplicar(&mut connection, &historias), Applied::Aplicado);
+        assert_eq!(
+            materializado(&connection, "story_order", "u1").as_deref(),
+            Some(historias.payload.as_str())
+        );
+        let livros = evento(
+            2,
+            "book_order",
+            "s1",
+            r#"{"storyId":"s1","bookIds":["b2","b1"]}"#,
+            "",
+        );
+        assert_eq!(aplicar(&mut connection, &livros), Applied::Aplicado);
+        assert_eq!(
+            materializado(&connection, "book_order", "s1").as_deref(),
+            Some(livros.payload.as_str())
+        );
+
+        // Repetido e de outro pai: erro, nada marcado.
+        for (tipo, pai, payload, trecho) in [
+            (
+                "story_order",
+                "u1",
+                r#"{"universeId":"u1","storyIds":["s1","s2","s1"]}"#,
+                "duas vezes",
+            ),
+            (
+                "story_order",
+                "u1",
+                r#"{"universeId":"u1","storyIds":["s1","s2","s-outro"]}"#,
+                "que é de u2",
+            ),
+            (
+                "book_order",
+                "s1",
+                r#"{"storyId":"s1","bookIds":["b1","b1","b2"]}"#,
+                "duas vezes",
+            ),
+            (
+                "book_order",
+                "s1",
+                r#"{"storyId":"s1","bookIds":["b1","b2","b-outro"]}"#,
+                "que é de s2",
+            ),
+        ] {
+            let base = if tipo == "story_order" {
+                &historias.new_rev
+            } else {
+                &livros.new_rev
+            };
+            let envelope = evento(3, tipo, pai, payload, base);
+            let erro = aplicar_tentando(&mut connection, &envelope).expect_err(trecho);
+            assert!(erro.message.contains(trecho), "{}", erro.message);
+            assert!(!marcado(&connection, &envelope));
+        }
+
+        // Inexistente e não citado: espera, nada marcado, ordem intacta.
+        for (i, (tipo, pai, payload)) in [
+            (
+                "story_order",
+                "u1",
+                r#"{"universeId":"u1","storyIds":["s1","s2","s-nao-chegou"]}"#,
+            ),
+            (
+                "story_order",
+                "u1",
+                r#"{"universeId":"u1","storyIds":["s1"]}"#,
+            ),
+            (
+                "book_order",
+                "s1",
+                r#"{"storyId":"s1","bookIds":["b1","b2","b-nao-chegou"]}"#,
+            ),
+            ("book_order", "s1", r#"{"storyId":"s1","bookIds":["b2"]}"#),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let antes = materializado(&connection, tipo, pai);
+            let base = if tipo == "story_order" {
+                &historias.new_rev
+            } else {
+                &livros.new_rev
+            };
+            let envelope = evento(3 + i as i64, tipo, pai, payload, base);
+            assert_eq!(
+                aplicar(&mut connection, &envelope),
+                Applied::PrecisaReconciliar,
+                "{payload}"
+            );
+            assert!(!marcado(&connection, &envelope));
+            assert_eq!(materializado(&connection, tipo, pai), antes);
         }
     }
 }

@@ -61,6 +61,8 @@ pub const TIPOS_COBERTOS: &[&str] = &[
     "book",
     "chapter",
     "chapter_order",
+    "story_order",
+    "book_order",
     "attachment",
     "tag_assignment",
 ];
@@ -85,7 +87,7 @@ pub(crate) fn erro(error: rusqlite::Error) -> DatabaseCommandError {
 /// `chapter_order(livro)` existe enquanto o livro existe. Na exclusão remota, ele só conta como
 /// "descendente vivo" se ainda tiver revisão corrente — a linha que o sustenta é o livro.
 pub fn existencia_derivada(tipo: &str) -> bool {
-    tipo == "chapter_order"
+    manuscrito::tipo_de_ordem(tipo).is_some()
 }
 
 /// O estado canônico atual, lido na conexão/transação recebida.
@@ -99,7 +101,11 @@ pub fn ler_canonico(
         "story" => manuscrito::ler_historia(connection, id),
         "book" => manuscrito::ler_livro(connection, id),
         "chapter" => manuscrito::ler_capitulo(connection, id),
-        "chapter_order" => manuscrito::ler_ordem(connection, id),
+        "story_order" | "book_order" | "chapter_order" => manuscrito::ler_ordem(
+            connection,
+            manuscrito::tipo_de_ordem(&agregado.aggregate_type).expect("tipo de ordem"),
+            id,
+        ),
         "tag_assignment" => manuscrito::ler_atribuicao(connection, id),
         "attachment" => anexo::ler(connection, id),
         outro => Err(nao_coberto(outro)),
@@ -120,7 +126,9 @@ pub fn impactos_da_exclusao(
         "story" => manuscrito::impactos_da_historia(connection, id),
         "book" => manuscrito::impactos_do_livro(connection, id),
         "chapter" => manuscrito::impactos_do_capitulo(connection, id),
-        "chapter_order" | "attachment" | "tag_assignment" => Ok(Vec::new()),
+        "story_order" | "book_order" | "chapter_order" | "attachment" | "tag_assignment" => {
+            Ok(Vec::new())
+        }
         outro => Err(nao_coberto(outro)),
     }
 }
@@ -139,9 +147,8 @@ pub fn dependencias(
     }
     match envelope.aggregate_type.as_str() {
         "universe" => Ok(None),
-        "story" | "book" | "chapter" | "chapter_order" | "tag_assignment" => {
-            manuscrito::dependencias(connection, envelope)
-        }
+        "story" | "book" | "chapter" | "story_order" | "book_order" | "chapter_order"
+        | "tag_assignment" => manuscrito::dependencias(connection, envelope),
         "attachment" => anexo::pai_ausente(connection, envelope),
         _ => Ok(None),
     }
@@ -153,9 +160,8 @@ pub fn dependencias(
 /// produziria o pior estado possível: o evento constaria como aplicado e o dado nunca chegaria.
 pub fn aplicar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {
     match envelope.aggregate_type.as_str() {
-        "universe" | "story" | "book" | "chapter" | "chapter_order" | "tag_assignment" => {
-            manuscrito::aplicar(tx, envelope)
-        }
+        "universe" | "story" | "book" | "chapter" | "story_order" | "book_order"
+        | "chapter_order" | "tag_assignment" => manuscrito::aplicar(tx, envelope),
         "attachment" => anexo::aplicar(tx, envelope),
         outro => Err(DatabaseCommandError::storage(format!(
             "Agregado '{outro}' ainda não tem aplicação de evento implementada. A sessão para \

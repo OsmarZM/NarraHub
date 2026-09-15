@@ -1,15 +1,18 @@
-//! Manuscrito: universo → história → livro → capítulo, e a ordem dos capítulos.
+//! Manuscrito: universo → história → livro → capítulo, e as ordens de cada nível.
 //!
 //! **Toda escrita sincronizável daqui passa pela `Mutacao`** (NH-079, B2). O gate
 //! `mutacao::gate_estrutural::escritas_do_manuscrito_passam_todas_pela_mutacao` confere cada
 //! função pública que escreve.
 //!
 //! ```text
-//! create_story / update_story            story
-//! delete_story                           story + livros, capítulos, ordens, anexos, marcações
-//! create_book                            book + chapter_order(livro)
+//! create_story                           story + story_order(universo) + book_order(história)
+//! update_story                           story
+//! delete_story                           story + livros, capítulos, ordens, anexos, marcações;
+//!                                        story_order(universo) reescrita
+//! create_book                            book + book_order(história) + chapter_order(livro)
 //! update_book                            book (capa pelo blob store)
-//! delete_book                            book + capítulos, ordem, anexos, marcações
+//! delete_book                            book + capítulos, ordem, anexos, marcações;
+//!                                        book_order(história) reescrita
 //! create_chapter                         chapter + chapter_order(livro)
 //! update_chapter                         chapter
 //! reorder_chapters                       chapter_order(livro) — nenhuma revisão de capítulo
@@ -55,6 +58,8 @@ pub fn create_story(
             &now_timestamp(),
         )?;
         m.gravou("story", &story.id)?;
+        m.gravou("story_order", universe_id)?;
+        m.gravou("book_order", &story.id)?;
         Ok(story)
     })
 }
@@ -154,6 +159,7 @@ pub fn create_book(
             &now_timestamp(),
         )?;
         m.gravou("book", &book.id)?;
+        m.gravou("book_order", story_id)?;
         m.gravou("chapter_order", &book.id)?;
         Ok(book)
     })

@@ -70,7 +70,8 @@ pub fn create(
     Mutacao::executar(database, identidade, |m| {
         universe_repository::insert(m.tx(), &universe)?;
         blob_fields::gravar_asset_direto(m.tx(), store, "universes", &universe.id, cover_image)?;
-        m.gravou("universe", &universe.id)
+        m.gravou("universe", &universe.id)?;
+        m.gravou("story_order", &universe.id)
     })?;
     // O que volta para a tela é o transporte, não o que ficou no banco.
     Ok(universe)

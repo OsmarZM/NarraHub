@@ -45,6 +45,9 @@ pub struct Relatorio {
     /// Eventos aplicados nesta sessão, inclusive pendentes antigos que
     /// puderam entrar porque a lacuna fechou.
     pub aplicados: usize,
+    /// Revisões de ordem que entraram na história sem materializar, porque o sucessor causal delas
+    /// já estava no log (`Applied::Superado`).
+    pub superados: usize,
     /// Eventos guardados e ainda não aplicáveis.
     pub pendentes: usize,
     /// Divergências abertas — o escritor vai precisar decidir.
@@ -146,17 +149,26 @@ pub fn receber_eventos(
     // que é de C): drenar cada uma uma vez, na ordem das chaves, deixaria A pendente se ela viesse
     // antes de C. Cada volta só termina quando nenhuma origem aplicou nada; como cada evento é
     // aplicado no máximo uma vez, isto termina.
+    let mut tocados: BTreeMap<(String, String), ()> = BTreeMap::new();
     loop {
         let aplicados_antes = contar_aplicados(&tx)?;
         relatorio.precisam_reconciliar.clear();
         for origem in origens.keys() {
-            drenar_origem(&tx, origem, &mut relatorio)?;
+            drenar_origem(&tx, origem, &mut relatorio, &mut tocados)?;
         }
         if contar_aplicados(&tx)? == aplicados_antes {
             break;
         }
     }
     relatorio.pendentes = contar_pendentes(&tx)?;
+
+    // Nenhuma revisão corrente é confirmada sem estar no banco (ver `atravessar_ponte`).
+    for (tipo, id) in tocados.keys() {
+        crate::infrastructure::sqlite::sync_apply::conferir_revisao_corrente(
+            &tx,
+            &crate::domain::sync::AggregateRef::new(tipo, id),
+        )?;
+    }
 
     tx.commit()
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
@@ -175,6 +187,7 @@ fn drenar_origem(
     tx: &Transaction<'_>,
     origem: &str,
     relatorio: &mut Relatorio,
+    tocados: &mut BTreeMap<(String, String), ()>,
 ) -> DatabaseCommandResult<()> {
     let (baseline, mut cursor) = cursor_de(tx, origem)?;
 
@@ -187,9 +200,24 @@ fn drenar_origem(
             break;
         };
 
-        match apply_remote_event(tx, &envelope)? {
+        let resultado = apply_remote_event(tx, &envelope)?;
+        if matches!(resultado, Applied::Aplicado | Applied::Superado) {
+            tocados.insert(
+                (
+                    envelope.aggregate_type.clone(),
+                    envelope.aggregate_id.clone(),
+                ),
+                (),
+            );
+        }
+        match resultado {
             Applied::Aplicado => relatorio.aplicados += 1,
             Applied::JaAplicado => {}
+            // A ponte fechou: a intermediária superada e o sucessor materializado.
+            Applied::Superado => {
+                relatorio.superados += 1;
+                relatorio.aplicados += 1;
+            }
             Applied::Divergente { .. } => relatorio.divergencias += 1,
             // A exclusão bloqueada é decisão pendente como qualquer divergência: conta junto.
             Applied::ExclusaoDoPaiBloqueada { .. } => relatorio.divergencias += 1,
