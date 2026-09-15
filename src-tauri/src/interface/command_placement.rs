@@ -45,6 +45,10 @@ mod tests {
             "restauração e rollback, opera arquivos",
         ),
         (
+            "database/upgrade.rs",
+            "backup antes da migration e rollback do arquivo do banco",
+        ),
+        (
             "database/production_replica.rs",
             "réplica de leitura para diagnóstico",
         ),
