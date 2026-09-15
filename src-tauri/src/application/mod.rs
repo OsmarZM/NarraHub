@@ -19,6 +19,7 @@ pub mod knowledge_service;
 pub mod manuscript_service;
 pub mod mutacao;
 pub mod planning_service;
+pub mod resolucao_divergencia;
 pub mod sync_bootstrap;
 pub mod sync_panorama;
 pub mod sync_pin_pairing;

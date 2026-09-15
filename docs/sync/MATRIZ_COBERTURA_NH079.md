@@ -35,7 +35,7 @@ revisões / eventos
 
 | etapa | status | o que cobre |
 | --- | --- | --- |
-| **B1** | implementada (PR da branch `sync-b1-mutacao`) | fronteira `Mutacao`; `chapter` update e **delete** (com os anexos por gatilho); `attachment` create e delete; exclusão remota de pai bloqueada; migration 21 (`sync_divergences.kind`) |
+| **B1** | implementada (PR da branch `sync-b1-mutacao`) | fronteira `Mutacao`; `chapter` update e **delete** (com os anexos por gatilho); `attachment` create e delete; exclusão remota de pai bloqueada e a resolução dela (4.4.1); fronteira com o blob store (4.4.2); migration 21 (`sync_divergences.kind`) |
 | B2–B6 | não iniciadas | ver seção 7 |
 
 **Limite conhecido da B1, dito às claras:** excluir um capítulo ainda apaga, pelo gatilho
@@ -216,6 +216,57 @@ Os eventos de exclusão dos filhos chegam **antes** do pai (ordem de emissão de
 concorrência, cada filho é removido pela própria regra causal; quando o pai chega, não resta descendente e
 a cascata não apaga nada que tenha história.
 
+**O evento bloqueado não se repete.** Ele fica marcado como aplicado e a revisão da exclusão entra na
+história; o cursor da origem avança. A mesma exclusão chegando de novo é `JaAplicado`: nenhuma divergência
+nova, nenhum `DELETE`.
+
+#### 4.4.1 Resolução de `parent_deletion_blocked`
+
+O resolvedor (`application/resolucao_divergencia.rs`) lê o `kind` antes de qualquer coisa. Tipo sem
+contrato é recusado; em especial, divergência `concurrent` **não** é resolvida executando uma exclusão
+(a caixa de conciliação dela é a etapa F).
+
+```text
+ManterLocal     pai e descendentes ficam
+                nasce upsert do pai com base_rev = revisão da exclusão remota
+                nos outros aparelhos: base == deleted_rev → Sequential → o pai volta, tombstone sai
+AceitarRemoto   preflight de descendentes refeito AGORA
+                  sobrou filho vivo              → recusa; nada muda; divergência continua aberta
+                  pai alterado depois do bloqueio → recusa
+                  outra divergência/evento pendente do pai → recusa
+                  nada disso                     → DELETE + tombstone com a revisão remota;
+                                                   nenhum evento novo (a revisão já é de todos)
+```
+
+O descendente se resolve antes, por mutação normal (excluir o anexo, por exemplo). Aceitar com base no
+que era verdade no momento do bloqueio deixaria a cascata apagar trabalho criado depois.
+
+**Mudança na classificação causal:** agregado excluído aqui, evento com `base_rev == deleted_rev` é
+`Sequential` (restauração que viu a exclusão). Só a resolução explícita produz essa base; uma edição que
+não viu a exclusão continua `ConcurrentComExclusao`, e nada ressuscita sozinho.
+
+Testes: `resolucao_divergencia::tests` (6) e `domain::sync::tests::restauracao_a_partir_da_revisao_da_exclusao_e_sequencial`.
+
+#### 4.4.2 Fronteira SQLite × blob store
+
+O arquivo do anexo é gravado dentro da `Mutacao`, mas o sistema de arquivos não participa do `ROLLBACK`.
+
+```text
+blob publicado → linha + evento → COMMIT     ok
+blob publicado → falha → ROLLBACK            blob órfão
+linha commitada → blob ausente               PROIBIDO (por isso o arquivo vem sempre antes)
+```
+
+Política:
+
+| resto | destino |
+| --- | --- |
+| blob publicado sem referência (rollback, seed recusado) | fica. Endereçado por conteúdo: inofensivo e reaproveitado se a ação for repetida. Não há GC de blob publicado (ADR 0010 §11) — pode ser de um backup ou de evento que outro aparelho ainda vai pedir; GC só com regra causal, depois da G |
+| `.part` em `blob-staging/` (queda no meio da escrita) | removido uma vez por arranque, antes do preparo do banco, se tiver mais de 1 h (`BlobStore::limpar_staging_abandonado`) |
+
+Testes: `mutacao::tests::rollback_depois_do_blob_deixa_so_o_arquivo_orfao_e_repetir_o_reaproveita`,
+`blob_store::tests::limpeza_de_staging_so_leva_part_abandonado`.
+
 ### 4.5 Gates
 
 1. **Estrutural:** serviços sincronizáveis não chamam `database.write()` fora da `Mutacao`; repositórios da
@@ -225,6 +276,8 @@ a cascata não apaga nada que tenha história.
 3. **Dois aparelhos:** operação no A, eventos no B, estado canônico igual.
 4. **Falha injetada** (só em build de teste): antes do evento, depois da mutação e antes do commit, durante
    a geração do evento → nada persiste; repetir a operação produz uma revisão só.
+5. **Escopo e posse:** afetado sem `universe_id` derruba a transação inteira (nunca evento com universo
+   vazio); a coleta de descendentes marca visitado antes de descer e recusa ciclo de posse.
 
 ## 5. Negociação de compatibilidade (etapa E)
 

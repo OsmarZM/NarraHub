@@ -119,6 +119,16 @@ pub fn apply_remote_event(
                 }
             }
             aplicar_no_agregado(tx, envelope)?;
+            if envelope.operation == Operation::Upsert {
+                // Upsert sequencial sobre tombstone é a restauração explícita (base = revisão da
+                // exclusão). O agregado voltou; o tombstone deixaria domínio e estado causal
+                // dizendo coisas opostas.
+                tx.execute(
+                    "DELETE FROM sync_tombstones WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+                    [&envelope.aggregate_type, &envelope.aggregate_id],
+                )
+                .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+            }
             registrar_revisao(tx, envelope)?;
             marcar_aplicado(tx, &envelope.event_id)?;
             Ok(Applied::Aplicado)
@@ -177,6 +187,55 @@ fn bloquear_exclusao_do_pai(
     )
     .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     Ok(Some(id))
+}
+
+/// Aplica no domínio a exclusão remota que ficou bloqueada, quando o escritor a aceita.
+///
+/// O evento já está no log, marcado como aplicado, e a revisão dele já está na história — o que
+/// faltava era o `DELETE` físico e o tombstone. Nenhum evento novo nasce: a revisão da exclusão já
+/// é a mesma em todos os aparelhos. Quem chama já conferiu que não sobrou descendente vivo.
+pub fn aplicar_exclusao_bloqueada(
+    tx: &Transaction<'_>,
+    event_id: &str,
+) -> DatabaseCommandResult<()> {
+    let envelope = tx
+        .query_row(
+            "SELECT event_id, device_id, seq, universe_id, aggregate_type, aggregate_id,
+                    operation, payload, base_rev, new_rev, signature
+               FROM sync_events WHERE event_id = ?1",
+            [event_id],
+            |row| {
+                Ok((
+                    EventEnvelope {
+                        event_id: row.get(0)?,
+                        device_id: row.get(1)?,
+                        seq: row.get(2)?,
+                        universe_id: row.get(3)?,
+                        aggregate_type: row.get(4)?,
+                        aggregate_id: row.get(5)?,
+                        operation: Operation::Delete,
+                        payload: row.get(7)?,
+                        base_rev: row.get(8)?,
+                        new_rev: row.get(9)?,
+                        signature: row.get(10)?,
+                    },
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    let Some((envelope, operacao)) = envelope else {
+        return Err(DatabaseCommandError::storage(format!(
+            "O evento {event_id} da exclusão bloqueada não está no log."
+        )));
+    };
+    if Operation::parse(&operacao) != Some(Operation::Delete) {
+        return Err(DatabaseCommandError::storage(format!(
+            "O evento {event_id} não é uma exclusão; aceitar não pode apagar nada."
+        )));
+    }
+    aplicar_no_agregado(tx, &envelope)
 }
 
 fn guardar_envelope(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {

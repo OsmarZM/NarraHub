@@ -36,12 +36,30 @@
 //! destrutivo: descobre os descendentes, recusa se algum tiver estado concorrente, e deixa os eventos
 //! de exclusão prontos. Descobrir os filhos depois da cascata é proibido por construção.
 //!
+//! ## Fronteira com o blob store
+//!
+//! O arquivo de um anexo é escrito **dentro** da closure e **fora** da transação: o sistema de
+//! arquivos não participa do `ROLLBACK`. A ordem é sempre arquivo primeiro, linha depois:
+//!
+//! ```text
+//! blob publicado → linha + evento → COMMIT     ok
+//! blob publicado → falha → ROLLBACK            blob órfão: inofensivo, endereçado por conteúdo,
+//!                                              reaproveitado se a ação for repetida
+//! ```
+//!
+//! O contrário (linha commitada apontando para arquivo que não existe) é o estado proibido. Blob
+//! publicado sem referência não é apagado automaticamente (ADR 0010 §11): pode ser o arquivo de uma
+//! repetição, de um backup ou de um evento que outro aparelho ainda vai pedir. A única limpeza
+//! automática é a de `.part` abandonado em staging, uma vez por arranque
+//! (`BlobStore::limpar_staging_abandonado`).
+//!
 //! ## O que ela não é
 //!
 //! Não é savepoint: `executar` dentro de `executar` é erro. Não guarda transação entre chamadas.
 //! Não conhece Tauri. Não decide nada de domínio — isso continua no serviço.
 
 use std::cell::Cell;
+use std::collections::HashSet;
 
 use rusqlite::{Transaction, TransactionBehavior};
 
@@ -152,10 +170,20 @@ impl<'t, 'c> Mutacao<'t, 'c> {
             )));
         }
 
-        let mut ordem = Vec::new();
-        self.coletar(&raiz, &mut ordem)?;
+        let ordem = coletar(&raiz, |agregado| {
+            sync_codec::descendentes(self.tx, agregado)
+        })?;
 
-        for agregado in &ordem {
+        // O escopo de cada afetado é lido AGORA, com todos ainda vivos. Afetado sem universo não
+        // vira evento com `universe_id` vazio: é inconsistência, e a transação inteira falha.
+        let mut preparados = Vec::with_capacity(ordem.len());
+        for agregado in ordem {
+            let estado = sync_codec::ler(self.tx, &agregado)?;
+            let universe_id = universo_do_afetado(&agregado, estado)?;
+            preparados.push((agregado, universe_id));
+        }
+
+        for (agregado, _) in &preparados {
             if let Some(motivo) = sync_codec::estado_concorrente(self.tx, agregado)? {
                 let por_que = match motivo {
                     EstadoConcorrente::DivergenciaAberta => {
@@ -172,35 +200,17 @@ impl<'t, 'c> Mutacao<'t, 'c> {
             }
         }
 
-        for agregado in ordem {
+        for (agregado, universe_id) in preparados {
             let ja = self.operacoes.iter().any(|operacao| {
                 matches!(operacao, Operacao::Excluiu { agregado: existente, .. } if existente == &agregado)
             });
             if ja {
                 continue;
             }
-            let universe_id = sync_codec::ler(self.tx, &agregado)?
-                .map(|estado| estado.universe_id)
-                .unwrap_or_default();
             self.operacoes.push(Operacao::Excluiu {
                 agregado,
                 universe_id,
             });
-        }
-        Ok(())
-    }
-
-    /// Descendentes primeiro, depois o próprio agregado.
-    fn coletar(
-        &self,
-        agregado: &AggregateRef,
-        ordem: &mut Vec<AggregateRef>,
-    ) -> DatabaseCommandResult<()> {
-        for filho in sync_codec::descendentes(self.tx, agregado)? {
-            self.coletar(&filho, ordem)?;
-        }
-        if !ordem.contains(agregado) {
-            ordem.push(agregado.clone());
         }
         Ok(())
     }
@@ -232,11 +242,12 @@ impl<'t, 'c> Mutacao<'t, 'c> {
                             agregado.aggregate_type, agregado.aggregate_id
                         ))
                     })?;
+                    let universe_id = universo_do_afetado(agregado, Some(estado.clone()))?;
                     append_event_in_transaction(
                         self.tx,
                         identidade,
                         &LocalChange {
-                            universe_id: &estado.universe_id,
+                            universe_id: &universe_id,
                             aggregate: agregado.clone(),
                             operation: Operation::Upsert,
                             payload: &estado.payload,
@@ -274,6 +285,83 @@ impl<'t, 'c> Mutacao<'t, 'c> {
         }
         Ok(())
     }
+}
+
+/// O universo de um agregado afetado, ou erro. Nunca `""`.
+///
+/// Um evento sem escopo não é roteável nem verificável no receptor, e um `unwrap_or_default` aqui
+/// transformaria uma inconsistência do banco num evento assinado e retransmitido para sempre.
+fn universo_do_afetado(
+    agregado: &AggregateRef,
+    estado: Option<sync_codec::EstadoDoAgregado>,
+) -> DatabaseCommandResult<String> {
+    match estado {
+        Some(estado) if !estado.universe_id.trim().is_empty() => Ok(estado.universe_id),
+        Some(_) => Err(DatabaseCommandError::storage(format!(
+            "{} {} não tem universo. O banco está inconsistente e nada foi confirmado.",
+            agregado.aggregate_type, agregado.aggregate_id
+        ))),
+        None => Err(DatabaseCommandError::storage(format!(
+            "{} {} foi listado como afetado e não existe. O banco está inconsistente e nada foi \
+             confirmado.",
+            agregado.aggregate_type, agregado.aggregate_id
+        ))),
+    }
+}
+
+/// Todos os afetados pela exclusão de `raiz`: **descendentes primeiro**, a raiz por último.
+///
+/// Resiste a ciclo e a filho compartilhado. Cada agregado é marcado como visitado **antes** de
+/// descer nele, então nada é visitado duas vezes. Um filho que já está no caminho atual é um ciclo
+/// de posse — dado corrompido —, e a exclusão é recusada em vez de escolher uma ordem arbitrária.
+fn coletar(
+    raiz: &AggregateRef,
+    mut descendentes: impl FnMut(&AggregateRef) -> DatabaseCommandResult<Vec<AggregateRef>>,
+) -> DatabaseCommandResult<Vec<AggregateRef>> {
+    type Descendentes<'f> =
+        dyn FnMut(&AggregateRef) -> DatabaseCommandResult<Vec<AggregateRef>> + 'f;
+
+    fn visitar(
+        agregado: &AggregateRef,
+        descendentes: &mut Descendentes<'_>,
+        visitados: &mut HashSet<(String, String)>,
+        caminho: &mut Vec<AggregateRef>,
+        ordem: &mut Vec<AggregateRef>,
+    ) -> DatabaseCommandResult<()> {
+        let chave = (
+            agregado.aggregate_type.clone(),
+            agregado.aggregate_id.clone(),
+        );
+        if !visitados.insert(chave) {
+            if caminho.contains(agregado) {
+                return Err(DatabaseCommandError::storage(format!(
+                    "Ciclo de posse em {} {}: um agregado aparece como descendente de si mesmo. \
+                     Nada foi apagado.",
+                    agregado.aggregate_type, agregado.aggregate_id
+                )));
+            }
+            return Ok(());
+        }
+        caminho.push(agregado.clone());
+        for filho in descendentes(agregado)? {
+            visitar(&filho, descendentes, visitados, caminho, ordem)?;
+        }
+        caminho.pop();
+        ordem.push(agregado.clone());
+        Ok(())
+    }
+
+    let mut visitados = HashSet::new();
+    let mut caminho = Vec::new();
+    let mut ordem = Vec::new();
+    visitar(
+        raiz,
+        &mut descendentes,
+        &mut visitados,
+        &mut caminho,
+        &mut ordem,
+    )?;
+    Ok(ordem)
 }
 
 /// Falha injetada nos pontos críticos da fronteira. Só existe em build de teste; em produção é
@@ -320,7 +408,7 @@ pub(crate) mod falha {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::falha::{armar, Ponto};
     use super::*;
     use crate::application::{canvas_service, manuscript_service};
@@ -335,13 +423,13 @@ mod tests {
     use rusqlite::{Connection, OptionalExtension};
 
     /// Um aparelho de teste: banco com universo → história → livro → capítulo legado `c1`.
-    struct Aparelho {
-        banco: TemporaryDatabase,
-        eu: DeviceIdentity,
+    pub(crate) struct Aparelho {
+        pub(crate) banco: TemporaryDatabase,
+        pub(crate) eu: DeviceIdentity,
     }
 
     impl Aparelho {
-        fn novo() -> Self {
+        pub(crate) fn novo() -> Self {
             let banco = TemporaryDatabase::new();
             let eu = {
                 let connection = banco.database.write().expect("escrita");
@@ -359,11 +447,11 @@ mod tests {
             Self { banco, eu }
         }
 
-        fn conexao(&self) -> Connection {
+        pub(crate) fn conexao(&self) -> Connection {
             self.banco.connection()
         }
 
-        fn editar(&self, texto: &str) -> DatabaseCommandResult<()> {
+        pub(crate) fn editar(&self, texto: &str) -> DatabaseCommandResult<()> {
             manuscript_service::update_chapter(
                 &self.banco.database,
                 &self.eu,
@@ -377,7 +465,7 @@ mod tests {
         }
 
         /// Anexo no capítulo, pela fronteira (sem blob: o que se prova aqui é a causalidade).
-        fn anexar(&self, id: &str) {
+        pub(crate) fn anexar(&self, id: &str) {
             Mutacao::executar(&self.banco.database, &self.eu, |m| {
                 canvas_repository::insert_attachment(
                     m.tx(),
@@ -399,7 +487,7 @@ mod tests {
             .expect("anexar");
         }
 
-        fn eventos(&self) -> Vec<(String, String, String)> {
+        pub(crate) fn eventos(&self) -> Vec<(String, String, String)> {
             let connection = self.conexao();
             let mut consulta = connection
                 .prepare(
@@ -422,7 +510,7 @@ mod tests {
                 .expect("conteúdo")
         }
 
-        fn existe(&self, tabela: &str, id: &str) -> bool {
+        pub(crate) fn existe(&self, tabela: &str, id: &str) -> bool {
             self.conexao()
                 .query_row(
                     &format!("SELECT EXISTS(SELECT 1 FROM {tabela} WHERE id = ?1)"),
@@ -432,7 +520,7 @@ mod tests {
                 .expect("existe")
         }
 
-        fn estado_causal(&self, tipo: &str, id: &str) -> Option<String> {
+        pub(crate) fn estado_causal(&self, tipo: &str, id: &str) -> Option<String> {
             self.conexao()
                 .query_row(
                     "SELECT current_rev FROM sync_aggregate_state WHERE aggregate_type = ?1 AND aggregate_id = ?2",
@@ -443,7 +531,7 @@ mod tests {
                 .expect("estado")
         }
 
-        fn tombstone(&self, tipo: &str, id: &str) -> bool {
+        pub(crate) fn tombstone(&self, tipo: &str, id: &str) -> bool {
             self.conexao()
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM sync_tombstones WHERE aggregate_type = ?1 AND aggregate_id = ?2)",
@@ -457,7 +545,7 @@ mod tests {
         ///
         /// Existe no domínio ⇒ tem revisão corrente, e o payload do evento dessa revisão é o estado
         /// lido agora. Não existe ⇒ não tem revisão corrente e tem tombstone.
-        fn coerente(&self, tipo: &str, id: &str) {
+        pub(crate) fn coerente(&self, tipo: &str, id: &str) {
             let connection = self.conexao();
             let agregado = AggregateRef::new(tipo, id);
             match sync_codec::ler(&connection, &agregado).expect("ler") {
@@ -489,6 +577,76 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn coletar_resiste_a_ciclo_e_a_filho_compartilhado() {
+        let r = |id: &str| AggregateRef::new("chapter", id);
+        // a → b, a → c, b → d, c → d (diamante)
+        let diamante = |agregado: &AggregateRef| -> DatabaseCommandResult<Vec<AggregateRef>> {
+            Ok(match agregado.aggregate_id.as_str() {
+                "a" => vec![r("b"), r("c")],
+                "b" | "c" => vec![r("d")],
+                _ => vec![],
+            })
+        };
+        let ordem = coletar(&r("a"), diamante).expect("diamante");
+        let ids: Vec<&str> = ordem.iter().map(|a| a.aggregate_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["d", "b", "c", "a"],
+            "cada um uma vez, filhos antes do pai"
+        );
+
+        // a → b → a: sem marcar visitado antes da descida, isto nunca terminaria.
+        let mut chamadas = 0;
+        let ciclo = |agregado: &AggregateRef| -> DatabaseCommandResult<Vec<AggregateRef>> {
+            chamadas += 1;
+            assert!(chamadas < 10, "a coleta entrou em laço");
+            Ok(match agregado.aggregate_id.as_str() {
+                "a" => vec![r("b")],
+                _ => vec![r("a")],
+            })
+        };
+        let erro = coletar(&r("a"), ciclo).expect_err("ciclo é inconsistência");
+        assert!(erro.message.contains("Ciclo de posse"), "{}", erro.message);
+
+        // Auto-referência.
+        let proprio =
+            |_: &AggregateRef| -> DatabaseCommandResult<Vec<AggregateRef>> { Ok(vec![r("a")]) };
+        assert!(coletar(&r("a"), proprio).is_err());
+    }
+
+    /// Afetado sem universo derruba a exclusão inteira; nunca sai evento com `universe_id` vazio.
+    #[test]
+    fn exclusao_com_afetado_sem_universo_falha_inteira() {
+        let aparelho = Aparelho::novo();
+        {
+            let connection = aparelho.banco.database.write().expect("escrita");
+            seed_universe(&connection, "");
+            connection
+                .execute(
+                    "INSERT INTO attachments (id, universe_id, owner_type, owner_id, data_url, created_at)
+                     VALUES ('a-sem-escopo', '', 'chapter', 'c1', '', '2026-09-15 10:00:00')",
+                    [],
+                )
+                .expect("anexo inconsistente");
+        }
+
+        let erro = manuscript_service::delete_chapter(&aparelho.banco.database, &aparelho.eu, "c1")
+            .expect_err("tinha que recusar");
+        assert!(
+            erro.message.contains("não tem universo"),
+            "{}",
+            erro.message
+        );
+        assert!(aparelho.existe("chapters", "c1"));
+        assert!(aparelho.existe("attachments", "a-sem-escopo"));
+        assert!(aparelho.eventos().is_empty());
+
+        let erro = universo_do_afetado(&AggregateRef::new("attachment", "x"), None)
+            .expect_err("afetado sumido");
+        assert!(erro.message.contains("não existe"), "{}", erro.message);
     }
 
     #[test]
@@ -707,6 +865,81 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["upsert", "delete"]
         );
+        let _ = std::fs::remove_dir_all(raiz);
+    }
+
+    /// **SQLite × blob store:** rollback depois de o arquivo ser publicado deixa o blob órfão — e só
+    /// ele. Repetir a ação reaproveita o mesmo arquivo; nada duplica, nada fica em staging.
+    #[test]
+    fn rollback_depois_do_blob_deixa_so_o_arquivo_orfao_e_repetir_o_reaproveita() {
+        let aparelho = Aparelho::novo();
+        let raiz = std::env::temp_dir().join(format!("narrahub-b1-orfao-{}", uuid::Uuid::new_v4()));
+        let store = crate::infrastructure::blob_store::BlobStore::new(raiz.clone());
+        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        let arquivos = |pasta: &std::path::Path| -> Vec<std::path::PathBuf> {
+            let mut pilha = vec![pasta.to_path_buf()];
+            let mut achados = Vec::new();
+            while let Some(atual) = pilha.pop() {
+                let Ok(filhos) = std::fs::read_dir(&atual) else {
+                    continue;
+                };
+                for filho in filhos.flatten() {
+                    let caminho = filho.path();
+                    if caminho.is_dir() {
+                        pilha.push(caminho);
+                    } else {
+                        achados.push(caminho);
+                    }
+                }
+            }
+            achados
+        };
+        let criar = || {
+            canvas_service::create_attachment(
+                &aparelho.banco.database,
+                &store,
+                &aparelho.eu,
+                "u1",
+                "chapter",
+                "c1",
+                png,
+                "",
+            )
+        };
+
+        armar(Some(Ponto::AntesDoCommit));
+        assert!(criar().is_err());
+
+        let linhas: i64 = aparelho
+            .conexao()
+            .query_row("SELECT COUNT(*) FROM attachments", [], |row| row.get(0))
+            .expect("contar");
+        assert_eq!(linhas, 0, "linha sem commit sobreviveu");
+        assert!(aparelho.eventos().is_empty());
+        let orfaos = arquivos(&store.raiz());
+        assert_eq!(
+            orfaos.len(),
+            1,
+            "o blob publicado antes do rollback fica, e só ele"
+        );
+        assert!(
+            arquivos(&raiz.join(crate::infrastructure::blob_store::DIRETORIO_DE_STAGING))
+                .is_empty(),
+            "sobrou temporário em staging"
+        );
+
+        let anexo = criar().expect("repetir");
+        assert_eq!(
+            arquivos(&store.raiz()),
+            orfaos,
+            "a repetição duplicou o arquivo"
+        );
+        assert_eq!(
+            orfaos[0].file_name().and_then(|n| n.to_str()),
+            Some(anexo.blob_hash.as_str()),
+            "a linha nova aponta para o arquivo que tinha ficado órfão"
+        );
+        aparelho.coerente("attachment", &anexo.id);
         let _ = std::fs::remove_dir_all(raiz);
     }
 
