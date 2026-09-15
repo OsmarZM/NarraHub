@@ -92,6 +92,10 @@ pub async fn database_migration_prepare(
     let app_data = super::app_data_path(&app).map_err(DatabaseCommandError::unavailable)?;
     estado.definir(FaseDoBanco::Unprepared);
     let resultado = tauri::async_runtime::spawn_blocking(move || {
+        // Uma vez por arranque: `.part` de escrita de blob interrompida por queda. Melhor esforço —
+        // falhar aqui não impede abrir o banco, e blob publicado nunca é tocado.
+        let _ = crate::infrastructure::blob_store::BlobStore::new(&app_data)
+            .limpar_staging_abandonado(crate::infrastructure::blob_store::STAGING_ABANDONADO_APOS);
         prepare_at(&app_data, env!("CARGO_PKG_VERSION"))
     })
     .await

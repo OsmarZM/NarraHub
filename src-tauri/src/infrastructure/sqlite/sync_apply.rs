@@ -54,6 +54,10 @@ pub enum Applied {
     /// Duas edições a partir da mesma base. **Nada foi sobrescrito** — as
     /// duas revisões ficam preservadas e a divergência é registrada.
     Divergente { id_divergencia: String },
+    /// Chegou a exclusão de um pai, e a cascata apagaria um descendente que a origem da exclusão
+    /// não apagou antes. O `DELETE` físico **não** rodou: o pai e o filho continuam, e a exclusão
+    /// fica como divergência `parent_deletion_blocked` para o escritor decidir.
+    ExclusaoDoPaiBloqueada { id_divergencia: String },
     /// `base_rev` que não conhecemos. Não é conflito: falta história
     /// intermediária, e o agregado precisa de reconciliação.
     PrecisaReconciliar,
@@ -102,7 +106,29 @@ pub fn apply_remote_event(
             Ok(Applied::JaAplicado)
         }
         Causality::Sequential => {
+            // Preflight causal da exclusão remota, ANTES de qualquer SQL destrutivo.
+            //
+            // A origem que apagou este pai emitiu, antes, a exclusão de cada descendente que ela
+            // conhecia; esses já chegaram e já saíram. Se ainda existe descendente aqui, ele é algo
+            // que a origem não conhecia ou não apagou — trabalho concorrente. Deixar a chave
+            // estrangeira ou um gatilho apagá-lo seria perda silenciosa causada pelo banco, não
+            // pelo protocolo. Corrigir depois da cascata é impossível: a linha já não existe.
+            if envelope.operation == Operation::Delete {
+                if let Some(id) = bloquear_exclusao_do_pai(tx, envelope, &aggregate, &historia)? {
+                    return Ok(Applied::ExclusaoDoPaiBloqueada { id_divergencia: id });
+                }
+            }
             aplicar_no_agregado(tx, envelope)?;
+            if envelope.operation == Operation::Upsert {
+                // Upsert sequencial sobre tombstone é a restauração explícita (base = revisão da
+                // exclusão). O agregado voltou; o tombstone deixaria domínio e estado causal
+                // dizendo coisas opostas.
+                tx.execute(
+                    "DELETE FROM sync_tombstones WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+                    [&envelope.aggregate_type, &envelope.aggregate_id],
+                )
+                .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+            }
             registrar_revisao(tx, envelope)?;
             marcar_aplicado(tx, &envelope.event_id)?;
             Ok(Applied::Aplicado)
@@ -132,6 +158,84 @@ pub fn apply_remote_event(
             Ok(Applied::PrecisaReconciliar)
         }
     }
+}
+
+/// Recusa a exclusão de um pai que ainda tem descendente vivo, registrando a divergência.
+///
+/// Devolve o id da divergência quando bloqueou; `None` quando a exclusão pode seguir.
+fn bloquear_exclusao_do_pai(
+    tx: &Transaction<'_>,
+    envelope: &EventEnvelope,
+    aggregate: &AggregateRef,
+    historia: &crate::domain::sync::AggregateHistory,
+) -> DatabaseCommandResult<Option<String>> {
+    if !crate::infrastructure::sqlite::sync_codec::coberto(&aggregate.aggregate_type) {
+        return Ok(None);
+    }
+    let vivos = crate::infrastructure::sqlite::sync_codec::descendentes(tx, aggregate)?;
+    if vivos.is_empty() {
+        return Ok(None);
+    }
+    // A revisão da exclusão entra na história: um evento posterior que parta dela precisa ser
+    // reconhecido. O agregado continua corrente — ele não foi apagado.
+    registrar_revisao(tx, envelope)?;
+    marcar_aplicado(tx, &envelope.event_id)?;
+    let id = registrar_divergencia(tx, envelope, &envelope.base_rev, historia)?;
+    tx.execute(
+        "UPDATE sync_divergences SET kind = 'parent_deletion_blocked' WHERE id = ?1",
+        [&id],
+    )
+    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Ok(Some(id))
+}
+
+/// Aplica no domínio a exclusão remota que ficou bloqueada, quando o escritor a aceita.
+///
+/// O evento já está no log, marcado como aplicado, e a revisão dele já está na história — o que
+/// faltava era o `DELETE` físico e o tombstone. Nenhum evento novo nasce: a revisão da exclusão já
+/// é a mesma em todos os aparelhos. Quem chama já conferiu que não sobrou descendente vivo.
+pub fn aplicar_exclusao_bloqueada(
+    tx: &Transaction<'_>,
+    event_id: &str,
+) -> DatabaseCommandResult<()> {
+    let envelope = tx
+        .query_row(
+            "SELECT event_id, device_id, seq, universe_id, aggregate_type, aggregate_id,
+                    operation, payload, base_rev, new_rev, signature
+               FROM sync_events WHERE event_id = ?1",
+            [event_id],
+            |row| {
+                Ok((
+                    EventEnvelope {
+                        event_id: row.get(0)?,
+                        device_id: row.get(1)?,
+                        seq: row.get(2)?,
+                        universe_id: row.get(3)?,
+                        aggregate_type: row.get(4)?,
+                        aggregate_id: row.get(5)?,
+                        operation: Operation::Delete,
+                        payload: row.get(7)?,
+                        base_rev: row.get(8)?,
+                        new_rev: row.get(9)?,
+                        signature: row.get(10)?,
+                    },
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    let Some((envelope, operacao)) = envelope else {
+        return Err(DatabaseCommandError::storage(format!(
+            "O evento {event_id} da exclusão bloqueada não está no log."
+        )));
+    };
+    if Operation::parse(&operacao) != Some(Operation::Delete) {
+        return Err(DatabaseCommandError::storage(format!(
+            "O evento {event_id} não é uma exclusão; aceitar não pode apagar nada."
+        )));
+    }
+    aplicar_no_agregado(tx, &envelope)
 }
 
 fn guardar_envelope(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {

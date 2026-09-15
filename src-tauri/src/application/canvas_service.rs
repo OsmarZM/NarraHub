@@ -1,4 +1,5 @@
 use crate::application::blob_fields;
+use crate::application::mutacao::Mutacao;
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::canvas::{
     is_known_attachment_owner, is_known_endpoint_kind, is_known_node_kind, Attachment, CanvasEdge,
@@ -6,9 +7,7 @@ use crate::domain::canvas::{
 };
 use crate::domain::identity::DeviceIdentity;
 use crate::domain::ids::{new_id, now_timestamp};
-use crate::domain::sync::{AggregateRef, Operation};
 use crate::infrastructure::blob_store::BlobStore;
-use crate::infrastructure::sqlite::sync_repository::{append_event_in_transaction, LocalChange};
 use crate::infrastructure::sqlite::{canvas_repository, SqliteDatabase};
 
 pub fn list_nodes(
@@ -300,72 +299,23 @@ pub fn create_attachment(
         sort_order: 0,
         created_at: now_timestamp(),
     };
-    let mut conexao = database.write()?;
-    let tx = conexao
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    // A posição é calculada pelo banco numa subquery do `INSERT`, então ela
-    // volta de lá — devolver o zero que montamos aqui mostraria a imagem no
-    // começo da galeria até a próxima recarga.
-    attachment.sort_order = canvas_repository::insert_attachment(&tx, &attachment)?;
-    blob_fields::gravar_asset_direto(&tx, store, "attachments", &attachment.id, data_url)?;
-
-    // O payload é lido do banco depois da escrita, dentro da transação: é
-    // assim que ele carrega a referência em vez do que a tela mandou.
-    let gravado = canvas_repository::get_attachment(&tx, &attachment.id)?
-        .ok_or_else(|| DatabaseCommandError::storage("O anexo não foi encontrado após gravar."))?;
-    emitir_evento_de_anexo(&tx, identidade, &gravado, Operation::Upsert)?;
-
-    tx.commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    // O que volta para a tela leva a referência; a `data:` URL de exibição é
-    // montada na leitura seguinte.
-    attachment.blob_hash = gravado.blob_hash;
-    attachment.mime_type = gravado.mime_type;
-    attachment.data_url = String::new();
-    Ok(attachment)
-}
-
-/// O envelope do anexo, com o payload sem bytes.
-fn emitir_evento_de_anexo(
-    tx: &rusqlite::Transaction<'_>,
-    identidade: &DeviceIdentity,
-    anexo: &Attachment,
-    operacao: Operation,
-) -> DatabaseCommandResult<()> {
-    // **Delete não carrega payload**, e é o schema que cobra:
-    //
-    //   RAISE(ABORT, 'Evento delete nao carrega payload.')
-    //    WHERE NEW.operation = 'delete' AND NEW.payload <> ''
-    //
-    // A regra existe porque um delete com payload sugeriria que há o que
-    // restaurar. Não há: o tombstone é a informação inteira. Eu serializava o
-    // anexo nas duas operações, e o gate reprovou.
-    //
-    // No upsert, a cópia tem `data_url` vazio de propósito e não por acidente:
-    // o campo existe no struct para transporte de leitura, e o evento é o
-    // lugar em que ele não pode aparecer.
-    let payload = if operacao == Operation::Delete {
-        String::new()
-    } else {
-        serde_json::to_string(&Attachment {
-            data_url: String::new(),
-            ..anexo.clone()
-        })
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?
-    };
-
-    append_event_in_transaction(
-        tx,
-        identidade,
-        &LocalChange {
-            universe_id: &anexo.universe_id,
-            aggregate: AggregateRef::new("attachment", &anexo.id),
-            operation: operacao,
-            payload: &payload,
-        },
-    )?;
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        // A posição é calculada pelo banco numa subquery do `INSERT`, então ela volta de lá —
+        // devolver o zero que montamos aqui mostraria a imagem no começo da galeria.
+        attachment.sort_order = canvas_repository::insert_attachment(m.tx(), &attachment)?;
+        blob_fields::gravar_asset_direto(m.tx(), store, "attachments", &attachment.id, data_url)?;
+        let gravado =
+            canvas_repository::get_attachment(m.tx(), &attachment.id)?.ok_or_else(|| {
+                DatabaseCommandError::storage("O anexo não foi encontrado após gravar.")
+            })?;
+        // O evento é lido pela fronteira do banco, com a referência de blob e sem `data_url`.
+        m.gravou("attachment", &attachment.id)?;
+        // O que volta para a tela leva a referência; a `data:` URL é montada na leitura seguinte.
+        attachment.blob_hash = gravado.blob_hash;
+        attachment.mime_type = gravado.mime_type;
+        attachment.data_url = String::new();
+        Ok(attachment)
+    })
 }
 
 /// Remove o anexo e emite o tombstone causal.
@@ -379,22 +329,16 @@ pub fn delete_attachment(
     identidade: &DeviceIdentity,
     id: &str,
 ) -> DatabaseCommandResult<()> {
-    let mut connection = database.write()?;
-    let tx = connection
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-
-    let Some(anexo) = canvas_repository::get_attachment(&tx, id)? else {
-        return Err(DatabaseCommandError::not_found("O anexo não existe mais."));
-    };
-    if !canvas_repository::delete_attachment(&tx, id)? {
-        return Err(DatabaseCommandError::not_found("O anexo não existe mais."));
-    }
-    emitir_evento_de_anexo(&tx, identidade, &anexo, Operation::Delete)?;
-
-    tx.commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        if canvas_repository::get_attachment(m.tx(), id)?.is_none() {
+            return Err(DatabaseCommandError::not_found("O anexo não existe mais."));
+        }
+        m.excluir("attachment", id)?;
+        if !canvas_repository::delete_attachment(m.tx(), id)? {
+            return Err(DatabaseCommandError::not_found("O anexo não existe mais."));
+        }
+        Ok(())
+    })
 }
 
 fn ensure_attachment_owner(owner_type: &str) -> DatabaseCommandResult<()> {

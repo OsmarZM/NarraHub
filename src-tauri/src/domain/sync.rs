@@ -198,6 +198,11 @@ pub fn classify(historia: &AggregateHistory, base_rev: &str, new_rev: &str) -> C
                     };
                 }
                 Causality::Sequential
+            } else if historia.deleted_rev.as_deref() == Some(base_rev) {
+                // Restauração que VIU a exclusão: a base é a própria revisão da exclusão. Só a
+                // resolução explícita de uma exclusão bloqueada produz isto ("manter o meu"), e
+                // quem a produziu conhecia o delete — é sucessora causal, não concorrente.
+                Causality::Sequential
             } else if historia.deleted_rev.is_some() && historia.knows(base_rev) {
                 // Excluído aqui, editado lá, a partir de uma base que
                 // conhecemos. Concorrência entre exclusão e edição.
@@ -231,6 +236,27 @@ mod tests {
 
     fn agregado() -> AggregateRef {
         AggregateRef::new("chapter", "cap-1")
+    }
+
+    #[test]
+    fn restauracao_a_partir_da_revisao_da_exclusao_e_sequencial() {
+        let excluido = AggregateHistory {
+            current_rev: None,
+            known_revs: vec!["r1".into(), "r-del".into()],
+            deleted_rev: Some("r-del".into()),
+        };
+        assert_eq!(
+            classify(&excluido, "r-del", "r-restaurado"),
+            Causality::Sequential,
+            "quem restaura a partir da exclusão viu a exclusão"
+        );
+        // A edição que NÃO viu a exclusão continua sendo concorrente: nada ressuscita sozinho.
+        assert_eq!(
+            classify(&excluido, "r1", "r-editado"),
+            Causality::ConcurrentComExclusao {
+                base_rev: "r1".into()
+            }
+        );
     }
 
     #[test]

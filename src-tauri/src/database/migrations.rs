@@ -1,7 +1,7 @@
 //! NarraHub — Database Migrations
 //! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 20;
+pub const LATEST_SCHEMA_VERSION: i64 = 21;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -25,6 +25,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         18 => Some(MIGRATION_V18),
         19 => Some(MIGRATION_V19),
         20 => Some(MIGRATION_V20),
+        21 => Some(MIGRATION_V21),
         _ => None,
     }
 }
@@ -1395,6 +1396,23 @@ CREATE INDEX IF NOT EXISTS idx_blob_migration_issues_abertas
     WHERE resolved_at = '';
 "#;
 
+/// NH-079, etapa B1: a exclusão de um pai que a cascata faria apagar um filho concorrente.
+pub const MIGRATION_V21: &str = r#"
+-- Uma divergencia deixa de ser so "duas revisoes da mesma base". A etapa B1
+-- acrescenta um segundo tipo, com a mesma garantia - nenhuma versao some:
+--
+--   concurrent                  duas revisoes partiram da mesma base (etapa 11)
+--   parent_deletion_blocked     chegou a exclusao de um pai, e a cascata de
+--                               chave estrangeira apagaria um descendente que
+--                               a origem da exclusao nao conhecia. O DELETE
+--                               fisico NAO roda; o pai e o filho continuam, e
+--                               a decisao fica com o escritor.
+--
+-- Coluna com DEFAULT: toda divergencia que ja existe e do primeiro tipo.
+ALTER TABLE sync_divergences ADD COLUMN kind TEXT NOT NULL DEFAULT 'concurrent'
+    CHECK (kind IN ('concurrent', 'parent_deletion_blocked'));
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1409,6 +1427,7 @@ mod tests {
     const NATIVE_SCHEMA_V18_FIXTURE: &str = include_str!("../../fixtures/schema18_native.sql");
     const NATIVE_SCHEMA_V19_FIXTURE: &str = include_str!("../../fixtures/schema19_native.sql");
     const NATIVE_SCHEMA_V20_FIXTURE: &str = include_str!("../../fixtures/schema20_native.sql");
+    const NATIVE_SCHEMA_V21_FIXTURE: &str = include_str!("../../fixtures/schema21_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -2303,6 +2322,49 @@ mod tests {
     ///
     /// Sem isto, a suíte continuaria verde enquanto a cobertura envelhece em silêncio — que é
     /// o modo mais comum de uma rede de segurança apodrecer.
+    /// Schema 21: a exclusão de pai bloqueada é um tipo explícito de divergência, e o banco
+    /// recusa qualquer outro valor. Divergência antiga fica `concurrent`.
+    #[test]
+    fn schema21_distingue_exclusao_de_pai_bloqueada_de_divergencia_concorrente() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V21_FIXTURE)
+            .expect("carregar a fixture nativa de schema 21");
+
+        let mut consulta = connection
+            .prepare("SELECT id, kind FROM sync_divergences ORDER BY id")
+            .expect("consulta");
+        let tipos: Vec<(String, String)> = consulta
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("linhas")
+            .collect::<Result<_, _>>()
+            .expect("tipos");
+        assert_eq!(
+            tipos,
+            vec![
+                ("fx16-div-1".to_string(), "concurrent".to_string()),
+                ("fx18-div-2".to_string(), "concurrent".to_string()),
+                (
+                    "fx21-div-3".to_string(),
+                    "parent_deletion_blocked".to_string()
+                ),
+            ]
+        );
+
+        let invalido = connection.execute(
+            "UPDATE sync_divergences SET kind = 'qualquer' WHERE id = 'fx16-div-1'",
+            [],
+        );
+        assert!(
+            invalido.is_err(),
+            "o schema aceitou um tipo de divergência inventado"
+        );
+    }
+
     #[test]
     fn existe_fixture_nativa_para_o_schema_mais_recente() {
         let esperado = format!("schema{LATEST_SCHEMA_VERSION}_native.sql");
