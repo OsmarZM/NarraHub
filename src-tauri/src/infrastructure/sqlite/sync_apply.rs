@@ -54,6 +54,10 @@ pub enum Applied {
     /// Duas edições a partir da mesma base. **Nada foi sobrescrito** — as
     /// duas revisões ficam preservadas e a divergência é registrada.
     Divergente { id_divergencia: String },
+    /// Chegou a exclusão de um pai, e a cascata apagaria um descendente que a origem da exclusão
+    /// não apagou antes. O `DELETE` físico **não** rodou: o pai e o filho continuam, e a exclusão
+    /// fica como divergência `parent_deletion_blocked` para o escritor decidir.
+    ExclusaoDoPaiBloqueada { id_divergencia: String },
     /// `base_rev` que não conhecemos. Não é conflito: falta história
     /// intermediária, e o agregado precisa de reconciliação.
     PrecisaReconciliar,
@@ -102,6 +106,18 @@ pub fn apply_remote_event(
             Ok(Applied::JaAplicado)
         }
         Causality::Sequential => {
+            // Preflight causal da exclusão remota, ANTES de qualquer SQL destrutivo.
+            //
+            // A origem que apagou este pai emitiu, antes, a exclusão de cada descendente que ela
+            // conhecia; esses já chegaram e já saíram. Se ainda existe descendente aqui, ele é algo
+            // que a origem não conhecia ou não apagou — trabalho concorrente. Deixar a chave
+            // estrangeira ou um gatilho apagá-lo seria perda silenciosa causada pelo banco, não
+            // pelo protocolo. Corrigir depois da cascata é impossível: a linha já não existe.
+            if envelope.operation == Operation::Delete {
+                if let Some(id) = bloquear_exclusao_do_pai(tx, envelope, &aggregate, &historia)? {
+                    return Ok(Applied::ExclusaoDoPaiBloqueada { id_divergencia: id });
+                }
+            }
             aplicar_no_agregado(tx, envelope)?;
             registrar_revisao(tx, envelope)?;
             marcar_aplicado(tx, &envelope.event_id)?;
@@ -132,6 +148,35 @@ pub fn apply_remote_event(
             Ok(Applied::PrecisaReconciliar)
         }
     }
+}
+
+/// Recusa a exclusão de um pai que ainda tem descendente vivo, registrando a divergência.
+///
+/// Devolve o id da divergência quando bloqueou; `None` quando a exclusão pode seguir.
+fn bloquear_exclusao_do_pai(
+    tx: &Transaction<'_>,
+    envelope: &EventEnvelope,
+    aggregate: &AggregateRef,
+    historia: &crate::domain::sync::AggregateHistory,
+) -> DatabaseCommandResult<Option<String>> {
+    if !crate::infrastructure::sqlite::sync_codec::coberto(&aggregate.aggregate_type) {
+        return Ok(None);
+    }
+    let vivos = crate::infrastructure::sqlite::sync_codec::descendentes(tx, aggregate)?;
+    if vivos.is_empty() {
+        return Ok(None);
+    }
+    // A revisão da exclusão entra na história: um evento posterior que parta dela precisa ser
+    // reconhecido. O agregado continua corrente — ele não foi apagado.
+    registrar_revisao(tx, envelope)?;
+    marcar_aplicado(tx, &envelope.event_id)?;
+    let id = registrar_divergencia(tx, envelope, &envelope.base_rev, historia)?;
+    tx.execute(
+        "UPDATE sync_divergences SET kind = 'parent_deletion_blocked' WHERE id = ?1",
+        [&id],
+    )
+    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Ok(Some(id))
 }
 
 fn guardar_envelope(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {

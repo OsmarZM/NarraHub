@@ -112,5 +112,5 @@ pub fn chapter_reorder(
 
 #[tauri::command]
 pub fn chapter_delete(app: AppHandle, id: String) -> DatabaseCommandResult<()> {
-    manuscript_service::delete_chapter(&super::database(&app)?, &id)
+    manuscript_service::delete_chapter(&super::database(&app)?, &super::sync_identity(&app)?, &id)
 }

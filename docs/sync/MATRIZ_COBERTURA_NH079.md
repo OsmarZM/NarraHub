@@ -31,6 +31,20 @@ agregados afetados            uma ação que mexe em 5 tabelas de UM agregado = 
 revisões / eventos
 ```
 
+## Estado da cobertura
+
+| etapa | status | o que cobre |
+| --- | --- | --- |
+| **B1** | implementada (PR da branch `sync-b1-mutacao`) | fronteira `Mutacao`; `chapter` update e **delete** (com os anexos por gatilho); `attachment` create e delete; exclusão remota de pai bloqueada; migration 21 (`sync_divergences.kind`) |
+| B2–B6 | não iniciadas | ver seção 7 |
+
+**Limite conhecido da B1, dito às claras:** excluir um capítulo ainda apaga, pelo gatilho
+`trg_chapter_metadata_delete`, as atribuições de tag e os campos personalizados dele sem evento — esses
+agregados só entram na B2. A B1 prova a infraestrutura; não declara o capítulo como totalmente coberto.
+
+Criar capítulo (`create_chapter`) também continua sem evento até a B2, e o payload do capítulo ainda
+carrega `sort_order`, que sai para o agregado `chapter_order` na B2.
+
 ## 2. Agregados
 
 **Critério:** agregado é a **unidade de consistência e de conflito** — o conjunto que precisa ser lido e

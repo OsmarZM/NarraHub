@@ -1,14 +1,12 @@
+use crate::application::mutacao::Mutacao;
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::identity::DeviceIdentity;
 use crate::domain::ids::{new_id, now_timestamp};
 use crate::domain::manuscript::{
     Book, BookOption, BookUpdate, Chapter, ChapterOption, ChapterUpdate, Story, StoryUpdate,
 };
-use crate::domain::sync::{AggregateRef, Operation};
 use crate::infrastructure::blob_document;
-use crate::infrastructure::sqlite::sync_repository::{append_event_in_transaction, LocalChange};
 use crate::infrastructure::sqlite::{manuscript_repository, SqliteDatabase};
-use rusqlite::TransactionBehavior;
 
 // ── História ─────────────────────────────────────────────────────────────
 
@@ -219,43 +217,15 @@ pub fn update_chapter(
             return Err(DatabaseCommandError::validation(motivo.to_string()));
         }
     }
-    let mut connection = database.write()?;
-
-    // `IMMEDIATE`, e uma transação só para o dado E o evento. Duas transações
-    // — salvar e depois registrar — reconstroem o buraco que o outbox existe
-    // para fechar: uma queda no meio deixa o capítulo salvo neste aparelho e
-    // invisível para todos os outros, sem nada registrando que faltou.
-    let tx = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-
-    if !manuscript_repository::update_chapter(&tx, id, &patch, &now_timestamp())? {
-        return Err(DatabaseCommandError::not_found("Capítulo não encontrado."));
-    }
-
-    // O payload é o estado NOVO do agregado, lido depois da escrita e dentro
-    // da mesma transação. Montá-lo a partir do patch descreveria só o que a
-    // tela mexeu, e quem recebe precisa do capítulo inteiro para convergir.
-    let chapter = manuscript_repository::get_chapter(&tx, id)?
-        .ok_or_else(|| DatabaseCommandError::not_found("Capítulo não encontrado."))?;
-    let universe_id = universo_do_capitulo(&tx, id)?;
-    let payload = serde_json::to_string(&chapter)
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-
-    append_event_in_transaction(
-        &tx,
-        identidade,
-        &LocalChange {
-            universe_id: &universe_id,
-            aggregate: AggregateRef::new("chapter", id),
-            operation: Operation::Upsert,
-            payload: &payload,
-        },
-    )?;
-
-    tx.commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+    // Uma transação `IMMEDIATE` só para o dado E o evento, pela fronteira `Mutacao`: duas
+    // transações — salvar e depois registrar — reconstroem o buraco que o outbox existe para
+    // fechar. O payload é o estado NOVO do capítulo, lido pela fronteira depois da escrita.
+    Mutacao::executar(database, identidade, |m| {
+        if !manuscript_repository::update_chapter(m.tx(), id, &patch, &now_timestamp())? {
+            return Err(DatabaseCommandError::not_found("Capítulo não encontrado."));
+        }
+        m.gravou("chapter", id)
+    })
 }
 
 /// Reordena os capítulos do livro numa transação.
@@ -287,12 +257,26 @@ pub fn reorder_chapters(
     Ok(())
 }
 
-pub fn delete_chapter(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    if !manuscript_repository::delete_chapter(&connection, id)? {
-        return Err(DatabaseCommandError::not_found("Capítulo não encontrado."));
-    }
-    Ok(())
+/// Exclui o capítulo — e, por gatilho, os anexos dele.
+///
+/// A exclusão é declarada **antes** do `DELETE`: depois dele, `trg_chapter_attachments_delete` já
+/// apagou os anexos e ninguém saberia quais eram. A fronteira emite a exclusão de cada anexo antes
+/// da do capítulo, e recusa tudo se algum deles tiver versão concorrente esperando decisão.
+pub fn delete_chapter(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    id: &str,
+) -> DatabaseCommandResult<()> {
+    Mutacao::executar(database, identidade, |m| {
+        if manuscript_repository::get_chapter(m.tx(), id)?.is_none() {
+            return Err(DatabaseCommandError::not_found("Capítulo não encontrado."));
+        }
+        m.excluir("chapter", id)?;
+        if !manuscript_repository::delete_chapter(m.tx(), id)? {
+            return Err(DatabaseCommandError::not_found("Capítulo não encontrado."));
+        }
+        Ok(())
+    })
 }
 
 fn require_name(value: &str, message: &str) -> DatabaseCommandResult<String> {
@@ -301,31 +285,6 @@ fn require_name(value: &str, message: &str) -> DatabaseCommandResult<String> {
         return Err(DatabaseCommandError::validation(message));
     }
     Ok(value.to_string())
-}
-
-/// O universo a que um capítulo pertence, pela cadeia livro → história.
-///
-/// O evento carrega `universe_id` porque ele é o escopo da replicação, e o
-/// capítulo não guarda essa coluna — a informação vive na história.
-fn universo_do_capitulo(
-    connection: &rusqlite::Connection,
-    chapter_id: &str,
-) -> DatabaseCommandResult<String> {
-    connection
-        .query_row(
-            "SELECT s.universe_id
-               FROM chapters c
-               JOIN books b ON b.id = c.book_id
-               JOIN stories s ON s.id = b.story_id
-              WHERE c.id = ?1",
-            [chapter_id],
-            |row| row.get(0),
-        )
-        .map_err(|error| {
-            DatabaseCommandError::storage(format!(
-                "Não foi possível descobrir o universo do capítulo: {error}"
-            ))
-        })
 }
 
 #[cfg(test)]
