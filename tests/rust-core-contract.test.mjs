@@ -419,7 +419,9 @@ test('o arranque chama a fronteira de assets entre as migrations e o primeiro co
   // dentro, e `update_chapter` recusaria o proximo salvamento.
   const arranque = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
 
-  const migrations = arranque.indexOf('this.db.init()');
+  // O pool abre (e o plugin migra) dentro de openDatabaseSafely, com backup antes — ver
+  // tests/migration-safety.test.mjs. A posição que importa é a da chamada no arranque.
+  const migrations = arranque.indexOf('this.openDatabaseSafely()');
   const assets = arranque.indexOf('this.blobs.prepareAssets()');
   const consumo = arranque.indexOf('this.universes.load()');
 

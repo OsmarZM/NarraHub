@@ -32,6 +32,8 @@ fn updater_configured(app: tauri::AppHandle) -> bool {
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(database::backup::BackupRuntimeState::default())
+        // Nenhum comando toca o banco antes do upgrade seguro terminar (database/estado.rs).
+        .manage(database::estado::EstadoDoBanco::default())
         .manage(database::recovery::RestoreRuntimeState::default())
         .manage(std::sync::Mutex::new(sync::SyncState::default()))
         .manage(std::sync::Mutex::new(
@@ -299,6 +301,9 @@ pub fn run() {
             updater_configured,
             database::health::database_health,
             database::health::database_compatibility,
+            database::upgrade::database_migration_prepare,
+            database::upgrade::database_migration_finish,
+            database::upgrade::database_migration_rollback,
             database::backup::backup_create,
             database::backup::backup_list,
             database::backup::backup_validate,

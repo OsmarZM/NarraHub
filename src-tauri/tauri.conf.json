@@ -29,9 +29,7 @@
     }
   },
   "plugins": {
-    "sql": {
-      "preload": ["sqlite:narrahub.db"]
-    }
+    "sql": {}
   },
   "bundle": {
     "active": true,

@@ -65,7 +65,7 @@ export class AppBootstrapService {
         return;
       }
 
-      await this.db.init();
+      await this.openDatabaseSafely();
 
       // A FRONTEIRA DE UPGRADE DOS ASSETS (ADR 0010).
       //
@@ -109,6 +109,50 @@ export class AppBootstrapService {
       this.error.set(error instanceof Error ? error.message : String(error));
     } finally {
       this.ready.set(true);
+    }
+  }
+
+  /**
+   * Abre o banco com a migration protegida (ver `src-tauri/src/database/upgrade.rs`).
+   *
+   *   prepareMigration   backup validado antes; migration interrompida antes é desfeita
+   *   db.init            o plugin-sql aplica as migrations
+   *   finishMigration    só aqui o registro some; versão intermediária não passa
+   *   rollbackMigration  qualquer falha acima devolve o banco original
+   */
+  private async openDatabaseSafely(): Promise<void> {
+    const preparation = await this.backupService.prepareMigration();
+    if (preparation.recoveredInterrupted) {
+      console.warn('[NarraHub] Uma atualização do banco tinha sido interrompida; o banco anterior foi restaurado antes de tentar de novo.');
+    }
+    if (!preparation.needed) {
+      await this.db.init();
+      return;
+    }
+    console.log(
+      `[NarraHub] Atualizando o banco da versão ${preparation.fromVersion} para a ${preparation.toVersion}. `
+        + `Backup antes da atualização: ${preparation.backup?.backupId}.`,
+    );
+    try {
+      await this.db.init();
+      await this.backupService.finishMigration();
+    } catch (error) {
+      await this.db.close().catch(() => undefined);
+      const detalhe = error instanceof Error ? error.message : String(error);
+      try {
+        const rollback = await this.backupService.rollbackMigration();
+        throw new Error(
+          `A atualização do banco falhou (${detalhe}). Seu banco anterior foi restaurado`
+            + `${rollback.backupId ? ` a partir do backup ${rollback.backupId}` : ''} e nada foi perdido.`,
+        );
+      } catch (rollbackError) {
+        if (rollbackError instanceof Error && rollbackError.message.startsWith('A atualização do banco falhou')) throw rollbackError;
+        const motivo = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+        throw new Error(
+          `A atualização do banco falhou (${detalhe}) e o banco anterior não pôde ser restaurado automaticamente (${motivo}). `
+            + `O backup ${preparation.backup?.backupId ?? ''} continua em Configurações → Backup.`,
+        );
+      }
     }
   }
 }

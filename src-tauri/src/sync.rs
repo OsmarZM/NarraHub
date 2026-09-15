@@ -264,6 +264,11 @@ fn handle_connection(
 }
 
 fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
+    // O V1 abre o arquivo por conta própria; a mesma guarda do banco pronto vale para ele.
+    use tauri::Manager;
+    app.state::<crate::database::estado::EstadoDoBanco>()
+        .exigir_pronto()
+        .map_err(|erro| erro.message)?;
     crate::database::app_database_path(app)
 }
 
