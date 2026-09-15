@@ -35,10 +35,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, State};
 
 use super::backup::{create_backup_at, validate_backup_at, BackupManifest, BackupReason};
+use super::duravel;
 use super::error::{DatabaseCommandError, DatabaseCommandResult};
+use super::estado::{EstadoDoBanco, FaseDoBanco};
 use super::health::{inspect_compatibility, inspect_database};
 use super::migrations::LATEST_SCHEMA_VERSION;
 
@@ -85,27 +87,52 @@ pub struct MigrationRollback {
 #[tauri::command]
 pub async fn database_migration_prepare(
     app: AppHandle,
+    estado: State<'_, EstadoDoBanco>,
 ) -> DatabaseCommandResult<MigrationPreparation> {
     let app_data = super::app_data_path(&app).map_err(DatabaseCommandError::unavailable)?;
-    tauri::async_runtime::spawn_blocking(move || prepare_at(&app_data, env!("CARGO_PKG_VERSION")))
-        .await
-        .map_err(|error| DatabaseCommandError::unavailable(error.to_string()))?
+    estado.definir(FaseDoBanco::Unprepared);
+    let resultado = tauri::async_runtime::spawn_blocking(move || {
+        prepare_at(&app_data, env!("CARGO_PKG_VERSION"))
+    })
+    .await
+    .map_err(|error| DatabaseCommandError::unavailable(error.to_string()))?;
+    estado.definir(match &resultado {
+        Ok(preparo) if preparo.needed => FaseDoBanco::Migrating,
+        Ok(_) => FaseDoBanco::Ready,
+        Err(_) => FaseDoBanco::RecoveryRequired,
+    });
+    resultado
 }
 
 #[tauri::command]
-pub fn database_migration_finish(app: AppHandle) -> DatabaseCommandResult<i64> {
+pub fn database_migration_finish(
+    app: AppHandle,
+    estado: State<'_, EstadoDoBanco>,
+) -> DatabaseCommandResult<i64> {
     let app_data = super::app_data_path(&app).map_err(DatabaseCommandError::unavailable)?;
-    finish_at(&app_data)
+    let resultado = finish_at(&app_data);
+    // Só a confirmação libera. Uma falha aqui deixa em `Migrating`: o arranque chama o rollback.
+    if resultado.is_ok() {
+        estado.definir(FaseDoBanco::Ready);
+    }
+    resultado
 }
 
 #[tauri::command]
 pub async fn database_migration_rollback(
     app: AppHandle,
+    estado: State<'_, EstadoDoBanco>,
 ) -> DatabaseCommandResult<MigrationRollback> {
     let app_data = super::app_data_path(&app).map_err(DatabaseCommandError::unavailable)?;
-    tauri::async_runtime::spawn_blocking(move || rollback_at(&app_data))
+    let resultado = tauri::async_runtime::spawn_blocking(move || rollback_at(&app_data))
         .await
-        .map_err(|error| DatabaseCommandError::unavailable(error.to_string()))?
+        .map_err(|error| DatabaseCommandError::unavailable(error.to_string()))?;
+    estado.definir(match &resultado {
+        // O original voltou, mas ainda está no schema antigo: o próximo arranque prepara de novo.
+        Ok(_) => FaseDoBanco::Unprepared,
+        Err(_) => FaseDoBanco::RecoveryRequired,
+    });
+    resultado
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -142,30 +169,25 @@ pub fn read_marker(app_data: &Path) -> DatabaseCommandResult<Option<MigrationMar
     })
 }
 
-/// Escreve o marcador de forma atômica: arquivo temporário e `rename`. Um marcador pela metade
-/// seria pior que nenhum.
+/// Escreve o marcador de forma atômica **e durável**: temporário sincronizado no disco, troca de
+/// nome, diretório sincronizado. Um marcador que some numa queda de energia deixaria uma migration
+/// interrompida sem ninguém para desfazê-la.
 fn write_marker(app_data: &Path, marker: &MigrationMarker) -> DatabaseCommandResult<()> {
-    let destino = marker_path(app_data);
-    let temporario = app_data.join(format!("{MARKER_FILE_NAME}.tmp"));
     let bytes = serde_json::to_vec_pretty(marker)
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    fs::write(&temporario, bytes)
-        .and_then(|_| fs::rename(&temporario, &destino))
-        .map_err(|error| {
-            DatabaseCommandError::storage(format!(
-                "O registro da migration não pôde ser gravado ({error}). Nada foi migrado."
-            ))
-        })
+    duravel::gravar_atomico(&marker_path(app_data), &bytes).map_err(|error| {
+        DatabaseCommandError::storage(format!(
+            "O registro da migration não pôde ser gravado ({error}). Nada foi migrado."
+        ))
+    })
 }
 
 fn remove_marker(app_data: &Path) -> DatabaseCommandResult<()> {
-    match fs::remove_file(marker_path(app_data)) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(DatabaseCommandError::storage(format!(
+    duravel::remover_duravel(&marker_path(app_data)).map_err(|error| {
+        DatabaseCommandError::storage(format!(
             "O registro da migration não pôde ser removido: {error}"
-        ))),
-    }
+        ))
+    })
 }
 
 /// Antes de o pool abrir: devolve uma migration interrompida, e faz o backup da que vai rodar.
@@ -182,6 +204,16 @@ pub fn prepare_at(
     let banco = database_path(app_data);
     let compatibilidade = inspect_compatibility(&banco).map_err(DatabaseCommandError::storage)?;
     let from_version = compatibilidade.schema_version;
+
+    // Proteção própria, sem depender de o frontend ter consultado a compatibilidade antes: um banco
+    // mais novo que esta build não é "já na versão". Abrir o pool nele escreveria em colunas que
+    // este executável não conhece.
+    if from_version > LATEST_SCHEMA_VERSION {
+        return Err(DatabaseCommandError::conflict(format!(
+            "O banco está no schema {from_version}, mais novo que o {LATEST_SCHEMA_VERSION} que esta \
+             versão do NarraHub conhece. Ele não foi aberto nem alterado."
+        )));
+    }
 
     // Instalação nova, ou banco já na versão: não há o que proteger.
     if !compatibilidade.database_exists || from_version >= LATEST_SCHEMA_VERSION {
@@ -291,31 +323,52 @@ pub fn rollback_at(app_data: &Path) -> DatabaseCommandResult<MigrationRollback> 
         .join(DATABASE_FILE_NAME);
     let banco = database_path(app_data);
 
-    // Copia para o lado e só então troca: uma falha na cópia deixa o banco atual intacto.
+    // 1. Cópia do backup para o lado, sincronizada. Falhar aqui não tocou em nada.
     let temporario = app_data.join("narrahub.db.restaurando");
-    fs::copy(&origem, &temporario).map_err(|error| {
-        DatabaseCommandError::storage(format!(
-            "O banco original não pôde ser copiado do backup ({error}). O banco atual foi mantido."
-        ))
-    })?;
-    // Os arquivos -wal/-shm pertencem ao banco migrado; ao lado do original, o SQLite os leria
-    // como parte dele.
+    fs::copy(&origem, &temporario)
+        .and_then(|_| duravel::sincronizar_arquivo(&temporario))
+        .map_err(|error| {
+            let _ = fs::remove_file(&temporario);
+            DatabaseCommandError::storage(format!(
+                "O banco original não pôde ser copiado do backup ({error}). O banco atual foi mantido."
+            ))
+        })?;
+
+    // 2. Os -wal/-shm são do banco migrado: ao lado do original, o SQLite os leria como parte dele.
+    //    Saem de lugar ANTES da troca, e voltam se ela falhar.
+    let mut afastados: Vec<(PathBuf, PathBuf)> = Vec::new();
     for sidecar in SIDECARS {
         let caminho = app_data.join(sidecar);
-        if caminho.exists() {
-            fs::remove_file(&caminho).map_err(|error| {
-                DatabaseCommandError::storage(format!(
-                    "O arquivo {sidecar} do banco migrado não pôde ser removido: {error}"
-                ))
-            })?;
+        if !caminho.exists() {
+            continue;
         }
+        let destino_afastado = app_data.join(format!("{sidecar}.migrado"));
+        if let Err(error) = fs::rename(&caminho, &destino_afastado) {
+            devolver(&afastados);
+            let _ = fs::remove_file(&temporario);
+            return Err(DatabaseCommandError::storage(format!(
+                "O arquivo {sidecar} do banco atualizado está em uso ({error}). Feche o NarraHub e abra \
+                 de novo; o banco atual foi mantido e o backup continua em {}.",
+                origem.display()
+            )));
+        }
+        afastados.push((caminho, destino_afastado));
     }
-    fs::rename(&temporario, &banco).map_err(|error| {
-        DatabaseCommandError::storage(format!(
-            "O banco original não pôde voltar ao lugar ({error}). Ele continua em {}.",
+
+    // 3. A troca, portável e sem depender de o rename aceitar destino existente (duravel.rs). Com o
+    //    banco ainda aberto por alguém, falha aqui sem mudar nada.
+    if let Err(error) = duravel::substituir_arquivo(&temporario, &banco) {
+        devolver(&afastados);
+        let _ = fs::remove_file(&temporario);
+        return Err(DatabaseCommandError::storage(format!(
+            "O banco original não pôde voltar ao lugar ({error}). O banco atual foi mantido; o \
+             backup continua em {}.",
             origem.display()
-        ))
-    })?;
+        )));
+    }
+    for (_, afastado) in &afastados {
+        let _ = fs::remove_file(afastado);
+    }
 
     let versao = inspect_compatibility(&banco)
         .map_err(DatabaseCommandError::storage)?
@@ -326,6 +379,13 @@ pub fn rollback_at(app_data: &Path) -> DatabaseCommandResult<MigrationRollback> 
         backup_id: Some(marker.backup_id),
         schema_version: versao,
     })
+}
+
+/// Devolve os arquivos que tinham saído de lugar, quando a restauração desiste.
+fn devolver(afastados: &[(PathBuf, PathBuf)]) {
+    for (original, afastado) in afastados {
+        let _ = fs::rename(afastado, original);
+    }
 }
 
 #[cfg(test)]
@@ -559,5 +619,85 @@ mod tests {
             read_marker(&dados.0).expect("marcador").is_none(),
             "sem backup, sem marcador"
         );
+    }
+
+    #[test]
+    fn banco_mais_novo_que_a_build_e_recusado_mesmo_sem_o_portao_do_frontend() {
+        let dados = Dados::novo();
+        dados.banco_na_versao(LATEST_SCHEMA_VERSION);
+        Connection::open(database_path(&dados.0))
+            .expect("abrir")
+            .execute(
+                "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+                 VALUES (?1, 'do futuro', 1, x'00', 0)",
+                [LATEST_SCHEMA_VERSION + 1],
+            )
+            .expect("simular versão futura");
+        dados.universo("não pode ser tocado");
+
+        let erro = prepare_at(&dados.0, "teste").expect_err("tinha que recusar");
+        assert!(erro.message.contains("mais novo"), "{}", erro.message);
+        assert!(
+            !backups_root(&dados.0).exists(),
+            "nada de backup de banco que não será migrado"
+        );
+        assert!(read_marker(&dados.0).expect("marcador").is_none());
+        assert_eq!(dados.universos(), vec!["não pode ser tocado".to_string()]);
+    }
+
+    /// Rollback com o banco migrado ainda aberto por uma conexão SQLite — o caso real do Windows,
+    /// onde o arquivo não pode ser renomeado. Nada pode ser perdido, o marcador fica para tentar de
+    /// novo, e depois de a conexão fechar o rollback conclui.
+    #[test]
+    fn rollback_com_o_banco_aberto_nao_perde_nada_e_conclui_depois_de_fechar() {
+        let dados = Dados::novo();
+        dados.banco_na_versao(LATEST_SCHEMA_VERSION - 2);
+        dados.universo("Reino de Aether");
+        prepare_at(&dados.0, "teste").expect("preparar");
+        dados.migrar_como_o_plugin(LATEST_SCHEMA_VERSION - 2, LATEST_SCHEMA_VERSION - 1);
+        dados.universo("escrito na migração");
+
+        let aberta = Connection::open(database_path(&dados.0)).expect("segurar aberto");
+        aberta
+            .query_row("SELECT COUNT(*) FROM universes", [], |r| r.get::<_, i64>(0))
+            .expect("usar");
+        let tentativa = rollback_at(&dados.0);
+
+        if cfg!(windows) {
+            let erro = tentativa.expect_err("no Windows o banco aberto impede a troca");
+            assert!(erro.message.contains("foi mantido"), "{}", erro.message);
+            assert!(
+                read_marker(&dados.0).expect("marcador").is_some(),
+                "marcador fica para a próxima tentativa"
+            );
+            assert!(
+                !dados.0.join("narrahub.db.restaurando").exists(),
+                "sobrou cópia temporária"
+            );
+            drop(aberta);
+            let volta = rollback_at(&dados.0).expect("depois de fechar, conclui");
+            assert!(volta.restored);
+        } else {
+            assert!(tentativa.expect("em Unix a troca é permitida").restored);
+            drop(aberta);
+        }
+        assert_eq!(dados.universos(), vec!["Reino de Aether".to_string()]);
+        assert!(read_marker(&dados.0).expect("marcador").is_none());
+    }
+
+    #[test]
+    fn marcador_gravado_e_removido_sem_deixar_temporario() {
+        let dados = Dados::novo();
+        let marker = MigrationMarker {
+            backup_id: "x".into(),
+            from_version: 1,
+            to_version: 2,
+        };
+        write_marker(&dados.0, &marker).expect("gravar");
+        write_marker(&dados.0, &marker).expect("regravar");
+        assert_eq!(read_marker(&dados.0).expect("ler"), Some(marker));
+        remove_marker(&dados.0).expect("remover");
+        let restos: Vec<_> = fs::read_dir(&dados.0).expect("ler").collect();
+        assert!(restos.is_empty(), "sobrou arquivo do marcador");
     }
 }

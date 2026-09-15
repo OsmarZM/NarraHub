@@ -24,7 +24,15 @@ use ::tauri::AppHandle;
 /// Resolve o banco do app. Não guarda estado: o caminho depende do
 /// `AppHandle`, e a restauração de backup troca o arquivo debaixo do app —
 /// um handle memorizado apontaria para o banco antigo depois disso.
+///
+/// **Só entrega o banco pronto.** Antes de o upgrade seguro confirmar o schema
+/// (`database/upgrade.rs`), ou com o banco pedindo recuperação, todo comando de
+/// domínio recebe erro em vez de uma conexão — independentemente da ordem em que
+/// o frontend chamou as coisas.
 pub fn database(app: &AppHandle) -> DatabaseCommandResult<SqliteDatabase> {
+    use ::tauri::Manager;
+    app.state::<crate::database::estado::EstadoDoBanco>()
+        .exigir_pronto()?;
     let path = crate::database::app_database_path(app).map_err(DatabaseCommandError::storage)?;
     Ok(SqliteDatabase::new(path))
 }

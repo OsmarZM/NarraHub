@@ -37,12 +37,38 @@ ser criado.
 5 qualquer falha em 3 ou 4    devolve o banco do backup, apaga os -wal/-shm do banco migrado
 ```
 
+## Garantias, e até onde elas vão
+
+| situação | resultado |
+| --- | --- |
+| a migration falha | o banco anterior volta do backup |
+| o processo morre no meio (fechar à força, travamento) | na próxima abertura o marcador é encontrado e o banco anterior volta |
+| **queda de energia** no meio | idem: backup, manifesto e marcador são gravados com `sync_all` (fsync / `FlushFileBuffers`) antes de a próxima etapa começar, e a pasta é sincronizada em Android e Unix |
+| o banco atualizado ainda está aberto (Windows) | a troca falha **antes** de tocar em qualquer coisa; o banco atual fica, o marcador fica, e a próxima tentativa conclui |
+| banco mais novo que esta versão | recusado pelo próprio backend (`prepare`), mesmo que o frontend não pergunte antes |
+
+No Windows, a pasta em si não pode ser sincronizada pela biblioteca padrão; o NTFS registra a troca de
+nome no próprio journal de metadados. O que o NarraHub garante lá é que os **bytes** de cada arquivo
+estão no disco antes de a troca de nome acontecer.
+
+**A troca do arquivo não depende de `rename` sobrescrever o destino.** O banco atual sai do nome primeiro
+(se estiver aberto pelo SQLite, isso falha sem mudar nada), o arquivo restaurado entra, e o antigo só é
+apagado depois. Os `-wal`/`-shm` do banco atualizado saem de lugar antes e voltam se a troca falhar.
+Código: `src-tauri/src/database/duravel.rs`.
+
+## Nenhum comando toca o banco antes disso
+
+O backend guarda o estado do banco (`Unprepared`, `Migrating`, `Ready`, `RecoveryRequired`), e o ponto
+comum de acesso dos comandos (`interface::tauri::database`) e o Sync V1 recusam qualquer operação antes
+de `Ready`. A proteção não depende de o frontend chamar as funções na ordem certa. Código:
+`src-tauri/src/database/estado.rs`.
+
 `migration-em-andamento.json` fica na pasta de dados do app enquanto a atualização acontece. Se ele
 existir na próxima abertura, a atualização anterior não terminou — o app devolve o banco original e
 tenta de novo.
 
-Código: `src-tauri/src/database/upgrade.rs`. Testes: 9 no Rust (`database::upgrade`) e
-`tests/migration-safety.test.mjs`.
+Código: `src-tauri/src/database/upgrade.rs`. Testes: `database::upgrade` (12), `database::duravel` (4),
+`database::estado` (2) no Rust, e `tests/migration-safety.test.mjs`.
 
 ## Restaurar um backup à mão
 
