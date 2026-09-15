@@ -110,24 +110,25 @@ pub fn apply_remote_event(
                 // Preflight causal da exclusão remota, ANTES de qualquer SQL destrutivo.
                 //
                 // A origem que apagou este agregado emitiu, antes, a exclusão de cada descendente
-                // e a reescrita de cada sobrevivente que ela conhecia. Se ainda existe descendente
-                // aqui, ou se um sobrevivente mudaria sem revisão, é trabalho concorrente — e a FK
-                // ou o gatilho o destruiriam em silêncio. Depois da cascata não há como corrigir.
+                // que ela conhecia. Se ainda existe descendente aqui, ou se um sobrevivente tem
+                // decisão ou alteração pendente, é trabalho concorrente — e a FK ou o gatilho o
+                // destruiriam em silêncio. Depois da cascata não há como corrigir.
                 Operation::Delete => {
                     if let Some(motivo) = motivo_para_bloquear_exclusao_remota(tx, envelope)? {
                         let id = bloquear_exclusao(tx, envelope, &historia, &motivo)?;
                         return Ok(Applied::ExclusaoDoPaiBloqueada { id_divergencia: id });
                     }
                 }
-                // Dependência de criação: filho antes do pai é história incompleta, não erro.
-                // Não aplica, não marca; o cursor espera o pai chegar.
+                // Dependências: pai ou capítulo citado que ainda não chegou é história incompleta.
+                // Não aplica, não marca; o cursor espera. Pai divergente é erro (pai imutável).
                 Operation::Upsert => {
-                    if sync_codec::pai_ausente(tx, envelope)?.is_some() {
+                    if sync_codec::dependencias(tx, envelope)?.is_some() {
                         return Ok(Applied::PrecisaReconciliar);
                     }
                 }
             }
             aplicar_com_estado_causal(tx, envelope)?;
+            conferir_materializacao(tx, envelope)?;
             registrar_revisao(tx, envelope)?;
             marcar_aplicado(tx, &envelope.event_id)?;
             Ok(Applied::Aplicado)
@@ -164,8 +165,8 @@ pub fn apply_remote_event(
 /// ```text
 /// Bloqueado(motivo)        efeito sobre agregado ainda não coberto        → bloqueia
 /// Excluido(filho) vivo     a origem não apagou este filho                  → bloqueia
-/// Reescrito(sobrevivente)  a exclusão é simulada num SAVEPOINT; se o sobrevivente tem revisão
-///                          corrente e o estado canônico dele deixaria de ser o dela → bloqueia
+/// Reescrito(sobrevivente)  com divergência aberta ou evento pendente aqui → bloqueia; sem isso,
+///                          a reescrita dele chega da origem como o evento seguinte
 /// ```
 ///
 /// Um filho de existência derivada (`chapter_order`) só conta como vivo se ainda tiver revisão
@@ -179,7 +180,6 @@ pub fn motivo_para_bloquear_exclusao_remota(
         // A aplicação falha fechada logo em seguida; não há o que simular.
         return Ok(None);
     }
-    let mut reescritos = Vec::new();
     for impacto in sync_codec::impactos_da_exclusao(tx, &agregado)? {
         match impacto {
             Impacto::Bloqueado(motivo) => return Ok(Some(motivo)),
@@ -193,38 +193,52 @@ pub fn motivo_para_bloquear_exclusao_remota(
                     )));
                 }
             }
-            Impacto::Reescrito(sobrevivente) => reescritos.push(sobrevivente),
-        }
-    }
-    if reescritos.is_empty() {
-        return Ok(None);
-    }
-
-    tx.execute_batch("SAVEPOINT exclusao_remota")
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    let simulado = (|| -> DatabaseCommandResult<Option<String>> {
-        sync_codec::aplicar(tx, envelope)?;
-        for sobrevivente in &reescritos {
-            // Sem revisão corrente, o sobrevivente nunca entrou no Sync V2 (ou já foi excluído
-            // causalmente): não há estado causal que a exclusão contradiga. A gênese (etapa C)
-            // adota o que estiver no banco.
-            let Some(registrado) = sync_codec::payload_da_revisao_corrente(tx, sobrevivente)?
-            else {
-                continue;
-            };
-            let depois = sync_codec::ler_canonico(tx, sobrevivente)?.map(|estado| estado.payload);
-            if depois.as_deref() != Some(registrado.as_str()) {
-                return Ok(Some(format!(
-                    "{} {} mudaria sem revisão: há alteração aqui que o outro aparelho não viu",
-                    sobrevivente.aggregate_type, sobrevivente.aggregate_id
-                )));
+            // O sobrevivente muda com a exclusão; a reescrita dele vem da origem logo depois, como
+            // evento próprio. O que não pode é ele ter decisão ou história pendente aqui: aí a
+            // mudança atropelaria trabalho concorrente.
+            Impacto::Reescrito(sobrevivente) => {
+                if sync_codec::estado_concorrente_para_evento(tx, &sobrevivente, envelope)?
+                    .is_some()
+                {
+                    return Ok(Some(format!(
+                        "{} {} tem decisão ou alteração pendente aqui e seria alterado pela exclusão",
+                        sobrevivente.aggregate_type, sobrevivente.aggregate_id
+                    )));
+                }
             }
         }
-        Ok(None)
-    })();
-    tx.execute_batch("ROLLBACK TO exclusao_remota; RELEASE exclusao_remota")
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    simulado
+    }
+    Ok(None)
+}
+
+/// **Invariante do apply:** depois de aplicar, o estado materializado É o evento.
+///
+/// ```text
+/// upsert   ler_canonico(agregado).payload == envelope.payload
+/// delete   ler_canonico(agregado) == None      (exceto existência derivada: some com o pai)
+/// ```
+///
+/// Falhar aqui desfaz tudo (a sessão para): registrar a revisão com outro estado no domínio seria o
+/// estado "revisão diz X, banco tem Y" que nenhuma sincronização seguinte consegue detectar.
+fn conferir_materializacao(
+    tx: &Transaction<'_>,
+    envelope: &EventEnvelope,
+) -> DatabaseCommandResult<()> {
+    let agregado = AggregateRef::new(&envelope.aggregate_type, &envelope.aggregate_id);
+    let materializado = sync_codec::ler_canonico(tx, &agregado)?.map(|estado| estado.payload);
+    let coerente = match envelope.operation {
+        Operation::Upsert => materializado.as_deref() == Some(envelope.payload.as_str()),
+        Operation::Delete => {
+            materializado.is_none() || sync_codec::existencia_derivada(&agregado.aggregate_type)
+        }
+    };
+    if !coerente {
+        return Err(DatabaseCommandError::storage(format!(
+            "Depois de aplicar {} {}, o estado no banco não é o do evento. Nada foi confirmado.",
+            agregado.aggregate_type, agregado.aggregate_id
+        )));
+    }
+    Ok(())
 }
 
 /// Registra a exclusão bloqueada: a revisão entra na história (um evento posterior que parta dela
@@ -349,7 +363,8 @@ pub fn aplicar_exclusao_bloqueada(
             envelope.aggregate_type, envelope.aggregate_id
         )));
     }
-    aplicar_com_estado_causal(tx, &envelope)
+    aplicar_com_estado_causal(tx, &envelope)?;
+    conferir_materializacao(tx, &envelope)
 }
 
 fn guardar_envelope(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {
@@ -481,6 +496,7 @@ pub fn envelope_de_origem(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::error::DatabaseCommandResult;
     use crate::infrastructure::sqlite::test_support::{seed_universe, TemporaryDatabase};
     use rusqlite::{Connection, TransactionBehavior};
 
@@ -903,21 +919,9 @@ mod tests {
             "",
         );
         aplicar(&mut connection, &criacao);
-        // A origem que exclui o capítulo reescreve a ordem do livro antes (Mutacao, B2).
-        let ordem_sem = envelope_de_origem(
-            ORIGEM,
-            2,
-            "u1",
-            &AggregateRef::new("chapter_order", "b1"),
-            Operation::Upsert,
-            &ordem(&[]),
-            "",
-        );
-        assert_eq!(aplicar(&mut connection, &ordem_sem), Applied::Aplicado);
-
         let exclusao = envelope_de_origem(
             ORIGEM,
-            3,
+            2,
             "u1",
             &agregado(),
             Operation::Delete,
@@ -1028,6 +1032,7 @@ mod tests {
                  "created_at":"2026-01-01 00:00:00"}}"#
         )
         .replace('\n', "")
+        .replace("                 ", "")
     }
 
     /// **Evento de anexo com bytes dentro é recusado.**
@@ -1161,5 +1166,218 @@ mod tests {
             })
             .expect("contar");
         assert_eq!(aplicados, 1);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // B2: dependências, pai imutável e ordem exata
+    // ═══════════════════════════════════════════════════════════════════════
+
+    fn ordem_env(seq: i64, base: &str, capitulos: &[&str]) -> EventEnvelope {
+        envelope_de_origem(
+            ORIGEM,
+            seq,
+            "u1",
+            &AggregateRef::new("chapter_order", "b1"),
+            Operation::Upsert,
+            &ordem(capitulos),
+            base,
+        )
+    }
+
+    fn semear_capitulos(connection: &Connection, livro: &str, ids: &[&str]) {
+        for (i, id) in ids.iter().enumerate() {
+            connection
+                .execute(
+                    "INSERT INTO chapters (id, book_id, title, sort_order) VALUES (?1, ?2, ?1, ?3)",
+                    rusqlite::params![id, livro, i as i64],
+                )
+                .expect("capítulo");
+        }
+    }
+
+    fn marcado(connection: &Connection, envelope: &EventEnvelope) -> bool {
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_applied_events WHERE event_id = ?1)",
+                [&envelope.event_id],
+                |row| row.get(0),
+            )
+            .expect("marcado")
+    }
+
+    fn aplicar_tentando(
+        connection: &mut Connection,
+        envelope: &EventEnvelope,
+    ) -> DatabaseCommandResult<Applied> {
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("transação");
+        let resultado = apply_remote_event(&tx, envelope)?;
+        tx.commit().expect("commit");
+        Ok(resultado)
+    }
+
+    fn materializado(connection: &Connection, tipo: &str, id: &str) -> Option<String> {
+        sync_codec::ler_canonico(connection, &AggregateRef::new(tipo, id))
+            .expect("ler")
+            .map(|estado| estado.payload)
+    }
+
+    #[test]
+    fn ordem_aplicada_e_exatamente_o_payload() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        semear_capitulos(&connection, "b1", &["c1", "c2", "c3"]);
+
+        let envelope = ordem_env(1, "", &["c3", "c1", "c2"]);
+        assert_eq!(aplicar(&mut connection, &envelope), Applied::Aplicado);
+        assert_eq!(
+            materializado(&connection, "chapter_order", "b1").as_deref(),
+            Some(envelope.payload.as_str())
+        );
+    }
+
+    #[test]
+    fn ordem_com_capitulo_inexistente_espera_sem_marcar() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        semear_capitulos(&connection, "b1", &["c1"]);
+
+        let envelope = ordem_env(1, "", &["c1", "c-ainda-nao-chegou"]);
+        assert_eq!(
+            aplicar(&mut connection, &envelope),
+            Applied::PrecisaReconciliar
+        );
+        assert!(
+            !marcado(&connection, &envelope),
+            "ordem incompleta marcada como aplicada"
+        );
+        assert_eq!(
+            materializado(&connection, "chapter_order", "b1").as_deref(),
+            Some(r#"{"bookId":"b1","chapterIds":["c1"]}"#),
+            "a ordem foi mexida"
+        );
+    }
+
+    #[test]
+    fn ordem_que_nao_cita_capitulo_daqui_espera_sem_marcar() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        semear_capitulos(&connection, "b1", &["c1", "c2"]);
+
+        let envelope = ordem_env(1, "", &["c2"]);
+        assert_eq!(
+            aplicar(&mut connection, &envelope),
+            Applied::PrecisaReconciliar
+        );
+        assert!(!marcado(&connection, &envelope));
+    }
+
+    #[test]
+    fn ordem_com_capitulo_repetido_ou_de_outro_livro_e_recusada() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        connection
+            .execute(
+                "INSERT INTO books (id, story_id, name) VALUES ('b2', 's1', 'Outro')",
+                [],
+            )
+            .expect("livro 2");
+        semear_capitulos(&connection, "b1", &["c1", "c2"]);
+        semear_capitulos(&connection, "b2", &["x1"]);
+
+        let repetido = ordem_env(1, "", &["c1", "c2", "c1"]);
+        let erro = aplicar_tentando(&mut connection, &repetido).expect_err("repetido");
+        assert!(erro.message.contains("duas vezes"), "{}", erro.message);
+        assert!(!marcado(&connection, &repetido));
+
+        let de_outro = ordem_env(1, "", &["c1", "c2", "x1"]);
+        let erro = aplicar_tentando(&mut connection, &de_outro).expect_err("outro livro");
+        assert!(
+            erro.message.contains("que é do livro b2"),
+            "{}",
+            erro.message
+        );
+        assert!(!marcado(&connection, &de_outro));
+    }
+
+    /// Pai imutável: capítulo, livro e história que já existem aqui com outro pai.
+    #[test]
+    fn evento_que_troca_o_pai_e_recusado_e_nao_marca() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        connection
+            .execute_batch(
+                "INSERT INTO stories (id, universe_id, name) VALUES ('s2', 'u1', 'Outra');
+                 INSERT INTO books (id, story_id, name) VALUES ('b2', 's1', 'Livro 2');",
+            )
+            .expect("semear");
+        crate::infrastructure::sqlite::test_support::seed_universe(&connection, "u2");
+        semear_capitulos(&connection, "b1", &["cap-1"]);
+
+        let casos = [
+            (
+                AggregateRef::new("chapter", "cap-1"),
+                capitulo("Movido", "texto").replace("\"bookId\":\"b1\"", "\"bookId\":\"b2\""),
+                "book_id",
+            ),
+            (
+                AggregateRef::new("book", "b1"),
+                r#"{"id":"b1","storyId":"s2","name":"Livro","description":"","coverBlobHash":"","coverMimeType":"","customFields":[]}"#.to_string(),
+                "story_id",
+            ),
+            (
+                AggregateRef::new("story", "s1"),
+                r#"{"id":"s1","universeId":"u2","name":"Historia","description":"","customFields":[]}"#.to_string(),
+                "universe_id",
+            ),
+        ];
+        for (agregado, payload, coluna) in casos {
+            let envelope =
+                envelope_de_origem(ORIGEM, 1, "u1", &agregado, Operation::Upsert, &payload, "");
+            let erro = aplicar_tentando(&mut connection, &envelope).expect_err("pai trocado");
+            assert!(
+                erro.message.contains("imutável") && erro.message.contains(coluna),
+                "{}",
+                erro.message
+            );
+            assert!(!marcado(&connection, &envelope));
+        }
+    }
+
+    /// Após todo `Aplicado`, o estado materializado do agregado é o payload do evento — para cada
+    /// tipo coberto pela B2.
+    #[test]
+    fn todo_aplicado_da_b2_materializa_exatamente_o_payload() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        let eventos = [
+            ("universe", "u9", r#"{"id":"u9","name":"Novo","description":"d","coverBlobHash":"","coverMimeType":"","customFields":[{"key":"Tom","value":"frio"}]}"#.to_string()),
+            ("story", "s9", r#"{"id":"s9","universeId":"u9","name":"S","description":"","customFields":[]}"#.to_string()),
+            ("book", "b9", r#"{"id":"b9","storyId":"s9","name":"L","description":"","coverBlobHash":"","coverMimeType":"","customFields":[{"key":"Série","value":"I"}]}"#.to_string()),
+            ("chapter", "c9", r#"{"id":"c9","bookId":"b9","title":"T","content":"<p>um dois</p>","summary":"","sceneOrigin":"","sceneDestination":"","status":"IDEIA","canonStatus":"CANON","customFields":[]}"#.to_string()),
+            ("chapter_order", "b9", r#"{"bookId":"b9","chapterIds":["c9"]}"#.to_string()),
+        ];
+        for (seq, (tipo, id, payload)) in eventos.iter().enumerate() {
+            let envelope = envelope_de_origem(
+                ORIGEM,
+                seq as i64 + 1,
+                "u9",
+                &AggregateRef::new(*tipo, *id),
+                Operation::Upsert,
+                payload,
+                "",
+            );
+            assert_eq!(
+                aplicar(&mut connection, &envelope),
+                Applied::Aplicado,
+                "{tipo}"
+            );
+            assert_eq!(
+                materializado(&connection, tipo, id).as_deref(),
+                Some(payload.as_str()),
+                "{tipo} {id}: materializado difere do payload"
+            );
+        }
     }
 }

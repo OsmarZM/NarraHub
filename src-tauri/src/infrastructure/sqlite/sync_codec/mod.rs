@@ -125,11 +125,12 @@ pub fn impactos_da_exclusao(
     }
 }
 
-/// Para upsert remoto: o agregado de que este depende ainda não existe aqui?
+/// Para upsert remoto: tudo de que o estado final depende está aqui e é coerente?
 ///
-/// Devolve a descrição do que falta. Quem chama trata como história incompleta — não aplica, não
-/// marca como aplicado, e o cursor espera o pai chegar.
-pub fn pai_ausente(
+/// `Ok(Some(falta))` é história incompleta — quem chama não aplica, não marca como aplicado, e o
+/// cursor espera. `Err` é inconsistência que nunca fica válida (pai diferente, ordem com capítulo
+/// repetido ou de outro livro).
+pub fn dependencias(
     connection: &Connection,
     envelope: &EventEnvelope,
 ) -> DatabaseCommandResult<Option<String>> {
@@ -139,7 +140,7 @@ pub fn pai_ausente(
     match envelope.aggregate_type.as_str() {
         "universe" => Ok(None),
         "story" | "book" | "chapter" | "chapter_order" | "tag_assignment" => {
-            manuscrito::pai_ausente(connection, envelope)
+            manuscrito::dependencias(connection, envelope)
         }
         "attachment" => anexo::pai_ausente(connection, envelope),
         _ => Ok(None),
@@ -227,6 +228,42 @@ pub fn estado_concorrente(
                               AND NOT EXISTS (SELECT 1 FROM sync_applied_events a
                                                WHERE a.event_id = e.event_id))",
             [&agregado.aggregate_type, &agregado.aggregate_id],
+            |row| row.get(0),
+        )
+        .map_err(erro)?;
+    Ok(pendente.then_some(EstadoConcorrente::EventoPendente))
+}
+
+/// Como [`estado_concorrente`], visto por um evento remoto que está sendo aplicado.
+///
+/// Quem recebe guarda o lote inteiro antes de aplicar. Os eventos seguintes **da mesma origem**
+/// (`seq` maior) já estão no log sem estar aplicados, e não são concorrência: são a continuação
+/// da mesma mutação — a reescrita da ordem que vem logo depois da exclusão do capítulo, por
+/// exemplo. Pendência de outra origem, ou anterior na mesma, continua contando.
+pub fn estado_concorrente_para_evento(
+    connection: &Connection,
+    agregado: &AggregateRef,
+    envelope: &EventEnvelope,
+) -> DatabaseCommandResult<Option<EstadoConcorrente>> {
+    if matches!(
+        estado_concorrente(connection, agregado)?,
+        Some(EstadoConcorrente::DivergenciaAberta)
+    ) {
+        return Ok(Some(EstadoConcorrente::DivergenciaAberta));
+    }
+    let pendente: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_events e
+                            WHERE e.aggregate_type = ?1 AND e.aggregate_id = ?2
+                              AND NOT (e.device_id = ?3 AND e.seq > ?4)
+                              AND NOT EXISTS (SELECT 1 FROM sync_applied_events a
+                                               WHERE a.event_id = e.event_id))",
+            rusqlite::params![
+                &agregado.aggregate_type,
+                &agregado.aggregate_id,
+                &envelope.device_id,
+                envelope.seq
+            ],
             |row| row.get(0),
         )
         .map_err(erro)?;

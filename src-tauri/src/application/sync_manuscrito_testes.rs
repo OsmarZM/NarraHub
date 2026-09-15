@@ -225,7 +225,68 @@ fn sincronizar(a: &Aparelho, b: &Aparelho) -> (Relatorio, Relatorio) {
     let para_a = eventos_para(&b.banco.connection(), &vetor_a).expect("b → a");
     let em_b = receber_eventos(&mut b.banco.connection(), &para_b).expect("b recebe");
     let em_a = receber_eventos(&mut a.banco.connection(), &para_a).expect("a recebe");
+    a.invariante_de_materializacao();
+    b.invariante_de_materializacao();
     (em_b, em_a)
+}
+
+/// Os tipos cobertos pela B2 (e o anexo da B1).
+const TIPOS_DA_B2: &[&str] = &[
+    "universe",
+    "story",
+    "book",
+    "chapter",
+    "chapter_order",
+    "tag_assignment",
+    "attachment",
+];
+
+impl Aparelho {
+    /// **Asserção geral:** para TODO agregado coberto com revisão corrente, o estado canônico no
+    /// banco é o payload dessa revisão.
+    ///
+    /// Vale em repouso — depois de uma sessão inteira. Ficam de fora só os agregados com decisão
+    /// aberta ou evento guardado sem aplicar: neles o banco ainda não é, por definição, uma revisão
+    /// única. Entre dois eventos de uma mesma mutação (capítulo excluído, ordem ainda por chegar) o
+    /// estado do OUTRO agregado pode estar no meio do caminho; por isso a checagem evento a evento
+    /// é sobre o agregado aplicado (ver `cada_aplicado_materializa_o_proprio_evento`).
+    fn invariante_de_materializacao(&self) {
+        let connection = self.banco.connection();
+        let mut consulta = connection
+            .prepare("SELECT aggregate_type, aggregate_id FROM sync_aggregate_state")
+            .expect("consulta");
+        let agregados: Vec<(String, String)> = consulta
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("linhas")
+            .collect::<Result<_, _>>()
+            .expect("agregados");
+        for (tipo, id) in agregados {
+            if !TIPOS_DA_B2.contains(&tipo.as_str()) {
+                continue;
+            }
+            let agregado = AggregateRef::new(&tipo, &id);
+            if sync_codec::estado_concorrente(&connection, &agregado)
+                .expect("concorrente")
+                .is_some()
+            {
+                continue;
+            }
+            let Some(registrado) =
+                sync_codec::payload_da_revisao_corrente(&connection, &agregado).expect("revisão")
+            else {
+                continue;
+            };
+            let canonico = sync_codec::ler_canonico(&connection, &agregado)
+                .expect("ler")
+                .map(|estado| estado.payload);
+            assert_eq!(
+                canonico.as_deref(),
+                Some(registrado.as_str()),
+                "{}: {tipo} {id} no banco não é o payload da revisão corrente",
+                self.nome
+            );
+        }
+    }
 }
 
 /// Universo → história → livro → dois capítulos com texto, criados no `autor`, já sincronizados.
@@ -645,4 +706,139 @@ fn salvar_o_mesmo_estado_nao_gera_revisao() {
     let antes = pc.eventos_do_tipo("chapter");
     pc.escrever(&arvore.capitulos[0], "<p>Era uma vez</p>");
     assert_eq!(pc.eventos_do_tipo("chapter"), antes);
+}
+
+/// **Após todo `Aplicado`, o agregado aplicado é exatamente o evento.** Os eventos de uma árvore
+/// inteira (criação, edição, reorder, exclusão) chegam ao Android um por vez.
+#[test]
+fn cada_aplicado_materializa_o_proprio_evento() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    let historia = pc.historia(&universo, "Saga").id;
+    let livro = pc.livro(&historia, "Livro").id;
+    let c1 = pc.capitulo(&livro, "Um").id;
+    let c2 = pc.capitulo(&livro, "Dois").id;
+    pc.escrever(&c2, "<p>texto</p>");
+    manuscript_service::reorder_chapters(
+        &pc.banco.database,
+        &pc.eu,
+        &livro,
+        &[c2.clone(), c1.clone()],
+    )
+    .expect("reordenar");
+    manuscript_service::delete_chapter(&pc.banco.database, &pc.eu, &c1).expect("excluir");
+
+    apresentar(&pc, &android);
+    apresentar(&android, &pc);
+    let vetor = vetor_local(&android.banco.connection()).expect("vetor");
+    let eventos = eventos_para(&pc.banco.connection(), &vetor).expect("eventos");
+    assert!(eventos.len() >= 10, "{}", eventos.len());
+    for evento in &eventos {
+        let relatorio = receber_eventos(
+            &mut android.banco.connection(),
+            std::slice::from_ref(evento),
+        )
+        .expect("receber");
+        assert_eq!(
+            relatorio.aplicados, 1,
+            "{} {} não foi aplicado",
+            evento.aggregate_type, evento.aggregate_id
+        );
+        let materializado = android.canonico(&evento.aggregate_type, &evento.aggregate_id);
+        match evento.operation {
+            Operation::Upsert => assert_eq!(
+                materializado.as_deref(),
+                Some(evento.payload.as_str()),
+                "{} {}",
+                evento.aggregate_type,
+                evento.aggregate_id
+            ),
+            Operation::Delete => {
+                if !sync_codec::existencia_derivada(&evento.aggregate_type) {
+                    assert!(materializado.is_none());
+                }
+            }
+        }
+    }
+    android.invariante_de_materializacao();
+    pc.convergiu_com(&android, "chapter_order", &livro);
+}
+
+/// **Causalidade cruzada entre origens.**
+///
+/// ```text
+/// C cria c3 (capítulo + ordem)
+/// A recebe de C, conhece c3, reordena incluindo c3
+/// B recebe a ordem de A ANTES do create de c3, que é de C
+///   → a ordem fica pendente, não conta como aplicada, a ordem de B não muda
+/// B recebe os eventos de C
+///   → c3 entra, a ordem de A é reaplicada, e o estado final é o payload dela
+/// ```
+#[test]
+fn ordem_que_cita_capitulo_de_outra_origem_espera_o_capitulo_chegar() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let c = Aparelho::novo("c");
+    let arvore = arvore(&a, &b);
+    sincronizar(&a, &c);
+
+    let c3 = c.capitulo(&arvore.livro, "Três").id;
+    sincronizar(&a, &c);
+    let nova = vec![
+        c3.clone(),
+        arvore.capitulos[0].clone(),
+        arvore.capitulos[1].clone(),
+    ];
+    manuscript_service::reorder_chapters(&a.banco.database, &a.eu, &arvore.livro, &nova)
+        .expect("A reordena");
+
+    apresentar(&a, &b);
+    apresentar(&c, &b);
+    let vetor_b = vetor_local(&b.banco.connection()).expect("vetor");
+    let todos = eventos_para(&a.banco.connection(), &vetor_b).expect("eventos");
+    let (de_a, de_c): (Vec<_>, Vec<_>) = todos
+        .into_iter()
+        .partition(|evento| evento.device_id == a.eu.device_id());
+    let ordem_de_a = de_a
+        .iter()
+        .find(|evento| evento.aggregate_type == "chapter_order")
+        .expect("a ordem de A")
+        .clone();
+    assert!(
+        !de_c.is_empty(),
+        "A precisa ter os eventos de C para repassar"
+    );
+
+    let ordem_antes = b.canonico("chapter_order", &arvore.livro);
+    let relatorio = receber_eventos(&mut b.banco.connection(), &de_a).expect("B recebe de A");
+    assert_eq!(relatorio.aplicados, 0);
+    assert!(relatorio.pendentes >= 1, "{relatorio:?}");
+    let aplicado: bool = b
+        .banco
+        .connection()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_applied_events WHERE event_id = ?1)",
+            [&ordem_de_a.event_id],
+            |row| row.get(0),
+        )
+        .expect("aplicado");
+    assert!(
+        !aplicado,
+        "a ordem que cita c3 foi dada como aplicada sem c3"
+    );
+    assert_eq!(b.canonico("chapter_order", &arvore.livro), ordem_antes);
+    assert!(b.canonico("chapter", &c3).is_none());
+
+    let relatorio = receber_eventos(&mut b.banco.connection(), &de_c).expect("B recebe de C");
+    assert!(relatorio.precisam_reconciliar.is_empty(), "{relatorio:?}");
+    assert!(b.canonico("chapter", &c3).is_some());
+    assert_eq!(
+        b.canonico("chapter_order", &arvore.livro).as_deref(),
+        Some(ordem_de_a.payload.as_str()),
+        "o estado final da ordem em B é o payload de A"
+    );
+    b.invariante_de_materializacao();
+    a.convergiu_com(&b, "chapter_order", &arvore.livro);
+    a.convergiu_com(&b, "chapter", &c3);
 }

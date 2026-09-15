@@ -289,6 +289,15 @@ pub fn ler_livro(
     }))
 }
 
+/// O universo de um livro, ou erro: livro sem história é inconsistência, não "universo vazio".
+fn universo_obrigatorio(connection: &Connection, book_id: &str) -> DatabaseCommandResult<String> {
+    universo_do_livro(connection, book_id)?.ok_or_else(|| {
+        DatabaseCommandError::storage(format!(
+            "O livro {book_id} não está ligado a uma história. Nada foi aplicado."
+        ))
+    })
+}
+
 pub fn ler_capitulo(
     connection: &Connection,
     id: &str,
@@ -519,29 +528,106 @@ pub fn impactos_do_capitulo(
 
 // ── Dependência de criação ───────────────────────────────────────────────
 
-pub fn pai_ausente(
+/// Confere, ANTES de aplicar um upsert remoto, tudo de que o estado final depende.
+///
+/// ```text
+/// Ok(None)          pode aplicar; o estado materializado vai ser exatamente o payload
+/// Ok(Some(falta))   história incompleta: algo que ainda pode chegar (pai, capítulo citado)
+///                   → não aplica, não marca, o cursor espera
+/// Err(..)           inconsistência que nunca fica válida → a sessão para
+/// ```
+///
+/// **O pai é imutável.** Nenhuma escrita do app move história, livro ou capítulo de pai. Um evento
+/// que diga outro pai para um agregado que já existe aqui não é "mover": é um payload que descreve
+/// outra árvore, e registrar a revisão dele deixaria domínio e revisão dizendo coisas diferentes.
+pub fn dependencias(
     connection: &Connection,
     envelope: &EventEnvelope,
 ) -> DatabaseCommandResult<Option<String>> {
     let falta = |tabela: &str, tipo: &str, id: &str| -> DatabaseCommandResult<Option<String>> {
         Ok((!existe(connection, tabela, id)?).then(|| format!("{tipo} {id}")))
     };
+    let pai_imutavel = |tabela: &str, coluna: &str, esperado: &str| -> DatabaseCommandResult<()> {
+        let atual: Option<String> = connection
+            .query_row(
+                &format!("SELECT {coluna} FROM {tabela} WHERE id = ?1"),
+                [&envelope.aggregate_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(erro)?;
+        match atual {
+            Some(atual) if atual != esperado => Err(DatabaseCommandError::storage(format!(
+                "{} {} está em {coluna} {atual} aqui, e o evento diz {esperado}. O pai é imutável: \
+                 o evento não é aplicado.",
+                envelope.aggregate_type, envelope.aggregate_id
+            ))),
+            _ => Ok(()),
+        }
+    };
     match envelope.aggregate_type.as_str() {
         "story" => {
             let historia: HistoriaCanonica = de_json(envelope)?;
+            pai_imutavel("stories", "universe_id", &historia.universe_id)?;
             falta("universes", "universe", &historia.universe_id)
         }
         "book" => {
             let livro: LivroCanonico = de_json(envelope)?;
+            pai_imutavel("books", "story_id", &livro.story_id)?;
             falta("stories", "story", &livro.story_id)
         }
         "chapter" => {
             let capitulo: CapituloCanonico = de_json(envelope)?;
+            pai_imutavel("chapters", "book_id", &capitulo.book_id)?;
             falta("books", "book", &capitulo.book_id)
         }
         "chapter_order" => {
             let ordem: OrdemDosCapitulos = de_json(envelope)?;
-            falta("books", "book", &ordem.book_id)
+            if let Some(falta) = falta("books", "book", &ordem.book_id)? {
+                return Ok(Some(falta));
+            }
+            let mut vistos = std::collections::HashSet::new();
+            for capitulo in &ordem.chapter_ids {
+                if !vistos.insert(capitulo) {
+                    return Err(DatabaseCommandError::storage(format!(
+                        "A ordem do livro {} cita o capítulo {capitulo} duas vezes.",
+                        ordem.book_id
+                    )));
+                }
+            }
+            for capitulo in &ordem.chapter_ids {
+                let livro: Option<String> = connection
+                    .query_row(
+                        "SELECT book_id FROM chapters WHERE id = ?1",
+                        [capitulo],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(erro)?;
+                match livro {
+                    None => return Ok(Some(format!("chapter {capitulo}"))),
+                    Some(livro) if livro != ordem.book_id => {
+                        return Err(DatabaseCommandError::storage(format!(
+                            "A ordem do livro {} cita o capítulo {capitulo}, que é do livro {livro}.",
+                            ordem.book_id
+                        )))
+                    }
+                    Some(_) => {}
+                }
+            }
+            // Capítulo daqui que a ordem não cita: a lista não descreve este livro inteiro. A origem
+            // emite a exclusão de capítulo ANTES da reescrita da ordem, então no caminho causal isto
+            // não acontece; quando acontece, é história que falta (ou legado anterior à gênese).
+            let citados: std::collections::HashSet<&String> = ordem.chapter_ids.iter().collect();
+            if let Some(nao_citado) = ids_dos_capitulos(connection, &ordem.book_id)?
+                .into_iter()
+                .find(|capitulo| !citados.contains(capitulo))
+            {
+                return Ok(Some(format!(
+                    "chapter {nao_citado} existe aqui e não está na ordem recebida"
+                )));
+            }
+            Ok(None)
         }
         "tag_assignment" => {
             let atribuicao: AtribuicaoDeTag = de_json(envelope)?;
@@ -734,7 +820,7 @@ pub fn aplicar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseComman
                 ],
             )
             .map_err(erro)?;
-            let universo = universo_do_livro(tx, id)?.unwrap_or_default();
+            let universo = universo_obrigatorio(tx, id)?;
             gravar_campos(tx, &universo, "book", id, &livro.custom_fields)
         }
         "chapter" => {
@@ -775,30 +861,27 @@ pub fn aplicar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseComman
                 ],
             )
             .map_err(erro)?;
-            let universo = universo_do_livro(tx, &capitulo.book_id)?.unwrap_or_default();
+            let universo = universo_obrigatorio(tx, &capitulo.book_id)?;
             gravar_campos(tx, &universo, "chapter", id, &capitulo.custom_fields)
         }
         "chapter_order" => {
             let ordem: OrdemDosCapitulos = de_json(envelope)?;
             conferir_id(envelope, &ordem.book_id)?;
-            // Os listados, na posição da lista; um id que não existe aqui (ainda) é ignorado.
-            // Os que existem aqui e a lista não cita vão depois, na ordem que já tinham.
-            let existentes = ids_dos_capitulos(tx, id)?;
-            let mut posicao = 0i64;
+            // `dependencias` já garantiu: todos existem, todos são deste livro, sem repetição, e
+            // nenhum capítulo daqui ficou de fora. A ordem materializada é exatamente a lista.
             let mut atualizar = tx
                 .prepare("UPDATE chapters SET sort_order = ?1 WHERE id = ?2 AND book_id = ?3")
                 .map_err(erro)?;
-            for capitulo in ordem.chapter_ids.iter().filter(|c| existentes.contains(c)) {
-                atualizar
-                    .execute(rusqlite::params![posicao, capitulo, id])
-                    .map_err(erro)?;
-                posicao += 1;
-            }
-            for capitulo in existentes.iter().filter(|c| !ordem.chapter_ids.contains(c)) {
-                atualizar
-                    .execute(rusqlite::params![posicao, capitulo, id])
-                    .map_err(erro)?;
-                posicao += 1;
+            for (posicao, capitulo) in ordem.chapter_ids.iter().enumerate() {
+                if atualizar
+                    .execute(rusqlite::params![posicao as i64, capitulo, id])
+                    .map_err(erro)?
+                    != 1
+                {
+                    return Err(DatabaseCommandError::storage(format!(
+                        "O capítulo {capitulo} sumiu do livro {id} no meio da aplicação da ordem."
+                    )));
+                }
             }
             Ok(())
         }

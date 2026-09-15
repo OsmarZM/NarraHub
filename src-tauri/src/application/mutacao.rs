@@ -21,8 +21,8 @@
 //!     m.gravou(tipo, id)      create/update — o estado é lido no fim, depois da escrita
 //!     m.excluir(tipo, id)     ANTES do DELETE: impactos, estado causal, preflight, eventos preparados
 //!   fim:
-//!     reescritos: confere que continuam existindo, relê o estado canônico → upsert
 //!     excluídos:  confere que sumiram → delete (descendentes antes do pai)
+//!     reescritos: confere que continuam existindo, relê o estado canônico → upsert (depois)
 //!     agregado cujo estado canônico já é o da revisão corrente não gera evento
 //!   COMMIT
 //! ```
@@ -37,7 +37,7 @@
 //!     Bloqueado(motivo)                      → efeito sobre tipo ainda não coberto → recusa tudo
 //!   cada afetado: divergência aberta ou evento pendente → recusa (nada de alteração silenciosa)
 //! serviço executa o DELETE
-//! fim: reescritos antes dos excluídos, tudo na mesma transação
+//! fim: excluídos antes dos reescritos, tudo na mesma transação
 //! ```
 //!
 //! **Uma ação, um conjunto coerente de revisões.** O serviço declara agregados, não SQLs: cinco
@@ -228,16 +228,9 @@ impl<'t, 'c> Mutacao<'t, 'c> {
             }
         }
 
-        // Reescritos antes dos excluídos: o sobrevivente deixa de apontar para o que vai sumir
-        // antes de o que vai sumir sumir, também nos outros aparelhos.
-        for agregado in coleta.reescritos {
-            let ja = self.operacoes.iter().any(
-                |operacao| matches!(operacao, Operacao::Reescreveu(existente) if existente == &agregado),
-            );
-            if !ja {
-                self.operacoes.push(Operacao::Reescreveu(agregado));
-            }
-        }
+        // Excluídos antes dos reescritos: quem recebe aplica a reescrita do sobrevivente já sem o
+        // que sumiu, e o estado materializado dele é exatamente o payload (ex.: a ordem do livro
+        // chega depois da exclusão do capítulo, sem ele).
         for (agregado, universe_id) in preparados {
             let ja = self.operacoes.iter().any(|operacao| {
                 matches!(operacao, Operacao::Excluiu { agregado: existente, .. } if existente == &agregado)
@@ -249,6 +242,14 @@ impl<'t, 'c> Mutacao<'t, 'c> {
                 agregado,
                 universe_id,
             });
+        }
+        for agregado in coleta.reescritos {
+            let ja = self.operacoes.iter().any(
+                |operacao| matches!(operacao, Operacao::Reescreveu(existente) if existente == &agregado),
+            );
+            if !ja {
+                self.operacoes.push(Operacao::Reescreveu(agregado));
+            }
         }
         Ok(())
     }
@@ -757,7 +758,7 @@ pub(crate) mod tests {
         assert!(erro.message.contains("não existe"), "{}", erro.message);
     }
 
-    /// A reescrita de `chapter_order(b1)` que uma origem emite antes de excluir capítulo (B2).
+    /// A reescrita de `chapter_order(b1)` que uma origem emite depois de excluir capítulo (B2).
     pub(crate) fn ordem_remota(
         origem: &DeviceIdentity,
         seq: i64,
@@ -869,13 +870,14 @@ pub(crate) mod tests {
 
         let eventos = aparelho.eventos();
         assert_eq!(
-            &eventos[eventos.len() - 3..],
+            &eventos[eventos.len() - 4..],
             &[
                 ("attachment".into(), "a1".into(), "delete".into()),
                 ("attachment".into(), "a2".into(), "delete".into()),
                 ("chapter".into(), "c1".into(), "delete".into()),
+                ("chapter_order".into(), "b1".into(), "upsert".into()),
             ],
-            "filhos antes do pai"
+            "filhos antes do pai; o sobrevivente reescrito depois dos excluídos"
         );
         for (tipo, id) in [
             ("chapter", "c1"),
@@ -1091,10 +1093,10 @@ pub(crate) mod tests {
             let connection = aparelho.banco.database.write().expect("escrita");
             origem_remota_confiavel(&connection, &aparelho.eu)
         };
-        let ordem = ordem_remota(&outra, 1, "", &[]);
+        let ordem = ordem_remota(&outra, 2, "", &[]);
         let mut exclusao = envelope_de_origem(
             outra.device_id(),
-            2,
+            1,
             "u1",
             &AggregateRef::new("chapter", "c1"),
             Operation::Delete,
@@ -1144,10 +1146,10 @@ pub(crate) mod tests {
             let connection = aparelho.banco.database.write().expect("escrita");
             origem_remota_confiavel(&connection, &aparelho.eu)
         };
-        let ordem = ordem_remota(&outra, 1, "", &[]);
+        let ordem = ordem_remota(&outra, 2, "", &[]);
         let mut exclusao = envelope_de_origem(
             outra.device_id(),
-            2,
+            1,
             "u1",
             &AggregateRef::new("chapter", "c1"),
             Operation::Delete,

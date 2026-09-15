@@ -142,14 +142,32 @@ pub fn receber_eventos(
         origens.insert(origem, ());
     }
 
-    for origem in origens.keys() {
-        drenar_origem(&tx, origem, &mut relatorio)?;
+    // Até não haver progresso. Uma origem pode depender de outra (a ordem de A cita um capítulo
+    // que é de C): drenar cada uma uma vez, na ordem das chaves, deixaria A pendente se ela viesse
+    // antes de C. Cada volta só termina quando nenhuma origem aplicou nada; como cada evento é
+    // aplicado no máximo uma vez, isto termina.
+    loop {
+        let aplicados_antes = contar_aplicados(&tx)?;
+        relatorio.precisam_reconciliar.clear();
+        for origem in origens.keys() {
+            drenar_origem(&tx, origem, &mut relatorio)?;
+        }
+        if contar_aplicados(&tx)? == aplicados_antes {
+            break;
+        }
     }
     relatorio.pendentes = contar_pendentes(&tx)?;
 
     tx.commit()
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     Ok(relatorio)
+}
+
+fn contar_aplicados(tx: &Transaction<'_>) -> DatabaseCommandResult<i64> {
+    tx.query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+        row.get(0)
+    })
+    .map_err(|error| DatabaseCommandError::storage(error.to_string()))
 }
 
 /// Aplica, em ordem, tudo o que estiver contíguo a partir do cursor.

@@ -163,6 +163,16 @@ fn manter_local(
         )));
     }
     m.gravou(&agregado.aggregate_type, &agregado.aggregate_id)?;
+    // Os sobreviventes que a exclusão reescreveria (a ordem do livro, para capítulo) também são
+    // declarados: o outro aparelho já os reescreveu sem este agregado, e a versão daqui precisa
+    // existir como revisão — senão a restauração chega num livro cuja ordem não o cita.
+    for impacto in sync_codec::impactos_da_exclusao(m.tx(), agregado)? {
+        if let sync_codec::Impacto::Reescrito(sobrevivente) = impacto {
+            if sync_codec::ler_canonico(m.tx(), &sobrevivente)?.is_some() {
+                m.gravou(&sobrevivente.aggregate_type, &sobrevivente.aggregate_id)?;
+            }
+        }
+    }
     marcar_resolvida(m, id, "local")?;
     Ok(Resolucao::MantidoLocal)
 }
@@ -252,10 +262,11 @@ mod tests {
                 let connection = aparelho.banco.database.write().expect("escrita");
                 origem_remota_confiavel(&connection, &aparelho.eu)
             };
-            let ordem = ordem_remota(&outra, 1, "", &[]);
+            // A origem exclui o capítulo e DEPOIS reescreve a ordem sem ele.
+            let ordem = ordem_remota(&outra, 2, "", &[]);
             let mut exclusao = envelope_de_origem(
                 outra.device_id(),
-                2,
+                1,
                 "u1",
                 &AggregateRef::new("chapter", "c1"),
                 Operation::Delete,
@@ -334,7 +345,7 @@ mod tests {
         let cenario = Cenario::bloqueado();
         assert_eq!(
             cenario.cursor(),
-            2,
+            1,
             "o cursor não pode travar na exclusão bloqueada"
         );
         assert_eq!(cenario.divergencias_abertas().len(), 1);
@@ -347,7 +358,8 @@ mod tests {
             1,
             "divergência duplicada"
         );
-        assert_eq!(cenario.cursor(), 2);
+        // A ordem sem c1 espera: c1 continua aqui, e a ordem não pode ser materializada.
+        assert_eq!(cenario.cursor(), 1);
         assert!(cenario.aparelho.existe("chapters", "c1"));
         assert!(cenario.aparelho.existe("attachments", "a-concorrente"));
     }
@@ -371,12 +383,17 @@ mod tests {
         cenario.aparelho.coerente("attachment", "a-concorrente");
 
         let eventos = cenario.aparelho.eventos();
-        assert_eq!(eventos.len(), eventos_antes + 1);
+        assert_eq!(
+            eventos.len(),
+            eventos_antes + 2,
+            "restauração do capítulo e a ordem daqui, que o cita"
+        );
         let base: String = cenario
             .aparelho
             .conexao()
             .query_row(
-                "SELECT base_rev FROM sync_events WHERE device_id = ?1 ORDER BY seq DESC LIMIT 1",
+                "SELECT base_rev FROM sync_events
+                  WHERE device_id = ?1 AND aggregate_type = 'chapter' ORDER BY seq DESC LIMIT 1",
                 [cenario.aparelho.eu.device_id()],
                 |row| row.get(0),
             )
@@ -388,7 +405,19 @@ mod tests {
 
         // A exclusão chegando de novo não reabre nada.
         let relatorio = cenario.entregar(std::slice::from_ref(&cenario.exclusao));
-        assert_eq!(relatorio.divergencias, 0);
+        // A ordem que o outro aparelho mandou sem c1 deixa de esperar e vira decisão: aqui a ordem
+        // mantida cita c1. Nenhuma divergência nova no capítulo.
+        assert_eq!(relatorio.divergencias, 1);
+        let em_capitulo: i64 = cenario
+            .aparelho
+            .conexao()
+            .query_row(
+                "SELECT COUNT(*) FROM sync_divergences WHERE aggregate_type = 'chapter' AND resolved_at = ''",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert_eq!(em_capitulo, 0);
         assert!(cenario.aparelho.existe("chapters", "c1"));
     }
 
@@ -436,6 +465,11 @@ mod tests {
             tombstone, cenario.exclusao.new_rev,
             "a revisão da exclusão é a remota"
         );
+
+        // A ordem que esperava c1 sair agora pode ser materializada, exatamente como veio.
+        cenario.entregar(&[]);
+        assert_eq!(cenario.cursor(), 2);
+        cenario.aparelho.coerente("chapter_order", "b1");
     }
 
     #[test]
@@ -508,10 +542,10 @@ mod tests {
             origem_remota_confiavel(&connection, &aparelho.eu)
         };
         let agregado = AggregateRef::new("chapter", "c1");
-        let ordem = ordem_remota(&outra, 1, "", &[]);
+        let ordem = ordem_remota(&outra, 2, "", &[]);
         let mut exclusao = envelope_de_origem(
             outra.device_id(),
-            2,
+            1,
             "u1",
             &agregado,
             Operation::Delete,

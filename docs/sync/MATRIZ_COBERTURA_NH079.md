@@ -259,9 +259,9 @@ m.excluir(parent)
     universe_id de todo afetado lido agora; vazio → erro
 serviço executa o DELETE
 fim da transação:
-  Reescrito → precisa continuar existindo → estado canônico relido → evento upsert
   Excluido  → precisa ter sumido → evento delete (descendentes antes do pai)
-  reescritos são emitidos antes dos excluídos
+  Reescrito → precisa continuar existindo → estado canônico relido → evento upsert
+  excluídos são emitidos ANTES dos reescritos
   agregado cujo canônico já é o payload da revisão corrente → nenhum evento
 COMMIT
 ```
@@ -269,14 +269,18 @@ COMMIT
 Na B2 o `Reescrito` real é `chapter_order(livro)` quando um capítulo é excluído. Os `Reescrito` por
 `SET NULL` (planning, timeline) são `Bloqueado` até a etapa que cobre o agregado.
 
-**Exclusão remota com sobrevivente.** Quem recebe a exclusão simula o `DELETE` num `SAVEPOINT`, relê cada
-`Reescrito` e compara com o payload da revisão corrente dele. Sobrevivente sem revisão corrente nunca
-entrou no V2 (ou já foi excluído causalmente) e não tem o que contradizer. Diferente → a exclusão vira
-`parent_deletion_blocked` (o sobrevivente mudaria sem revisão: há alteração aqui que a origem não viu).
-Igual → `ROLLBACK TO` e a exclusão segue normalmente. A origem emite a reescrita antes da exclusão, então
-no caminho sem concorrência o sobrevivente já chegou ao estado final.
+**Por que excluídos antes dos reescritos.** Quem recebe materializa cada evento exatamente (seção 8.1).
+A ordem do livro sem o capítulo só pode ser materializada quando o capítulo já saiu; se a reescrita viesse
+antes, ela esperaria um capítulo sumir que ainda está no banco.
 
-**Ordem da cascata do livro:** `chapter_order` sai primeiro, depois os capítulos. Quando a exclusão de um
+**Exclusão remota com sobrevivente.** Quem recebe a exclusão não bloqueia porque o sobrevivente vai mudar —
+a reescrita dele é o evento seguinte da mesma origem. Bloqueia se o sobrevivente tem **decisão aberta** ou
+**evento pendente de outra história** aqui (`estado_concorrente_para_evento`). Eventos da mesma origem com
+`seq` maior não contam: o lote é guardado inteiro antes de aplicar, e eles são a continuação da mesma
+mutação. Entre os dois eventos, o sobrevivente fica momentaneamente diferente da revisão dele; a asserção
+geral de materialização vale em repouso (8.1).
+
+**Ordem da cascata do livro:** `chapter_order` (excluído, existência derivada) sai primeiro, depois os capítulos. Quando a exclusão de um
 capítulo chega, a ordem já está excluída causalmente (sem revisão corrente) e não conta como sobrevivente
 nem como filho vivo.
 
@@ -320,6 +324,8 @@ contrato é recusado; em especial, divergência `concurrent` **não** é resolvi
 ManterLocal     pai e descendentes ficam
                 nasce upsert do pai com base_rev = revisão da exclusão remota
                 nos outros aparelhos: base == deleted_rev → Sequential → o pai volta, tombstone sai
+                sobreviventes que a exclusão reescreveria (a ordem do livro) também são declarados:
+                a ordem daqui, que cita o capítulo, vira revisão — a do outro lado, sem ele, vira decisão
 AceitarRemoto   preflight de descendentes refeito AGORA
                   sobrou filho vivo              → recusa; nada muda; divergência continua aberta
                   pai alterado depois do bloqueio → recusa
@@ -380,6 +386,10 @@ Testes: `mutacao::tests::rollback_depois_do_blob_deixa_so_o_arquivo_orfao_e_repe
    recusada nos dois lados; reescrita de agregado em divergência recusa a exclusão; exclusão de universo
    recusada local e remotamente; salvar o mesmo estado não gera revisão. Convergência = payload canônico
    igual nos dois **e** igual ao payload da revisão corrente de cada um.
+9. **Materialização exata (B2):** cada evento aplicado um por vez com o estado conferido
+   (`cada_aplicado_materializa_o_proprio_evento`); asserção geral em repouso depois de toda sessão dos testes
+   de dois aparelhos; causalidade cruzada A/B/C (`ordem_que_cita_capitulo_de_outra_origem_espera_o_capitulo_chegar`);
+   ordem com capítulo repetido, de outro livro, inexistente e não citado; pai trocado em `story`/`book`/`chapter`.
 
 ## 5. Negociação de compatibilidade (etapa E)
 
@@ -410,6 +420,7 @@ Nenhuma PR declara cobertura completa; cada uma atualiza as suas linhas da seç�
 B1  infraestrutura: Mutacao, exclusão com preflight, exclusão remota bloqueada;
     chapter (update, delete) + attachment migrados; gates 1–4        — sem cobertura nova além disso
 B2  manuscrito: universe, story, book, chapter create, chapter_order, custom fields, tag assignments por gatilho
+B2.1 (proposta) story_order(universe), book_order(story) — antes da C
 B3  entidades: entity (+atributos), relation, timeline_event, canvas_entity_position
 B4  planejamento: planning_item, planning_order, planning_field_definition (gatilho que reescreve cards)
 B5  conhecimento e canvas: content_tag, tag_assignment, canvas_node, canvas_edge; gate autoral × efêmero
@@ -440,14 +451,58 @@ Decisões que valem conferir na revisão:
 - **`word_count` fora.** Quem recebe recalcula em Rust com a mesma regra do editor
   (`sync_codec/palavras.rs`); a paridade é conferida pelos dois lados sobre
   `src-tauri/fixtures/contagem_de_palavras.json` (Rust e `tests/word-count-parity.test.mjs`).
-- **Ordem de história e livro fora.** Não existe reordenação de história/livro no app; a posição é a de
-  criação em cada aparelho. Se a reordenação existir um dia, ela vira agregado próprio, como
-  `chapter_order`.
+- **Ordem de história e livro: fora do payload, e isso NÃO é estado local definitivo.** Decisão: a ordem
+  vai ser sincronizada como agregado próprio, no padrão de `chapter_order`:
+
+  ```text
+  story_order(universe)   {universeId, storyIds}
+  book_order(story)       {storyId, bookIds}
+  ```
+
+  Até lá, dois aparelhos podem convergir causalmente e **mostrar histórias/livros em ordens diferentes**
+  (a posição é a de chegada em cada um). É divergência visível e conhecida, não perda de dado. Proposta de
+  etapa: **B2.1, antes da C**, para a gênese já adotar a ordem em vez de nascer sem ela. Hoje o app não
+  tem reordenação de história nem de livro, então nenhuma escrita fica sem evento enquanto isso.
 - **Capa legada bloqueia.** Capa ainda em base64 (`hash` vazio) não vira payload: a leitura canônica recusa
   e a mutação falha sem alterar nada, até o backfill converter.
 - **`chapter_order` existe enquanto o livro existe**, inclusive vazia. `create_book` emite a ordem vazia;
   `create_chapter`/`delete_chapter` a reescrevem na mesma mutação; `reorder_chapters` altera só ela.
-- **Aplicação da ordem:** ids listados na posição da lista (os que ainda não existem aqui são ignorados);
-  capítulos daqui que a lista não cita vão depois, na ordem que já tinham.
-- **Dependência de criação:** upsert remoto cujo pai ainda não existe (`story` sem universo, `chapter` sem
-  livro, …) não é aplicado nem marcado; o cursor da origem espera, como história incompleta.
+
+### 8.1 Contrato da aplicação remota (upsert)
+
+```text
+dependencias(evento)                         ANTES de escrever
+  Err(inconsistência)   nunca fica válida    → erro; a sessão para; nada é marcado
+  Ok(Some(falta))       ainda pode chegar    → PrecisaReconciliar; não aplica, não marca, cursor espera
+  Ok(None)              → aplica
+conferir_materializacao(evento)              DEPOIS de escrever, na mesma transação
+  ler_canonico(agregado).payload == envelope.payload   (delete: ler_canonico == None)
+  diferente → erro; a transação inteira desfaz
+```
+
+| caso | resultado |
+| --- | --- |
+| pai ainda não existe (`story` sem universo, `book` sem história, `chapter`/`chapter_order` sem livro, `tag_assignment` sem tag ou dono) | `PrecisaReconciliar` |
+| agregado já existe aqui com **outro pai** (`story.universeId`, `book.storyId`, `chapter.bookId`) | erro — **o pai é imutável**: nenhuma escrita do app move história, livro ou capítulo; um evento que diga outro pai descreve outra árvore |
+| `chapter_order` cita capítulo que não existe aqui | `PrecisaReconciliar` (pode ser de outra origem que ainda não chegou) |
+| `chapter_order` cita capítulo repetido | erro |
+| `chapter_order` cita capítulo de outro livro | erro (pai imutável: nunca fica válido) |
+| existe capítulo deste livro que `chapter_order` não cita | `PrecisaReconciliar` — a ordem não descreve o livro inteiro; no caminho causal não acontece, porque a origem exclui o capítulo antes de reescrever a ordem |
+| tudo presente | a ordem materializada é **exatamente** a lista; nada é ignorado nem anexado ao fim |
+
+Se mover capítulo entre livros virar funcionalidade, o contrato muda para "atualiza a FK na mesma
+transação" — e a checagem de materialização continua a mesma.
+
+**Asserção geral de materialização:**
+
+- **Por evento (em produção):** após todo `Applied::Aplicado`, o agregado aplicado é o payload do evento.
+  Existência derivada (`chapter_order`) é exceção só no delete: ela some com o livro, que vem depois.
+- **Em repouso (nos testes):** depois de cada sessão, todo agregado da B2 com revisão corrente e sem decisão
+  aberta nem evento pendente tem `ler_canonico == payload da revisão corrente`. Não vale **entre** dois
+  eventos de uma mesma mutação para os OUTROS agregados dela (capítulo já excluído, ordem ainda por chegar):
+  uma mutação vira vários eventos, e o receptor os aplica um de cada vez. Tornar isso atômico exige agrupar
+  eventos por mutação no protocolo — fica registrado para a etapa E.
+
+**Sessão com dependência entre origens.** A drenagem repete as origens até nenhuma aplicar nada. Antes,
+cada origem era drenada uma vez em ordem de `device_id`: a ordem de A que cita um capítulo de C ficava
+pendente até a sessão seguinte se A viesse antes de C. O teste de três aparelhos encontrou isso.
