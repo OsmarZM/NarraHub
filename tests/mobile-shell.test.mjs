@@ -147,3 +147,46 @@ test('toque na alça abre, peteleco curto abre, e a dica aparece uma vez por ver
   assert.match(ts, /MOBILE_NAV_HINT_VERSION = '\d+'/u);
   assert.match(ler('../src-tauri/gen/android/app/src/main/AndroidManifest.xml'), /android\.permission\.VIBRATE/u);
 });
+
+test('escrita no celular: árvore e resumo como folhas, com o mesmo conteúdo do desktop', () => {
+  const html = ler('../src/app/features/manuscript/writing-page.component.html');
+  // Um conteúdo, duas apresentações: nada de copiar a árvore ou o resumo para o mobile.
+  assert.equal((html.match(/<ng-template #projectTree>/gu) || []).length, 1);
+  assert.equal((html.match(/<ng-template #chapterContext let-chapter>/gu) || []).length, 1);
+  assert.equal((html.match(/\[ngTemplateOutlet\]="projectTree"/gu) || []).length, 2, 'árvore: aside no desktop e folha no celular');
+  assert.equal((html.match(/\[ngTemplateOutlet\]="chapterContext"/gu) || []).length, 2, 'resumo: inspetor no desktop e folha no celular');
+  assert.match(html, /@if \(viewport\.isMobile\(\) && mobileTreeOpen\(\)\) \{\s*<app-mobile-sheet[^>]*title="Livros e capítulos"/u);
+  assert.match(html, /@if \(viewport\.isMobile\(\)\) \{\s*<app-mobile-sheet[^>]*title="Resumo e contexto"/u);
+  assert.match(html, /@if \(!viewport\.isMobile\(\)\) \{\s*<aside class="project-tree">/u);
+  // Arrastar para reordenar não disputa a rolagem da folha; ↑↓ ficam no menu do item.
+  assert.match(html, /cdkDrag \[cdkDragData\]="chapter" \[cdkDragDisabled\]="viewport\.isMobile\(\)"/u);
+});
+
+test('nenhuma ação da árvore depende de hover no celular: cada item tem "⋯"', () => {
+  const html = ler('../src/app/features/manuscript/writing-page.component.html');
+  for (const kind of ['story', 'book', 'chapter']) {
+    assert.match(html, new RegExp(`class="tree-more"[^>]*openItemMenu\\('${kind}'`, 'u'), `sem "⋯" para ${kind}`);
+  }
+  const menu = html.slice(html.indexOf('@if (itemMenu(); as item)'), html.indexOf('</app-mobile-sheet>', html.indexOf('@if (itemMenu(); as item)')));
+  for (const acao of ['up', 'down', 'rename', 'tags', 'delete']) assert.match(menu, new RegExp(`runItemAction\\('${acao}'`, 'u'));
+  const ts = ler('../src/app/features/manuscript/writing-page.component.ts');
+  const run = ts.slice(ts.indexOf('  runItemAction('), ts.indexOf('\n  }\n', ts.indexOf('  runItemAction(')));
+  for (const handler of ['moveTreeChapter', 'requestRename', 'requestMetadata', 'requestDelete']) {
+    assert.match(run, new RegExp(`this\\.${handler}\\(`, 'u'), `o menu do item não usa ${handler}`);
+  }
+});
+
+test('editor no celular: ferramentas rolam por dentro e ferramentas de desktop não aparecem', () => {
+  const html = ler('../src/app/features/writing/writing-editor.component.html');
+  assert.match(html, /@if \(!viewport\.isMobile\(\)\) \{\s*<div class="nh-editor-spacer"><\/div>\s*<div class="nh-toolbar-group view-tools"/u);
+  const css = ler('../src/app/features/writing/writing-editor.component.css');
+  const toolbar = css.slice(css.indexOf('html.nh-mobile app-writing-editor .nh-editor-toolbar {'));
+  const regra = toolbar.slice(0, toolbar.indexOf('}'));
+  assert.match(regra, /flex-wrap:\s*nowrap/u);
+  assert.match(regra, /overflow-x:\s*auto/u);
+  assert.match(regra, /max-width:\s*100%/u);
+  assert.match(regra, /backdrop-filter:\s*none/u);
+  // O arquivo global de emergência não carrega mais regras da escrita.
+  const global = ler('../src/app/shell/android/android-shell.css');
+  assert.doesNotMatch(global, /writing-|nh-editor-|project-tree|ProseMirror/u);
+});
