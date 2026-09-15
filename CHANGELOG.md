@@ -2,6 +2,24 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.2 — 2026-09-15 (pré-release)
+
+Pré-release só Android, para teste. Instala por cima da 0.10.0-beta.1 e pode ser recebida pela atualização do
+próprio app.
+
+### Um aplicativo de celular de verdade
+
+- **Sem zoom** por pinça ou toque duplo na interface.
+- **Barra de cima própria**: voltar, busca e "•••" com as ações do universo. Sem barra lateral nem
+  linha de botões espremida.
+- **Navegação gestual mais fácil de achar**: três barras douradas na borda direita, dica na primeira
+  vez, abre por toque, arrasto ou peteleco; vibração leve.
+- **Escrita**: o editor ocupa a tela; capítulos e resumo abrem em folhas; cada item da árvore tem "⋯".
+- **Diálogos** sobem de baixo e continuam acima do teclado.
+- **Planejamento** uma coluna por vez; **Timeline** em lista vertical; **Conexões** com o grafo em
+  tela cheia.
+- Mais leve: sem desfoque de fundo e com menos animação contínua.
+
 ## 0.10.0-beta.1 — 2026-09-14 (pré-release)
 
 Pré-release só Android, para teste: não há instalador Windows nesta versão, e quem usa a 0.9.2 no Windows continua nela.
