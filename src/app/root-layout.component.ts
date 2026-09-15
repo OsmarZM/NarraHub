@@ -24,7 +24,7 @@ import { TitlebarComponent } from './shell/titlebar/titlebar.component';
   standalone: true,
   imports: [RouterOutlet, NgTemplateOutlet, AppShellComponent, TitlebarComponent, MobileShellComponent, SchemaRecoveryComponent, MobileNavigationComponent],
   templateUrl: './root-layout.component.html',
-  styleUrls: ['./root-layout.component.css', './shell/android/android-shell.css'],
+  styleUrl: './root-layout.component.css',
   encapsulation: ViewEncapsulation.None,
 })
 export class RootLayoutComponent implements OnDestroy {

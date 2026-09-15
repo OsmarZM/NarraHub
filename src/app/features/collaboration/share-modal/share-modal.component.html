@@ -1,5 +1,5 @@
-<div class="modal-backdrop" (mousedown)="closeRequested.emit()">
-  <form class="modal share-modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+<div class="modal-backdrop" data-nh-dialog (mousedown)="closeRequested.emit()">
+  <form class="modal share-modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
     <header><div><span class="eyebrow">SESSÃO COLABORATIVA</span><h2>Compartilhar universos literários</h2></div><button type="button" (click)="closeRequested.emit()">×</button></header>
     <p class="modal-guidance">Escolha os universos, o conteúdo visível e o que o convidado poderá fazer. Propostas de edição sempre exigem sua aprovação.</p>
     @if (!store.shareLink()) {

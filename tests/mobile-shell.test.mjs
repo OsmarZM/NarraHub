@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import test from 'node:test';
 import { BREAKPOINTS, MOBILE_MEDIA_QUERY, isMobileViewport } from '../src/app/shell/state/breakpoints.ts';
 
@@ -39,9 +39,15 @@ test('sem zoom no app: meta viewport, WebView e touch-action, sem depender de us
   assert.match(ler('../src/styles.css'), /@import '\.\/styles\/mobile\.css';/u);
 });
 
-test('altura e safe area do mobile saem de tokens, não de 100vh nem env() espalhados', () => {
+test('altura do mobile acompanha o teclado: cadeia de 100%, sem vh/dvh no shell', () => {
   const mobile = ler('../src/styles/mobile.css');
-  assert.match(mobile, /--nh-app-height:\s*100dvh/u);
+  assert.match(mobile, /html\.nh-mobile,\s*html\.nh-mobile body,\s*html\.nh-mobile app-root,\s*html\.nh-mobile app-root-layout \{[^}]*height:\s*100%/u);
+  // dvh dentro de variável não é recalculado pelo Chromium quando a altura muda (medido).
+  for (const arquivo of ['../src/app/shell/mobile-shell/mobile-shell.component.css', '../src/app/shell/mobile-sheet/mobile-sheet.component.css']) {
+    const css = ler(arquivo).replace(/\/\*[\s\S]*?\*\//gu, '');
+    assert.doesNotMatch(css, /\d(d|s|l)?vh\b|--nh-app-height/u, `${arquivo} usa vh/dvh`);
+  }
+  assert.doesNotMatch(mobile.replace(/\/\*[\s\S]*?\*\//gu, ''), /--nh-app-height/u);
   for (const lado of ['top', 'right', 'bottom', 'left']) {
     assert.match(mobile, new RegExp(`--nh-safe-${lado}:\\s*env\\(safe-area-inset-${lado}, 0px\\)`, 'u'));
   }
@@ -186,7 +192,38 @@ test('editor no celular: ferramentas rolam por dentro e ferramentas de desktop n
   assert.match(regra, /overflow-x:\s*auto/u);
   assert.match(regra, /max-width:\s*100%/u);
   assert.match(regra, /backdrop-filter:\s*none/u);
-  // O arquivo global de emergência não carrega mais regras da escrita.
-  const global = ler('../src/app/shell/android/android-shell.css');
-  assert.doesNotMatch(global, /writing-|nh-editor-|project-tree|ProseMirror/u);
+  // O CSS global de emergência (android-shell.css) sobrescrevia outras features por especificidade.
+  // Cada tela agora cuida da própria apresentação mobile.
+  assert.equal(existsSync(new URL('../src/app/shell/android/android-shell.css', import.meta.url)), false);
+});
+
+test('todo diálogo segue o contrato data-nh-dialog e vira folha no celular', () => {
+  // Uma regra única em styles/mobile.css transforma qualquer diálogo em folha de baixo. Um modal
+  // novo sem os atributos voltaria a ser uma caixa de desktop no meio do celular.
+  const htmls = [];
+  const varrer = (pasta) => {
+    for (const entrada of readdirSync(pasta, { withFileTypes: true })) {
+      const caminho = new URL(entrada.name + (entrada.isDirectory() ? '/' : ''), pasta);
+      if (entrada.isDirectory()) varrer(caminho);
+      else if (entrada.name.endsWith('.html')) htmls.push(caminho);
+    }
+  };
+  varrer(new URL('../src/app/', import.meta.url));
+  let fundos = 0;
+  for (const arquivo of htmls) {
+    const html = readFileSync(arquivo, 'utf8');
+    for (const fundo of html.matchAll(/<div class="[a-z-]*modal-backdrop"[^>]*>/gu)) {
+      fundos += 1;
+      assert.match(fundo[0], /\sdata-nh-dialog(\s|>)/u, `${arquivo.pathname}: fundo de diálogo sem data-nh-dialog`);
+    }
+    for (const painel of html.matchAll(/<form class="(?:[a-z]+-)?modal\b[^"]*"[^>]*>/gu)) {
+      assert.match(painel[0], /\sdata-nh-dialog-panel(\s|>)/u, `${arquivo.pathname}: painel de diálogo sem data-nh-dialog-panel`);
+    }
+  }
+  assert.ok(fundos >= 15, `esperava os diálogos das features, achei ${fundos}`);
+
+  const mobile = ler('../src/styles/mobile.css');
+  assert.match(mobile, /html\.nh-mobile \[data-nh-dialog\] \{[^}]*align-items:\s*flex-end/u);
+  assert.match(mobile, /html\.nh-mobile \[data-nh-dialog\] > \[data-nh-dialog-panel\] \{[^}]*max-height:\s*92%/u);
+  assert.match(mobile, /html\.nh-mobile \[data-nh-dialog\] \{[^}]*backdrop-filter:\s*none/u);
 });

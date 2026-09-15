@@ -186,10 +186,10 @@
 
 <!-- Modals -->
 @if (modal()) {
-  <div class="planning-modal-backdrop" (mousedown)="closeModal()">
+  <div class="planning-modal-backdrop" data-nh-dialog (mousedown)="closeModal()">
     <!-- Create Card Modal -->
     @if (modal() === 'create') {
-      <form class="planning-modal create-modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault(); createCard()">
+      <form class="planning-modal create-modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault(); createCard()">
         <header class="create-modal-header">
           <div>
             <h2>Novo card</h2>
@@ -245,7 +245,7 @@
     
     <!-- CRM Card Sheet Modal -->
     @else if (modal() === 'card' && editingCard; as card) {
-      <form class="planning-modal crm-modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault(); saveCard()">
+      <form class="planning-modal crm-modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault(); saveCard()">
         <header class="crm-header">
           <div class="crm-header-main">
             <div class="crm-status-wrapper">

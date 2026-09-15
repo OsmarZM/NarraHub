@@ -58,3 +58,17 @@
 @keyframes portalIn { from { opacity: 0; transform: translateY(12px) scale(.985); } }
 @media (min-width: 1260px) { .portal-grid { grid-template-columns: repeat(4, minmax(245px, 1fr)); } }
 @media (max-width: 760px) { .universe-library { padding: 24px 16px 80px; }.library-hero { text-align: left; }.library-hero h1 { font-size: 38px; }.library-heading { align-items: flex-start; flex-direction: column; }.library-heading label { align-self: stretch; justify-content: space-between; }.library-heading select { flex: 1; }.portal-grid { grid-template-columns: 1fr; }.universe-portal,.portal-art,.create-portal { min-height: 390px; }.portal-menu-button { opacity: 1; } }
+
+/* ── celular ─────────────────────────────────────────────────────────────────────
+ * A biblioteca no celular: margens de polegar, título que cabe em duas linhas, cartões mais baixos.
+ * Critério de celular: ViewportState e shell/state/breakpoints.ts. */
+:host-context(html.nh-mobile) .universe-library { padding: 20px var(--nh-mobile-gutter, 16px) 48px; }
+:host-context(html.nh-mobile) .library-hero { margin-bottom: 22px; text-align: left; }
+:host-context(html.nh-mobile) .library-kicker { font-size: 12px; }
+:host-context(html.nh-mobile) .library-hero h1 { font-size: 30px; line-height: 1.12; letter-spacing: -.02em; }
+:host-context(html.nh-mobile) .library-hero > p:last-child { margin-top: 8px; font-size: 15px; }
+:host-context(html.nh-mobile) .library-heading h2 { font-size: 22px; }
+:host-context(html.nh-mobile) .library-heading select { min-height: var(--nh-touch-target, 44px); font-size: 16px; }
+:host-context(html.nh-mobile) :is(.universe-portal, .portal-art, .create-portal) { min-height: 260px; }
+/* O menu do cartão aparece só com hover no desktop; no celular fica sempre visível e tocável. */
+:host-context(html.nh-mobile) .portal-menu-button { min-width: var(--nh-touch-target, 44px); min-height: var(--nh-touch-target, 44px); opacity: 1; }

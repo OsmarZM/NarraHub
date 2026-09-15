@@ -8,10 +8,6 @@
  */
 
 :root {
-  /* Altura da área do app. `100vh` no Android inclui as barras do sistema e não encolhe com o
-   * teclado; `100dvh` acompanha as duas coisas. */
-  --nh-app-height: 100vh;
-
   /* Safe area. No APK o MainActivity já aplica as barras do sistema, o recorte da câmera e o
    * teclado como padding NATIVO da WebView (a fonte da verdade são os insets do Android): lá
    * dentro estes valores são 0 e nada fica atrás das barras. Num navegador móvel comum, `env()`
@@ -28,13 +24,22 @@
   --nh-mobile-gutter: 16px;
 }
 
-@supports (height: 100dvh) {
-  :root { --nh-app-height: 100dvh; }
-}
-
+/*
+ * Altura: uma cadeia de `100%` do <html> até o shell, e não `vh`/`dvh`.
+ *
+ *   - `100vh` no Android inclui as barras do sistema e não encolhe com o teclado;
+ *   - `100dvh` acompanha, mas guardado numa variável (`height: var(--x)` com `--x: 100dvh`) o
+ *     Chromium NÃO recalcula quando a tela muda de altura — medido: o shell ficou com 844px numa
+ *     tela que já tinha 480px, até um recálculo forçado. É exatamente o momento em que o teclado abre.
+ *   - `100%` é refeito a cada resize. No APK o MainActivity encolhe a própria WebView quando o teclado
+ *     abre (padding com o inset do IME), então 100% da página É a área visível acima do teclado.
+ */
 html.nh-mobile,
-html.nh-mobile body {
-  height: var(--nh-app-height);
+html.nh-mobile body,
+html.nh-mobile app-root,
+html.nh-mobile app-root-layout {
+  display: block;
+  height: 100%;
   overflow: hidden;
   /* A página não estica nem "puxa para atualizar"; quem rola é o conteúdo de cada tela. */
   overscroll-behavior: none;
@@ -64,4 +69,68 @@ html.nh-mobile :is(input, textarea, [contenteditable="true"], .ProseMirror, .Pro
   -webkit-user-select: text;
   user-select: text;
   -webkit-touch-callout: default;
+}
+
+/* ── diálogos viram folhas de baixo ──────────────────────────────────────────────
+ * Contrato: todo fundo de diálogo tem `data-nh-dialog` e o painel dentro dele `data-nh-dialog-panel`
+ * (teste em tests/mobile-shell.test.mjs). No desktop os atributos não fazem nada; no celular, esta
+ * regra única transforma qualquer diálogo — de qualquer feature, com qualquer classe — numa folha
+ * que sobe de baixo. A folha fica ancorada embaixo da área do app, que o Android já encolhe quando o
+ * teclado abre: o campo e o botão salvar ficam acima do teclado. */
+html.nh-mobile [data-nh-dialog] {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: stretch;
+  padding: 0;
+  background: rgb(4 3 10 / 58%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html.nh-mobile [data-nh-dialog] > [data-nh-dialog-panel] {
+  width: 100%;
+  max-width: none;
+  max-height: 92%;
+  margin: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 18px var(--nh-mobile-gutter) calc(20px + var(--nh-safe-bottom));
+  border-width: 1px 0 0;
+  border-radius: 24px 24px 0 0;
+  box-shadow: 0 -16px 40px rgb(0 0 0 / 40%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transform: none;
+  animation: nh-dialog-up .22s cubic-bezier(.2, .8, .2, 1);
+}
+
+html.nh-mobile [data-nh-dialog-panel] :is(input, textarea, select) { min-height: var(--nh-touch-target); font-size: 16px; }
+html.nh-mobile [data-nh-dialog-panel] header > button { min-width: var(--nh-touch-target); min-height: var(--nh-touch-target); }
+html.nh-mobile [data-nh-dialog-panel] footer { flex-wrap: wrap; gap: 8px; }
+html.nh-mobile [data-nh-dialog-panel] footer > button { min-height: 48px; flex: 1 1 140px; font-size: 15px; }
+
+@keyframes nh-dialog-up { from { transform: translate3d(0, 32px, 0); opacity: .5; } }
+
+/* ── avisos do shell ────────────────────────────────────────────────────────────── */
+html.nh-mobile .startup-update {
+  right: var(--nh-mobile-gutter);
+  bottom: calc(12px + var(--nh-safe-bottom));
+  left: var(--nh-mobile-gutter);
+  width: auto;
+  grid-template-columns: auto 1fr;
+}
+html.nh-mobile .startup-update-actions { grid-column: 1 / -1; justify-content: flex-end; }
+html.nh-mobile .startup-update-actions button { min-height: var(--nh-touch-target); }
+html.nh-mobile .toast { right: var(--nh-mobile-gutter); bottom: calc(16px + var(--nh-safe-bottom)); left: var(--nh-mobile-gutter); max-width: none; }
+
+/* A entrada das telas anima `transform` com fill `both`, e um ancestral com transform vira a
+ * referência de `position: fixed`: folhas e diálogos se posicionariam dentro da tela, não na janela.
+ * No celular a tela entra sem esse deslocamento. */
+html.nh-mobile .page-enter { animation: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  html.nh-mobile [data-nh-dialog] > [data-nh-dialog-panel] { animation: none; }
 }

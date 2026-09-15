@@ -55,8 +55,8 @@
 </div>
 
 @if (appState.modalOpen() === 'rename-item' && renamingUniverse()) {
-  <div class="modal-backdrop" (mousedown)="appState.closeModal()">
-    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="modal-backdrop" data-nh-dialog (mousedown)="appState.closeModal()">
+    <form class="modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       <header><div><span class="eyebrow">EDIÇÃO RÁPIDA</span><h2>Renomear universo</h2></div><button type="button" (click)="renamingUniverse.set(false); appState.closeModal()">×</button></header>
       <p class="modal-guidance">A alteração será aplicada imediatamente em todas as prévias e referências locais.</p>
       <label>Novo nome<input name="renameValue" [(ngModel)]="renameValue" autofocus (keydown.enter)="confirmRenameUniverse()" /></label>

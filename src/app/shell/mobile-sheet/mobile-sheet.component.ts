@@ -4,8 +4,8 @@ import { Component, ElementRef, HostListener, OnInit, input, output, viewChild }
  * Folha que sobe da parte de baixo da tela — o "modal" do celular.
  *
  * Usada para ações secundárias, árvore de capítulos, resumo e formulários curtos. Cobre a tela
- * com um fundo escurecido; toque no fundo, no "fechar" ou Esc fecha. A altura respeita a área do
- * app (`--nh-app-height`, que já encolhe com o teclado) e a safe area de baixo.
+ * com um fundo escurecido; toque no fundo, no "fechar" ou Esc fecha. A altura é % da tela, que já
+ * encolhe com o teclado, e o fim respeita a safe area de baixo.
  *
  * Só aparece no shell mobile. Nada de `backdrop-filter`: é translucidez sobre cor, que o WebView
  * desenha barato.

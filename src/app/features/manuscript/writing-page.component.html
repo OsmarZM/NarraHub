@@ -163,8 +163,8 @@
 </ng-template>
 
 @if (showNewStory()) {
-  <div class="modal-backdrop" (mousedown)="closeCreateModals()">
-    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="modal-backdrop" data-nh-dialog (mousedown)="closeCreateModals()">
+    <form class="modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       <header><div><span class="eyebrow">ESTRUTURA</span><h2>Nova história</h2></div><button type="button" (click)="closeCreateModals()">×</button></header>
       <label>Nome da história<input name="storyName" [(ngModel)]="newStoryName" placeholder="Ex.: A saga principal" autofocus (keydown.enter)="createStory()" /></label>
       <footer><button type="button" class="secondary-button" (click)="closeCreateModals()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newStoryName.trim()" (click)="createStory()">Criar história</button></footer>
@@ -172,8 +172,8 @@
   </div>
 }
 @if (showNewBook()) {
-  <div class="modal-backdrop" (mousedown)="closeCreateModals()">
-    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="modal-backdrop" data-nh-dialog (mousedown)="closeCreateModals()">
+    <form class="modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       <header><div><span class="eyebrow">ESTRUTURA</span><h2>Novo livro</h2></div><button type="button" (click)="closeCreateModals()">×</button></header>
       <label>Nome do livro<input name="bookName" [(ngModel)]="newBookName" placeholder="Ex.: Livro I — O Despertar" autofocus (keydown.enter)="createBook()" /></label>
       <footer><button type="button" class="secondary-button" (click)="closeCreateModals()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newBookName.trim()" (click)="createBook()">Criar livro</button></footer>
@@ -181,8 +181,8 @@
   </div>
 }
 @if (showNewChapter()) {
-  <div class="modal-backdrop" (mousedown)="closeCreateModals()">
-    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="modal-backdrop" data-nh-dialog (mousedown)="closeCreateModals()">
+    <form class="modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       <header><div><span class="eyebrow">ESCRITA</span><h2>Novo capítulo</h2></div><button type="button" (click)="closeCreateModals()">×</button></header>
       <label>Título do capítulo<input name="chapterTitle" [(ngModel)]="newChapterTitle" placeholder="Ex.: Capítulo 1 — O chamado" autofocus (keydown.enter)="createChapter()" /></label>
       <footer><button type="button" class="secondary-button" (click)="closeCreateModals()">Cancelar</button><button type="submit" class="primary-button" [disabled]="!newChapterTitle.trim()" (click)="createChapter()">Criar capítulo</button></footer>
@@ -190,8 +190,8 @@
   </div>
 }
 @if (pendingRename(); as item) {
-  <div class="modal-backdrop" (mousedown)="pendingRename.set(null)">
-    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="modal-backdrop" data-nh-dialog (mousedown)="pendingRename.set(null)">
+    <form class="modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       <header><div><span class="eyebrow">EDIÇÃO RÁPIDA</span><h2>Renomear {{ renameKindLabel(item.kind).toLocaleLowerCase('pt-BR') }}</h2></div><button type="button" (click)="pendingRename.set(null)">×</button></header>
       <p class="modal-guidance">A alteração será aplicada imediatamente em todas as prévias e referências locais.</p>
       <label>Novo nome<input name="renameValue" [(ngModel)]="renameValue" [placeholder]="item.name" autofocus (keydown.enter)="confirmRename()" /></label>
@@ -200,8 +200,8 @@
   </div>
 }
 @if (pendingDelete(); as item) {
-  <div class="modal-backdrop" (mousedown)="pendingDelete.set(null)">
-    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="modal-backdrop" data-nh-dialog (mousedown)="pendingDelete.set(null)">
+    <form class="modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       <header><div><span class="eyebrow danger-copy">EXCLUSÃO LOCAL</span><h2>Excluir {{ deleteKindLabel(item.kind).toLocaleLowerCase('pt-BR') }}?</h2></div><button type="button" (click)="pendingDelete.set(null)">×</button></header>
       <p class="delete-warning"><strong>{{ item.name }}</strong><br />{{ item.detail }} Esta ação não pode ser desfeita.</p>
       <footer><button type="button" class="secondary-button" (click)="pendingDelete.set(null)">Cancelar</button><button type="submit" class="primary-button destructive" (click)="confirmDelete()">Excluir {{ deleteKindLabel(item.kind).toLocaleLowerCase('pt-BR') }}</button></footer>

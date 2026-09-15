@@ -272,8 +272,8 @@
 </section>
 
 @if (restoreModal() && pendingRestoreBackup(); as backup) {
-  <div class="settings-modal-backdrop" (mousedown)="closeRestoreModal()">
-    <form class="settings-modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="settings-modal-backdrop" data-nh-dialog (mousedown)="closeRestoreModal()">
+    <form class="settings-modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       <header><div><span class="eyebrow danger-copy">RECUPERAÇÃO LOCAL</span><h2>Restaurar este backup?</h2></div><button type="button" [disabled]="store.backupBusy()" (click)="closeRestoreModal()">×</button></header>
       <p class="delete-warning"><strong>{{ formatDate(backup.createdAt) }}</strong><br />O conteúdo atual será substituído pelo snapshot de schema {{ backup.schemaVersion }}. Antes disso, o NarraHub cria outro backup e mantém os arquivos anteriores em uma área de rollback.</p>
       @if (!store.restorePreparation()) {

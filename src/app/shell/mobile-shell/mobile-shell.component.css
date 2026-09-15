@@ -1,7 +1,8 @@
 :host {
   position: relative;
   width: 100%;
-  height: var(--nh-app-height, 100dvh);
+  /* 100% da cadeia montada em styles/mobile.css — acompanha o teclado; ver lá por que não dvh. */
+  height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;

@@ -12,7 +12,8 @@
   right: 0;
   bottom: 0;
   left: 0;
-  max-height: calc(var(--nh-app-height, 100dvh) * .9);
+  /* % do :host, que é fixo na tela inteira: acompanha o teclado sem depender de dvh. */
+  max-height: 90%;
   display: flex;
   flex-direction: column;
   padding: 8px var(--nh-mobile-gutter, 16px) calc(16px + var(--nh-safe-bottom, 0px));
@@ -25,7 +26,7 @@
   animation: nh-sheet-up .22s cubic-bezier(.2, .8, .2, 1);
 }
 
-.nh-sheet.tall { height: calc(var(--nh-app-height, 100dvh) * .9); }
+.nh-sheet.tall { height: 90%; }
 
 .nh-sheet-grip {
   width: 40px;
