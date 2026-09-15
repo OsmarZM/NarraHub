@@ -261,3 +261,19 @@ test('ações escondidas por hover ficam visíveis no celular', () => {
   const biblioteca = ler('../src/app/features/universe-picker/universe-picker.component.css');
   assert.match(biblioteca, /:host-context\(html\.nh-mobile\) \.portal-menu-button \{[^}]*opacity: 1/u);
 });
+
+test('perfil de desempenho: sem blur no celular e sem camadas de GPU permanentes no navegador gestual', () => {
+  const mobile = ler('../src/styles/mobile.css');
+  assert.match(mobile, /html\.nh-mobile \.nh-mshell-content \*,\s*html\.nh-mobile \[data-nh-dialog\],\s*html\.nh-mobile \[data-nh-dialog\] \* \{[^}]*backdrop-filter:\s*none !important/u);
+
+  const semComentarios = (css) => css.replace(/\/\*[\s\S]*?\*\//gu, '');
+  const nav = semComentarios(ler('../src/app/shell/mobile-navigation/mobile-navigation.component.css'));
+  for (const regra of nav.matchAll(/([^{}]+)\{([^}]*will-change[^}]*)\}/gu)) {
+    assert.match(regra[1], /html\.nh-mnav-active/u, `will-change permanente em "${regra[1].trim()}"`);
+  }
+  const shell = semComentarios(ler('../src/app/shell/mobile-shell/mobile-shell.component.css'));
+  assert.doesNotMatch(shell, /backdrop-filter:\s*blur|will-change/u);
+  // O céu do celular tem UMA camada animada, e só de opacidade.
+  assert.equal((shell.match(/animation:[^;]*infinite/gu) || []).length, 1);
+  assert.match(shell, /@keyframes nh-mshell-twinkle \{ to \{ opacity: [\d.]+; \} \}/u);
+});

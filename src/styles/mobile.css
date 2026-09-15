@@ -134,3 +134,18 @@ html.nh-mobile .page-enter { animation: none; }
 @media (prefers-reduced-motion: reduce) {
   html.nh-mobile [data-nh-dialog] > [data-nh-dialog-panel] { animation: none; }
 }
+
+/* ── perfil de desempenho do celular ─────────────────────────────────────────────
+ * O desktop usa vidro de verdade (`backdrop-filter: blur(…)`) em dezenas de superfícies. No WebView
+ * de um celular cada uma é uma passada extra de GPU sobre tudo o que está atrás, a cada quadro de
+ * rolagem. No celular a identidade de vidro fica com translucidez, borda e gradiente — sem desfoque.
+ *
+ * `!important` aqui é deliberado e restrito a esta propriedade: 46 regras de 16 arquivos, várias com
+ * seletores de duas classes que venceriam por especificidade. É um perfil de desempenho do shell,
+ * não um ajuste de layout. O shell mobile e a navegação gestual já nascem sem blur. */
+html.nh-mobile .nh-mshell-content *,
+html.nh-mobile [data-nh-dialog],
+html.nh-mobile [data-nh-dialog] * {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}

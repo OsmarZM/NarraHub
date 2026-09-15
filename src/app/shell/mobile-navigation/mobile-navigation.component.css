@@ -118,7 +118,6 @@
   color: var(--mnav-ink);
   background-color: var(--nh-mobile-bg-color, #0a0f1c);
   touch-action: none;
-  will-change: opacity;
 }
 
 :host(.nh-mnav-open) .nh-mnav-layer { pointer-events: auto; }
@@ -152,6 +151,14 @@
     radial-gradient(1px 1px at 24% 80%, var(--mnav-gold), transparent 60%);
   animation: nh-mnav-twinkle 6s ease-in-out infinite alternate;
 }
+
+/* Camadas de composição só enquanto o navegador está visível (o componente liga `nh-mnav-active`
+ * no <html> duas vezes por abertura, não por quadro). Fechado, a camada e os oito cartões não
+ * ocupam memória de GPU, e o brilho das estrelas não roda escondido. */
+:host-context(html.nh-mnav-active) .nh-mnav-layer { will-change: opacity; }
+:host-context(html.nh-mnav-active) .nh-mnav-card { will-change: transform, opacity; }
+.nh-mnav-sky i:last-child { animation-play-state: paused; }
+:host-context(html.nh-mnav-active) .nh-mnav-sky i:last-child { animation-play-state: running; }
 
 @keyframes nh-mnav-twinkle {
   from { opacity: .15; }
@@ -211,7 +218,6 @@
   box-shadow: var(--mnav-shadow);
   text-align: left;
   transform-origin: 50% 50%;
-  will-change: transform, opacity;
   -webkit-tap-highlight-color: transparent;
   touch-action: none;
 }
