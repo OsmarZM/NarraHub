@@ -50,3 +50,49 @@ test('altura e safe area do mobile saem de tokens, não de 100vh nem env() espal
   assert.match(activity, /WindowInsetsCompat\.Type\.systemBars\(\) or WindowInsetsCompat\.Type\.displayCutout\(\)/u);
   assert.match(activity, /WindowInsetsCompat\.Type\.ime\(\)/u);
 });
+
+test('dois shells de apresentação, um só router-outlet', () => {
+  // DesktopShell e MobileShell compartilham Router, stores e serviços; só a composição muda. Um
+  // segundo outlet criaria duas instâncias da rota — dois editores do mesmo capítulo.
+  const html = ler('../src/app/root-layout.component.html');
+  assert.equal((html.match(/<router-outlet\b/gu) || []).length, 1);
+  assert.match(html, /<ng-template #appContent>[\s\S]*<router-outlet \/>[\s\S]*<\/ng-template>/u);
+  const mobile = html.indexOf('@if (viewport.isMobile())');
+  const desktop = html.indexOf('} @else {', mobile);
+  assert.ok(mobile >= 0 && desktop > mobile, 'o shell é escolhido pelo ViewportState');
+  assert.match(html.slice(mobile, desktop), /<app-mobile-shell[\s\S]*<app-mobile-navigation[\s\S]*navigation/u);
+  assert.match(html.slice(desktop), /<app-shell[\s\S]*<app-titlebar/u);
+  assert.doesNotMatch(html.slice(desktop), /app-mobile-/u, 'o desktop não monta nada do mobile');
+});
+
+test('no celular a sidebar e o cabeçalho do universo não são renderizados', () => {
+  const html = ler('../src/app/workspace-layout.component.html');
+  assert.match(html, /@if \(!isFocusMode\(\) && !viewport\.isMobile\(\)\) \{\s*<app-universe-sidebar/u);
+  assert.match(html, /@if \(!viewport\.isMobile\(\)\) \{\s*<header class="workspace-header">/u);
+});
+
+test('toda ação do cabeçalho do desktop existe no "•••" do celular, com o mesmo handler', () => {
+  const html = ler('../src/app/workspace-layout.component.html');
+  const ts = ler('../src/app/workspace-layout.component.ts');
+  const inicio = html.indexOf('<div class="workspace-actions">');
+  const cabecalho = html.slice(inicio, html.indexOf('</header>', inicio));
+  const handlers = [...cabecalho.matchAll(/\(click\)="([a-zA-Z]+)\(/gu)].map((m) => m[1]);
+  assert.ok(handlers.length >= 5, `esperava as ações do cabeçalho, achei ${handlers}`);
+  const comeco = ts.indexOf('private readonly mobileActions');
+  assert.ok(comeco >= 0, 'mobileActions sumiu do WorkspaceLayout');
+  const mobile = ts.slice(comeco, ts.indexOf('return actions;', comeco));
+  for (const handler of new Set(handlers)) {
+    assert.ok(mobile.includes(`this.${handler}(`), `a ação "${handler}" do desktop não chegou ao celular`);
+  }
+});
+
+test('todo destino da navegação tem cartão no navegador gestual', () => {
+  // A sidebar some no celular; nada pode ficar inacessível.
+  const tipos = ler('../src/app/core/navigation/app-navigation.ts');
+  const ids = [...tipos.slice(tipos.indexOf('export type AppNavigationId'), tipos.indexOf(';', tipos.indexOf('export type AppNavigationId'))).matchAll(/'([a-z]+)'/gu)].map((m) => m[1]);
+  assert.ok(ids.length >= 8);
+  const root = ler('../src/app/root-layout.component.ts');
+  const apresentacao = root.slice(root.indexOf('const MOBILE_PRESENTATION'));
+  for (const id of ids) assert.ok(apresentacao.includes(`${id}: { label:`), `destino ${id} sem cartão`);
+  assert.match(root, /this\.navigation\.navigationItems\.map\(/u, 'os cartões saem da mesma lista da sidebar');
+});

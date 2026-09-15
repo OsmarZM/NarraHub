@@ -15,33 +15,6 @@
 
 /* Comportamento de página inteira (zoom, rolagem elástica, seleção): src/styles/mobile.css. */
 
-/* ── o quadro: barra de cima + conteúdo que ocupa o resto ─────────────────── */
-html.nh-mobile .nh-app-shell {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-html.nh-mobile .nh-app-frame,
-html.nh-mobile .nh-app-shell.focus-mode .nh-app-frame {
-  height: auto;
-  min-height: 0;
-  flex: 1 1 auto;
-  /* Sem camada própria: o botão de ações sobe para a barra de cima, e as folhas cobrem a barra. */
-  z-index: auto;
-}
-html.nh-mobile .nh-app-shell.has-sidebar .nh-content { padding-bottom: 0; }
-
-/* A barra antiga do desktop (quando uma tela ainda a desenha) e a sidebar do universo saem. */
-html.nh-mobile :is(.navigation, app-universe-sidebar) { display: none !important; }
-html.nh-mobile .content { padding-bottom: 0; }
-
-/* Rolagem com inércia dentro das telas, sem esticar a página. */
-html.nh-mobile :is(.nh-content, .workspace-route-content, .content-stage) { overscroll-behavior: contain; }
-
-/* Espaço para a alça gestual não cobrir conteúdo encostado na borda direita. */
-html.nh-mobile .workspace-route-content { padding: 0; }
-
 /* ── avisos ─────────────────────────────────────────────────────────────────── */
 html.nh-mobile .startup-update {
   right: 12px;
@@ -68,78 +41,6 @@ html.nh-mobile .modal footer { flex-wrap: wrap; }
 html.nh-mobile .modal footer > button { min-height: 46px; flex: 1 1 140px; }
 
 @keyframes nh-android-sheet-up { from { transform: translateY(24px); opacity: .6; } }
-
-/* ── cabeçalho do universo ───────────────────────────────────────────────── */
-/* A linha do cabeçalho some: universo e tela já estão na barra de cima. O botão de ações sobe
- * para a barra de cima, ao lado da busca. */
-html.nh-mobile .workspace-header {
-  height: 0;
-  flex: 0 0 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  overflow: visible;
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-html.nh-mobile .breadcrumb { display: none; }
-
-html.nh-mobile .workspace-more {
-  position: fixed;
-  z-index: 45;
-  top: 6px;
-  right: 8px;
-  width: 44px;
-  height: 44px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: 50%;
-  color: var(--nh-mobile-ink, #ede7d9);
-  background: transparent;
-  font-size: 22px;
-  line-height: 1;
-}
-html.nh-mobile app-root-layout:has(.workspace-more) .nh-mtop:not(.searching) { padding-right: 58px; }
-html.nh-mobile .workspace-more:active { background: rgb(255 255 255 / 8%); }
-
-/* As ações: fora da linha. Fechadas não existem; abertas são uma folha de baixo. */
-html.nh-mobile .workspace-actions { display: none; }
-html.nh-mobile .workspace-header.actions-open .workspace-actions {
-  position: fixed;
-  z-index: 950;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 4px;
-  padding: 18px 14px 22px;
-  border-top: 1px solid rgb(255 255 255 / 10%);
-  border-radius: 22px 22px 0 0;
-  background: var(--nh-mobile-glass-strong, rgb(16 23 40 / 96%));
-  box-shadow: 0 -20px 50px rgb(0 0 0 / 45%);
-  animation: nh-android-sheet-up .2s ease-out;
-}
-html.nh-mobile .workspace-header.actions-open .workspace-actions button {
-  height: 52px;
-  justify-content: flex-start;
-  padding: 0 16px;
-  border: 0;
-  border-radius: 14px;
-  background: transparent;
-  box-shadow: none;
-  font-size: 16px;
-  text-align: left;
-}
-html.nh-mobile .workspace-header.actions-open .workspace-actions button:active { background: rgb(255 255 255 / 8%); }
-html.nh-mobile .workspace-header.actions-open .save-state { padding: 0 16px 10px; font-size: 13px; }
-html.nh-mobile .workspace-actions-backdrop { position: fixed; z-index: 940; inset: 0; background: rgb(5 4 10 / 55%); }
-/* No desktop o botão e o fundo não existem. */
-html:not(.nh-mobile) :is(.workspace-more, .workspace-actions-backdrop, .writing-mobile-bar, .writing-sheet-backdrop, .writing-sheet-grip) { display: none !important; }
 
 /* ── escrita ──────────────────────────────────────────────────────────────── */
 /* Itens de flex encolhem até 0: sem isso a barra de ferramentas numa linha alarga a tela inteira. */

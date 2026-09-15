@@ -1,6 +1,7 @@
 <div class="workspace-route-frame" [class.focus-mode]="isFocusMode()">
   @if (appState.activeUniverse(); as universe) {
-    @if (!isFocusMode()) {
+    <!-- No celular não há sidebar: os mesmos destinos estão na navegação gestual. -->
+    @if (!isFocusMode() && !viewport.isMobile()) {
       <app-universe-sidebar
         [universe]="universe"
         [items]="navItems"
@@ -23,13 +24,12 @@
       }
 
       <section class="workspace-view page-enter">
-        <header class="workspace-header" [class.actions-open]="mobileActionsOpen()">
+        <!-- No celular o cabeçalho não existe: as ações vão para o "•••" do shell mobile
+             (publishMobileActions), e o universo e a área já estão na barra de cima. -->
+        @if (!viewport.isMobile()) {
+        <header class="workspace-header">
           <div class="breadcrumb"><button type="button" (click)="selectNav(navItems[0])">{{ libraryBreadcrumbLabel }}</button><span>/</span><strong>{{ universe.name }}</strong>@if (activeStory() && activeNav() === 'escrita') { <span>/</span><span>{{ activeStory()?.name }}</span> }</div>
-          <!-- Android: as ações saem da linha e abrem numa folha por baixo. No desktop o botão
-               e o fundo não aparecem (android-shell.css). Qualquer toque numa ação fecha a folha. -->
-          <button type="button" class="workspace-more" aria-label="Ações do universo" [attr.aria-expanded]="mobileActionsOpen()" (click)="mobileActionsOpen.set(!mobileActionsOpen())">⋯</button>
-          @if (mobileActionsOpen()) { <div class="workspace-actions-backdrop" (click)="mobileActionsOpen.set(false)"></div> }
-          <div class="workspace-actions" (click)="closeMobileActionsFrom($event)"><span class="save-state" [class.saving]="isSaving()"><i></i>{{ saveMessage() || 'Banco local conectado' }}</span>
+          <div class="workspace-actions"><span class="save-state" [class.saving]="isSaving()"><i></i>{{ saveMessage() || 'Banco local conectado' }}</span>
             <button type="button" class="secondary-button" title="Renomear universo" (click)="beginRenameUniverse()">✎ Renomear</button><button type="button" class="secondary-button metadata-button" title="Tags do universo" (click)="openMetadata('universe', universe.id, universe.name)"># Tags</button>
             <button type="button" class="secondary-button" (click)="openShareModal()">↗ Compartilhar</button>
             @if (activeNav() === 'escrita') { <button type="button" class="secondary-button" [class.active]="inspectorOpen()" [disabled]="!activeChapter()" (click)="toggleInspector()">{{ inspectorOpen() ? 'Ocultar resumo' : 'Resumo do capítulo' }}</button><button type="button" class="secondary-button" (click)="beginCreateOnActivePage()" [disabled]="!activeBook()">＋ Capítulo</button> }
@@ -38,6 +38,7 @@
             @else if (activeNav() === 'planejamento') { <button type="button" class="primary-button small" (click)="beginCreateOnActivePage()">＋ Card</button> }
           </div>
         </header>
+        }
 
         <!-- As páginas já migradas para rota (Histórico, Timeline) entram AQUI, no
              mesmo slot de conteúdo que as páginas legacy acima ocupam. O outlet

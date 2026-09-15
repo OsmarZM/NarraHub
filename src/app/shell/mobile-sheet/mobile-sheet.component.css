@@ -1,0 +1,84 @@
+:host { position: fixed; z-index: 960; inset: 0; display: block; }
+
+.nh-sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgb(4 3 10 / 58%);
+  animation: nh-sheet-fade .18s ease-out;
+}
+
+.nh-sheet {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  max-height: calc(var(--nh-app-height, 100dvh) * .9);
+  display: flex;
+  flex-direction: column;
+  padding: 8px var(--nh-mobile-gutter, 16px) calc(16px + var(--nh-safe-bottom, 0px));
+  border-top: 1px solid var(--nh-mobile-line, rgb(216 183 114 / 22%));
+  border-radius: 24px 24px 0 0;
+  outline: none;
+  color: var(--nh-mobile-ink, #ede7d9);
+  background: var(--nh-mobile-sheet, #111726);
+  box-shadow: 0 -16px 40px rgb(0 0 0 / 40%);
+  animation: nh-sheet-up .22s cubic-bezier(.2, .8, .2, 1);
+}
+
+.nh-sheet.tall { height: calc(var(--nh-app-height, 100dvh) * .9); }
+
+.nh-sheet-grip {
+  width: 40px;
+  height: 4px;
+  flex: 0 0 auto;
+  margin: 2px auto 10px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--nh-mobile-ink, #ede7d9) 26%, transparent);
+}
+
+.nh-sheet-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 8px;
+}
+.nh-sheet-header small {
+  display: block;
+  color: var(--nh-mobile-gold, #d8b772);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.nh-sheet-header h2 { margin: 2px 0 0; font-size: 20px; font-weight: 650; line-height: 1.25; }
+
+.nh-sheet-close {
+  width: var(--nh-touch-target, 44px);
+  height: var(--nh-touch-target, 44px);
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  margin: -6px -8px 0 0;
+  border: 0;
+  border-radius: 50%;
+  color: inherit;
+  background: transparent;
+  font-size: 18px;
+}
+.nh-sheet-close:active { background: color-mix(in srgb, var(--nh-mobile-ink, #ede7d9) 10%, transparent); }
+
+.nh-sheet-body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@keyframes nh-sheet-up { from { transform: translate3d(0, 32px, 0); opacity: .4; } }
+@keyframes nh-sheet-fade { from { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .nh-sheet, .nh-sheet-backdrop { animation: none; }
+}

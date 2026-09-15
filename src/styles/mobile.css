@@ -23,6 +23,9 @@
 
   /* Alvo mínimo de toque (Material e WCAG 2.5.8 recomendam 44–48). */
   --nh-touch-target: 44px;
+
+  /* Margem lateral das telas no celular. */
+  --nh-mobile-gutter: 16px;
 }
 
 @supports (height: 100dvh) {
