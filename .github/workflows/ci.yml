@@ -39,6 +39,33 @@ jobs:
       # SHA-256, assinatura verificada, e versionCode na ordem SemVer.
       - run: npm run test:android-release
 
+  mobile:
+    name: Mobile (Playwright)
+    # A experiência do celular em navegador real: quatro tamanhos de Android com toque e o desktop.
+    # Gestos, folhas, diálogos com teclado simulado, rolagem horizontal e o desktop intacto.
+    # O que o Chromium não emula está em docs/mobile/ROTEIRO_ANDROID.md.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Chromium do Playwright
+        run: npx playwright install --with-deps chromium
+      - run: npm run test:mobile-e2e
+        env:
+          CI: 'true'
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            playwright-report
+            test-results
+          retention-days: 7
+
   rust:
     name: Core Rust
     # Ubuntu porque o core não depende de nada de Windows: ele fala rusqlite e

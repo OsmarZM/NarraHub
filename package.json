@@ -15,6 +15,7 @@
     "android:dev": "tauri android dev",
     "android:build": "tauri android build",
     "test:android-release": "node --test tests/android-release.test.mjs",
+    "test:mobile-e2e": "playwright test",
     "android:apk": "tauri android build --debug --apk --target aarch64 --ci",
     "android:release:apk": "tauri android build --apk --target aarch64 --ci --config src-tauri/tauri.production.conf.json",
     "share-api:dev": "node services/share-api/src/server.mjs",
@@ -70,6 +71,7 @@
     "@angular/build": "^22.1.5",
     "@angular/cli": "^22.1.5",
     "@angular/compiler-cli": "^22.1.0",
+    "@playwright/test": "^1.56.1",
     "@tauri-apps/cli": "^2.11.4",
     "prettier": "^3.8.1",
     "typescript": "~6.0.2"

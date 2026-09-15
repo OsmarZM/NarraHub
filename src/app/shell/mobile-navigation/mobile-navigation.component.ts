@@ -250,7 +250,9 @@ export class MobileNavigationComponent implements OnDestroy {
     });
 
     listen(layer, 'pointerdown', (event) => {
-      if (this.open < 0.99) return;
+      // Aceita o dedo já na segunda metade da abertura: quem começa a fechar ou girar enquanto a
+      // pilha ainda chega não pode ser ignorado. A animação em curso é cancelada e o gesto assume.
+      if (this.open < 0.5) return;
       cancelAnimationFrame(this.animation);
       // O cartão tocado é lido ANTES da captura: depois dela, todo evento do ponteiro chega
       // com a camada como alvo, e o `pointerup` não saberia mais em qual cartão o dedo estava.
@@ -302,7 +304,10 @@ export class MobileNavigationComponent implements OnDestroy {
     const end = (event: PointerEvent) => {
       const gesture = this.gesture;
       if (gesture.kind === 'idle' || event.pointerId !== gesture.pointerId) return;
-      this.record(event);
+      // O `pointerup` só entra na amostra se o dedo ainda andou. Soltar alguns milissegundos depois
+      // do último movimento, no mesmo ponto, zerava a velocidade — e um peteleco virava toque.
+      const ultimo = this.samples[this.samples.length - 1];
+      if (!ultimo || ultimo.x !== event.clientX || ultimo.y !== event.clientY) this.record(event);
       this.gesture = { kind: 'idle' };
       this.host.nativeElement.classList.remove('nh-mnav-pulling');
       const velocity = this.velocity();

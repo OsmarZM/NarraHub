@@ -160,6 +160,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
 | Ciclo de atualização empacotado | **Concluído.** Roteiro, checklist de release e três execuções reais |
+| Shell mobile | **ADR 0011 `Accepted`.** DesktopShell e MobileShell compartilham domínio e navegação, não a composição visual. Gates: `tests/mobile-shell.test.mjs` e Playwright (`test:mobile-e2e`, job Mobile na CI). Falta o roteiro físico (`docs/mobile/ROTEIRO_ANDROID.md`) |
 
 ## Versões e schema
 
