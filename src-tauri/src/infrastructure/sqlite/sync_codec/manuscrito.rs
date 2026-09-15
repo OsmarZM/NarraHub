@@ -90,6 +90,97 @@ pub struct OrdemDosCapitulos {
     pub chapter_ids: Vec<String>,
 }
 
+/// A ordem das histórias de um universo. Identidade do agregado: o id do universo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OrdemDasHistorias {
+    pub universe_id: String,
+    pub story_ids: Vec<String>,
+}
+
+/// A ordem dos livros de uma história. Identidade do agregado: o id da história.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OrdemDosLivros {
+    pub story_id: String,
+    pub book_ids: Vec<String>,
+}
+
+/// Os três agregados de ordem, com o mesmo contrato: lista dos filhos de um pai, materializada em
+/// `sort_order` dos filhos. Existência derivada — existem enquanto o pai existe.
+#[derive(Debug, Clone, Copy)]
+pub struct TipoDeOrdem {
+    pub tipo: &'static str,
+    pub tabela_do_pai: &'static str,
+    pub tipo_do_filho: &'static str,
+    pub tabela_do_filho: &'static str,
+    pub coluna_do_pai: &'static str,
+}
+
+pub const ORDENS: &[TipoDeOrdem] = &[
+    TipoDeOrdem {
+        tipo: "story_order",
+        tabela_do_pai: "universes",
+        tipo_do_filho: "story",
+        tabela_do_filho: "stories",
+        coluna_do_pai: "universe_id",
+    },
+    TipoDeOrdem {
+        tipo: "book_order",
+        tabela_do_pai: "stories",
+        tipo_do_filho: "book",
+        tabela_do_filho: "books",
+        coluna_do_pai: "story_id",
+    },
+    TipoDeOrdem {
+        tipo: "chapter_order",
+        tabela_do_pai: "books",
+        tipo_do_filho: "chapter",
+        tabela_do_filho: "chapters",
+        coluna_do_pai: "book_id",
+    },
+];
+
+pub fn tipo_de_ordem(tipo: &str) -> Option<&'static TipoDeOrdem> {
+    ORDENS.iter().find(|ordem| ordem.tipo == tipo)
+}
+
+/// (id do pai, ids na ordem) do payload de um evento de ordem.
+fn lista_do_evento(
+    ordem: &TipoDeOrdem,
+    envelope: &EventEnvelope,
+) -> DatabaseCommandResult<(String, Vec<String>)> {
+    Ok(match ordem.tipo {
+        "story_order" => {
+            let lista: OrdemDasHistorias = de_json(envelope)?;
+            (lista.universe_id, lista.story_ids)
+        }
+        "book_order" => {
+            let lista: OrdemDosLivros = de_json(envelope)?;
+            (lista.story_id, lista.book_ids)
+        }
+        _ => {
+            let lista: OrdemDosCapitulos = de_json(envelope)?;
+            (lista.book_id, lista.chapter_ids)
+        }
+    })
+}
+
+fn ids_dos_filhos(
+    connection: &Connection,
+    ordem: &TipoDeOrdem,
+    pai: &str,
+) -> DatabaseCommandResult<Vec<String>> {
+    let mut consulta = connection
+        .prepare(&format!(
+            "SELECT id FROM {} WHERE {} = ?1 ORDER BY sort_order, id",
+            ordem.tabela_do_filho, ordem.coluna_do_pai
+        ))
+        .map_err(erro)?;
+    let linhas = consulta.query_map([pai], |row| row.get(0)).map_err(erro)?;
+    linhas.collect::<Result<_, _>>().map_err(erro)
+}
+
 /// Marcação de tag. Identidade: `tagId:ownerType:ownerId` — duas marcações da mesma tag no mesmo
 /// dono são a mesma, em qualquer aparelho (o `id` da linha é local).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,6 +380,71 @@ pub fn ler_livro(
     }))
 }
 
+/// As regras de toda ordem recebida (story_order, book_order, chapter_order):
+///
+/// ```text
+/// pai ausente                          → falta (PrecisaReconciliar)
+/// id repetido                          → erro
+/// filho de outro pai                   → erro (pai imutável)
+/// filho citado que não existe aqui     → falta
+/// filho daqui que a lista não cita     → falta; nunca "vai para o fim"
+/// ```
+///
+/// Passando tudo, a ordem materializada é exatamente a lista.
+fn validar_ordem(
+    connection: &Connection,
+    ordem: &TipoDeOrdem,
+    pai: &str,
+    lista: &[String],
+) -> DatabaseCommandResult<Option<String>> {
+    if !existe(connection, ordem.tabela_do_pai, pai)? {
+        return Ok(Some(format!("{} {pai}", ordem.tabela_do_pai)));
+    }
+    let mut vistos = std::collections::HashSet::new();
+    for filho in lista {
+        if !vistos.insert(filho) {
+            return Err(DatabaseCommandError::storage(format!(
+                "A ordem {} de {pai} cita {} {filho} duas vezes.",
+                ordem.tipo, ordem.tipo_do_filho
+            )));
+        }
+    }
+    for filho in lista {
+        let pai_do_filho: Option<String> = connection
+            .query_row(
+                &format!(
+                    "SELECT {} FROM {} WHERE id = ?1",
+                    ordem.coluna_do_pai, ordem.tabela_do_filho
+                ),
+                [filho],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(erro)?;
+        match pai_do_filho {
+            None => return Ok(Some(format!("{} {filho}", ordem.tipo_do_filho))),
+            Some(outro) if outro != pai => {
+                return Err(DatabaseCommandError::storage(format!(
+                    "A ordem {} de {pai} cita {} {filho}, que é de {outro}.",
+                    ordem.tipo, ordem.tipo_do_filho
+                )))
+            }
+            Some(_) => {}
+        }
+    }
+    let citados: std::collections::HashSet<&String> = lista.iter().collect();
+    if let Some(nao_citado) = ids_dos_filhos(connection, ordem, pai)?
+        .into_iter()
+        .find(|filho| !citados.contains(filho))
+    {
+        return Ok(Some(format!(
+            "{} {nao_citado} existe aqui e não está na ordem recebida",
+            ordem.tipo_do_filho
+        )));
+    }
+    Ok(None)
+}
+
 /// O universo de um livro, ou erro: livro sem história é inconsistência, não "universo vazio".
 fn universo_obrigatorio(connection: &Connection, book_id: &str) -> DatabaseCommandResult<String> {
     universo_do_livro(connection, book_id)?.ok_or_else(|| {
@@ -340,28 +496,42 @@ pub fn ler_capitulo(
     }))
 }
 
-fn ids_dos_capitulos(connection: &Connection, book_id: &str) -> DatabaseCommandResult<Vec<String>> {
-    let mut consulta = connection
-        .prepare("SELECT id FROM chapters WHERE book_id = ?1 ORDER BY sort_order, id")
-        .map_err(erro)?;
-    let linhas = consulta
-        .query_map([book_id], |row| row.get(0))
-        .map_err(erro)?;
-    linhas.collect::<Result<_, _>>().map_err(erro)
-}
-
-/// Existe enquanto o livro existe; lista vazia é uma ordem válida.
+/// Existe enquanto o pai existe; lista vazia é uma ordem válida. Ids na ordem `sort_order, id`.
 pub fn ler_ordem(
     connection: &Connection,
-    book_id: &str,
+    ordem: &TipoDeOrdem,
+    pai: &str,
 ) -> DatabaseCommandResult<Option<EstadoDoAgregado>> {
-    let Some(universe_id) = universo_do_livro(connection, book_id)? else {
+    let universo = match ordem.tipo {
+        "story_order" => existe(connection, "universes", pai)?.then(|| pai.to_string()),
+        "book_order" => connection
+            .query_row(
+                "SELECT universe_id FROM stories WHERE id = ?1",
+                [pai],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(erro)?,
+        _ => universo_do_livro(connection, pai)?,
+    };
+    let Some(universe_id) = universo else {
         return Ok(None);
     };
-    let payload = para_json(&OrdemDosCapitulos {
-        book_id: book_id.to_string(),
-        chapter_ids: ids_dos_capitulos(connection, book_id)?,
-    })?;
+    let ids = ids_dos_filhos(connection, ordem, pai)?;
+    let payload = match ordem.tipo {
+        "story_order" => para_json(&OrdemDasHistorias {
+            universe_id: pai.to_string(),
+            story_ids: ids,
+        })?,
+        "book_order" => para_json(&OrdemDosLivros {
+            story_id: pai.to_string(),
+            book_ids: ids,
+        })?,
+        _ => para_json(&OrdemDosCapitulos {
+            book_id: pai.to_string(),
+            chapter_ids: ids,
+        })?,
+    };
     Ok(Some(EstadoDoAgregado {
         universe_id,
         payload,
@@ -461,6 +631,8 @@ pub fn impactos_da_historia(
              para o Sync V2. Remova a história dos campos desses cards antes"
         )));
     }
+    // A ordem dos livros sai primeiro (existência derivada), como a dos capítulos no livro.
+    impactos.push(Impacto::Excluido(AggregateRef::new("book_order", id)));
     for livro in ids(
         connection,
         "SELECT id FROM books WHERE story_id = ?1 ORDER BY sort_order, id",
@@ -469,6 +641,20 @@ pub fn impactos_da_historia(
         impactos.push(Impacto::Excluido(AggregateRef::new("book", livro)));
     }
     impactos.extend(atribuicoes_do_dono(connection, "story", id)?);
+    let universo: Option<String> = connection
+        .query_row(
+            "SELECT universe_id FROM stories WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(erro)?;
+    if let Some(universo) = universo {
+        impactos.push(Impacto::Reescrito(AggregateRef::new(
+            "story_order",
+            universo,
+        )));
+    }
     Ok(impactos)
 }
 
@@ -476,10 +662,22 @@ pub fn impactos_do_livro(connection: &Connection, id: &str) -> DatabaseCommandRe
     // A ordem sai PRIMEIRO: nos outros aparelhos, quando a exclusão de cada capítulo chegar, a
     // ordem já está excluída causalmente e não conta como sobrevivente que mudaria sem revisão.
     let mut impactos = vec![Impacto::Excluido(AggregateRef::new("chapter_order", id))];
-    for capitulo in ids_dos_capitulos(connection, id)? {
+    for capitulo in ids_dos_filhos(connection, &ORDENS[2], id)? {
         impactos.push(Impacto::Excluido(AggregateRef::new("chapter", capitulo)));
     }
     impactos.extend(atribuicoes_do_dono(connection, "book", id)?);
+    let historia: Option<String> = connection
+        .query_row("SELECT story_id FROM books WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(erro)?;
+    if let Some(historia) = historia {
+        impactos.push(Impacto::Reescrito(AggregateRef::new(
+            "book_order",
+            historia,
+        )));
+    }
     Ok(impactos)
 }
 
@@ -581,53 +779,10 @@ pub fn dependencias(
             pai_imutavel("chapters", "book_id", &capitulo.book_id)?;
             falta("books", "book", &capitulo.book_id)
         }
-        "chapter_order" => {
-            let ordem: OrdemDosCapitulos = de_json(envelope)?;
-            if let Some(falta) = falta("books", "book", &ordem.book_id)? {
-                return Ok(Some(falta));
-            }
-            let mut vistos = std::collections::HashSet::new();
-            for capitulo in &ordem.chapter_ids {
-                if !vistos.insert(capitulo) {
-                    return Err(DatabaseCommandError::storage(format!(
-                        "A ordem do livro {} cita o capítulo {capitulo} duas vezes.",
-                        ordem.book_id
-                    )));
-                }
-            }
-            for capitulo in &ordem.chapter_ids {
-                let livro: Option<String> = connection
-                    .query_row(
-                        "SELECT book_id FROM chapters WHERE id = ?1",
-                        [capitulo],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(erro)?;
-                match livro {
-                    None => return Ok(Some(format!("chapter {capitulo}"))),
-                    Some(livro) if livro != ordem.book_id => {
-                        return Err(DatabaseCommandError::storage(format!(
-                            "A ordem do livro {} cita o capítulo {capitulo}, que é do livro {livro}.",
-                            ordem.book_id
-                        )))
-                    }
-                    Some(_) => {}
-                }
-            }
-            // Capítulo daqui que a ordem não cita: a lista não descreve este livro inteiro. A origem
-            // emite a exclusão de capítulo ANTES da reescrita da ordem, então no caminho causal isto
-            // não acontece; quando acontece, é história que falta (ou legado anterior à gênese).
-            let citados: std::collections::HashSet<&String> = ordem.chapter_ids.iter().collect();
-            if let Some(nao_citado) = ids_dos_capitulos(connection, &ordem.book_id)?
-                .into_iter()
-                .find(|capitulo| !citados.contains(capitulo))
-            {
-                return Ok(Some(format!(
-                    "chapter {nao_citado} existe aqui e não está na ordem recebida"
-                )));
-            }
-            Ok(None)
+        "story_order" | "book_order" | "chapter_order" => {
+            let ordem = tipo_de_ordem(&envelope.aggregate_type).expect("tipo de ordem");
+            let (pai, lista) = lista_do_evento(ordem, envelope)?;
+            validar_ordem(connection, ordem, &pai, &lista)
         }
         "tag_assignment" => {
             let atribuicao: AtribuicaoDeTag = de_json(envelope)?;
@@ -721,8 +876,8 @@ pub fn aplicar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseComman
             "story" => "DELETE FROM stories WHERE id = ?1",
             "book" => "DELETE FROM books WHERE id = ?1",
             "chapter" => "DELETE FROM chapters WHERE id = ?1",
-            // A ordem não tem linha própria: ela some com o livro.
-            "chapter_order" => return Ok(()),
+            // A ordem não tem linha própria: ela some com o pai.
+            "story_order" | "book_order" | "chapter_order" => return Ok(()),
             "tag_assignment" => {
                 let (tag, tipo, dono) = partes_da_atribuicao(id)?;
                 tx.execute(
@@ -864,22 +1019,27 @@ pub fn aplicar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseComman
             let universo = universo_obrigatorio(tx, &capitulo.book_id)?;
             gravar_campos(tx, &universo, "chapter", id, &capitulo.custom_fields)
         }
-        "chapter_order" => {
-            let ordem: OrdemDosCapitulos = de_json(envelope)?;
-            conferir_id(envelope, &ordem.book_id)?;
-            // `dependencias` já garantiu: todos existem, todos são deste livro, sem repetição, e
-            // nenhum capítulo daqui ficou de fora. A ordem materializada é exatamente a lista.
+        "story_order" | "book_order" | "chapter_order" => {
+            let ordem = tipo_de_ordem(&envelope.aggregate_type).expect("tipo de ordem");
+            let (pai, lista) = lista_do_evento(ordem, envelope)?;
+            conferir_id(envelope, &pai)?;
+            // `dependencias` já garantiu: todos existem, todos são deste pai, sem repetição, e
+            // nenhum filho daqui ficou de fora. A ordem materializada é exatamente a lista.
             let mut atualizar = tx
-                .prepare("UPDATE chapters SET sort_order = ?1 WHERE id = ?2 AND book_id = ?3")
+                .prepare(&format!(
+                    "UPDATE {} SET sort_order = ?1 WHERE id = ?2 AND {} = ?3",
+                    ordem.tabela_do_filho, ordem.coluna_do_pai
+                ))
                 .map_err(erro)?;
-            for (posicao, capitulo) in ordem.chapter_ids.iter().enumerate() {
+            for (posicao, filho) in lista.iter().enumerate() {
                 if atualizar
-                    .execute(rusqlite::params![posicao as i64, capitulo, id])
+                    .execute(rusqlite::params![posicao as i64, filho, &pai])
                     .map_err(erro)?
                     != 1
                 {
                     return Err(DatabaseCommandError::storage(format!(
-                        "O capítulo {capitulo} sumiu do livro {id} no meio da aplicação da ordem."
+                        "{} {filho} sumiu de {pai} no meio da aplicação da ordem.",
+                        ordem.tipo_do_filho
                     )));
                 }
             }
@@ -985,6 +1145,22 @@ mod tests {
                 })
                 .expect("json"),
                 r#"{"bookId":"b1","chapterIds":["c3","c1","c2"]}"#,
+            ),
+            (
+                para_json(&OrdemDasHistorias {
+                    universe_id: "u1".into(),
+                    story_ids: vec!["s2".into(), "s1".into()],
+                })
+                .expect("json"),
+                r#"{"universeId":"u1","storyIds":["s2","s1"]}"#,
+            ),
+            (
+                para_json(&OrdemDosLivros {
+                    story_id: "s1".into(),
+                    book_ids: vec!["b2".into(), "b1".into()],
+                })
+                .expect("json"),
+                r#"{"storyId":"s1","bookIds":["b2","b1"]}"#,
             ),
             (
                 para_json(&AtribuicaoDeTag {

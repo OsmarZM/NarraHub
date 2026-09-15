@@ -321,7 +321,9 @@ fn arvore(autor: &Aparelho, outro: &Aparelho) -> Arvore {
 
 fn convergencia_da_arvore(a: &Aparelho, b: &Aparelho, arvore: &Arvore) {
     a.convergiu_com(b, "universe", &arvore.universo);
+    a.convergiu_com(b, "story_order", &arvore.universo);
     a.convergiu_com(b, "story", &arvore.historia);
+    a.convergiu_com(b, "book_order", &arvore.historia);
     a.convergiu_com(b, "book", &arvore.livro);
     a.convergiu_com(b, "chapter_order", &arvore.livro);
     for capitulo in &arvore.capitulos {
@@ -480,6 +482,18 @@ fn excluir_livro_e_historia_converge_com_tombstone_de_toda_a_arvore() {
         pc.convergiu_com(&android, "chapter", capitulo);
     }
     pc.convergiu_com(&android, "book", &segundo);
+    // book delete → book_order(história) reescrita, igual nos dois.
+    pc.convergiu_com(&android, "book_order", &arvore.historia);
+    assert_eq!(
+        android.canonico("book_order", &arvore.historia).as_deref(),
+        Some(
+            format!(
+                r#"{{"storyId":"{}","bookIds":["{segundo}"]}}"#,
+                arvore.historia
+            )
+            .as_str()
+        )
+    );
 
     manuscript_service::delete_story(&pc.banco.database, &pc.eu, &arvore.historia)
         .expect("história");
@@ -490,9 +504,16 @@ fn excluir_livro_e_historia_converge_com_tombstone_de_toda_a_arvore() {
         ("book", &segundo),
         ("chapter_order", &segundo),
         ("chapter", &solto),
+        ("book_order", &arvore.historia),
+        ("story_order", &arvore.universo),
     ] {
         pc.convergiu_com(&android, tipo, id);
     }
+    // story delete → story_order(universo) reescrita sem a história.
+    assert_eq!(
+        android.canonico("story_order", &arvore.universo).as_deref(),
+        Some(format!(r#"{{"universeId":"{}","storyIds":[]}}"#, arvore.universo).as_str())
+    );
     assert_eq!(android.contar("SELECT COUNT(*) FROM chapters"), 0);
     pc.convergiu_com(&android, "universe", &arvore.universo);
 }
@@ -841,4 +862,130 @@ fn ordem_que_cita_capitulo_de_outra_origem_espera_o_capitulo_chegar() {
     b.invariante_de_materializacao();
     a.convergiu_com(&b, "chapter_order", &arvore.livro);
     a.convergiu_com(&b, "chapter", &c3);
+}
+
+/// **A/B/C para `story_order` (B2.1) — o cenário que travava.**
+///
+/// ```text
+/// C cria s3                       ordem de C = [s1, s3]
+/// A recebe de C e cria s4         ordem de A = [s1, s3, s4], base = ordem de C
+/// B recebe o que é de A ANTES do que é de C
+///   → s4 entra; a ordem de A espera (base desconhecida), não é dada como aplicada
+/// B recebe o que é de C
+///   → s3 entra; a ordem de C não cita s4 e o sucessor dela está no log → superada
+///   → a ordem de A vira sequencial e materializa exatamente
+/// ```
+#[test]
+fn story_order_entre_tres_origens_converge_sem_travar() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let c = Aparelho::novo("c");
+    let arvore = arvore(&a, &b);
+    sincronizar(&a, &c);
+
+    let s3 = c.historia(&arvore.universo, "Três").id;
+    sincronizar(&a, &c);
+    let s4 = a.historia(&arvore.universo, "Quatro").id;
+
+    apresentar(&a, &b);
+    apresentar(&c, &b);
+    let vetor_b = vetor_local(&b.banco.connection()).expect("vetor");
+    let todos = eventos_para(&a.banco.connection(), &vetor_b).expect("eventos");
+    let (de_a, de_c): (Vec<_>, Vec<_>) = todos
+        .into_iter()
+        .partition(|evento| evento.device_id == a.eu.device_id());
+    let ordem_de_a = de_a
+        .iter()
+        .find(|evento| evento.aggregate_type == "story_order")
+        .expect("ordem de A")
+        .clone();
+
+    let relatorio = receber_eventos(&mut b.banco.connection(), &de_a).expect("B recebe de A");
+    assert!(relatorio.pendentes >= 1, "{relatorio:?}");
+    let aplicada = |evento: &crate::domain::sync::EventEnvelope| -> bool {
+        b.banco
+            .connection()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_applied_events WHERE event_id = ?1)",
+                [&evento.event_id],
+                |row| row.get(0),
+            )
+            .expect("aplicado")
+    };
+    assert!(!aplicada(&ordem_de_a), "a ordem de A avançou sem a de C");
+    assert!(b.canonico("story", &s3).is_none());
+
+    let relatorio = receber_eventos(&mut b.banco.connection(), &de_c).expect("B recebe de C");
+    assert!(relatorio.precisam_reconciliar.is_empty(), "{relatorio:?}");
+    assert_eq!(relatorio.superados, 1, "{relatorio:?}");
+    assert!(aplicada(&ordem_de_a));
+    assert_eq!(
+        b.canonico("story_order", &arvore.universo).as_deref(),
+        Some(ordem_de_a.payload.as_str())
+    );
+    b.invariante_de_materializacao();
+    for (tipo, id) in [
+        ("story_order", arvore.universo.as_str()),
+        ("story", s3.as_str()),
+        ("story", s4.as_str()),
+        ("book_order", s3.as_str()),
+        ("book_order", s4.as_str()),
+    ] {
+        a.convergiu_com(&b, tipo, id);
+    }
+}
+
+/// O mesmo travamento existia em `chapter_order` desde a B2. Com o lote inteiro, depende de qual
+/// origem a sessão drena primeiro; entregando o que é de A antes do que é de C, ele é certo.
+#[test]
+fn chapter_order_entre_tres_origens_converge_sem_travar() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let c = Aparelho::novo("c");
+    let arvore = arvore(&a, &b);
+    sincronizar(&a, &c);
+
+    let c3 = c.capitulo(&arvore.livro, "Três").id;
+    sincronizar(&a, &c);
+    let c4 = a.capitulo(&arvore.livro, "Quatro").id;
+
+    apresentar(&a, &b);
+    apresentar(&c, &b);
+    let vetor_b = vetor_local(&b.banco.connection()).expect("vetor");
+    let todos = eventos_para(&a.banco.connection(), &vetor_b).expect("eventos");
+    let (de_a, de_c): (Vec<_>, Vec<_>) = todos
+        .into_iter()
+        .partition(|evento| evento.device_id == a.eu.device_id());
+    receber_eventos(&mut b.banco.connection(), &de_a).expect("B recebe de A");
+    let em_b = receber_eventos(&mut b.banco.connection(), &de_c).expect("B recebe de C");
+    assert!(em_b.precisam_reconciliar.is_empty(), "{em_b:?}");
+    assert_eq!(em_b.pendentes, 0, "{em_b:?}");
+    assert_eq!(em_b.superados, 1, "{em_b:?}");
+    b.invariante_de_materializacao();
+    a.convergiu_com(&b, "chapter_order", &arvore.livro);
+    a.convergiu_com(&b, "chapter", &c3);
+    a.convergiu_com(&b, "chapter", &c4);
+}
+
+/// Superar não é merge: uma ordem concorrente (mesma base que a daqui) vira decisão.
+#[test]
+fn ordem_concorrente_vira_decisao_e_nao_e_superada() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let c = Aparelho::novo("c");
+    let arvore = arvore(&a, &b);
+    sincronizar(&a, &c);
+
+    // B cria s-local e nunca manda; C cria s3 e manda para B diretamente.
+    let local = b.historia(&arvore.universo, "Só de B").id;
+    let _ = local;
+    c.historia(&arvore.universo, "Três");
+    let (em_b, _) = sincronizar(&c, &b);
+    // A ordem de C parte da mesma base que a de B: é concorrente, não sequencial. Vira decisão,
+    // não é superada nem inventa ordem.
+    assert_eq!(em_b.superados, 0, "{em_b:?}");
+    assert_eq!(
+        b.divergencias_abertas("story_order"),
+        vec![(arvore.universo.clone(), "concurrent".to_string())]
+    );
 }

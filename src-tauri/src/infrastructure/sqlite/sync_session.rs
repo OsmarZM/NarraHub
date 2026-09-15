@@ -45,6 +45,9 @@ pub struct Relatorio {
     /// Eventos aplicados nesta sessão, inclusive pendentes antigos que
     /// puderam entrar porque a lacuna fechou.
     pub aplicados: usize,
+    /// Revisões de ordem que entraram na história sem materializar, porque o sucessor causal delas
+    /// já estava no log (`Applied::Superado`).
+    pub superados: usize,
     /// Eventos guardados e ainda não aplicáveis.
     pub pendentes: usize,
     /// Divergências abertas — o escritor vai precisar decidir.
@@ -190,6 +193,7 @@ fn drenar_origem(
         match apply_remote_event(tx, &envelope)? {
             Applied::Aplicado => relatorio.aplicados += 1,
             Applied::JaAplicado => {}
+            Applied::Superado => relatorio.superados += 1,
             Applied::Divergente { .. } => relatorio.divergencias += 1,
             // A exclusão bloqueada é decisão pendente como qualquer divergência: conta junto.
             Applied::ExclusaoDoPaiBloqueada { .. } => relatorio.divergencias += 1,
