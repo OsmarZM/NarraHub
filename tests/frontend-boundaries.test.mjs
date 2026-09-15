@@ -277,7 +277,8 @@ test('o pool só é aberto depois do portão de compatibilidade de schema (ADR 0
   // Se esta ordem se inverter, o app volta a morrer em silêncio.
   const bootstrap = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
   const portao = bootstrap.indexOf('this.backupService.compatibility()');
-  const abertura = bootstrap.indexOf('this.db.init()');
+  // O pool abre em openDatabaseSafely (backup antes da migration, tests/migration-safety.test.mjs).
+  const abertura = bootstrap.indexOf('this.openDatabaseSafely()');
   assert.notEqual(portao, -1, 'o bootstrap precisa consultar a compatibilidade do schema');
   assert.notEqual(abertura, -1, 'o bootstrap continua responsável por abrir o pool');
   assert.ok(portao < abertura, 'a verificação de compatibilidade tem que vir ANTES de abrir o pool');

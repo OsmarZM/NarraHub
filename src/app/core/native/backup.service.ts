@@ -57,6 +57,22 @@ export interface RestoreCommitResult {
   requiresRestart: boolean;
 }
 
+/** O que o arranque decidiu sobre a migration de schema. Espelha `MigrationPreparation` do Rust. */
+export interface MigrationPreparation {
+  needed: boolean;
+  fromVersion: number;
+  toVersion: number;
+  backup: BackupManifest | null;
+  recoveredInterrupted: boolean;
+}
+
+/** Espelha `MigrationRollback` do Rust. */
+export interface MigrationRollback {
+  restored: boolean;
+  backupId: string | null;
+  schemaVersion: number;
+}
+
 @Injectable({ providedIn: 'root' })
 export class BackupService {
   /**
@@ -67,6 +83,27 @@ export class BackupService {
   async compatibility(): Promise<DatabaseCompatibility> {
     this.ensureDesktop();
     return this.invokeDatabase<DatabaseCompatibility>('database_compatibility');
+  }
+
+  /**
+   * Antes de abrir o pool: devolve uma migration interrompida e faz o backup da que vai rodar.
+   * Se o backup falhar, rejeita — e o arranque não abre o banco. Ver `database/upgrade.rs`.
+   */
+  async prepareMigration(): Promise<MigrationPreparation> {
+    this.ensureDesktop();
+    return this.invokeDatabase<MigrationPreparation>('database_migration_prepare');
+  }
+
+  /** Depois de o plugin migrar: confere versão e integridade e encerra o registro da migration. */
+  async finishMigration(): Promise<number> {
+    this.ensureDesktop();
+    return this.invokeDatabase<number>('database_migration_finish');
+  }
+
+  /** A migration falhou: devolve o banco que existia antes, a partir do backup. */
+  async rollbackMigration(): Promise<MigrationRollback> {
+    this.ensureDesktop();
+    return this.invokeDatabase<MigrationRollback>('database_migration_rollback');
   }
 
   async health(): Promise<DatabaseHealthReport> {
