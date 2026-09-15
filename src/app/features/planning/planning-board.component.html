@@ -16,7 +16,8 @@
             class="metric-pill"
             [class.active]="filterStatus() === status"
             [attr.data-status]="status"
-            (click)="toggleStatusFilter(status)"
+            (click)="onMetricPill(status, $index)"
+            [class.mobile-current]="viewport.isMobile() && mobileColumn() === $index"
             [title]="'Filtrar por ' + statusLabel(status)"
           >
             <i class="metric-dot"></i>
@@ -58,7 +59,7 @@
   }
 
   <!-- Kanban Board: 100% Height, Horizontal Scroll if columns overflow -->
-  <div class="kanban-board" cdkDropListGroup (wheel)="onBoardWheel($event)">
+  <div #board class="kanban-board" cdkDropListGroup (wheel)="onBoardWheel($event)" (scroll)="onBoardScroll($event)">
     @for (status of statuses; track status; let columnIndex = $index) {
       <section class="kanban-column" [attr.data-status]="status">
         <!-- Sticky Column Header -->
@@ -93,6 +94,7 @@
               [attr.data-planning-id]="item.id"
               cdkDrag
               [cdkDragData]="item"
+              [cdkDragDisabled]="viewport.isMobile()"
               (cdkDragStarted)="dragStarted()"
               (cdkDragEnded)="dragEnded()"
               (click)="openCard(item)"

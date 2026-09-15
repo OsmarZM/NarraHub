@@ -1475,3 +1475,40 @@ input:focus, select:focus, textarea:focus {
   font-size: 8px;
   line-height: 1.4;
 }
+
+/* ── celular ─────────────────────────────────────────────────────────────────────
+ * Kanban não se espreme: uma coluna por vez, deslizando com encaixe, e as pílulas de etapa como
+ * abas. Mudar um card de etapa é pelo próprio card (campo Etapa) — arrastar entre colunas
+ * disputaria a rolagem e fica desligado no celular. Critério de celular: shell/state/breakpoints.ts. */
+:host-context(html.nh-mobile) .planning-page { padding: 12px 0 0; }
+:host-context(html.nh-mobile) .crm-toolbar { gap: 10px; margin: 0 var(--nh-mobile-gutter, 16px) 10px; }
+:host-context(html.nh-mobile) .toolbar-heading h1,
+:host-context(html.nh-mobile) .toolbar-heading h2 { font-size: 18px; }
+:host-context(html.nh-mobile) .status-metrics-bar { gap: 6px; scrollbar-width: none; }
+:host-context(html.nh-mobile) .status-metrics-bar::-webkit-scrollbar { display: none; }
+:host-context(html.nh-mobile) .metric-pill { flex: 0 0 auto; height: 40px; padding: 0 14px; border-radius: 20px; font-size: 14px; }
+:host-context(html.nh-mobile) .metric-pill.mobile-current {
+  border-color: var(--nh-mobile-gold, #d8b772);
+  color: var(--nh-mobile-ink, #ede7d9);
+  background: color-mix(in srgb, var(--nh-mobile-gold, #d8b772) 14%, transparent);
+}
+:host-context(html.nh-mobile) .search-box { min-height: var(--nh-touch-target, 44px); }
+:host-context(html.nh-mobile) .search-box input { font-size: 16px; }
+:host-context(html.nh-mobile) .crm-create-btn { min-height: var(--nh-touch-target, 44px); font-size: 15px; }
+
+:host-context(html.nh-mobile) .kanban-board {
+  grid-template-columns: repeat(5, calc(100% - 2 * var(--nh-mobile-gutter, 16px)));
+  gap: 10px;
+  padding: 2px var(--nh-mobile-gutter, 16px) 12px;
+  scroll-padding-inline: var(--nh-mobile-gutter, 16px);
+  scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+:host-context(html.nh-mobile) .kanban-board::-webkit-scrollbar { display: none; }
+:host-context(html.nh-mobile) .kanban-column { scroll-snap-align: start; box-shadow: none; }
+:host-context(html.nh-mobile) .column-header h2 { font-size: 16px; }
+:host-context(html.nh-mobile) .column-quick-add { min-width: var(--nh-touch-target, 44px); min-height: var(--nh-touch-target, 44px); }
+:host-context(html.nh-mobile) .kanban-cards { overscroll-behavior-y: contain; }
+:host-context(html.nh-mobile) .kanban-card { font-size: 14px; }
+:host-context(html.nh-mobile) .kanban-add { min-height: 48px; font-size: 15px; }

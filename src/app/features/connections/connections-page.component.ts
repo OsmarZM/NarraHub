@@ -1,10 +1,13 @@
-import { CommonModule } from '@angular/common';
-import { Component, Input, OnChanges, SimpleChanges, inject, signal } from '@angular/core';
+import { CommonModule, NgTemplateOutlet } from '@angular/common';
+import { Component, ElementRef, Input, OnChanges, OnDestroy, SimpleChanges, computed, effect, inject, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { AppState } from '../../core/state/app.state';
 import { EntityStore } from '../entities/state/entity.store';
 import { ShellState } from '../../shell/state/shell.state';
+import { ShellAction, ShellActionsState } from '../../shell/state/shell-actions.state';
+import { ViewportState } from '../../shell/state/viewport.state';
+import { MobileSheetComponent } from '../../shell/mobile-sheet/mobile-sheet.component';
 import { CanvasNode, CanvasNodeKind, Entity } from '../../core/models';
 import { fileToDataUrl } from '../../shared/utils/file-to-data-url';
 import { CanvasConnectRequest, CanvasPositionChange, ConnectionsGraphComponent } from './connections-graph.component';
@@ -13,11 +16,11 @@ import { ConnectionsStore } from './state/connections.store';
 @Component({
   selector: 'app-connections-page',
   standalone: true,
-  imports: [CommonModule, FormsModule, ConnectionsGraphComponent],
+  imports: [CommonModule, FormsModule, ConnectionsGraphComponent, MobileSheetComponent, NgTemplateOutlet],
   templateUrl: './connections-page.component.html',
   styleUrl: './connections-page.component.css',
 })
-export class ConnectionsPageComponent implements OnChanges {
+export class ConnectionsPageComponent implements OnChanges, OnDestroy {
   @Input({ required: true }) universeId = '';
 
   /**
@@ -32,6 +35,31 @@ export class ConnectionsPageComponent implements OnChanges {
   private readonly shell = inject(ShellState);
   private readonly entityStore = inject(EntityStore);
   private readonly router = inject(Router);
+  readonly viewport = inject(ViewportState);
+  private readonly shellActions = inject(ShellActionsState);
+  private readonly imageInput = viewChild<ElementRef<HTMLInputElement>>('imageInput');
+
+  /** Celular: a lista de ligações abre numa folha; o canvas fica com a tela. */
+  readonly mobileRelationsOpen = signal(false);
+  /** As ações da barra do desktop, como dados, para o "•••" do shell mobile. Mesmos handlers. */
+  private readonly mobileActions = computed<ShellAction[]>(() => {
+    const actions: ShellAction[] = [
+      { id: 'conexao', icon: '＋', label: 'Nova conexão', disabled: this.entityStore.entities().length < 2, run: () => this.openCreateRelation() },
+      { id: 'titulo', icon: 'T', label: 'Adicionar título', run: () => this.addTitle() },
+      { id: 'imagem', icon: '▧', label: 'Adicionar imagem', run: () => this.imageInput()?.nativeElement.click() },
+      { id: 'nota', icon: '✎', label: 'Adicionar nota', run: () => this.addNote() },
+    ];
+    if (this.store.entityPositions().length) actions.push({ id: 'layout', icon: '↺', label: 'Reorganizar o grafo', run: () => this.resetLayout() });
+    if (this.store.relations().length || this.store.canvasEdges().length) {
+      actions.push({ id: 'ligacoes', icon: '⌘', label: 'Ver ligações cadastradas', run: () => this.mobileRelationsOpen.set(true) });
+    }
+    return actions;
+  });
+
+  private readonly publishMobileActions = effect(() => {
+    if (!this.viewport.isMobile()) { this.shellActions.clear(this); return; }
+    this.shellActions.publish(this, 'Conexões', this.mobileActions(), '', 'page');
+  });
 
   readonly showNewRelation = signal(false);
   readonly pendingDelete = signal<{ id: string; label: string } | null>(null);
@@ -45,6 +73,10 @@ export class ConnectionsPageComponent implements OnChanges {
   newRelationLabel = '';
   connectionLabel = '';
   nodeText = '';
+
+  ngOnDestroy(): void {
+    this.shellActions.clear(this);
+  }
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['universeId']) void this.store.load(this.universeId);

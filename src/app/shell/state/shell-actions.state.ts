@@ -17,6 +17,14 @@ export interface ShellAction {
   run: () => void;
 }
 
+/**
+ * Duas camadas, na ordem em que aparecem na folha:
+ *
+ *   page   ações da tela aberta (Conexões: nova conexão, nota, imagem…)
+ *   area   ações da área que hospeda a tela (o universo: renomear, tags, compartilhar)
+ */
+export type ShellActionLayer = 'page' | 'area';
+
 interface Publicacao {
   owner: object;
   title: string;
@@ -26,19 +34,22 @@ interface Publicacao {
 
 @Injectable({ providedIn: 'root' })
 export class ShellActionsState {
-  private readonly publicacao = signal<Publicacao | null>(null);
+  private readonly camadas = signal<Record<ShellActionLayer, Publicacao | null>>({ page: null, area: null });
 
-  readonly actions = computed(() => this.publicacao()?.actions ?? []);
-  readonly title = computed(() => this.publicacao()?.title ?? '');
-  readonly status = computed(() => this.publicacao()?.status ?? '');
+  readonly actions = computed(() => [...(this.camadas().page?.actions ?? []), ...(this.camadas().area?.actions ?? [])]);
+  readonly title = computed(() => this.camadas().area?.title || this.camadas().page?.title || '');
+  readonly status = computed(() => this.camadas().area?.status || this.camadas().page?.status || '');
 
-  /** Quem publica é dono das ações; publicar de novo substitui. */
-  publish(owner: object, title: string, actions: ShellAction[], status = ''): void {
-    this.publicacao.set({ owner, title, status, actions });
+  /** Quem publica é dono das ações da sua camada; publicar de novo substitui. */
+  publish(owner: object, title: string, actions: ShellAction[], status = '', layer: ShellActionLayer = 'area'): void {
+    this.camadas.update((atual) => ({ ...atual, [layer]: { owner, title, status, actions } }));
   }
 
   /** Só o dono limpa — uma tela que sai não apaga as ações da que acabou de entrar. */
   clear(owner: object): void {
-    if (this.publicacao()?.owner === owner) this.publicacao.set(null);
+    this.camadas.update((atual) => ({
+      page: atual.page?.owner === owner ? null : atual.page,
+      area: atual.area?.owner === owner ? null : atual.area,
+    }));
   }
 }

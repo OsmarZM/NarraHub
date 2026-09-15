@@ -227,3 +227,37 @@ test('todo diálogo segue o contrato data-nh-dialog e vira folha no celular', ()
   assert.match(mobile, /html\.nh-mobile \[data-nh-dialog\] > \[data-nh-dialog-panel\] \{[^}]*max-height:\s*92%/u);
   assert.match(mobile, /html\.nh-mobile \[data-nh-dialog\] \{[^}]*backdrop-filter:\s*none/u);
 });
+
+test('telas especiais: kanban uma coluna por vez, timeline em pé, grafo com a tela', () => {
+  const kanbanCss = ler('../src/app/features/planning/planning-board.component.css');
+  const board = kanbanCss.slice(kanbanCss.indexOf(':host-context(html.nh-mobile) .kanban-board {'));
+  assert.match(board.slice(0, board.indexOf('}')), /scroll-snap-type:\s*x mandatory/u);
+  assert.match(kanbanCss, /:host-context\(html\.nh-mobile\) \.kanban-column \{[^}]*scroll-snap-align:\s*start/u);
+  const kanbanHtml = ler('../src/app/features/planning/planning-board.component.html');
+  assert.match(kanbanHtml, /\[cdkDragDisabled\]="viewport\.isMobile\(\)"/u, 'arrastar card disputa a rolagem do quadro no celular');
+  assert.match(kanbanHtml, /\(click\)="onMetricPill\(status, \$index\)"/u);
+  const kanbanTs = ler('../src/app/features/planning/planning-board.component.ts');
+  assert.match(kanbanTs, /if \(!this\.viewport\.isMobile\(\)\) \{\s*this\.toggleStatusFilter\(status\);/u, 'no desktop a pílula continua sendo filtro');
+
+  const timelineCss = ler('../src/app/features/timeline/timeline-page.component.css');
+  assert.match(timelineCss, /:host-context\(html\.nh-mobile\) \.timeline-board \{[^}]*flex-direction:\s*column/u);
+  assert.match(timelineCss, /:host-context\(html\.nh-mobile\) \.timeline-stage \{[^}]*overflow-x:\s*hidden/u);
+  assert.match(timelineCss, /:host-context\(html\.nh-mobile\) \.timeline-actions \{ opacity: 1; \}/u);
+
+  const grafoHtml = ler('../src/app/features/connections/connections-page.component.html');
+  assert.match(grafoHtml, /@if \(!viewport\.isMobile\(\)\) \{\s*<div class="toolbar-right">/u);
+  const grafoTs = ler('../src/app/features/connections/connections-page.component.ts');
+  const acoes = grafoTs.slice(grafoTs.indexOf('private readonly mobileActions'), grafoTs.indexOf('return actions;', grafoTs.indexOf('private readonly mobileActions')));
+  for (const handler of ['openCreateRelation', 'addTitle', 'addNote', 'resetLayout']) {
+    assert.ok(acoes.includes(`this.${handler}(`), `a ação ${handler} da barra do grafo não chegou ao celular`);
+  }
+  assert.match(grafoTs, /this\.shellActions\.publish\(this, 'Conexões', this\.mobileActions\(\), '', 'page'\)/u);
+});
+
+test('ações escondidas por hover ficam visíveis no celular', () => {
+  const entidades = ler('../src/app/features/entities/entities-page/entities-page.component.css');
+  assert.match(entidades, /html\.nh-mobile app-entities-page :is\(\.entity-card-rename, \.entity-card-delete\) \{[^}]*opacity: 1/u);
+  assert.match(entidades, /html\.nh-mobile app-entities-page :is\(\.entity-list-rename, \.entity-list-delete\) \{[^}]*opacity: 1/u);
+  const biblioteca = ler('../src/app/features/universe-picker/universe-picker.component.css');
+  assert.match(biblioteca, /:host-context\(html\.nh-mobile\) \.portal-menu-button \{[^}]*opacity: 1/u);
+});

@@ -7,13 +7,12 @@
         <span class="total-badge">{{ entities.length }} entidades · {{ store.relations().length }} conexões · {{ store.canvasNodes().length }} elementos</span>
       </div>
     </div>
+    <!-- No celular estas ações vão para o "•••" do shell (mobileActions); o canvas fica com a tela. -->
+    @if (!viewport.isMobile()) {
     <div class="toolbar-right">
       <div class="canvas-add-group" role="group" aria-label="Adicionar ao canvas">
         <button type="button" class="secondary-button" (click)="addTitle()">＋ Título</button>
-        <label class="secondary-button canvas-image-button">
-          ＋ Imagem
-          <input type="file" accept="image/*" hidden (change)="onImageSelected($event)" />
-        </label>
+        <button type="button" class="secondary-button canvas-image-button" (click)="imageInput.click()">＋ Imagem</button>
         <button type="button" class="secondary-button" (click)="addNote()">＋ Nota</button>
       </div>
       @if (store.entityPositions().length) {
@@ -23,6 +22,8 @@
         <span>＋</span> Nova conexão
       </button>
     </div>
+    }
+    <input #imageInput type="file" accept="image/*" hidden (change)="onImageSelected($event)" />
   </header>
 
   @if (entities.length > 0 || store.canvasNodes().length > 0) {
@@ -41,7 +42,16 @@
         (canvasEdgeDeleted)="deleteCanvasEdge($event)"
       />
     </div>
-    @if (store.relations().length || store.canvasEdges().length) {
+    @if ((store.relations().length || store.canvasEdges().length) && !viewport.isMobile()) {
+      <ng-container [ngTemplateOutlet]="relationList" />
+    }
+  } @else {
+    <section class="empty-feature"><span>⌘</span><h2>Conecte seu universo</h2><p>Cadastre entidades e ligue-as, ou monte o diagrama do seu jeito com títulos, imagens e notas.</p><button type="button" class="primary-button" (click)="addTitle()">Começar com um título</button></section>
+  }
+</div>
+
+<!-- As ligações cadastradas. Desktop: gaveta sob o canvas. Celular: folha aberta pelo "•••". -->
+<ng-template #relationList>
       <section class="relation-manager-drawer" aria-label="Ligações cadastradas">
         <header><strong>Ligações ({{ store.relations().length + store.canvasEdges().length }})</strong></header>
         <div class="relation-pills-list">
@@ -63,11 +73,13 @@
           }
         </div>
       </section>
-    }
-  } @else {
-    <section class="empty-feature"><span>⌘</span><h2>Conecte seu universo</h2><p>Cadastre entidades e ligue-as, ou monte o diagrama do seu jeito com títulos, imagens e notas.</p><button type="button" class="primary-button" (click)="addTitle()">Começar com um título</button></section>
-  }
-</div>
+</ng-template>
+
+@if (viewport.isMobile() && mobileRelationsOpen()) {
+  <app-mobile-sheet eyebrow="Conexões" title="Ligações cadastradas" size="tall" (closed)="mobileRelationsOpen.set(false)">
+    <ng-container [ngTemplateOutlet]="relationList" />
+  </app-mobile-sheet>
+}
 
 @if (showNewRelation()) {
   <div class="modal-backdrop" data-nh-dialog (mousedown)="closeCreateRelation()">
