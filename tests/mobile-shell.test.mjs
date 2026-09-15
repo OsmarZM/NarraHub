@@ -96,3 +96,54 @@ test('todo destino da navegação tem cartão no navegador gestual', () => {
   for (const id of ids) assert.ok(apresentacao.includes(`${id}: { label:`), `destino ${id} sem cartão`);
   assert.match(root, /this\.navigation\.navigationItems\.map\(/u, 'os cartões saem da mesma lista da sidebar');
 });
+
+test('gesto a 60 fps: por quadro só transform, opacity, z-index e visibilidade', () => {
+  // Cada propriedade que dispara layout (top, left, width, height, margin, padding) ou uma
+  // variável CSS na raiz, escrita a cada pointermove, custa o quadro inteiro num Android modesto.
+  const ts = ler('../src/app/shell/mobile-navigation/mobile-navigation.component.ts');
+  const render = ts.slice(ts.indexOf('  private render(): void {'), ts.indexOf('\n  }\n', ts.indexOf('  private render(): void {')));
+  assert.ok(render.length > 200, 'render() não encontrado');
+  const escritas = [...render.matchAll(/\.style\.([a-zA-Z]+)\s*=/gu)].map((m) => m[1]);
+  assert.ok(escritas.includes('transform') && escritas.includes('opacity'));
+  const permitidas = new Set(['transform', 'opacity', 'zIndex', 'visibility', 'willChange']);
+  for (const propriedade of escritas) assert.ok(permitidas.has(propriedade), `render() escreve style.${propriedade} por quadro`);
+  assert.doesNotMatch(render, /setProperty\(|getBoundingClientRect|innerWidth|offsetWidth|offsetHeight|clientWidth/u, 'render() lê layout ou escreve variável CSS');
+
+  // O pointermove não escreve DOM nem lê layout: só atualiza números e pede um quadro.
+  const move = ts.slice(ts.indexOf('const move = (event: PointerEvent) => {'), ts.indexOf("listenWindow('pointermove', move);"));
+  assert.ok(move.length > 100, 'handler de pointermove não encontrado');
+  assert.doesNotMatch(move, /\.style\.|classList|getBoundingClientRect|innerWidth|setProperty/u);
+  assert.match(move, /this\.requestRender\(\)/u);
+  // E roda fora da zona do Angular.
+  assert.match(ts, /this\.zone\.runOutsideAngular\(\(\) => this\.bindPointer\(\)\)/u);
+});
+
+test('alça perceptível, alvo de polegar, e a faixa sem "voltar" do Android no mesmo lugar', () => {
+  const css = ler('../src/app/shell/mobile-navigation/mobile-navigation.component.css');
+  const regra = css.slice(css.indexOf('.nh-mnav-handle {'), css.indexOf('}', css.indexOf('.nh-mnav-handle {')));
+  const px = (prop) => Number(regra.match(new RegExp(`\\n\\s*${prop}:\\s*(\\d+)px`, 'u'))?.[1]);
+  assert.ok(px('width') >= 44 && px('height') >= 44, 'alvo de toque menor que 44px');
+  const topo = Number(regra.match(/top:\s*(\d+)%/u)?.[1]);
+  assert.ok(topo >= 55 && topo <= 65, `alça fora da faixa do polegar: ${topo}%`);
+
+  const html = ler('../src/app/shell/mobile-navigation/mobile-navigation.component.html');
+  assert.match(html, /class="nh-mnav-grip"[^>]*><i><\/i><i><\/i><i><\/i><\/span>/u, 'a alça tem três barras');
+  // O feedback do toque não anima largura nem altura.
+  const grip = css.slice(css.indexOf('.nh-mnav-grip {'), css.indexOf('}', css.indexOf('.nh-mnav-grip {')));
+  assert.doesNotMatch(grip, /transition:[^;]*(width|height)/u);
+
+  const activity = ler('../src-tauri/gen/android/app/src/main/java/com/narrahub/app/MainActivity.kt');
+  const centro = Number(activity.match(/ALCA_CENTRO = (0\.\d+)f/u)?.[1]);
+  assert.equal(Math.round(centro * 100), topo, 'o MainActivity desliga o "voltar" em outra altura que não a da alça');
+  const faixa = Number(activity.match(/val faixa = \((\d+) \* dp\)/u)?.[1]);
+  assert.ok(faixa >= px('width') && faixa <= 56, `faixa sem "voltar" (${faixa}dp) deve cobrir só a alça (${px('width')}px)`);
+});
+
+test('toque na alça abre, peteleco curto abre, e a dica aparece uma vez por versão', () => {
+  const ts = ler('../src/app/shell/mobile-navigation/mobile-navigation.component.ts');
+  assert.match(ts, /const tocou = Math\.abs\(event\.clientX - gesture\.startX\) < TAP_SLOP;/u);
+  assert.match(ts, /this\.animateOpen\(tocou \|\| settleOpen\(this\.open, -velocity\.x\) \? 1 : 0/u);
+  assert.match(ts, /MOBILE_NAV_HINT_KEY = 'narrahub\.mobileNavigationHintSeen'/u);
+  assert.match(ts, /MOBILE_NAV_HINT_VERSION = '\d+'/u);
+  assert.match(ler('../src-tauri/gen/android/app/src/main/AndroidManifest.xml'), /android\.permission\.VIBRATE/u);
+});
