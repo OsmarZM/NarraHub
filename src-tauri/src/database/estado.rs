@@ -100,7 +100,8 @@ mod tests {
     /// perceberia sem o Tauri rodando.
     #[test]
     fn os_pontos_de_acesso_ao_banco_exigem_banco_pronto() {
-        let interface = include_str!("../interface/tauri/mod.rs");
+        // Checkout no Windows pode trazer CRLF, e o recorte procura o fim da função por `\n}\n`.
+        let interface = include_str!("../interface/tauri/mod.rs").replace("\r\n", "\n");
         let inicio = interface
             .find("pub fn database(")
             .expect("database() sumiu");
@@ -114,7 +115,7 @@ mod tests {
             "interface::tauri::database não checa o estado do banco"
         );
 
-        let v1 = include_str!("../sync.rs");
+        let v1 = include_str!("../sync.rs").replace("\r\n", "\n");
         let inicio = v1
             .find("fn database_path(")
             .expect("database_path do V1 sumiu");
