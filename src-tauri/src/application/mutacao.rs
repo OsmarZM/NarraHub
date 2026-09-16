@@ -949,9 +949,9 @@ pub(crate) mod tests {
     fn agregado_nao_coberto_nao_pode_ser_declarado() {
         let aparelho = Aparelho::novo();
         let erro = Mutacao::executar(&aparelho.banco.database, &aparelho.eu, |m| {
-            m.gravou("planning_item", "p1")
+            m.gravou("canvas_node", "n1")
         })
-        .expect_err("card do planejamento ainda não é coberto");
+        .expect_err("nó do canvas ainda não é coberto");
         assert!(erro.message.contains("NH-079"), "{}", erro.message);
     }
 
@@ -1313,6 +1313,7 @@ mod gate_estrutural {
             ("entity_service", include_str!("entity_service.rs")),
             ("workspace_service", include_str!("workspace_service.rs")),
             ("canvas_service", include_str!("canvas_service.rs")),
+            ("planning_service", include_str!("planning_service.rs")),
         ] {
             let codigo = sem_testes(fonte);
             let mut resto = codigo;
@@ -1353,8 +1354,8 @@ mod gate_estrutural {
                 conferidas += 1;
             }
         }
-        // 10 do manuscrito, 2 do universo (B2); 5 de entidade, 5 de workspace e 4 de canvas
-        // (anexos da B1 e posição de entidade da B3). Se cair, o gate perdeu funções de vista.
-        assert_eq!(conferidas, 26, "o gate conferiu {conferidas} escritas");
+        // 10 do manuscrito, 2 do universo (B2); 5 de entidade, 5 de workspace e 4 de canvas (B1/B3);
+        // 8 do planejamento (B4). Se cair, o gate perdeu funções de vista.
+        assert_eq!(conferidas, 34, "o gate conferiu {conferidas} escritas");
     }
 }

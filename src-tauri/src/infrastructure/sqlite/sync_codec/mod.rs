@@ -36,6 +36,7 @@ pub mod catalogo;
 pub mod entidades;
 pub mod manuscrito;
 pub mod palavras;
+pub mod planejamento;
 
 /// O estado de um agregado como o evento o carrega.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +69,9 @@ pub const TIPOS_COBERTOS: &[&str] = &[
     "relation",
     "timeline_event",
     "canvas_entity_position",
+    "planning_item",
+    "planning_order",
+    "planning_field_definition",
     "attachment",
     "tag_assignment",
 ];
@@ -92,7 +96,7 @@ pub(crate) fn erro(error: rusqlite::Error) -> DatabaseCommandError {
 /// `chapter_order(livro)` existe enquanto o livro existe. Na exclusão remota, ele só conta como
 /// "descendente vivo" se ainda tiver revisão corrente — a linha que o sustenta é o livro.
 pub fn existencia_derivada(tipo: &str) -> bool {
-    manuscrito::tipo_de_ordem(tipo).is_some()
+    manuscrito::tipo_de_ordem(tipo).is_some() || tipo == "planning_order"
 }
 
 /// O estado canônico atual, lido na conexão/transação recebida.
@@ -116,6 +120,9 @@ pub fn ler_canonico(
         "relation" => entidades::ler_relacao(connection, id),
         "timeline_event" => entidades::ler_evento(connection, id),
         "canvas_entity_position" => entidades::ler_posicao(connection, id),
+        "planning_item" => planejamento::ler_card(connection, id),
+        "planning_order" => planejamento::ler_quadro(connection, id),
+        "planning_field_definition" => planejamento::ler_campo(connection, id),
         "attachment" => anexo::ler(connection, id),
         outro => Err(nao_coberto(outro)),
     }
@@ -137,13 +144,16 @@ pub fn impactos_da_exclusao(
         "chapter" => manuscrito::impactos_do_capitulo(connection, id),
         "entity" => entidades::impactos_da_entidade(connection, id),
         "timeline_event" => entidades::impactos_do_evento(connection, id),
+        "planning_item" => planejamento::impactos_do_card(connection, id),
+        "planning_field_definition" => planejamento::impactos_do_campo(connection, id),
         "story_order"
         | "book_order"
         | "chapter_order"
         | "attachment"
         | "tag_assignment"
         | "relation"
-        | "canvas_entity_position" => Ok(Vec::new()),
+        | "canvas_entity_position"
+        | "planning_order" => Ok(Vec::new()),
         outro => Err(nao_coberto(outro)),
     }
 }
@@ -168,6 +178,9 @@ pub fn dependencias(
         "entity" | "relation" | "timeline_event" | "canvas_entity_position" => {
             entidades::dependencias(connection, envelope)
         }
+        "planning_item" | "planning_order" | "planning_field_definition" => {
+            planejamento::dependencias(connection, envelope)
+        }
         _ => Ok(None),
     }
 }
@@ -182,6 +195,9 @@ pub fn aplicar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseComman
         | "chapter_order" | "tag_assignment" => manuscrito::aplicar(tx, envelope),
         "entity" | "relation" | "timeline_event" | "canvas_entity_position" => {
             entidades::aplicar(tx, envelope)
+        }
+        "planning_item" | "planning_order" | "planning_field_definition" => {
+            planejamento::aplicar(tx, envelope)
         }
         "attachment" => anexo::aplicar(tx, envelope),
         outro => Err(DatabaseCommandError::storage(format!(
@@ -206,6 +222,9 @@ pub fn validar_para_emissao(
     let falta = match agregado.aggregate_type.as_str() {
         "entity" | "relation" | "timeline_event" | "canvas_entity_position" => {
             entidades::validar(connection, &agregado.aggregate_type, payload)?
+        }
+        "planning_item" | "planning_order" | "planning_field_definition" => {
+            planejamento::validar(connection, &agregado.aggregate_type, payload)?
         }
         _ => None,
     };

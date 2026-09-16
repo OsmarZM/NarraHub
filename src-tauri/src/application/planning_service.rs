@@ -1,5 +1,7 @@
 use crate::application::blob_fields;
+use crate::application::mutacao::Mutacao;
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
+use crate::domain::identity::DeviceIdentity;
 use crate::domain::ids::{new_id, now_timestamp};
 use crate::domain::planning::{
     is_known_field_scope, is_known_status, PlanningCardPlacement, PlanningFieldDefinition,
@@ -42,15 +44,40 @@ pub fn list(
     Ok(cards)
 }
 
+/// O que a tela manda para criar um card.
+pub struct NovoCard<'a> {
+    pub universe_id: &'a str,
+    pub title: &'a str,
+    pub description: &'a str,
+    pub chapter_id: Option<&'a str>,
+    pub image: &'a str,
+}
+
+/// O que a tela manda para criar uma propriedade.
+pub struct NovaPropriedade<'a> {
+    pub universe_id: &'a str,
+    pub name: &'a str,
+    pub field_type: &'a str,
+    pub options: &'a [String],
+    pub scope: &'a str,
+    pub card_id: Option<&'a str>,
+}
+
+/// Cria o card. O quadro do universo ganha uma coluna a mais ocupada, então ele é revisado junto —
+/// na mesma mutação, e como agregado próprio.
 pub fn create(
     database: &SqliteDatabase,
     store: &BlobStore,
-    universe_id: &str,
-    title: &str,
-    description: &str,
-    chapter_id: Option<&str>,
-    image: &str,
+    identidade: &DeviceIdentity,
+    novo: NovoCard<'_>,
 ) -> DatabaseCommandResult<String> {
+    let NovoCard {
+        universe_id,
+        title,
+        description,
+        chapter_id,
+        image,
+    } = novo;
     let title = title.trim();
     if title.is_empty() {
         return Err(DatabaseCommandError::validation(
@@ -58,26 +85,23 @@ pub fn create(
         ));
     }
     let id = new_id();
-    let mut conexao = database.write()?;
-    let connection = conexao
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    planning_repository::insert_card(
-        &connection,
-        &planning_repository::NewPlanningCard {
-            id: &id,
-            universe_id,
-            title,
-            description: description.trim(),
-            chapter_id,
-            image,
-            timestamp: &now_timestamp(),
-        },
-    )?;
-    blob_fields::gravar_asset_direto(&connection, store, "planning_items", &id, image)?;
-    connection
-        .commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Mutacao::executar(database, identidade, |m| {
+        planning_repository::insert_card(
+            m.tx(),
+            &planning_repository::NewPlanningCard {
+                id: &id,
+                universe_id,
+                title,
+                description: description.trim(),
+                chapter_id,
+                image,
+                timestamp: &now_timestamp(),
+            },
+        )?;
+        blob_fields::gravar_asset_direto(m.tx(), store, "planning_items", &id, image)?;
+        m.gravou("planning_item", &id)?;
+        m.gravou("planning_order", universe_id)
+    })?;
     Ok(id)
 }
 
@@ -86,22 +110,28 @@ pub fn create(
 /// Numa transação porque as duas escritas formam uma operação só: um card
 /// excluído deixando para trás um campo órfão apareceria no catálogo do
 /// universo sem dono e sem ficha onde ser editado.
-pub fn delete(database: &SqliteDatabase, id: &str, universe_id: &str) -> DatabaseCommandResult<()> {
-    let mut connection = database.write()?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    planning_repository::delete_field_definitions_owned_by(&transaction, id)?;
-    if !planning_repository::delete_card(&transaction, id, universe_id)? {
-        // Sai sem commit: o Drop do rusqlite reverte.
-        return Err(DatabaseCommandError::not_found(
-            "O card não existe mais neste universo.",
-        ));
-    }
-    transaction
-        .commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+pub fn delete(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    id: &str,
+    universe_id: &str,
+) -> DatabaseCommandResult<()> {
+    Mutacao::executar(database, identidade, |m| {
+        m.excluir("planning_item", id).map_err(|erro| {
+            if erro.kind == crate::database::error::DatabaseErrorKind::NotFound {
+                DatabaseCommandError::not_found("O card não existe mais neste universo.")
+            } else {
+                erro
+            }
+        })?;
+        planning_repository::delete_field_definitions_owned_by(m.tx(), id)?;
+        if !planning_repository::delete_card(m.tx(), id, universe_id)? {
+            return Err(DatabaseCommandError::not_found(
+                "O card não existe mais neste universo.",
+            ));
+        }
+        Ok(())
+    })
 }
 
 /// Reposiciona os cards em bloco.
@@ -109,8 +139,10 @@ pub fn delete(database: &SqliteDatabase, id: &str, universe_id: &str) -> Databas
 /// Se o número de linhas atingidas não bater com o número de cards enviados, o
 /// quadro mudou entre o arrasto e a gravação — a transação é revertida e o
 /// erro pede recarregar, em vez de gravar meia reordenação.
+/// Mover cards altera **só o quadro**: nenhum card ganha revisão por ter mudado de coluna.
 pub fn save_order(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     universe_id: &str,
     placements: &[PlanningCardPlacement],
 ) -> DatabaseCommandResult<()> {
@@ -127,22 +159,16 @@ pub fn save_order(
         )));
     }
 
-    let mut connection = database.write()?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    let affected =
-        planning_repository::save_order(&transaction, universe_id, placements, &now_timestamp())?;
-    if affected != placements.len() {
-        // Sai sem commit: o Drop do rusqlite reverte.
-        return Err(DatabaseCommandError::conflict(
-            "O quadro mudou enquanto o card era movido. Atualize e tente novamente.",
-        ));
-    }
-    transaction
-        .commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        let affected =
+            planning_repository::save_order(m.tx(), universe_id, placements, &now_timestamp())?;
+        if affected != placements.len() {
+            return Err(DatabaseCommandError::conflict(
+                "O quadro mudou enquanto o card era movido. Atualize e tente novamente.",
+            ));
+        }
+        m.gravou("planning_order", universe_id)
+    })
 }
 
 pub fn list_field_links(
@@ -198,13 +224,17 @@ fn resolve_field_owner<'a>(
 /// uma subquery no `INSERT`, então aqui nós não o conhecemos.
 pub fn create_field_definition(
     database: &SqliteDatabase,
-    universe_id: &str,
-    name: &str,
-    field_type: &str,
-    options: &[String],
-    scope: &str,
-    card_id: Option<&str>,
+    identidade: &DeviceIdentity,
+    nova: NovaPropriedade<'_>,
 ) -> DatabaseCommandResult<PlanningFieldDefinition> {
+    let NovaPropriedade {
+        universe_id,
+        name,
+        field_type,
+        options,
+        scope,
+        card_id,
+    } = nova;
     let name = name.trim();
     if name.is_empty() {
         return Err(DatabaseCommandError::validation(
@@ -220,28 +250,31 @@ pub fn create_field_definition(
         .map_err(|error| DatabaseCommandError::validation(error.to_string()))?;
 
     let timestamp = now_timestamp();
-    let connection = database.write()?;
-    let owner_item_id = resolve_field_owner(&connection, universe_id, scope, card_id)?;
-    let definition = PlanningFieldDefinition {
-        id: new_id(),
-        universe_id: universe_id.to_string(),
-        name: name.to_string(),
-        field_type: field_type.to_string(),
-        options_json,
-        sort_order: 0,
-        scope: scope.to_string(),
-        owner_item_id: owner_item_id.map(str::to_string),
-        created_at: timestamp.clone(),
-        updated_at: timestamp,
-    };
-
-    planning_repository::insert_field_definition(&connection, &definition)?;
-    planning_repository::get_field_definition(&connection, &definition.id, universe_id)?
-        .ok_or_else(|| DatabaseCommandError::storage("O campo criado não pôde ser lido de volta."))
+    Mutacao::executar(database, identidade, |m| {
+        let owner_item_id = resolve_field_owner(m.tx(), universe_id, scope, card_id)?;
+        let definition = PlanningFieldDefinition {
+            id: new_id(),
+            universe_id: universe_id.to_string(),
+            name: name.to_string(),
+            field_type: field_type.to_string(),
+            options_json: options_json.clone(),
+            sort_order: 0,
+            scope: scope.to_string(),
+            owner_item_id: owner_item_id.map(str::to_string),
+            created_at: timestamp.clone(),
+            updated_at: timestamp.clone(),
+        };
+        planning_repository::insert_field_definition(m.tx(), &definition)?;
+        m.gravou("planning_field_definition", &definition.id)?;
+        planning_repository::get_field_definition(m.tx(), &definition.id, universe_id)?.ok_or_else(
+            || DatabaseCommandError::storage("O campo criado não pôde ser lido de volta."),
+        )
+    })
 }
 
 pub fn rename_field_definition(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     id: &str,
     universe_id: &str,
     name: &str,
@@ -252,19 +285,20 @@ pub fn rename_field_definition(
             "O campo precisa de um nome.",
         ));
     }
-    let connection = database.write()?;
-    if !planning_repository::rename_field_definition(
-        &connection,
-        id,
-        universe_id,
-        name,
-        &now_timestamp(),
-    )? {
-        return Err(DatabaseCommandError::not_found(
-            "O campo não existe mais neste universo.",
-        ));
-    }
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        if !planning_repository::rename_field_definition(
+            m.tx(),
+            id,
+            universe_id,
+            name,
+            &now_timestamp(),
+        )? {
+            return Err(DatabaseCommandError::not_found(
+                "O campo não existe mais neste universo.",
+            ));
+        }
+        m.gravou("planning_field_definition", id)
+    })
 }
 
 /// Promove um campo de card para universal, ou o restringe de volta.
@@ -273,40 +307,56 @@ pub fn rename_field_definition(
 /// já que um campo de todos os cards não tem dono.
 pub fn set_field_definition_scope(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     id: &str,
     universe_id: &str,
     scope: &str,
     card_id: Option<&str>,
 ) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    let owner_item_id = resolve_field_owner(&connection, universe_id, scope, card_id)?;
-    if !planning_repository::set_field_definition_scope(
-        &connection,
-        id,
-        universe_id,
-        scope,
-        owner_item_id,
-        &now_timestamp(),
-    )? {
-        return Err(DatabaseCommandError::not_found(
-            "O campo não existe mais neste universo.",
-        ));
-    }
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        let owner_item_id = resolve_field_owner(m.tx(), universe_id, scope, card_id)?;
+        if !planning_repository::set_field_definition_scope(
+            m.tx(),
+            id,
+            universe_id,
+            scope,
+            owner_item_id,
+            &now_timestamp(),
+        )? {
+            return Err(DatabaseCommandError::not_found(
+                "O campo não existe mais neste universo.",
+            ));
+        }
+        m.gravou("planning_field_definition", id)
+    })
 }
 
+/// Exclui a propriedade — e **declara a reescrita de cada card que o gatilho toca**.
+///
+/// `trg_planning_field_definition_delete` tira a chave do campo do JSON de todos os cards do
+/// universo, e a FK apaga as relações daquele campo. Sem declarar, uma exclusão reescreveria
+/// quarenta cards com um evento só.
 pub fn delete_field_definition(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     id: &str,
     universe_id: &str,
 ) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    if !planning_repository::delete_field_definition(&connection, id, universe_id)? {
-        return Err(DatabaseCommandError::not_found(
-            "O campo não existe mais neste universo.",
-        ));
-    }
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        m.excluir("planning_field_definition", id).map_err(|erro| {
+            if erro.kind == crate::database::error::DatabaseErrorKind::NotFound {
+                DatabaseCommandError::not_found("O campo não existe mais neste universo.")
+            } else {
+                erro
+            }
+        })?;
+        if !planning_repository::delete_field_definition(m.tx(), id, universe_id)? {
+            return Err(DatabaseCommandError::not_found(
+                "O campo não existe mais neste universo.",
+            ));
+        }
+        Ok(())
+    })
 }
 
 const VALID_STATUSES: &[&str] = &["IDEIAS", "PLANEJADO", "ESCREVENDO", "REVISAO", "FINALIZADO"];
@@ -335,28 +385,33 @@ pub struct PlanningCardSaveRequest {
 pub fn save_card(
     database: &SqliteDatabase,
     store: &BlobStore,
+    identidade: &DeviceIdentity,
     request: PlanningCardSaveRequest,
 ) -> DatabaseCommandResult<()> {
-    let mut connection = database.write()?;
-    save_card_with(&mut connection, store, request)
+    let universe_id = request.universe_id.clone();
+    let id = request.id.clone();
+    Mutacao::executar(database, identidade, |m| {
+        save_card_na_transacao(m.tx(), store, request)?;
+        m.gravou("planning_item", &id)?;
+        // A gravação da ficha também recoloca o card quando a etapa muda: o quadro é revisado
+        // junto, e não sai evento nenhum se a ordem não mudou de fato.
+        m.gravou("planning_order", &universe_id)
+    })
 }
 
 /// A gravação em si, sobre uma conexão já obtida.
 ///
 /// Separada de `save_card` para poder ser exercitada contra um banco em memória: os testes
 /// desta operação existem desde antes da migração e continuam sendo a rede que a protege.
-pub(crate) fn save_card_with(
-    connection: &mut Connection,
+pub(crate) fn save_card_na_transacao(
+    transaction: &Connection,
     store: &BlobStore,
     request: PlanningCardSaveRequest,
 ) -> DatabaseCommandResult<()> {
     validate_request(&request)?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
 
     if !planning_repository::card_exists_in_universe(
-        &transaction,
+        transaction,
         &request.id,
         &request.universe_id,
     )? {
@@ -366,7 +421,7 @@ pub(crate) fn save_card_with(
     }
     if let Some(chapter_id) = request.chapter_id.as_deref() {
         if !planning_repository::chapter_belongs_to_universe(
-            &transaction,
+            transaction,
             chapter_id,
             &request.universe_id,
         )? {
@@ -377,7 +432,7 @@ pub(crate) fn save_card_with(
     }
 
     let definitions = planning_repository::field_definitions_for_card(
-        &transaction,
+        transaction,
         &request.universe_id,
         &request.id,
     )?;
@@ -412,10 +467,10 @@ pub(crate) fn save_card_with(
 
     // As relações são reescritas por inteiro: comparar o que mudou custaria mais que
     // regravar, e deixaria espaço para divergência entre o JSON e as linhas.
-    planning_repository::delete_field_links(&transaction, &request.id)?;
+    planning_repository::delete_field_links(transaction, &request.id)?;
     for (field_id, field_type, target_id) in links {
         planning_repository::insert_field_link(
-            &transaction,
+            transaction,
             &request.id,
             &field_id,
             &field_type,
@@ -426,7 +481,7 @@ pub(crate) fn save_card_with(
     let scalar_json = serde_json::to_string(&Value::Object(scalar_values))
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     let atualizado = planning_repository::update_card_sheet(
-        &transaction,
+        transaction,
         &planning_repository::CardSheetUpdate {
             id: &request.id,
             universe_id: &request.universe_id,
@@ -447,15 +502,12 @@ pub(crate) fn save_card_with(
         ));
     }
     blob_fields::gravar_asset_direto(
-        &transaction,
+        transaction,
         store,
         "planning_items",
         &request.id,
         &request.image,
-    )?;
-    transaction
-        .commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))
+    )
 }
 
 fn validate_request(request: &PlanningCardSaveRequest) -> DatabaseCommandResult<()> {
@@ -654,6 +706,19 @@ mod card_save_tests {
         connection
     }
 
+    /// A gravação da ficha numa transação própria — é o que a `Mutacao` faz em produção.
+    fn salvar(
+        connection: &mut Connection,
+        request: PlanningCardSaveRequest,
+    ) -> DatabaseCommandResult<()> {
+        let transaction = connection.transaction().expect("abrir transação de teste");
+        let resultado = save_card_na_transacao(&transaction, &loja_de_teste().1, request);
+        if resultado.is_ok() {
+            transaction.commit().expect("commit");
+        }
+        resultado
+    }
+
     #[test]
     fn card_save_is_atomic_and_relations_are_normalized() {
         let mut connection = seeded_connection();
@@ -673,7 +738,7 @@ mod card_save_tests {
                 "tags": ["t1"]
             }),
         };
-        save_card_with(&mut connection, &loja_de_teste().1, request).expect("save card");
+        salvar(&mut connection, request).expect("save card");
 
         let (title, values): (String, String) = connection
             .query_row(
@@ -724,7 +789,7 @@ mod card_save_tests {
             chapter_id: None,
             field_values: serde_json::json!({"stories":["s2"]}),
         };
-        assert!(save_card_with(&mut connection, &loja_de_teste().1, request).is_err());
+        assert!(salvar(&mut connection, request).is_err());
         let title: String = connection
             .query_row(
                 "SELECT title FROM planning_items WHERE id = 'p1'",

@@ -15,7 +15,6 @@ use crate::infrastructure::sqlite::sync_codec;
 use crate::infrastructure::sqlite::sync_exchange::{eventos_para, vetor_local};
 use crate::infrastructure::sqlite::sync_session::{receber_eventos, Relatorio};
 use crate::infrastructure::sqlite::test_support::TemporaryDatabase;
-use rusqlite::OptionalExtension;
 
 struct Aparelho {
     nome: &'static str,
@@ -142,6 +141,81 @@ impl Aparelho {
             y,
         )
         .expect("posição");
+    }
+
+    fn card(&self, universo: &str, titulo: &str, capitulo: Option<&str>) -> String {
+        crate::application::planning_service::create(
+            &self.banco.database,
+            &self.store,
+            &self.eu,
+            crate::application::planning_service::NovoCard {
+                universe_id: universo,
+                title: titulo,
+                description: "",
+                chapter_id: capitulo,
+                image: "",
+            },
+        )
+        .expect("card")
+    }
+
+    fn campo(&self, universo: &str, nome: &str, tipo: &str, dono: Option<&str>) -> String {
+        let escopo = if dono.is_some() { "card" } else { "universal" };
+        crate::application::planning_service::create_field_definition(
+            &self.banco.database,
+            &self.eu,
+            crate::application::planning_service::NovaPropriedade {
+                universe_id: universo,
+                name: nome,
+                field_type: tipo,
+                options: &[],
+                scope: escopo,
+                card_id: dono,
+            },
+        )
+        .expect("campo")
+        .id
+    }
+
+    /// Grava a ficha do card com os valores informados (escalares e relações, como a tela manda).
+    fn salvar_card(
+        &self,
+        universo: &str,
+        card: &str,
+        titulo: &str,
+        capitulo: Option<&str>,
+        valores: serde_json::Value,
+    ) {
+        crate::application::planning_service::save_card(
+            &self.banco.database,
+            &self.store,
+            &self.eu,
+            crate::application::planning_service::PlanningCardSaveRequest {
+                id: card.to_string(),
+                universe_id: universo.to_string(),
+                title: titulo.to_string(),
+                description: String::new(),
+                image: String::new(),
+                status: "IDEIAS".into(),
+                chapter_id: capitulo.map(|c| c.to_string()),
+                field_values: valores,
+            },
+        )
+        .expect("salvar ficha");
+    }
+
+    fn mover_card(&self, universo: &str, card: &str, coluna: &str, posicao: i64) {
+        crate::application::planning_service::save_order(
+            &self.banco.database,
+            &self.eu,
+            universo,
+            &[crate::domain::planning::PlanningCardPlacement {
+                id: card.to_string(),
+                status: coluna.to_string(),
+                sort_order: posicao,
+            }],
+        )
+        .expect("mover");
     }
 
     fn canonico(&self, tipo: &str, id: &str) -> Option<String> {
@@ -292,16 +366,14 @@ fn sincronizar(a: &Aparelho, b: &Aparelho) -> (Relatorio, Relatorio) {
     (em_b, em_a)
 }
 
-/// Os tipos cobertos pela B2 (e o anexo da B1).
-const TIPOS_DA_B2: &[&str] = &[
-    "universe",
-    "story",
-    "book",
-    "chapter",
-    "chapter_order",
-    "tag_assignment",
-    "attachment",
-];
+/// **A lista de tipos vem do codec, não de uma lista à mão aqui.**
+///
+/// A primeira versão desta asserção tinha os tipos da B2 escritos à mão, e por isso não cobria nada
+/// da B3 nem da B4 — um agregado novo entrava sem ninguém conferir a materialização dele. Derivar de
+/// `TIPOS_COBERTOS` faz cada etapa nova cair automaticamente dentro do gate.
+fn tipos_conferidos() -> &'static [&'static str] {
+    sync_codec::TIPOS_COBERTOS
+}
 
 impl Aparelho {
     /// **Asserção geral:** para TODO agregado coberto com revisão corrente, o estado canônico no
@@ -323,7 +395,7 @@ impl Aparelho {
             .collect::<Result<_, _>>()
             .expect("agregados");
         for (tipo, id) in agregados {
-            if !TIPOS_DA_B2.contains(&tipo.as_str()) {
+            if !tipos_conferidos().contains(&tipo.as_str()) {
                 continue;
             }
             let agregado = AggregateRef::new(&tipo, &id);
@@ -635,64 +707,31 @@ fn exclusao_do_pai_com_filho_concorrente_nao_perde_o_filho() {
     );
 }
 
-/// Capítulo ligado a card do planejamento: o `SET NULL` reescreveria um agregado da B4.
-/// Local: a exclusão é recusada inteira. Remoto: a exclusão vira decisão, e o card continua ligado.
+/// Capítulo ligado a card do planejamento: o `SET NULL` **reescreve** o card (B4), nos dois lados.
 #[test]
-fn exclusao_que_reescreveria_card_do_planejamento_e_recusada_nos_dois_lados() {
+fn excluir_capitulo_ligado_a_card_reescreve_o_card_nos_dois() {
     let pc = Aparelho::novo("pc");
     let android = Aparelho::novo("android");
     let arvore = arvore(&pc, &android);
     let alvo = arvore.capitulos[0].clone();
-    let ligar = |aparelho: &Aparelho| {
-        aparelho
-            .banco
-            .connection()
-            .execute(
-                "INSERT INTO planning_items (id, universe_id, chapter_id, title, created_at, updated_at)
-                 VALUES ('card-1', ?1, ?2, 'Cena', '2026-01-01', '2026-01-01')",
-                [&arvore.universo, &alvo],
-            )
-            .expect("card");
-    };
+    let card = pc.card(&arvore.universo, "Cena do porto", Some(&alvo));
+    sincronizar(&pc, &android);
+    pc.convergiu_com(&android, "planning_item", &card);
 
-    // Local.
-    ligar(&pc);
-    let eventos = pc.contar("SELECT COUNT(*) FROM sync_events");
-    let erro = manuscript_service::delete_chapter(&pc.banco.database, &pc.eu, &alvo)
-        .expect_err("card ligado");
-    assert!(erro.message.contains("planejamento"), "{}", erro.message);
-    assert!(pc.canonico("chapter", &alvo).is_some());
-    assert_eq!(pc.contar("SELECT COUNT(*) FROM sync_events"), eventos);
-
-    // Remoto: o card só existe no Android; o PC exclui.
-    pc.banco
-        .connection()
-        .execute("DELETE FROM planning_items WHERE id = 'card-1'", [])
-        .expect("desligar no pc");
-    ligar(&android);
-    manuscript_service::delete_chapter(&pc.banco.database, &pc.eu, &alvo).expect("excluir no pc");
-    let (no_android, _) = sincronizar(&pc, &android);
-    assert_eq!(no_android.divergencias, 1);
-    assert_eq!(
-        android.divergencias_abertas("chapter"),
-        vec![(alvo.clone(), "parent_deletion_blocked".to_string())]
-    );
-    let ligado: Option<String> = android
-        .banco
-        .connection()
-        .query_row(
-            "SELECT chapter_id FROM planning_items WHERE id = 'card-1'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
+    manuscript_service::delete_chapter(&pc.banco.database, &pc.eu, &alvo).expect("excluir");
+    assert!(pc
+        .canonico("planning_item", &card)
         .expect("card")
-        .flatten();
-    assert_eq!(
-        ligado.as_deref(),
-        Some(alvo.as_str()),
-        "o SET NULL aconteceu em silêncio"
-    );
+        .contains(r#""chapterId":null"#));
+
+    let (no_android, _) = sincronizar(&pc, &android);
+    assert_eq!(no_android.divergencias, 0, "{no_android:?}");
+    pc.convergiu_com(&android, "chapter", &alvo);
+    pc.convergiu_com(&android, "planning_item", &card);
+    assert!(android
+        .canonico("planning_item", &card)
+        .expect("card")
+        .contains(r#""chapterId":null"#));
 }
 
 /// Reescrita também passa pelo preflight: com a ordem do livro em divergência, excluir capítulo
@@ -1919,4 +1958,424 @@ fn evento_destacado_nao_pode_ser_reancorado() {
         .expect("aplicado");
     assert!(!aplicado);
     android.invariante_de_materializacao();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// B4: card, quadro e propriedades do planejamento
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Universo com capítulo, entidade, história, um campo universal e dois cards — no `autor`, já
+/// sincronizado.
+struct Quadro {
+    universo: String,
+    historia: String,
+    capitulo: String,
+    entidade: String,
+    campo_texto: String,
+    campo_entidade: String,
+    campo_historia: String,
+    card_a: String,
+    card_b: String,
+}
+
+fn quadro(autor: &Aparelho, outro: &Aparelho) -> Quadro {
+    let universo = autor.universo("Terra");
+    let historia = autor.historia(&universo, "Saga").id;
+    let livro = autor.livro(&historia, "Livro I").id;
+    let capitulo = autor.capitulo(&livro, "Um").id;
+    let entidade = autor.entidade(&universo, "Frodo");
+    let campo_texto = autor.campo(&universo, "Tom", "text", None);
+    let campo_entidade = autor.campo(&universo, "Personagens", "character", None);
+    let campo_historia = autor.campo(&universo, "Histórias", "story", None);
+    let card_a = autor.card(&universo, "Cena do porto", Some(&capitulo));
+    let card_b = autor.card(&universo, "Cena da ponte", None);
+    autor.salvar_card(
+        &universo,
+        &card_a,
+        "Cena do porto",
+        Some(&capitulo),
+        serde_json::json!({
+            campo_texto.clone(): "tenso",
+            campo_entidade.clone(): [entidade.clone()],
+            campo_historia.clone(): [historia.clone()],
+        }),
+    );
+    autor.salvar_card(
+        &universo,
+        &card_b,
+        "Cena da ponte",
+        None,
+        serde_json::json!({ campo_texto.clone(): "calmo" }),
+    );
+    let (recebido, _) = sincronizar(autor, outro);
+    assert_eq!(recebido.divergencias, 0);
+    assert!(
+        recebido.precisam_reconciliar.is_empty(),
+        "{:?}",
+        recebido.precisam_reconciliar
+    );
+    Quadro {
+        universo,
+        historia,
+        capitulo,
+        entidade,
+        campo_texto,
+        campo_entidade,
+        campo_historia,
+        card_a,
+        card_b,
+    }
+}
+
+fn convergencia_do_quadro(a: &Aparelho, b: &Aparelho, quadro: &Quadro) {
+    for (tipo, id) in [
+        ("planning_order", quadro.universo.as_str()),
+        ("planning_item", quadro.card_a.as_str()),
+        ("planning_item", quadro.card_b.as_str()),
+        ("planning_field_definition", quadro.campo_texto.as_str()),
+        ("planning_field_definition", quadro.campo_entidade.as_str()),
+        ("planning_field_definition", quadro.campo_historia.as_str()),
+    ] {
+        a.convergiu_com(b, tipo, id);
+    }
+}
+
+#[test]
+fn card_quadro_e_propriedades_criados_no_pc_chegam_ao_android() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let quadro = quadro(&pc, &android);
+    convergencia_do_quadro(&pc, &android, &quadro);
+
+    // Escalares no JSON, relações nas linhas — do jeito que este banco representa as duas coisas.
+    let card = android
+        .canonico("planning_item", &quadro.card_a)
+        .expect("card");
+    assert!(card.contains("\"value\":\"tenso\""), "{card}");
+    assert!(
+        card.contains(&quadro.entidade) && card.contains(&quadro.historia),
+        "{card}"
+    );
+    assert_eq!(
+        android.contar("SELECT COUNT(*) FROM planning_field_links"),
+        2,
+        "as duas relações do card A"
+    );
+}
+
+/// Mover card mexe **só** no quadro; editar a ficha mexe no card (e no quadro, se a etapa mudar).
+#[test]
+fn mover_card_nao_revisa_o_conteudo_do_card() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let quadro = quadro(&pc, &android);
+    let cards_antes = pc.eventos_do_tipo("planning_item");
+    let quadros_antes = pc.eventos_do_tipo("planning_order");
+
+    pc.mover_card(&quadro.universo, &quadro.card_b, "ESCREVENDO", 0);
+    assert_eq!(
+        pc.eventos_do_tipo("planning_item"),
+        cards_antes,
+        "mover revisou o conteúdo do card"
+    );
+    assert_eq!(pc.eventos_do_tipo("planning_order"), quadros_antes + 1);
+
+    let (no_android, _) = sincronizar(&pc, &android);
+    assert_eq!(no_android.divergencias, 0, "{no_android:?}");
+    convergencia_do_quadro(&pc, &android, &quadro);
+    let coluna: String = android
+        .banco
+        .connection()
+        .query_row(
+            "SELECT status FROM planning_items WHERE id = ?1",
+            [&quadro.card_b],
+            |row| row.get(0),
+        )
+        .expect("coluna");
+    assert_eq!(coluna, "ESCREVENDO");
+}
+
+#[test]
+fn ficha_do_card_editada_no_android_chega_ao_pc() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let quadro = quadro(&pc, &android);
+    android.salvar_card(
+        &quadro.universo,
+        &quadro.card_b,
+        "Cena da ponte (revisada)",
+        Some(&quadro.capitulo),
+        serde_json::json!({ quadro.campo_texto.clone(): "urgente" }),
+    );
+    let (no_pc, _) = sincronizar(&android, &pc);
+    assert_eq!(no_pc.divergencias, 0, "{no_pc:?}");
+    convergencia_do_quadro(&android, &pc, &quadro);
+    assert!(pc
+        .canonico("planning_item", &quadro.card_b)
+        .expect("card")
+        .contains("urgente"));
+}
+
+#[test]
+fn excluir_card_leva_os_campos_exclusivos_dele_e_reescreve_o_quadro() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let quadro = quadro(&pc, &android);
+    let exclusivo = pc.campo(
+        &quadro.universo,
+        "Só deste card",
+        "text",
+        Some(&quadro.card_b),
+    );
+    sincronizar(&pc, &android);
+    pc.convergiu_com(&android, "planning_field_definition", &exclusivo);
+
+    crate::application::planning_service::delete(
+        &pc.banco.database,
+        &pc.eu,
+        &quadro.card_b,
+        &quadro.universo,
+    )
+    .expect("excluir card");
+
+    let (no_android, _) = sincronizar(&pc, &android);
+    assert_eq!(no_android.divergencias, 0, "{no_android:?}");
+    pc.convergiu_com(&android, "planning_item", &quadro.card_b);
+    pc.convergiu_com(&android, "planning_field_definition", &exclusivo);
+    pc.convergiu_com(&android, "planning_order", &quadro.universo);
+    assert!(android.canonico("planning_item", &quadro.card_b).is_none());
+    assert!(android
+        .canonico("planning_field_definition", &exclusivo)
+        .is_none());
+}
+
+/// **O gatilho que reescreve vários cards.** Excluir a propriedade tira o valor dela de TODOS os
+/// cards; cada card afetado ganha revisão própria, e o outro aparelho converge.
+#[test]
+fn excluir_propriedade_reescreve_todos_os_cards_afetados() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let quadro = quadro(&pc, &android);
+    let cards_antes = pc.eventos_do_tipo("planning_item");
+
+    crate::application::planning_service::delete_field_definition(
+        &pc.banco.database,
+        &pc.eu,
+        &quadro.campo_texto,
+        &quadro.universo,
+    )
+    .expect("excluir propriedade");
+
+    // Os dois cards tinham valor no campo: duas revisões, uma por card.
+    assert_eq!(
+        pc.eventos_do_tipo("planning_item"),
+        cards_antes + 2,
+        "o gatilho reescreveu cards sem evento"
+    );
+    for card in [&quadro.card_a, &quadro.card_b] {
+        assert!(
+            !pc.canonico("planning_item", card)
+                .expect("card")
+                .contains(&quadro.campo_texto),
+            "o valor do campo continua no card"
+        );
+    }
+
+    let (no_android, _) = sincronizar(&pc, &android);
+    assert_eq!(no_android.divergencias, 0, "{no_android:?}");
+    pc.convergiu_com(&android, "planning_field_definition", &quadro.campo_texto);
+    pc.convergiu_com(&android, "planning_item", &quadro.card_a);
+    pc.convergiu_com(&android, "planning_item", &quadro.card_b);
+}
+
+#[test]
+fn excluir_historia_e_entidade_tira_a_ligacao_do_card_com_revisao() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let quadro = quadro(&pc, &android);
+
+    crate::application::entity_service::delete(&pc.banco.database, &pc.eu, &quadro.entidade)
+        .expect("excluir entidade");
+    assert!(!pc
+        .canonico("planning_item", &quadro.card_a)
+        .expect("card")
+        .contains(&quadro.entidade));
+    // Antes de seguir: a revisão corrente do card já tem de ser este estado, sem a ligação.
+    pc.invariante_de_materializacao();
+
+    manuscript_service::delete_story(&pc.banco.database, &pc.eu, &quadro.historia)
+        .expect("excluir história");
+    let card = pc.canonico("planning_item", &quadro.card_a).expect("card");
+    assert!(!card.contains(&quadro.historia), "{card}");
+    assert!(
+        card.contains(r#""chapterId":null"#),
+        "o capítulo foi com a história: {card}"
+    );
+
+    let (no_android, _) = sincronizar(&pc, &android);
+    assert_eq!(no_android.divergencias, 0, "{no_android:?}");
+    pc.convergiu_com(&android, "planning_item", &quadro.card_a);
+    pc.convergiu_com(&android, "entity", &quadro.entidade);
+    pc.convergiu_com(&android, "story", &quadro.historia);
+    assert_eq!(
+        android.contar("SELECT COUNT(*) FROM planning_field_links"),
+        0,
+        "as ligações do card tinham de ter saído"
+    );
+}
+
+/// Card editado num lado, propriedade apagada no outro: decisão, sem perda silenciosa.
+#[test]
+fn card_editado_em_a_e_propriedade_apagada_em_b_vira_decisao() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let quadro = quadro(&a, &b);
+
+    a.salvar_card(
+        &quadro.universo,
+        &quadro.card_a,
+        "Cena do porto",
+        Some(&quadro.capitulo),
+        serde_json::json!({ quadro.campo_texto.clone(): "mudado em A" }),
+    );
+    crate::application::planning_service::delete_field_definition(
+        &b.banco.database,
+        &b.eu,
+        &quadro.campo_texto,
+        &quadro.universo,
+    )
+    .expect("B apaga a propriedade");
+
+    let (em_b, em_a) = sincronizar(&a, &b);
+    assert!(
+        em_b.divergencias + em_a.divergencias >= 1,
+        "{em_b:?} {em_a:?}"
+    );
+
+    // A propriedade deixou de existir nos dois: o valor dela sair do card é consequência, não
+    // perda — e a decisão sobre a edição de A fica registrada como divergência do card.
+    assert!(a
+        .canonico("planning_field_definition", &quadro.campo_texto)
+        .is_none());
+    assert!(b
+        .canonico("planning_field_definition", &quadro.campo_texto)
+        .is_none());
+    assert_eq!(
+        a.divergencias_abertas("planning_item")
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>(),
+        vec![quadro.card_a.clone()],
+        "a edição de A sobre o campo apagado precisa virar decisão"
+    );
+    // E o que A escreveu continua no log de A, íntegro, para essa decisão ser possível.
+    let guardado: i64 = a
+        .banco
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM sync_events WHERE payload LIKE '%mudado em A%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("contar");
+    assert!(guardado >= 1, "a edição de A não pode desaparecer do log");
+    a.invariante_de_materializacao();
+    b.invariante_de_materializacao();
+}
+
+/// Card movido num lado e ficha editada no outro: agregados diferentes, nenhuma decisão.
+#[test]
+fn card_movido_em_a_e_conteudo_editado_em_b_convergem_sem_conflito() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let quadro = quadro(&a, &b);
+
+    a.mover_card(&quadro.universo, &quadro.card_a, "REVISAO", 0);
+    b.salvar_card(
+        &quadro.universo,
+        &quadro.card_a,
+        "Cena do porto (editada em B)",
+        Some(&quadro.capitulo),
+        serde_json::json!({ quadro.campo_texto.clone(): "tenso" }),
+    );
+
+    let (em_b, em_a) = sincronizar(&a, &b);
+    assert_eq!(
+        em_b.divergencias + em_a.divergencias,
+        0,
+        "mover e editar não podem conflitar: {em_b:?} {em_a:?}"
+    );
+    convergencia_do_quadro(&a, &b, &quadro);
+    assert!(a
+        .canonico("planning_item", &quadro.card_a)
+        .expect("card")
+        .contains("editada em B"));
+    let coluna: String = a
+        .banco
+        .connection()
+        .query_row(
+            "SELECT status FROM planning_items WHERE id = ?1",
+            [&quadro.card_a],
+            |row| row.get(0),
+        )
+        .expect("coluna");
+    assert_eq!(coluna, "REVISAO");
+}
+
+/// Card de outra origem que cita entidade, história e propriedade que ainda não chegaram: espera,
+/// não é dado como aplicado, e converge quando o resto chega.
+#[test]
+fn card_que_depende_de_outra_origem_espera_e_converge() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let c = Aparelho::novo("c");
+    let universo = a.universo("Terra");
+    // B já tem o universo: o que segura os eventos de C é a dependência do card.
+    sincronizar(&a, &b);
+    let historia = a.historia(&universo, "Saga").id;
+    let entidade = a.entidade(&universo, "Frodo");
+    let campo_entidade = a.campo(&universo, "Personagens", "character", None);
+    let campo_historia = a.campo(&universo, "Histórias", "story", None);
+    sincronizar(&a, &c);
+
+    let card = c.card(&universo, "Cena de C", None);
+    c.salvar_card(
+        &universo,
+        &card,
+        "Cena de C",
+        None,
+        serde_json::json!({
+            campo_entidade.clone(): [entidade.clone()],
+            campo_historia.clone(): [historia.clone()],
+        }),
+    );
+
+    apresentar(&a, &b);
+    apresentar(&c, &b);
+    let vetor = vetor_local(&b.banco.connection()).expect("vetor");
+    let todos = eventos_para(&c.banco.connection(), &vetor).expect("eventos");
+    let (de_c, de_a): (Vec<_>, Vec<_>) = todos
+        .into_iter()
+        .partition(|evento| evento.device_id == c.eu.device_id());
+
+    let relatorio = receber_eventos(&mut b.banco.connection(), &de_c).expect("de C");
+    // A criação do card (sem ligações) entra; a ficha que cita a entidade e a história de A espera.
+    assert!(relatorio.pendentes >= 1, "{relatorio:?}");
+    assert_eq!(
+        b.contar("SELECT COUNT(*) FROM planning_field_links"),
+        0,
+        "nenhuma ligação pode ter sido gravada sem os alvos"
+    );
+    assert_ne!(
+        b.canonico("planning_item", &card),
+        c.canonico("planning_item", &card),
+        "o card ainda não pode ter convergido"
+    );
+
+    let relatorio = receber_eventos(&mut b.banco.connection(), &de_a).expect("de A");
+    assert!(relatorio.precisam_reconciliar.is_empty(), "{relatorio:?}");
+    assert_eq!(relatorio.pendentes, 0, "{relatorio:?}");
+    c.convergiu_com(&b, "planning_item", &card);
+    c.convergiu_com(&b, "planning_order", &universo);
+    b.invariante_de_materializacao();
 }
