@@ -32,7 +32,10 @@ use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::sync::{AggregateRef, EventEnvelope, Operation};
 
 mod anexo;
+pub mod canvas;
 pub mod catalogo;
+pub mod conhecimento;
+pub mod efemero;
 pub mod entidades;
 pub mod manuscrito;
 pub mod palavras;
@@ -74,6 +77,10 @@ pub const TIPOS_COBERTOS: &[&str] = &[
     "planning_field_definition",
     "attachment",
     "tag_assignment",
+    "content_tag",
+    "canvas_node",
+    "canvas_node_position",
+    "canvas_edge",
 ];
 
 pub fn coberto(tipo: &str) -> bool {
@@ -96,7 +103,10 @@ pub(crate) fn erro(error: rusqlite::Error) -> DatabaseCommandError {
 /// `chapter_order(livro)` existe enquanto o livro existe. Na exclusão remota, ele só conta como
 /// "descendente vivo" se ainda tiver revisão corrente — a linha que o sustenta é o livro.
 pub fn existencia_derivada(tipo: &str) -> bool {
-    manuscrito::tipo_de_ordem(tipo).is_some() || tipo == "planning_order"
+    manuscrito::tipo_de_ordem(tipo).is_some()
+        || tipo == "planning_order"
+        // A posição do elemento livre mora nas colunas do próprio `canvas_nodes`.
+        || tipo == "canvas_node_position"
 }
 
 /// O estado canônico atual, lido na conexão/transação recebida.
@@ -124,6 +134,10 @@ pub fn ler_canonico(
         "planning_order" => planejamento::ler_quadro(connection, id),
         "planning_field_definition" => planejamento::ler_campo(connection, id),
         "attachment" => anexo::ler(connection, id),
+        "content_tag" => conhecimento::ler(connection, id),
+        "canvas_node" => canvas::ler_no(connection, id),
+        "canvas_node_position" => canvas::ler_posicao(connection, id),
+        "canvas_edge" => canvas::ler_aresta(connection, id),
         outro => Err(nao_coberto(outro)),
     }
 }
@@ -146,6 +160,8 @@ pub fn impactos_da_exclusao(
         "timeline_event" => entidades::impactos_do_evento(connection, id),
         "planning_item" => planejamento::impactos_do_card(connection, id),
         "planning_field_definition" => planejamento::impactos_do_campo(connection, id),
+        "content_tag" => conhecimento::impactos_da_tag(connection, id),
+        "canvas_node" => canvas::impactos_do_no(connection, id),
         "story_order"
         | "book_order"
         | "chapter_order"
@@ -153,6 +169,8 @@ pub fn impactos_da_exclusao(
         | "tag_assignment"
         | "relation"
         | "canvas_entity_position"
+        | "canvas_node_position"
+        | "canvas_edge"
         | "planning_order" => Ok(Vec::new()),
         outro => Err(nao_coberto(outro)),
     }
@@ -181,6 +199,10 @@ pub fn dependencias(
         "planning_item" | "planning_order" | "planning_field_definition" => {
             planejamento::dependencias(connection, envelope)
         }
+        "content_tag" => conhecimento::dependencias(connection, envelope),
+        "canvas_node" | "canvas_node_position" | "canvas_edge" => {
+            canvas::dependencias(connection, envelope)
+        }
         _ => Ok(None),
     }
 }
@@ -200,6 +222,8 @@ pub fn aplicar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseComman
             planejamento::aplicar(tx, envelope)
         }
         "attachment" => anexo::aplicar(tx, envelope),
+        "content_tag" => conhecimento::aplicar(tx, envelope),
+        "canvas_node" | "canvas_node_position" | "canvas_edge" => canvas::aplicar(tx, envelope),
         outro => Err(DatabaseCommandError::storage(format!(
             "Agregado '{outro}' ainda não tem aplicação de evento implementada. A sessão para \
              aqui de propósito: avançar marcaria o evento como aplicado sem que o dado tivesse \
@@ -225,6 +249,12 @@ pub fn validar_para_emissao(
         }
         "planning_item" | "planning_order" | "planning_field_definition" => {
             planejamento::validar(connection, &agregado.aggregate_type, payload)?
+        }
+        "attachment" => anexo::validar(connection, payload)?,
+        "tag_assignment" => manuscrito::validar_atribuicao(connection, payload)?,
+        "content_tag" => conhecimento::validar(connection, payload)?,
+        "canvas_node" | "canvas_node_position" | "canvas_edge" => {
+            canvas::validar(connection, &agregado.aggregate_type, payload)?
         }
         _ => None,
     };

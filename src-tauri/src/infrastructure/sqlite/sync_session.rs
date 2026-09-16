@@ -221,6 +221,8 @@ fn drenar_origem(
             Applied::Divergente { .. } => relatorio.divergencias += 1,
             // A exclusão bloqueada é decisão pendente como qualquer divergência: conta junto.
             Applied::ExclusaoDoPaiBloqueada { .. } => relatorio.divergencias += 1,
+            // Tag homônima: nada foi aplicado, e o escritor decide. Também é decisão pendente.
+            Applied::ConflitoDeNomeDeTag { .. } => relatorio.divergencias += 1,
             // Exclusão contra edição também é divergência — e é a que mais
             // assusta o escritor, porque um dos lados é "isto sumiu".
             Applied::DivergenteComExclusao { .. } => relatorio.divergencias += 1,

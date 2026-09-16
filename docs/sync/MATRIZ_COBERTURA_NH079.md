@@ -41,8 +41,9 @@ revisões / eventos
 | **B2** | integrada (#59) | `universe` create/update; `story`, `book`, `chapter` create/update/delete; `chapter_order` (create/delete de capítulo e reorder); campos personalizados dentro desses agregados; `tag_assignment` apagado pelos gatilhos do manuscrito; impacto de exclusão `Excluido`/`Reescrito`/`Bloqueado` (4.3); catálogo de efeitos com gate (3); payload canônico definitivo (8); dependência de criação pai → filho na aplicação remota; capa de livro pelo blob store |
 | **B2.1** | integrada (#60) | `story_order(universe)` e `book_order(story)` com o contrato de `chapter_order`; **ponte de ordem** transacional (8.1), que destrava ordens entre três origens sem nunca confirmar revisão corrente não materializada — inclusive o travamento que existia em `chapter_order` desde a B2 |
 | **B3** | integrada (#61) | `entity` (ficha inteira: `entities` + `entity_attributes` + campos personalizados, uma revisão só), `relation`, `timeline_event` e `canvas_entity_position`; exclusão de entidade com árvore completa de efeitos, inclusive o `SET NULL` da linha do tempo como **reescrita**; `entity_service`, `workspace_service` e a posição do canvas pela `Mutacao` |
-| **B4** | implementada (branch `sync-b4-planejamento`), em revisão | `planning_item` (card inteiro: texto, imagem, capítulo, valores escalares e relações — uma revisão), `planning_order(universe)` (coluna e posição) e `planning_field_definition`; o gatilho que reescreve vários cards declarado; os bloqueios temporários de capítulo, história e entidade viraram reescrita do card |
-| B5–B6 | não iniciadas | ver seção 7 |
+| **B4** | integrada (#62) | `planning_item` (card inteiro: texto, imagem, capítulo, valores escalares e relações — uma revisão), `planning_order(universe)` (coluna e posição) e `planning_field_definition`; o gatilho que reescreve vários cards declarado; os bloqueios temporários de capítulo, história e entidade viraram reescrita do card |
+| **B5** | implementada (branch `sync-b5-conhecimento-canvas`), em revisão | `content_tag` (create/update/delete — **`update_tag` não existia**, e foi criado aqui), `tag_assignment` create/delete pela fronteira, `canvas_node`, `canvas_node_position` e `canvas_edge`; payload **definitivo** do `attachment`; migration 22 (gatilhos que matam a aresta com a ponta + `tag_name_conflict`); `knowledge_service` entra no gate estrutural, onde **nunca esteve**; gate autoral × efêmero |
+| B6 | não iniciada | ver seção 7 |
 
 **Fora da B2, dito às claras:**
 
@@ -52,9 +53,8 @@ revisões / eventos
   `parent_deletion_blocked` e não apaga nada. Volta quando a última dessas etapas integrar (B5).
 - Excluir capítulo ligado a card do planejamento, ou história usada num campo de card, é **recusado**
   (seção 3.2). Volta na B4, quando `planning_item` tiver codec e o efeito virar `Reescrito`.
-- Marcar e desmarcar tag (`knowledge_service::set_tag`) ainda não emite evento (B5). A B2 só emite o fim
-  das marcações que os gatilhos do manuscrito apagam.
-- `attachment` mantém o payload da B1 (com `created_at` e `sortOrder`); a revisão dele é da B5.
+- ~~Marcar e desmarcar tag ainda não emite evento~~ — fechado na B5.
+- ~~`attachment` mantém o payload da B1~~ — fechado na B5: `createdAt` e `sortOrder` saíram do payload.
 - **Nenhum bloqueio temporário sobrou do planejamento.** Excluir capítulo, história ou entidade ligada a
   card agora **reescreve o card** (B4). Os `Bloqueado` da B2/B3 saíram do código e do catálogo.
 - **Fora da B4:** `entity_templates` **não tem escritor no app** — é acervo legado que `create` de
@@ -112,14 +112,42 @@ universe
 
 | estado | onde vive | sincroniza |
 | --- | --- | --- |
-| posição de nó (`canvas_nodes.x/y`) | banco | **sim** |
-| posição persistida de entidade (`canvas_entity_positions`) | banco | **sim** |
+| posição de nó (`canvas_nodes.position_x/y`) | banco | **sim**, como `canvas_node_position` |
+| posição persistida de entidade (`canvas_entity_positions`) | banco | **sim**, como `canvas_entity_position` |
 | conteúdo de nó, arestas | banco | **sim** |
 | zoom, pan, viewport | memória do componente | não |
 | seleção, hover, painel aberto | memória do componente | não |
 
-Regra: **só o que está no banco e foi feito pelo usuário sincroniza.** Um gate na B5 confere que nenhuma
-tabela sincronizável guarda estado de viewport.
+Regra: **só o que está no banco e foi feito pelo usuário sincroniza.** O segundo grupo não sincroniza
+porque **não está no banco** — ele vive na memória do componente e morre com a tela.
+
+Isso agora é gate, não combinado (`sync_codec::efemero`):
+
+```text
+1  nenhuma coluna do banco INTEIRO com nome de estado de tela (zoom, pan, seleção, painel…)
+   sem estar declarada em ESTADO_DE_TELA_ACEITO com o motivo — a lista está vazia
+2  cada coluna das tabelas da B5 com destino declarado: payload de qual agregado, ou local com motivo
+```
+
+O gate 2 é o que morde: acrescentar coluna a `canvas_nodes` passa a exigir escrever o que ela é. O
+silêncio deixa de significar "não sincroniza e ninguém percebeu".
+
+**Conteúdo × posição do elemento livre.** `canvas_node` e `canvas_node_position` são agregados
+diferentes, pelo mesmo motivo de `entity` e `canvas_entity_position`: arrastar e escrever são ações
+diferentes e não podem colidir. A diferença é que a posição do nó mora em colunas do próprio
+`canvas_nodes` — `canvas_node_position` é de **existência derivada**, como as ordens.
+
+**A aresta e a ponta polimórfica.** Até a migration 22, apagar uma entidade deixava a aresta viva no
+banco: ela sumia da tela pelo filtro do `list_edges` e ficava no arquivo para sempre. Invisível não é
+ausente — e agora que a aresta é causal, isso seria divergência esperando para acontecer (um aparelho
+com ela, outro sem). Dois gatilhos resolvem nos dois sentidos, a migration limpa as órfãs de uma vez, e
+o catálogo da seção 3 passa a cobri-los.
+
+**Tag homônima (`tag_name_conflict`).** `content_tags` tem `UNIQUE(universe_id, name COLLATE NOCASE)` e
+a identidade causal da tag é o `id`. Criar "Mar" nos dois aparelhos produz dois agregados com o mesmo
+nome, e o segundo a chegar não cabe na tabela — o schema recusando materializar um evento válido. Nada
+é aplicado e nada é alterado: abre-se a divergência, e o escritor decide se são a mesma tag ou renomeia
+uma. Foi por isso que `update_tag` precisou existir.
 
 ### 2.3 Fora do Sync, de propósito
 
@@ -460,7 +488,17 @@ Testes: `mutacao::tests::rollback_depois_do_blob_deixa_so_o_arquivo_orfao_e_repe
     lado × propriedade apagada no outro (decisão, com a edição preservada no log); card movido num lado ×
     ficha editada no outro (agregados diferentes, sem conflito); card de outra origem que depende de
     entidade, história e propriedade que ainda não chegaram.
-11. **Materialização exata (B2):** cada evento aplicado um por vez com o estado conferido
+11. **Conhecimento e canvas em dois e três aparelhos (B5):** mover o elemento num lado × escrever nele no
+    outro (agregados diferentes, sem conflito); excluir elemento emite ligação e posição antes do nó;
+    excluir **entidade** leva a ligação nos dois aparelhos; elemento apagado num lado × ligação criada no
+    outro (exclusão bloqueada, ligação preservada); ligação que chega antes das pontas espera por elas
+    (três origens); a mesma marcação criada dos dois lados converge sem divergência e sem duplicar linha;
+    tag renomeada num lado × marcada no outro; tag homônima dos dois lados vira `tag_name_conflict` sem
+    aplicar nem alterar nada; tag apagada num lado × card editado no outro bloqueia a exclusão.
+12. **Autoral × efêmero (B5):** `sync_codec::efemero` — nenhuma coluna do banco inteiro com nome de estado
+    de tela sem decisão escrita; toda coluna das tabelas da B5 com destino declarado (payload de qual
+    agregado, ou local com motivo).
+13. **Materialização exata (B2):** cada evento aplicado um por vez com o estado conferido
    (`cada_aplicado_materializa_o_proprio_evento`); asserção geral em repouso depois de toda sessão dos testes
    de dois aparelhos; causalidade cruzada A/B/C (`ordem_que_cita_capitulo_de_outra_origem_espera_o_capitulo_chegar`);
    ordem com capítulo repetido, de outro livro, inexistente e não citado; pai trocado em `story`/`book`/`chapter`.
@@ -509,7 +547,13 @@ B3:
 
    Determinístico, sem id de linha no payload, e é o conjunto inteiro que vira uma revisão — como
    `chapter_order` fez com a ordem.
-3. **`planning_field_order(universe)` — requisito obrigatório da B6, não "talvez".** A B4 deixou o
+3. **`attachment_order(owner)` — requisito obrigatório da B6, não "talvez".** A B5 tirou `sortOrder` do payload do anexo: é número físico local
+   (`MAX+1` no `INSERT`) e não existe reordenação de anexo no app — nenhum comando, nenhum gateway. A
+   consequência é que cada aparelho calcula a posição na chegada, e duas galerias podem ficar em ordens
+   diferentes depois de convergir. É a mesma pergunta do item abaixo, com a mesma saída: ou nasce o
+   agregado de ordem no padrão de `chapter_order`, **ou** uma decisão formal, escrita, de que a
+   ordem da galeria é estado local. Uma das duas tem de existir antes da gênese.
+4. **`planning_field_order(universe)` — requisito obrigatório da B6, não "talvez".** A B4 deixou o
    `sort_order` das definições de campo fora do payload. Isso já diverge sem drag-and-drop: se A cria
    F1 e B cria F2, cada aparelho calcula o próprio `sort_order` e a ordem visual continua diferente depois de
    convergir. Antes da C, uma das duas coisas tem de existir: o agregado `planning_field_order(universe)` no
@@ -527,7 +571,8 @@ B2  manuscrito: universe, story, book, chapter create, chapter_order, custom fie
 B2.1 story_order(universe), book_order(story) — antes da C
 B3  entidades: entity (+atributos), relation, timeline_event, canvas_entity_position  ← implementada
 B4  planejamento: planning_item, planning_order, planning_field_definition (gatilho que reescreve cards)  ← implementada
-B5  conhecimento e canvas: content_tag, tag_assignment, canvas_node, canvas_edge; gate autoral × efêmero
+B5  conhecimento e canvas: content_tag (+update_tag), tag_assignment, canvas_node,
+    canvas_node_position, canvas_edge; attachment definitivo; gate autoral × efêmero  ← implementada
 B6  conteúdo final de colaboração aprovada e conversões de legado pela Mutacao;
     entity_template_set; decisão do UNIQUE(entity_id) da posição; gate de cobertura total
 ```

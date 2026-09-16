@@ -977,10 +977,12 @@ pub(crate) mod tests {
     #[test]
     fn agregado_nao_coberto_nao_pode_ser_declarado() {
         let aparelho = Aparelho::novo();
+        // `canvas_node` servia aqui até a B5, quando passou a ser coberto. O tipo desta asserção
+        // precisa ser um que a fronteira REALMENTE não sabe representar ainda.
         let erro = Mutacao::executar(&aparelho.banco.database, &aparelho.eu, |m| {
-            m.gravou("canvas_node", "n1")
+            m.gravou("entity_template_set", "modelo-1")
         })
-        .expect_err("nó do canvas ainda não é coberto");
+        .expect_err("o conjunto de modelos de ficha só é coberto na B6");
         assert!(erro.message.contains("NH-079"), "{}", erro.message);
     }
 
@@ -1318,16 +1320,13 @@ mod gate_estrutural {
                 "delete",
                 "recusa sempre (a árvore do universo ainda não é coberta) e não escreve",
             ),
-            ("canvas_service", "create_node", "canvas_node entra na B5"),
-            ("canvas_service", "update_node", "canvas_node entra na B5"),
-            ("canvas_service", "delete_node", "canvas_node entra na B5"),
             (
-                "canvas_service",
-                "save_node_position",
-                "posição de nó do canvas entra na B5, junto do agregado canvas_node",
+                "knowledge_service",
+                "sync_chapter_mentions",
+                "menção é DERIVADA do texto do capítulo: cada aparelho recalcula ao aplicar o \
+                 capítulo. Sincronizar mandaria o mesmo dado duas vezes, a segunda com chance \
+                 de discordar da primeira",
             ),
-            ("canvas_service", "create_edge", "canvas_edge entra na B5"),
-            ("canvas_service", "delete_edge", "canvas_edge entra na B5"),
         ];
         let leitura = |nome: &str| {
             nome == "list"
@@ -1343,6 +1342,7 @@ mod gate_estrutural {
             ("workspace_service", include_str!("workspace_service.rs")),
             ("canvas_service", include_str!("canvas_service.rs")),
             ("planning_service", include_str!("planning_service.rs")),
+            ("knowledge_service", include_str!("knowledge_service.rs")),
         ] {
             let codigo = sem_testes(fonte);
             let mut resto = codigo;
@@ -1383,8 +1383,12 @@ mod gate_estrutural {
                 conferidas += 1;
             }
         }
-        // 10 do manuscrito, 2 do universo (B2); 5 de entidade, 5 de workspace e 4 de canvas (B1/B3);
-        // 8 do planejamento (B4). Se cair, o gate perdeu funções de vista.
-        assert_eq!(conferidas, 34, "o gate conferiu {conferidas} escritas");
+        // 10 do manuscrito, 2 do universo (B2); 5 de entidade, 5 de workspace (B3); 8 do
+        // planejamento (B4); 10 de canvas e 4 de conhecimento (B1/B3/B5).
+        //
+        // `knowledge_service` **não estava na lista de fontes** até a B5 — o gate varria seis
+        // serviços e esse não era um deles. As escritas de tag nunca reprovaram porque nunca
+        // foram olhadas: estavam invisíveis, não dispensadas.
+        assert_eq!(conferidas, 44, "o gate conferiu {conferidas} escritas");
     }
 }

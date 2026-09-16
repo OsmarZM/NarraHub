@@ -719,6 +719,82 @@ pub fn impactos_do_capitulo(
 /// **O pai é imutável.** Nenhuma escrita do app move história, livro ou capítulo de pai. Um evento
 /// que diga outro pai para um agregado que já existe aqui não é "mover": é um payload que descreve
 /// outra árvore, e registrar a revisão dele deixaria domínio e revisão dizendo coisas diferentes.
+/// O universo do dono de uma marcação de tag. `None` quando o dono ainda não chegou.
+///
+/// Sobe a árvore quando precisa: o livro não tem `universe_id`, ele tem história.
+pub(super) fn universo_do_dono(
+    connection: &Connection,
+    owner_type: &str,
+    owner_id: &str,
+) -> DatabaseCommandResult<Option<String>> {
+    let sql = match owner_type {
+        // O universo é dono de si mesmo.
+        "universe" => "SELECT id FROM universes WHERE id = ?1",
+        "story" => "SELECT universe_id FROM stories WHERE id = ?1",
+        "book" => {
+            "SELECT s.universe_id FROM books b JOIN stories s ON s.id = b.story_id \
+                   WHERE b.id = ?1"
+        }
+        "chapter" => {
+            "SELECT s.universe_id FROM chapters c JOIN books b ON b.id = c.book_id \
+                      JOIN stories s ON s.id = b.story_id WHERE c.id = ?1"
+        }
+        "entity" => "SELECT universe_id FROM entities WHERE id = ?1",
+        "timeline" => "SELECT universe_id FROM timeline_events WHERE id = ?1",
+        "planning" => "SELECT universe_id FROM planning_items WHERE id = ?1",
+        outro => {
+            return Err(DatabaseCommandError::storage(format!(
+                "Tipo de dono de tag desconhecido: '{outro}'. Estado incompatível."
+            )))
+        }
+    };
+    connection
+        .query_row(sql, [owner_id], |row| row.get(0))
+        .optional()
+        .map_err(erro)
+}
+
+/// **A regra da marcação de tag, uma só, cobrada no local e no remoto.**
+///
+/// Existência é dependência (esperar resolve). **Universo diferente é inconsistência permanente**:
+/// uma tag de um universo marcando conteúdo de outro nunca vira válida, e deixá-la entrar
+/// atravessaria a fronteira entre dois acervos — o escritor veria a tag de um romance aparecer
+/// dentro de outro, sem ter feito nada.
+pub(super) fn validar_atribuicao(
+    connection: &Connection,
+    payload: &str,
+) -> DatabaseCommandResult<Option<String>> {
+    let atribuicao: AtribuicaoDeTag = serde_json::from_str(payload).map_err(|error| {
+        DatabaseCommandError::storage(format!("Marcação de tag ilegível: {error}"))
+    })?;
+    let Some(universo_da_tag) = connection
+        .query_row(
+            "SELECT universe_id FROM content_tags WHERE id = ?1",
+            [&atribuicao.tag_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(erro)?
+    else {
+        return Ok(Some(format!("content_tag {}", atribuicao.tag_id)));
+    };
+    match universo_do_dono(connection, &atribuicao.owner_type, &atribuicao.owner_id)? {
+        None => Ok(Some(format!(
+            "{} {}",
+            atribuicao.owner_type, atribuicao.owner_id
+        ))),
+        Some(universo_do_dono) if universo_do_dono != universo_da_tag => {
+            Err(DatabaseCommandError::storage(format!(
+                "A tag {} é do universo {universo_da_tag}, e {} {} é do universo \
+                 {universo_do_dono}. Uma tag não marca conteúdo de outro universo: estado \
+                 incompatível.",
+                atribuicao.tag_id, atribuicao.owner_type, atribuicao.owner_id
+            )))
+        }
+        Some(_) => Ok(None),
+    }
+}
+
 pub fn dependencias(
     connection: &Connection,
     envelope: &EventEnvelope,
@@ -765,27 +841,9 @@ pub fn dependencias(
             let (pai, lista) = lista_do_evento(ordem, envelope)?;
             validar_ordem(connection, ordem, &pai, &lista)
         }
-        "tag_assignment" => {
-            let atribuicao: AtribuicaoDeTag = de_json(envelope)?;
-            if let Some(falta) = falta("content_tags", "content_tag", &atribuicao.tag_id)? {
-                return Ok(Some(falta));
-            }
-            let tabela = match atribuicao.owner_type.as_str() {
-                "universe" => "universes",
-                "story" => "stories",
-                "book" => "books",
-                "chapter" => "chapters",
-                "entity" => "entities",
-                "timeline" => "timeline_events",
-                "planning" => "planning_items",
-                outro => {
-                    return Err(DatabaseCommandError::storage(format!(
-                        "Tipo de dono de tag desconhecido: '{outro}'."
-                    )))
-                }
-            };
-            falta(tabela, &atribuicao.owner_type, &atribuicao.owner_id)
-        }
+        // A MESMA função que `validar_para_emissao` chama: nenhum caminho local escapa de uma
+        // regra que o outro lado cobra.
+        "tag_assignment" => validar_atribuicao(connection, &envelope.payload),
         _ => Ok(None),
     }
 }

@@ -295,6 +295,9 @@ pub fn impactos_da_entidade(
 ) -> DatabaseCommandResult<Vec<Impacto>> {
     // `planning_field_links.entity_id ON DELETE CASCADE`: o card sobrevive sem a ligação (B4).
     let mut impactos = super::planejamento::cards_que_perdem_ligacao(connection, "entity_id", id)?;
+    // `trg_entity_canvas_edges_delete` (migration 22): a ligação do canvas morre com a ponta.
+    // Antes dele, apagar a entidade deixava a aresta no arquivo para sempre, invisível na tela.
+    impactos.extend(super::canvas::arestas_da_ponta(connection, "entity", id)?);
 
     let ids = |sql: &str| -> DatabaseCommandResult<Vec<String>> {
         let mut consulta = connection.prepare(sql).map_err(erro)?;

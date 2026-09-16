@@ -10,8 +10,8 @@ mod sync;
 use database::migrations::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V14,
     MIGRATION_V15, MIGRATION_V16, MIGRATION_V17, MIGRATION_V18, MIGRATION_V19, MIGRATION_V2,
-    MIGRATION_V20, MIGRATION_V21, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6,
-    MIGRATION_V7, MIGRATION_V8, MIGRATION_V9,
+    MIGRATION_V20, MIGRATION_V21, MIGRATION_V22, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5,
+    MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9,
 };
 use tauri_plugin_sql::{Migration, MigrationKind};
 
@@ -203,6 +203,12 @@ pub fn run() {
                             sql: MIGRATION_V21,
                             kind: MigrationKind::Up,
                         },
+                        Migration {
+                            version: 22,
+                            description: "Canvas edges die with their endpoint; tag name conflicts",
+                            sql: MIGRATION_V22,
+                            kind: MigrationKind::Up,
+                        },
                     ],
                 )
                 .build(),
@@ -274,6 +280,7 @@ pub fn run() {
             interface::tauri::knowledge_commands::tags_for_owner,
             interface::tauri::knowledge_commands::tag_assignments,
             interface::tauri::knowledge_commands::tag_create,
+            interface::tauri::knowledge_commands::tag_update,
             interface::tauri::knowledge_commands::tag_set,
             interface::tauri::knowledge_commands::tag_delete,
             interface::tauri::knowledge_commands::mentions_list,

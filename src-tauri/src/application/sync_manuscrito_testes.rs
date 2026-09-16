@@ -143,6 +143,90 @@ impl Aparelho {
         .expect("posição");
     }
 
+    fn tag(&self, universo: &str, nome: &str) -> String {
+        crate::application::knowledge_service::create_tag(
+            &self.banco.database,
+            &self.eu,
+            universo,
+            nome,
+            "#7d3650",
+        )
+        .expect("tag")
+        .id
+    }
+
+    fn marcar(&self, tag: &str, dono_tipo: &str, dono: &str, marcada: bool) {
+        crate::application::knowledge_service::set_tag(
+            &self.banco.database,
+            &self.eu,
+            dono_tipo,
+            dono,
+            tag,
+            marcada,
+        )
+        .expect("marcar");
+    }
+
+    fn no(&self, universo: &str, texto: &str, x: f64, y: f64) -> String {
+        canvas_service::create_node(
+            &self.banco.database,
+            &self.store,
+            &self.eu,
+            universo,
+            "note",
+            texto,
+            "",
+            x,
+            y,
+        )
+        .expect("elemento")
+        .id
+    }
+
+    fn mover_no(&self, no: &str, x: f64, y: f64) {
+        canvas_service::save_node_position(&self.banco.database, &self.eu, no, x, y)
+            .expect("mover");
+    }
+
+    fn escrever_no(&self, no: &str, texto: &str) {
+        canvas_service::update_node(
+            &self.banco.database,
+            &self.store,
+            &self.eu,
+            no,
+            crate::domain::canvas::CanvasNodePatch {
+                text: Some(texto.to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("editar elemento");
+    }
+
+    fn aresta(
+        &self,
+        universo: &str,
+        origem: (&str, &str),
+        destino: (&str, &str),
+        rotulo: &str,
+    ) -> String {
+        canvas_service::create_edge(
+            &self.banco.database,
+            &self.eu,
+            universo,
+            &crate::domain::canvas::CanvasEndpoint {
+                kind: origem.0.into(),
+                id: origem.1.into(),
+            },
+            &crate::domain::canvas::CanvasEndpoint {
+                kind: destino.0.into(),
+                id: destino.1.into(),
+            },
+            rotulo,
+        )
+        .expect("ligação")
+        .id
+    }
+
     fn card(&self, universo: &str, titulo: &str, capitulo: Option<&str>) -> String {
         crate::application::planning_service::create(
             &self.banco.database,
@@ -2608,4 +2692,609 @@ fn card_que_depende_de_outra_origem_espera_e_converge() {
     c.convergiu_com(&b, "planning_item", &card);
     c.convergiu_com(&b, "planning_order", &universo);
     b.invariante_de_materializacao();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// B5 — conhecimento e canvas
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// **Mover não é editar.** Conteúdo e posição do elemento livre são agregados diferentes, então
+/// arrastar num aparelho e escrever no outro não colide com nada.
+#[test]
+fn mover_o_elemento_num_lado_e_escrever_nele_no_outro_nao_conflita() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let no = a.no(&universo, "rascunho", 0.0, 0.0);
+    sincronizar(&a, &b);
+
+    a.mover_no(&no, 120.0, -40.0);
+    b.escrever_no(&no, "rota comercial antiga");
+
+    let (em_b, em_a) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 0, "{em_b:?}");
+    assert_eq!(em_a.divergencias, 0, "{em_a:?}");
+    a.convergiu_com(&b, "canvas_node", &no);
+    a.convergiu_com(&b, "canvas_node_position", &no);
+    assert!(a
+        .canonico("canvas_node", &no)
+        .expect("nó")
+        .contains("rota comercial antiga"));
+    assert!(b
+        .canonico("canvas_node_position", &no)
+        .expect("posição")
+        .contains("120"));
+}
+
+/// Excluir o elemento emite a árvore inteira, e o cursor da origem continua contíguo.
+#[test]
+fn excluir_o_elemento_leva_a_ligacao_e_a_posicao_com_eventos_proprios() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let entidade = a.entidade(&universo, "Frodo");
+    let no = a.no(&universo, "rascunho", 0.0, 0.0);
+    let ligacao = a.aresta(&universo, ("canvas", &no), ("entity", &entidade), "cita");
+    sincronizar(&a, &b);
+
+    let antes = a.eventos().len();
+    canvas_service::delete_node(&a.banco.database, &a.eu, &no).expect("excluir");
+    let eventos = a.eventos();
+    assert_eq!(
+        &eventos[antes..],
+        &[
+            (
+                "canvas_edge".to_string(),
+                ligacao.clone(),
+                "delete".to_string()
+            ),
+            (
+                "canvas_node_position".to_string(),
+                no.clone(),
+                "delete".to_string()
+            ),
+            ("canvas_node".to_string(), no.clone(), "delete".to_string()),
+        ],
+        "descendentes antes do pai, cada um com o seu evento"
+    );
+
+    let (em_b, _) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 0, "{em_b:?}");
+    a.convergiu_com(&b, "canvas_node", &no);
+    a.convergiu_com(&b, "canvas_edge", &ligacao);
+    assert_eq!(b.contar("SELECT COUNT(*) FROM canvas_edges"), 0);
+}
+
+/// **Apagar a entidade leva a ligação do canvas.** Sem o gatilho da migration 22, ela ficaria no
+/// arquivo do outro aparelho para sempre — invisível na tela e viva no banco.
+#[test]
+fn excluir_a_entidade_leva_a_ligacao_do_canvas_nos_dois_aparelhos() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let entidade = a.entidade(&universo, "Frodo");
+    let no = a.no(&universo, "rascunho", 0.0, 0.0);
+    let ligacao = a.aresta(&universo, ("canvas", &no), ("entity", &entidade), "cita");
+    sincronizar(&a, &b);
+    assert_eq!(b.contar("SELECT COUNT(*) FROM canvas_edges"), 1);
+
+    crate::application::entity_service::delete(&a.banco.database, &a.eu, &entidade)
+        .expect("excluir entidade");
+
+    let (em_b, _) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 0, "{em_b:?}");
+    a.convergiu_com(&b, "canvas_edge", &ligacao);
+    assert_eq!(
+        b.contar("SELECT COUNT(*) FROM canvas_edges"),
+        0,
+        "a ligação invisível continuou no arquivo do outro aparelho"
+    );
+}
+
+/// Ligação criada num lado para um elemento que o outro apagou: a exclusão chega e é bloqueada,
+/// porque apagar o elemento levaria junto uma ligação que a origem não conhecia.
+#[test]
+fn elemento_apagado_num_lado_com_ligacao_criada_no_outro_vira_decisao() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let entidade = a.entidade(&universo, "Frodo");
+    let no = a.no(&universo, "rascunho", 0.0, 0.0);
+    sincronizar(&a, &b);
+
+    canvas_service::delete_node(&a.banco.database, &a.eu, &no).expect("A apaga o elemento");
+    let ligacao = b.aresta(&universo, ("canvas", &no), ("entity", &entidade), "cita");
+
+    let (em_b, _) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 1, "{em_b:?}");
+    assert_eq!(
+        b.divergencias_abertas("canvas_node"),
+        vec![(no.clone(), "parent_deletion_blocked".to_string())]
+    );
+    assert!(
+        b.canonico("canvas_edge", &ligacao).is_some(),
+        "a ligação de B foi apagada antes da decisão"
+    );
+    assert!(b.canonico("canvas_node", &no).is_some());
+    b.invariante_de_materializacao();
+}
+
+/// **A ligação chega antes de uma das pontas.** Dependência, não erro.
+///
+/// O elemento é de B, a ligação é de A: a origem de A é contígua e completa, e mesmo assim a
+/// ligação não pode materializar até o elemento de B chegar. O que segura é a **ponta que falta**,
+/// não uma lacuna de `seq`.
+#[test]
+fn ligacao_que_chega_antes_da_ponta_de_outra_origem_espera_por_ela() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let c = Aparelho::novo("c");
+    let universo = a.universo("Terra");
+    let entidade = a.entidade(&universo, "Frodo");
+    sincronizar(&a, &b);
+
+    let no = b.no(&universo, "rascunho", 0.0, 0.0);
+    sincronizar(&a, &b);
+    let ligacao = a.aresta(&universo, ("canvas", &no), ("entity", &entidade), "cita");
+
+    apresentar(&a, &c);
+    apresentar(&c, &a);
+    apresentar(&b, &c);
+    apresentar(&c, &b);
+
+    // C recebe só o que A tem de si mesma... e A já replicou o nó de B, então para provar a
+    // espera de verdade C recebe primeiro apenas os eventos DA ORIGEM A.
+    let para_c = eventos_para(
+        &a.banco.connection(),
+        &vetor_local(&c.banco.connection()).expect("vetor c"),
+    )
+    .expect("a → c");
+    let so_de_a: Vec<_> = para_c
+        .into_iter()
+        .filter(|envelope| envelope.device_id == a.eu.device_id())
+        .collect();
+    let em_c = receber_eventos(&mut c.banco.connection(), &so_de_a).expect("c recebe");
+    assert!(
+        c.canonico("canvas_edge", &ligacao).is_none(),
+        "a ligação materializou sem a ponta: {em_c:?}"
+    );
+    assert!(c.canonico("entity", &entidade).is_some());
+
+    // O nó de B chega, e a ligação entra.
+    sincronizar(&b, &c);
+    sincronizar(&a, &c);
+    a.convergiu_com(&c, "canvas_edge", &ligacao);
+    a.convergiu_com(&c, "canvas_node", &no);
+}
+
+/// Marcar a mesma tag no mesmo dono nos dois aparelhos é **a mesma marcação**: a identidade é
+/// `tagId:ownerType:ownerId`, não o `id` aleatório da linha. Converge sem divergência.
+#[test]
+fn a_mesma_marcacao_criada_dos_dois_lados_converge_sem_divergencia() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let historia = a.historia(&universo, "Saga").id;
+    let livro = a.livro(&historia, "Livro I").id;
+    let capitulo = a.capitulo(&livro, "Um").id;
+    let tag = a.tag(&universo, "Reescrever");
+    sincronizar(&a, &b);
+
+    a.marcar(&tag, "chapter", &capitulo, true);
+    b.marcar(&tag, "chapter", &capitulo, true);
+
+    let (em_b, em_a) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 0, "{em_b:?}");
+    assert_eq!(em_a.divergencias, 0, "{em_a:?}");
+    let marcacao = sync_codec::manuscrito::id_da_atribuicao(&tag, "chapter", &capitulo);
+    a.convergiu_com(&b, "tag_assignment", &marcacao);
+    assert_eq!(
+        a.contar("SELECT COUNT(*) FROM content_tag_assignments"),
+        1,
+        "dois ids aleatórios viraram duas marcações"
+    );
+}
+
+/// Tag renomeada num lado e marcada no outro: agregados diferentes, sem conflito.
+#[test]
+fn tag_renomeada_num_lado_e_marcada_no_outro_nao_conflita() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let entidade = a.entidade(&universo, "Frodo");
+    let tag = a.tag(&universo, "Rever");
+    sincronizar(&a, &b);
+
+    crate::application::knowledge_service::update_tag(
+        &a.banco.database,
+        &a.eu,
+        &tag,
+        "Reescrever",
+        "#2f6f7d",
+    )
+    .expect("renomear");
+    b.marcar(&tag, "entity", &entidade, true);
+
+    let (em_b, em_a) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 0, "{em_b:?}");
+    assert_eq!(em_a.divergencias, 0, "{em_a:?}");
+    a.convergiu_com(&b, "content_tag", &tag);
+    let marcacao = sync_codec::manuscrito::id_da_atribuicao(&tag, "entity", &entidade);
+    a.convergiu_com(&b, "tag_assignment", &marcacao);
+    assert!(a
+        .canonico("content_tag", &tag)
+        .expect("tag")
+        .contains("Reescrever"));
+}
+
+/// **Tag homônima criada dos dois lados.** O schema não deixa as duas existirem, e nenhuma está
+/// errada. Nada é aplicado, nada é alterado: vira decisão do escritor.
+#[test]
+fn tag_homonima_criada_dos_dois_lados_vira_decisao_em_vez_de_travar() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    sincronizar(&a, &b);
+
+    let tag_de_a = a.tag(&universo, "Mar");
+    let tag_de_b = b.tag(&universo, "mar"); // COLLATE NOCASE: é o mesmo nome
+
+    let (em_b, em_a) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 1, "{em_b:?}");
+    assert_eq!(em_a.divergencias, 1, "{em_a:?}");
+    assert_eq!(
+        a.divergencias_abertas("content_tag"),
+        vec![(tag_de_b.clone(), "tag_name_conflict".to_string())]
+    );
+    assert_eq!(
+        b.divergencias_abertas("content_tag"),
+        vec![(tag_de_a.clone(), "tag_name_conflict".to_string())]
+    );
+    // Cada um continua com a sua, intacta, e nenhuma revisão corrente foi inventada.
+    assert!(a.canonico("content_tag", &tag_de_b).is_none());
+    assert!(a.canonico("content_tag", &tag_de_a).is_some());
+    a.invariante_de_materializacao();
+    b.invariante_de_materializacao();
+
+    // Renomear a tag daqui libera o nome. A tag que estava esperando NÃO entra sozinha: o evento
+    // dela já está marcado como aplicado, e reaplicá-lo é a resolução da divergência — trabalho da
+    // etapa F, com a tela de decisão. O que a B5 garante é que nada foi perdido nem alterado.
+    crate::application::knowledge_service::update_tag(
+        &a.banco.database,
+        &a.eu,
+        &tag_de_a,
+        "Mar aberto",
+        "#7d3650",
+    )
+    .expect("renomear");
+    assert!(a.canonico("content_tag", &tag_de_b).is_none());
+    assert_eq!(
+        a.divergencias_abertas("content_tag"),
+        vec![(tag_de_b.clone(), "tag_name_conflict".to_string())],
+        "a decisão continua aberta até alguém tomá-la"
+    );
+    a.invariante_de_materializacao();
+}
+
+/// Tag apagada num lado, card editado no outro: a exclusão é bloqueada, e o card de B não muda
+/// antes da decisão. Mesmo padrão da propriedade de card na B4.
+#[test]
+fn tag_apagada_num_lado_com_card_editado_no_outro_bloqueia_a_exclusao() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let tag = a.tag(&universo, "Mar");
+    let campo_tag = a.campo(&universo, "Tags", "tags", None);
+    let card = a.card(&universo, "Cena do porto", None);
+    a.salvar_card(
+        &universo,
+        &card,
+        "Cena do porto",
+        None,
+        serde_json::json!({ campo_tag.clone(): [tag.clone()] }),
+    );
+    let (recebido, _) = sincronizar(&a, &b);
+    assert_eq!(recebido.divergencias, 0, "{recebido:?}");
+
+    b.salvar_card(
+        &universo,
+        &card,
+        "Cena do porto ao amanhecer",
+        None,
+        serde_json::json!({ campo_tag.clone(): [tag.clone()] }),
+    );
+    crate::application::knowledge_service::delete_tag(&a.banco.database, &a.eu, &tag)
+        .expect("A apaga a tag");
+
+    let (em_b, _) = sincronizar(&a, &b);
+    assert!(em_b.divergencias >= 1, "{em_b:?}");
+    assert_eq!(
+        b.divergencias_abertas("content_tag"),
+        vec![(tag.clone(), "parent_deletion_blocked".to_string())]
+    );
+    assert!(
+        b.canonico("planning_item", &card)
+            .expect("card")
+            .contains(&tag),
+        "a ligação do card de B sumiu antes da decisão"
+    );
+    assert!(b.canonico("content_tag", &tag).is_some());
+    b.invariante_de_materializacao();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// B5 — revisão: um agregado não atravessa a fronteira entre dois universos
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Dois universos no mesmo aparelho, com um dono de cada tipo no segundo.
+struct DoisUniversos {
+    tag_u1: String,
+    entidade_u2: String,
+    capitulo_u2: String,
+    card_u2: String,
+    universo_u2: String,
+}
+
+fn dois_universos(a: &Aparelho) -> DoisUniversos {
+    let u1 = a.universo("Primeiro");
+    let u2 = a.universo("Segundo");
+    let historia = a.historia(&u2, "Saga").id;
+    let livro = a.livro(&historia, "Livro I").id;
+    DoisUniversos {
+        tag_u1: a.tag(&u1, "Mar"),
+        entidade_u2: a.entidade(&u2, "Frodo"),
+        capitulo_u2: a.capitulo(&livro, "Um").id,
+        card_u2: a.card(&u2, "Cena", None),
+        universo_u2: u2,
+    }
+}
+
+/// **Uma tag não marca conteúdo de outro universo.** Nem localmente, nem por evento recebido.
+///
+/// A regra é uma função só, cobrada nos dois lados. Se ela existisse só no remoto, este aparelho
+/// emitiria um evento que o outro recusaria — e a marcação ficaria aqui, inválida, para sempre.
+#[test]
+fn marcar_tag_de_um_universo_em_dono_de_outro_e_recusado_localmente() {
+    let a = Aparelho::novo("a");
+    let cenario = dois_universos(&a);
+
+    let antes_das_linhas = a.contar("SELECT COUNT(*) FROM content_tag_assignments");
+    let antes_dos_eventos = a.eventos().len();
+
+    for (tipo, dono) in [
+        ("entity", cenario.entidade_u2.as_str()),
+        ("chapter", cenario.capitulo_u2.as_str()),
+        ("planning", cenario.card_u2.as_str()),
+        ("universe", cenario.universo_u2.as_str()),
+    ] {
+        let erro = crate::application::knowledge_service::set_tag(
+            &a.banco.database,
+            &a.eu,
+            tipo,
+            dono,
+            &cenario.tag_u1,
+            true,
+        )
+        .expect_err("dono de outro universo tinha que ser recusado");
+        assert!(
+            erro.message.contains("outro universo"),
+            "{tipo}: {}",
+            erro.message
+        );
+    }
+
+    assert_eq!(
+        a.contar("SELECT COUNT(*) FROM content_tag_assignments"),
+        antes_das_linhas,
+        "a marcação entre universos gravou linha"
+    );
+    assert_eq!(
+        a.eventos().len(),
+        antes_dos_eventos,
+        "a marcação entre universos gerou evento"
+    );
+}
+
+/// O mesmo pelo lado remoto: o evento **não** é aplicado, e o cursor não avança por cima dele.
+#[test]
+fn marcacao_entre_universos_que_chega_de_fora_nao_e_aplicada() {
+    let a = Aparelho::novo("a");
+    let cenario = dois_universos(&a);
+
+    let agregado = AggregateRef::new(
+        "tag_assignment",
+        sync_codec::manuscrito::id_da_atribuicao(&cenario.tag_u1, "entity", &cenario.entidade_u2),
+    );
+    // Montado À MÃO, na ordem dos campos da struct canônica. O macro `json!` ordena as chaves
+    // alfabeticamente, e um payload fora da ordem canônica seria pego pela invariante de
+    // materialização — o teste passaria sem nunca exercer a regra que ele diz testar.
+    let payload = format!(
+        r#"{{"tagId":"{}","ownerType":"entity","ownerId":"{}"}}"#,
+        cenario.tag_u1, cenario.entidade_u2
+    );
+    let b = Aparelho::novo("b");
+    apresentar(&b, &a);
+    let mut envelope = envelope_de_origem(
+        b.eu.device_id(),
+        1,
+        &cenario.universo_u2,
+        &agregado,
+        Operation::Upsert,
+        &payload,
+        "",
+    );
+    envelope.signature = b.eu.sign(&envelope);
+    let event_id = envelope.event_id.clone();
+
+    let erro = receber_eventos(&mut a.banco.connection(), &[envelope])
+        .expect_err("marcação entre universos");
+    assert!(
+        erro.message.contains("outro universo"),
+        "recusou pelo motivo errado: {}",
+        erro.message
+    );
+
+    assert_eq!(a.contar("SELECT COUNT(*) FROM content_tag_assignments"), 0);
+    let aplicado: i64 = a
+        .banco
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM sync_applied_events WHERE event_id = ?1",
+            [&event_id],
+            |row| row.get(0),
+        )
+        .expect("contar");
+    assert_eq!(aplicado, 0, "o evento inválido foi marcado como aplicado");
+}
+
+/// **Um anexo não pertence a conteúdo de outro universo.**
+#[test]
+fn anexo_com_dono_de_outro_universo_e_recusado_sem_deixar_linha_nem_evento() {
+    let a = Aparelho::novo("a");
+    let u1 = a.universo("Primeiro");
+    let u2 = a.universo("Segundo");
+    let entidade_u2 = a.entidade(&u2, "Frodo");
+
+    let antes = a.eventos().len();
+    let erro = canvas_service::create_attachment(
+        &a.banco.database,
+        &a.store,
+        &a.eu,
+        &u1,
+        "entity",
+        &entidade_u2,
+        "data:image/png;base64,YQ==",
+        "",
+    )
+    .expect_err("anexo entre universos");
+    assert!(
+        erro.message.contains("outro universo"),
+        "recusou pelo motivo errado: {}",
+        erro.message
+    );
+
+    assert_eq!(a.contar("SELECT COUNT(*) FROM attachments"), 0);
+    assert_eq!(a.eventos().len(), antes, "o anexo inválido gerou evento");
+}
+
+/// **O dono do anexo é imutável.** Um evento com o mesmo id e outro dono não move a imagem.
+#[test]
+fn anexo_que_chega_com_outro_dono_e_recusado_e_o_original_fica_intacto() {
+    let a = Aparelho::novo("a");
+    let universo = a.universo("Terra");
+    let dona = a.entidade(&universo, "Frodo");
+    let outra = a.entidade(&universo, "Sam");
+    let anexo = canvas_service::create_attachment(
+        &a.banco.database,
+        &a.store,
+        &a.eu,
+        &universo,
+        "entity",
+        &dona,
+        "data:image/png;base64,YQ==",
+        "retrato",
+    )
+    .expect("anexo");
+
+    // Parte do payload CANÔNICO deste anexo e troca só o dono: assim a única diferença é a que
+    // está sendo testada. Montar o JSON à parte arriscaria diferir na ordem das chaves, e a
+    // invariante de materialização recusaria o evento antes de a regra do dono ser consultada.
+    let payload = a
+        .canonico("attachment", &anexo.id)
+        .expect("o anexo tem estado canônico")
+        .replace(&dona, &outra);
+    let b = Aparelho::novo("b");
+    apresentar(&b, &a);
+    // A partir da revisão corrente daqui: assim o evento é SEQUENCIAL e chega à validação. Com
+    // base vazia ele seria concorrente, viraria divergência e a regra de imutabilidade nem seria
+    // consultada — nada se moveria, mas também nada seria provado.
+    let base = {
+        let connection = a.banco.connection();
+        sync_codec::revisao_corrente(&connection, &AggregateRef::new("attachment", &anexo.id))
+            .expect("rev")
+            .expect("o anexo tem revisão")
+    };
+    let mut envelope = envelope_de_origem(
+        b.eu.device_id(),
+        1,
+        &universo,
+        &AggregateRef::new("attachment", &anexo.id),
+        Operation::Upsert,
+        &payload,
+        &base,
+    );
+    envelope.signature = b.eu.sign(&envelope);
+
+    let erro = receber_eventos(&mut a.banco.connection(), &[envelope])
+        .expect_err("o dono do anexo é imutável");
+    assert!(
+        erro.message.contains("imutável"),
+        "recusou pelo motivo errado: {}",
+        erro.message
+    );
+
+    let dono_agora: String = a
+        .banco
+        .connection()
+        .query_row(
+            "SELECT owner_id FROM attachments WHERE id = ?1",
+            [&anexo.id],
+            |row| row.get(0),
+        )
+        .expect("ler o anexo");
+    assert_eq!(dono_agora, dona, "o anexo mudou de dono");
+}
+
+/// **O conflito de nome guarda as DUAS identidades que colidiram.**
+///
+/// Renomear a tag daqui depois não pode apagar o rastro: a etapa F precisa saber quem colidiu com
+/// quem para poder oferecer "são a mesma tag", decisão que tem de juntar as marcações das duas.
+#[test]
+fn o_conflito_de_nome_guarda_a_tag_daqui_e_sobrevive_ao_rename() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    sincronizar(&a, &b);
+
+    let t1 = a.tag(&universo, "Mar");
+    let t2 = b.tag(&universo, "mar");
+    sincronizar(&a, &b);
+
+    let guardado = |aparelho: &Aparelho| -> (String, String) {
+        aparelho
+            .banco
+            .connection()
+            .query_row(
+                "SELECT aggregate_id, related_aggregate_id FROM sync_divergences
+                  WHERE kind = 'tag_name_conflict' AND resolved_at = ''",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("o conflito")
+    };
+    assert_eq!(
+        guardado(&a),
+        (t2.clone(), t1.clone()),
+        "em A: a tag que chegou é T2, e a daqui é T1"
+    );
+    assert_eq!(
+        guardado(&b),
+        (t1.clone(), t2.clone()),
+        "em B é o espelho disso"
+    );
+
+    // Renomear T1 não apaga com quem T2 colidiu.
+    crate::application::knowledge_service::update_tag(
+        &a.banco.database,
+        &a.eu,
+        &t1,
+        "Mar aberto",
+        "#7d3650",
+    )
+    .expect("renomear");
+    assert_eq!(
+        guardado(&a),
+        (t2, t1),
+        "o rename apagou a identidade com que o conflito aconteceu"
+    );
 }

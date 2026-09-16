@@ -58,6 +58,12 @@ pub enum Applied {
     /// não apagou antes. O `DELETE` físico **não** rodou: o pai e o filho continuam, e a exclusão
     /// fica como divergência `parent_deletion_blocked` para o escritor decidir.
     ExclusaoDoPaiBloqueada { id_divergencia: String },
+    /// Chegou uma tag com o nome de uma tag daqui, e elas são agregados diferentes (B5).
+    ///
+    /// `UNIQUE(universe_id, name COLLATE NOCASE)` não deixa as duas coexistirem, e nenhuma das
+    /// duas está errada: os dois escritores criaram "Mar" de boa-fé. **Nada é aplicado e nada é
+    /// alterado.** A decisão — são a mesma tag, ou uma vai ser renomeada? — é do escritor.
+    ConflitoDeNomeDeTag { id_divergencia: String },
     /// `base_rev` que não conhecemos. Não é conflito: falta história
     /// intermediária, e o agregado precisa de reconciliação.
     PrecisaReconciliar,
@@ -131,6 +137,16 @@ pub fn apply_remote_event(
                             return Ok(Applied::Superado);
                         }
                         return Ok(Applied::PrecisaReconciliar);
+                    }
+                    // Esperar não resolve nome de tag ocupado, e aplicar é impossível: o
+                    // `UNIQUE` do schema recusaria o `INSERT`. Vira decisão.
+                    if envelope.aggregate_type == "content_tag" {
+                        if let Some(homonima) =
+                            sync_codec::conhecimento::tag_homonima(tx, envelope)?
+                        {
+                            let id = conflito_de_nome_de_tag(tx, envelope, &historia, &homonima)?;
+                            return Ok(Applied::ConflitoDeNomeDeTag { id_divergencia: id });
+                        }
                     }
                 }
             }
@@ -489,6 +505,33 @@ fn bloquear_exclusao(
     tx.execute(
         "UPDATE sync_divergences SET kind = 'parent_deletion_blocked' WHERE id = ?1",
         [&id],
+    )
+    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Ok(id)
+}
+
+/// Registra o conflito de nome de tag, do mesmo jeito que a exclusão bloqueada: a revisão entra
+/// na história (um evento posterior que parta dela precisa ser reconhecido), o evento fica
+/// aplicado como decisão pendente, e **o domínio não é tocado**.
+/// **A identidade que colidiu é guardada.** `aggregate_id` é a tag que chegou (T2), e
+/// `related_aggregate_id` é a tag daqui que ocupava o nome (T1). Guardar só o nome não serviria:
+/// renomear T1 depois apagaria o rastro de com quem T2 colidiu, e a etapa F precisa das duas
+/// identidades para poder oferecer "são a mesma tag" — decisão que tem de juntar as marcações das
+/// duas.
+fn conflito_de_nome_de_tag(
+    tx: &Transaction<'_>,
+    envelope: &EventEnvelope,
+    historia: &crate::domain::sync::AggregateHistory,
+    homonima: &str,
+) -> DatabaseCommandResult<String> {
+    registrar_revisao(tx, envelope)?;
+    marcar_aplicado(tx, &envelope.event_id)?;
+    let id = registrar_divergencia(tx, envelope, &envelope.base_rev, historia)?;
+    tx.execute(
+        "UPDATE sync_divergences
+            SET kind = 'tag_name_conflict', related_aggregate_id = ?2
+          WHERE id = ?1",
+        [&id, &homonima.to_string()],
     )
     .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     Ok(id)
@@ -1198,9 +1241,10 @@ mod tests {
             ORIGEM,
             1,
             "u1",
-            &AggregateRef::new("canvas_node", "no-1"),
+            // `canvas_node` servia aqui até a B5, quando ganhou codec.
+            &AggregateRef::new("entity_template_set", "modelo-1"),
             Operation::Upsert,
-            r#"{"id":"no-1"}"#,
+            r#"{"id":"modelo-1"}"#,
             "",
         );
 
@@ -1258,7 +1302,19 @@ mod tests {
     // Anexo recebido (ADR 0010, fatia 7)
     // ═══════════════════════════════════════════════════════════════════════
 
-    fn anexo(hash: &str, data_url: &str) -> String {
+    /// O payload canônico definitivo da B5: camelCase, sem relógio, sem posição física, e **sem
+    /// campo nenhum onde caibam bytes**.
+    fn anexo(hash: &str) -> String {
+        format!(
+            r#"{{"id":"anexo-1","universeId":"u1","ownerType":"chapter",
+                 "ownerId":"cap-1","blobHash":"{hash}","mimeType":"image/png","caption":""}}"#
+        )
+        .replace('\n', "")
+        .replace("                 ", "")
+    }
+
+    /// O payload da B1, que um peer de versão antiga ainda produziria.
+    fn anexo_da_b1(hash: &str, data_url: &str) -> String {
         format!(
             r#"{{"id":"anexo-1","universe_id":"u1","owner_type":"chapter",
                  "owner_id":"cap-1","data_url":"{data_url}","blob_hash":"{hash}",
@@ -1278,6 +1334,10 @@ mod tests {
     ///
     /// A sessão para aqui de propósito. Marcar como aplicado sem gravar
     /// esconderia o problema; gravar traria os bytes de volta.
+    ///
+    /// **A B5 endureceu isto de um jeito que vale dizer:** o payload canônico não tem mais campo
+    /// `dataUrl`. Não existe mais "anexo com bytes onde os bytes são ignorados" — o formato é
+    /// recusado na desserialização, antes de qualquer decisão sobre o conteúdo.
     #[test]
     fn evento_de_anexo_com_bytes_e_recusado() {
         let fixture = TemporaryDatabase::new();
@@ -1297,7 +1357,7 @@ mod tests {
             "u1",
             &agregado,
             Operation::Upsert,
-            &anexo(&hash, "data:image/png;base64,aW1hZ2Vt"),
+            &anexo_da_b1(&hash, "data:image/png;base64,aW1hZ2Vt"),
             "",
         );
 
@@ -1306,7 +1366,7 @@ mod tests {
             .expect("transação");
         let erro = apply_remote_event(&tx, &envelope).expect_err("o evento traz bytes");
         assert!(
-            erro.message.contains("conteúdo embutido"),
+            erro.message.contains("data_url") || erro.message.contains("Anexo ilegível"),
             "recusou pelo motivo errado: {}",
             erro.message
         );
@@ -1337,7 +1397,7 @@ mod tests {
             "u1",
             &agregado,
             Operation::Upsert,
-            &anexo("../../../etc/passwd", ""),
+            &anexo("../../../etc/passwd"),
             "",
         );
 
@@ -1376,7 +1436,7 @@ mod tests {
             "u1",
             &agregado,
             Operation::Upsert,
-            &anexo(&hash, ""),
+            &anexo(&hash),
             "",
         );
 

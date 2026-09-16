@@ -120,6 +120,7 @@ pub const EFEITOS: &[EfeitoDeExclusao] = &[
     fk!("entities", "canvas_entity_positions"."entity_id" "CASCADE" => "canvas_entity_position", Delete, "B3", "—"),
     fk!("entities", "planning_field_links"."entity_id" "CASCADE" => "planning_item", Rewrite, "B4", "—"),
     fk!("entities", "mentions"."entity_id" "CASCADE" => "—", Local, "fora do sync", "—"),
+    gatilho!("entities", "trg_entity_canvas_edges_delete", "canvas_edges" => "canvas_edge", Delete, "B5", "—"),
     gatilho!("entities", "trg_entity_attachments_delete", "attachments" => "attachment", Delete, "B3", "—"),
     gatilho!("entities", "trg_entity_metadata_delete", "content_tag_assignments" => "tag_assignment", Delete, "B3", "—"),
     gatilho!("entities", "trg_entity_metadata_delete", "content_custom_fields" => "entity", Interno, "B3", "—"),
@@ -130,9 +131,11 @@ pub const EFEITOS: &[EfeitoDeExclusao] = &[
     gatilho!("planning_items", "trg_planning_metadata_delete", "content_tag_assignments" => "tag_assignment", Delete, "B4", "—"),
     fk!("planning_field_definitions", "planning_field_links"."field_definition_id" "CASCADE" => "planning_item", Rewrite, "B4", "—"),
     gatilho!("planning_field_definitions", "trg_planning_field_definition_delete", "planning_items" => "planning_item", Rewrite, "B4", "—"),
+    // ── canvas ────────────────────────────────────────────────────────────
+    gatilho!("canvas_nodes", "trg_canvas_node_edges_delete", "canvas_edges" => "canvas_edge", Delete, "B5", "—"),
     // ── tags ──────────────────────────────────────────────────────────────
-    fk!("content_tags", "content_tag_assignments"."tag_id" "CASCADE" => "tag_assignment", Delete, "B5", "knowledge_service fora da Mutacao até B5"),
-    fk!("content_tags", "planning_field_links"."tag_id" "CASCADE" => "planning_item", Rewrite, "B4", "knowledge_service fora da Mutacao até B5"),
+    fk!("content_tags", "content_tag_assignments"."tag_id" "CASCADE" => "tag_assignment", Delete, "B5", "—"),
+    fk!("content_tags", "planning_field_links"."tag_id" "CASCADE" => "planning_item", Rewrite, "B4", "—"),
     // ── colaboração ───────────────────────────────────────────────────────
     fk!("collaboration_sessions", "collaboration_contributions"."session_id" "CASCADE" => "—", Local, "fora do sync", "—"),
 ];
