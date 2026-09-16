@@ -209,7 +209,7 @@ fn partes_da_atribuicao(id: &str) -> DatabaseCommandResult<(String, String, Stri
 
 // ── Leitura canônica ─────────────────────────────────────────────────────
 
-fn campos(
+pub(super) fn campos(
     connection: &Connection,
     owner_type: &str,
     owner_id: &str,
@@ -232,8 +232,8 @@ fn campos(
     linhas.collect::<Result<_, _>>().map_err(erro)
 }
 
-/// Capa ainda em base64 na coluna legada não entra em evento: o backfill (ADR 0010) roda antes.
-fn exigir_capa_migrada(
+/// Imagem ainda em base64 na coluna legada não entra em evento: o backfill (ADR 0010) roda antes.
+pub(super) fn exigir_imagem_migrada(
     tipo: &str,
     id: &str,
     legado: &str,
@@ -241,7 +241,7 @@ fn exigir_capa_migrada(
 ) -> DatabaseCommandResult<()> {
     if hash.is_empty() && !legado.trim().is_empty() {
         return Err(DatabaseCommandError::conflict(format!(
-            "A capa de {tipo} {id} ainda não foi convertida para o armazenamento de imagens. Ela não \
+            "A imagem de {tipo} {id} ainda não foi convertida para o armazenamento de imagens. Ela não \
              pode entrar na sincronização assim; abra o app de novo para concluir a conversão. \
              Nada foi alterado."
         )));
@@ -273,7 +273,7 @@ pub fn ler_universo(
     else {
         return Ok(None);
     };
-    exigir_capa_migrada("universe", id, &legado, &hash)?;
+    exigir_imagem_migrada("universe", id, &legado, &hash)?;
     let payload = para_json(&UniversoCanonico {
         id: id.to_string(),
         name,
@@ -361,7 +361,7 @@ pub fn ler_livro(
     else {
         return Ok(None);
     };
-    exigir_capa_migrada("book", id, &legado, &hash)?;
+    exigir_imagem_migrada("book", id, &legado, &hash)?;
     let universe_id = universo_do_livro(connection, id)?.ok_or_else(|| {
         DatabaseCommandError::storage(format!("O livro {id} não está ligado a uma história."))
     })?;
@@ -585,7 +585,7 @@ fn ids(connection: &Connection, sql: &str, parametro: &str) -> DatabaseCommandRe
 }
 
 /// `trg_*_metadata_delete`: as marcações do dono somem com ele.
-fn atribuicoes_do_dono(
+pub(super) fn atribuicoes_do_dono(
     connection: &Connection,
     owner_type: &str,
     owner_id: &str,
@@ -821,7 +821,7 @@ fn conferir_id(envelope: &EventEnvelope, id: &str) -> DatabaseCommandResult<()> 
     Ok(())
 }
 
-fn conferir_hash(hash: &str) -> DatabaseCommandResult<()> {
+pub(super) fn conferir_hash(hash: &str) -> DatabaseCommandResult<()> {
     if !hash.is_empty() && !crate::infrastructure::blob_store::e_hash_canonico(hash) {
         return Err(DatabaseCommandError::storage(
             "O evento traz uma referência de imagem que não é um SHA-256 canônico.",
@@ -830,7 +830,7 @@ fn conferir_hash(hash: &str) -> DatabaseCommandResult<()> {
     Ok(())
 }
 
-fn gravar_campos(
+pub(super) fn gravar_campos(
     tx: &Transaction<'_>,
     universe_id: &str,
     owner_type: &str,

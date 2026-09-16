@@ -1198,9 +1198,9 @@ mod tests {
             ORIGEM,
             1,
             "u1",
-            &AggregateRef::new("entity", "ent-1"),
+            &AggregateRef::new("planning_item", "card-1"),
             Operation::Upsert,
-            r#"{"id":"ent-1"}"#,
+            r#"{"id":"card-1"}"#,
             "",
         );
 

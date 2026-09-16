@@ -81,12 +81,23 @@ pub fn canvas_entity_position_save(
     x: f64,
     y: f64,
 ) -> DatabaseCommandResult<()> {
-    canvas_service::save_entity_position(&super::database(&app)?, &universe_id, &entity_id, x, y)
+    canvas_service::save_entity_position(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        &universe_id,
+        &entity_id,
+        x,
+        y,
+    )
 }
 
 #[tauri::command]
 pub fn canvas_layout_clear(app: AppHandle, universe_id: String) -> DatabaseCommandResult<()> {
-    canvas_service::clear_layout(&super::database(&app)?, &universe_id)
+    canvas_service::clear_layout(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        &universe_id,
+    )
 }
 
 #[tauri::command]

@@ -33,6 +33,7 @@ use crate::domain::sync::{AggregateRef, EventEnvelope, Operation};
 
 mod anexo;
 pub mod catalogo;
+pub mod entidades;
 pub mod manuscrito;
 pub mod palavras;
 
@@ -63,6 +64,10 @@ pub const TIPOS_COBERTOS: &[&str] = &[
     "chapter_order",
     "story_order",
     "book_order",
+    "entity",
+    "relation",
+    "timeline_event",
+    "canvas_entity_position",
     "attachment",
     "tag_assignment",
 ];
@@ -107,6 +112,10 @@ pub fn ler_canonico(
             id,
         ),
         "tag_assignment" => manuscrito::ler_atribuicao(connection, id),
+        "entity" => entidades::ler_entidade(connection, id),
+        "relation" => entidades::ler_relacao(connection, id),
+        "timeline_event" => entidades::ler_evento(connection, id),
+        "canvas_entity_position" => entidades::ler_posicao(connection, id),
         "attachment" => anexo::ler(connection, id),
         outro => Err(nao_coberto(outro)),
     }
@@ -126,9 +135,15 @@ pub fn impactos_da_exclusao(
         "story" => manuscrito::impactos_da_historia(connection, id),
         "book" => manuscrito::impactos_do_livro(connection, id),
         "chapter" => manuscrito::impactos_do_capitulo(connection, id),
-        "story_order" | "book_order" | "chapter_order" | "attachment" | "tag_assignment" => {
-            Ok(Vec::new())
-        }
+        "entity" => entidades::impactos_da_entidade(connection, id),
+        "timeline_event" => entidades::impactos_do_evento(connection, id),
+        "story_order"
+        | "book_order"
+        | "chapter_order"
+        | "attachment"
+        | "tag_assignment"
+        | "relation"
+        | "canvas_entity_position" => Ok(Vec::new()),
         outro => Err(nao_coberto(outro)),
     }
 }
@@ -150,6 +165,9 @@ pub fn dependencias(
         "story" | "book" | "chapter" | "story_order" | "book_order" | "chapter_order"
         | "tag_assignment" => manuscrito::dependencias(connection, envelope),
         "attachment" => anexo::pai_ausente(connection, envelope),
+        "entity" | "relation" | "timeline_event" | "canvas_entity_position" => {
+            entidades::dependencias(connection, envelope)
+        }
         _ => Ok(None),
     }
 }
@@ -162,11 +180,40 @@ pub fn aplicar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseComman
     match envelope.aggregate_type.as_str() {
         "universe" | "story" | "book" | "chapter" | "story_order" | "book_order"
         | "chapter_order" | "tag_assignment" => manuscrito::aplicar(tx, envelope),
+        "entity" | "relation" | "timeline_event" | "canvas_entity_position" => {
+            entidades::aplicar(tx, envelope)
+        }
         "attachment" => anexo::aplicar(tx, envelope),
         outro => Err(DatabaseCommandError::storage(format!(
             "Agregado '{outro}' ainda não tem aplicação de evento implementada. A sessão para \
              aqui de propósito: avançar marcaria o evento como aplicado sem que o dado tivesse \
              chegado, e ninguém saberia que faltou."
+        ))),
+    }
+}
+
+/// **Um evento local não pode ser estruturalmente inválido para o próprio apply remoto.**
+///
+/// A `Mutacao` chama isto com o payload que acabou de ler do banco, antes de emitir. É a MESMA
+/// função que a aplicação remota usa em `dependencias` — nenhum caminho local escapa de uma regra
+/// que o outro lado cobra. Aqui, "dependência faltando" também é erro: localmente o estado já está
+/// escrito, então faltar é inconsistência, não espera.
+pub fn validar_para_emissao(
+    connection: &Connection,
+    agregado: &AggregateRef,
+    payload: &str,
+) -> DatabaseCommandResult<()> {
+    let falta = match agregado.aggregate_type.as_str() {
+        "entity" | "relation" | "timeline_event" | "canvas_entity_position" => {
+            entidades::validar(connection, &agregado.aggregate_type, payload)?
+        }
+        _ => None,
+    };
+    match falta {
+        None => Ok(()),
+        Some(falta) => Err(DatabaseCommandError::storage(format!(
+            "{} {} não pode ser sincronizado: falta {falta}. Nada foi confirmado.",
+            agregado.aggregate_type, agregado.aggregate_id
         ))),
     }
 }
