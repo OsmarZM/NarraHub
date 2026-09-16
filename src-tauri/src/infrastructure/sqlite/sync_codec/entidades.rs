@@ -293,21 +293,8 @@ pub fn impactos_da_entidade(
     connection: &Connection,
     id: &str,
 ) -> DatabaseCommandResult<Vec<Impacto>> {
-    let mut impactos = Vec::new();
-    // `planning_field_links.entity_id ON DELETE CASCADE` reescreve o card (B4).
-    let cards: i64 = connection
-        .query_row(
-            "SELECT COUNT(DISTINCT planning_item_id) FROM planning_field_links WHERE entity_id = ?1",
-            [id],
-            |row| row.get(0),
-        )
-        .map_err(erro)?;
-    if cards > 0 {
-        impactos.push(Impacto::Bloqueado(format!(
-            "a entidade está em {cards} card(s) do planejamento, que ainda está sendo migrado para o \
-             Sync V2. Remova a entidade desses cards antes"
-        )));
-    }
+    // `planning_field_links.entity_id ON DELETE CASCADE`: o card sobrevive sem a ligação (B4).
+    let mut impactos = super::planejamento::cards_que_perdem_ligacao(connection, "entity_id", id)?;
 
     let ids = |sql: &str| -> DatabaseCommandResult<Vec<String>> {
         let mut consulta = connection.prepare(sql).map_err(erro)?;

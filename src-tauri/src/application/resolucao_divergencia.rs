@@ -223,9 +223,24 @@ fn aceitar_exclusao(
         )));
     }
 
+    // Quem sobrevive à exclusão muda: esses agregados precisam de revisão aqui, senão o banco
+    // ficaria diferente da revisão corrente deles (o campo apagado sai do card, por exemplo).
+    let sobreviventes: Vec<AggregateRef> = sync_codec::impactos_da_exclusao(m.tx(), agregado)?
+        .into_iter()
+        .filter_map(|impacto| match impacto {
+            sync_codec::Impacto::Reescrito(sobrevivente) => Some(sobrevivente),
+            _ => None,
+        })
+        .collect();
+
     // O preflight da exclusão (filho vivo, sobrevivente que mudaria, efeito bloqueado) roda de novo
     // lá dentro, AGORA: o que era verdade no bloqueio não autoriza a cascata.
     sync_apply::aplicar_exclusao_bloqueada(m.tx(), &divergencia.remote_event_id)?;
+    for sobrevivente in sobreviventes {
+        if sync_codec::ler_canonico(m.tx(), &sobrevivente)?.is_some() {
+            m.gravou(&sobrevivente.aggregate_type, &sobrevivente.aggregate_id)?;
+        }
+    }
     marcar_resolvida(m, id, "remote")?;
     Ok(Resolucao::ExclusaoConcluida)
 }

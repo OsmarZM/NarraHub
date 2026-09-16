@@ -40,8 +40,9 @@ revisões / eventos
 | **B1** | integrada | fronteira `Mutacao`; `attachment` create e delete; exclusão remota bloqueada e a resolução dela (4.4.1); fronteira com o blob store (4.4.2); migration 21 (`sync_divergences.kind`) |
 | **B2** | integrada (#59) | `universe` create/update; `story`, `book`, `chapter` create/update/delete; `chapter_order` (create/delete de capítulo e reorder); campos personalizados dentro desses agregados; `tag_assignment` apagado pelos gatilhos do manuscrito; impacto de exclusão `Excluido`/`Reescrito`/`Bloqueado` (4.3); catálogo de efeitos com gate (3); payload canônico definitivo (8); dependência de criação pai → filho na aplicação remota; capa de livro pelo blob store |
 | **B2.1** | integrada (#60) | `story_order(universe)` e `book_order(story)` com o contrato de `chapter_order`; **ponte de ordem** transacional (8.1), que destrava ordens entre três origens sem nunca confirmar revisão corrente não materializada — inclusive o travamento que existia em `chapter_order` desde a B2 |
-| **B3** | implementada (branch `sync-b3-entidades`), em revisão | `entity` (ficha inteira: `entities` + `entity_attributes` + campos personalizados, uma revisão só), `relation`, `timeline_event` e `canvas_entity_position`; exclusão de entidade com árvore completa de efeitos, inclusive o `SET NULL` da linha do tempo como **reescrita**; `entity_service`, `workspace_service` e a posição do canvas pela `Mutacao` |
-| B4–B6 | não iniciadas | ver seção 7 |
+| **B3** | integrada (#61) | `entity` (ficha inteira: `entities` + `entity_attributes` + campos personalizados, uma revisão só), `relation`, `timeline_event` e `canvas_entity_position`; exclusão de entidade com árvore completa de efeitos, inclusive o `SET NULL` da linha do tempo como **reescrita**; `entity_service`, `workspace_service` e a posição do canvas pela `Mutacao` |
+| **B4** | implementada (branch `sync-b4-planejamento`), em revisão | `planning_item` (card inteiro: texto, imagem, capítulo, valores escalares e relações — uma revisão), `planning_order(universe)` (coluna e posição) e `planning_field_definition`; o gatilho que reescreve vários cards declarado; os bloqueios temporários de capítulo, história e entidade viraram reescrita do card |
+| B5–B6 | não iniciadas | ver seção 7 |
 
 **Fora da B2, dito às claras:**
 
@@ -54,11 +55,13 @@ revisões / eventos
 - Marcar e desmarcar tag (`knowledge_service::set_tag`) ainda não emite evento (B5). A B2 só emite o fim
   das marcações que os gatilhos do manuscrito apagam.
 - `attachment` mantém o payload da B1 (com `created_at` e `sortOrder`); a revisão dele é da B5.
-- **Fora da B3:** excluir entidade ligada a card do planejamento é **recusado** até a B4 (o
-  `planning_field_links.entity_id` reescreveria o card). `entity_templates` (as fichas em branco por
-  tipo, por universo) **não tem escritor no app** — é acervo legado que `create` de entidade lê; precisa
-  de codec antes da gênese e entra no gate de cobertura total da B6. Nó e aresta do canvas continuam na
-  B5, e as funções deles estão nomeadas no gate estrutural com o motivo.
+- **Nenhum bloqueio temporário sobrou do planejamento.** Excluir capítulo, história ou entidade ligada a
+  card agora **reescreve o card** (B4). Os `Bloqueado` da B2/B3 saíram do código e do catálogo.
+- **Fora da B4:** `entity_templates` **não tem escritor no app** — é acervo legado que `create` de
+  entidade lê; precisa de codec antes da gênese (6.1). Nó e aresta do canvas continuam na B5, e as
+  funções deles estão nomeadas no gate estrutural com o motivo. Tag e marcação de tag continuam na B5:
+  excluir uma tag reescreve cards que a citam, e isso só passa pela fronteira quando o
+  `knowledge_service` entrar.
 
 ## 2. Agregados
 
@@ -271,9 +274,10 @@ m.excluir(parent)
     universe_id de todo afetado lido agora; vazio → erro
 serviço executa o DELETE
 fim da transação:
+  Reescrito com linha própria → estado canônico relido → upsert, ANTES das exclusões
   Excluido  → precisa ter sumido → evento delete (descendentes antes do pai)
-  Reescrito → precisa continuar existindo → estado canônico relido → evento upsert
-  excluídos são emitidos ANTES dos reescritos
+  Reescrito de existência derivada (ordens) → upsert DEPOIS das exclusões
+  Excluido(A) domina Reescrito(A): agregado condenado não ganha revisão intermediária
   agregado cujo canônico já é o payload da revisão corrente → nenhum evento
 COMMIT
 ```
@@ -281,9 +285,18 @@ COMMIT
 Na B2 o `Reescrito` real é `chapter_order(livro)` quando um capítulo é excluído. Os `Reescrito` por
 `SET NULL` (planning, timeline) são `Bloqueado` até a etapa que cobre o agregado.
 
-**Por que excluídos antes dos reescritos.** Quem recebe materializa cada evento exatamente (seção 8.1).
-A ordem do livro sem o capítulo só pode ser materializada quando o capítulo já saiu; se a reescrita viesse
-antes, ela esperaria um capítulo sumir que ainda está no banco.
+**A ordem de emissão depende do tipo de sobrevivente.**
+
+| sobrevivente | quando é emitido | por quê |
+| --- | --- | --- |
+| tem linha própria (card do planejamento) | **antes** das exclusões | o estado dele sem o item apagado já é materializável, e vir primeiro faz o receptor conhecer a concorrência **antes** do SQL destrutivo: edição concorrente abre divergência e a exclusão seguinte é bloqueada pelo preflight |
+| existência derivada (`*_order`) | **depois** das exclusões | a lista sem o item só materializa quando o item sai; e como o cursor de uma origem é contíguo, pôr a ordem primeiro travaria a origem inteira (o travamento que a B2.1 encontrou) |
+
+**`Excluido(A)` domina `Reescrito(A)`.** Se um agregado já vai desaparecer nesta operação, a reescrita que a
+cascata causaria nele é absorvida — sem revisão intermediária. É o card que possui um campo exclusivo com
+valor dentro dele: apagar o card apaga o campo, e o efeito do campo sobre o card não vira evento. A regra
+está em dois lugares de propósito (`coletar` descarta, `finalizar` ignora), e um teste de mutação que
+remove as duas reprova.
 
 **Exclusão remota com sobrevivente.** Quem recebe a exclusão não bloqueia porque o sobrevivente vai mudar —
 a reescrita dele é o evento seguinte da mesma origem. Bloqueia se o sobrevivente tem **decisão aberta** ou
@@ -374,6 +387,22 @@ delete entity
 Emissão: os excluídos primeiro (relação, posição, anexo, marcação), a entidade, e por último a
 reescrita de cada evento da linha do tempo — que é relido depois do `DELETE`, já com `entityId` nulo.
 
+#### 4.4.1.2 O gatilho que reescreve vários cards (B4)
+
+```text
+delete planning_field_definition F
+  ├─ trg_planning_field_definition_delete   tira a chave de F do JSON de CADA card do universo
+  ├─ FK planning_field_links.field_definition_id CASCADE   apaga as relações de F em cada card
+  └─ efeito declarado: Rewrite(card A), Rewrite(card B), Rewrite(card C), …
+```
+
+Os dois mecanismos atingem o mesmo agregado (o card), e a união deles é declarada como `Reescrito`
+antes do `DELETE`. Cada card afetado é relido depois do SQL e ganha **revisão própria**. Card com
+divergência aberta ou evento pendente recusa a exclusão inteira, como qualquer reescrita (4.3).
+
+Sem isso, uma exclusão reescreveria quarenta cards emitindo um evento só — a escrita invisível que
+abriu a NH-079.
+
 #### 4.4.2 Fronteira SQLite × blob store
 
 O arquivo do anexo é gravado dentro da `Mutacao`, mas o sistema de arquivos não participa do `ROLLBACK`.
@@ -424,7 +453,14 @@ Testes: `mutacao::tests::rollback_depois_do_blob_deixa_so_o_arquivo_orfao_e_repe
    que chegam antes das entidades (de outra origem, contíguos — o que segura é a dependência, não a lacuna
    de `seq`); três origens com a relação de A citando entidade de C; `clear_layout`; evento que troca de
    entidade recusado.
-10. **Materialização exata (B2):** cada evento aplicado um por vez com o estado conferido
+10. **Planejamento em dois e três aparelhos (B4):** card, quadro e propriedades PC ↔ Android; mover card
+    não revisa o conteúdo; excluir card leva os campos exclusivos e reescreve o quadro; excluir
+    propriedade reescreve **todos** os cards afetados (um evento por card); excluir capítulo deixa
+    `chapterId` nulo; excluir história e entidade tiram a ligação com revisão do card; card editado num
+    lado × propriedade apagada no outro (decisão, com a edição preservada no log); card movido num lado ×
+    ficha editada no outro (agregados diferentes, sem conflito); card de outra origem que depende de
+    entidade, história e propriedade que ainda não chegaram.
+11. **Materialização exata (B2):** cada evento aplicado um por vez com o estado conferido
    (`cada_aplicado_materializa_o_proprio_evento`); asserção geral em repouso depois de toda sessão dos testes
    de dois aparelhos; causalidade cruzada A/B/C (`ordem_que_cita_capitulo_de_outra_origem_espera_o_capitulo_chegar`);
    ordem com capítulo repetido, de outro livro, inexistente e não citado; pai trocado em `story`/`book`/`chapter`.
@@ -473,6 +509,12 @@ B3:
 
    Determinístico, sem id de linha no payload, e é o conjunto inteiro que vira uma revisão — como
    `chapter_order` fez com a ordem.
+3. **`planning_field_order(universe)` — requisito obrigatório da B6, não "talvez".** A B4 deixou o
+   `sort_order` das definições de campo fora do payload. Isso já diverge sem drag-and-drop: se A cria
+   F1 e B cria F2, cada aparelho calcula o próprio `sort_order` e a ordem visual continua diferente depois de
+   convergir. Antes da C, uma das duas coisas tem de existir: o agregado `planning_field_order(universe)` no
+   padrão de `chapter_order`, **ou** uma decisão formal, escrita, de que a ordem das propriedades é estado
+   local. A preferência registrada é sincronizar.
 
 ## 7. Subdivisão da B
 
@@ -484,7 +526,7 @@ B1  infraestrutura: Mutacao, exclusão com preflight, exclusão remota bloqueada
 B2  manuscrito: universe, story, book, chapter create, chapter_order, custom fields, tag assignments por gatilho
 B2.1 story_order(universe), book_order(story) — antes da C
 B3  entidades: entity (+atributos), relation, timeline_event, canvas_entity_position  ← implementada
-B4  planejamento: planning_item, planning_order, planning_field_definition (gatilho que reescreve cards)
+B4  planejamento: planning_item, planning_order, planning_field_definition (gatilho que reescreve cards)  ← implementada
 B5  conhecimento e canvas: content_tag, tag_assignment, canvas_node, canvas_edge; gate autoral × efêmero
 B6  conteúdo final de colaboração aprovada e conversões de legado pela Mutacao;
     entity_template_set; decisão do UNIQUE(entity_id) da posição; gate de cobertura total
@@ -514,6 +556,9 @@ Campos personalizados: `[{key, value}]` na ordem `sort_order, key`.
 | `relation` | `relations.id` | `{id, universeId, sourceId, targetId, type, label, bidirectional, importance}` | `created_at` |
 | `timeline_event` | `timeline_events.id` | `{id, universeId, title, description, eventType, startDate, endDate, entityId, displayDate, sortKey}` | timestamps |
 | `canvas_entity_position` | `entities.id` | `{entityId, universeId, positionX, positionY}` | `updated_at` |
+| `planning_item` | `planning_items.id` | `{id, universeId, chapterId, title, description, targetWords, imageBlobHash, imageMimeType, values:[{fieldId,value}], links:[{fieldId,kind,targetId}]}` | `status` e `sort_order` (→ `planning_order`), timestamps, `image` legada, ids das linhas de ligação |
+| `planning_order` | `universes.id` | `{universeId, items:[{itemId, status}]}` — colunas na ordem do fluxo, posição = a da lista | os números de `sort_order` |
+| `planning_field_definition` | `planning_field_definitions.id` | `{id, universeId, name, fieldType, options, scope, ownerItemId}` | timestamps, `sort_order` (ver 6.1) |
 
 Decisões que valem conferir na revisão:
 
@@ -565,6 +610,23 @@ Decisões que valem conferir na revisão:
   Dois aparelhos convergem no payload quando têm o mesmo `f64`, que é o que a replicação entrega.
 - **Posição do grafo é autoral e sincroniza; viewport não.** Zoom, pan, seleção e hover vivem na memória
   do componente e não passam por serviço nenhum. `clear_layout` exclui cada posição, com evento.
+
+**Decisões da B4 que valem conferir:**
+
+- **Valores do card: duas tabelas, um conceito, sem duplicata.** `custom_field_values` (JSON) guarda os
+  **escalares**; `planning_field_links` guarda as **relações** (história, entidade, tag). A migration 13 já
+  moveu as relações que a build de desenvolvimento havia escrito no JSON para a tabela normalizada e
+  limpou o JSON — não há legado a migrar nem duas fontes de verdade. As duas coisas são estado interno do
+  card: mudar um campo é **uma revisão do `planning_item`**, nunca um evento por linha ou por link.
+- **Coluna e ordem são o quadro, não o card.** Arrastar altera só `planning_order`; nenhum card ganha
+  revisão por ter mudado de coluna. Criar e excluir card emitem `planning_item` **e** `planning_order` na
+  mesma mutação. Salvar a ficha também revisa o quadro quando a etapa muda (o próprio `UPDATE` recoloca o
+  card no fim da coluna nova) — e não emite nada se a ordem não mudou de fato.
+- **`ownerItemId` é dependência causal explícita.** Um campo de escopo `card` não existe sem o card dono e
+  some com ele (FK `owner_item_id ON DELETE CASCADE`), então excluir o card declara a exclusão do campo.
+  Escopo `universal` com dono, ou escopo `card` sem dono, é inconsistência.
+- **`sort_order` das definições ficou fora do payload** — não há operação de reordenação hoje, igual ao
+  caso de história/livro na B2. A decisão sobre um `planning_field_order(universe)` está em 6.1.
 
 ### 8.1 Contrato da aplicação remota (upsert)
 
@@ -658,11 +720,45 @@ universo; posição no mesmo universo da entidade.
 | `canvas_entity_position` cuja entidade **já tem posição em outro universo** | erro; a segunda linha não é criada |
 | `sortKey`/`positionX`/`positionY` não finito | erro — não há payload canônico para NaN ou infinito |
 
+**Concorrência nunca altera o estado vivo antes da decisão (B4).** Uma exclusão remota que reescreveria um
+card com edição concorrente **não executa**:
+
+```text
+A edita o valor do campo F no card       B apaga o campo F
+A recebe:  reescrita do card (sem F)  → concorrente → divergência; o card de A fica intacto
+           exclusão de F              → preflight vê o card divergente → o DELETE não roda
+                                      → parent_deletion_blocked
+resolvendo: manter o local  → campo e valor continuam
+            aceitar remoto  → campo e valor somem, e o card ganha revisão por isso
+```
+
+A resolução que aceita a exclusão **declara a reescrita dos sobreviventes**: o card muda porque o campo
+deixou de existir, e isso tem de ser uma revisão dele, não uma alteração muda. A decisão sobre a
+divergência do próprio card (concorrente) continua sendo da etapa F.
+
+**Card, quadro e propriedade (B4):**
+
+| caso | resultado |
+| --- | --- |
+| `planning_item` com `universeId` diferente do daqui | erro — o universo do card é imutável |
+| `chapterId` que não existe aqui | `PrecisaReconciliar` |
+| `chapterId` de capítulo de **outro universo** | erro |
+| valor ou ligação citando `fieldId` que não existe aqui | `PrecisaReconciliar` |
+| `fieldId` de outro universo, ou exclusivo de outro card | erro |
+| ligação cujo alvo (história, entidade, tag) não existe aqui | `PrecisaReconciliar` |
+| ligação cujo alvo está em outro universo | erro |
+| `planning_order` citando card que não existe aqui | `PrecisaReconciliar` |
+| `planning_order` com card repetido, coluna desconhecida ou card de outro universo | erro |
+| existe card deste universo que o quadro não cita | `PrecisaReconciliar` (com a ponte de ordem de 8.1) |
+| `planning_field_definition` com escopo e dono incoerentes, ou `options` que não é lista | erro |
+
 **Asserção geral de materialização:**
 
 - **Por evento (em produção):** após todo `Applied::Aplicado`, o agregado aplicado é o payload do evento.
   Existência derivada (`chapter_order`) é exceção só no delete: ela some com o livro, que vem depois.
-- **Em repouso (nos testes):** depois de cada sessão, todo agregado da B2 com revisão corrente e sem decisão
+- **Em repouso (nos testes):** depois de cada sessão, todo agregado **coberto** (a lista vem de
+  `sync_codec::TIPOS_COBERTOS`, não de uma lista à mão — a primeira versão desta asserção citava só os
+  tipos da B2 e por isso não cobria B3 nem B4) com revisão corrente e sem decisão
   aberta nem evento pendente tem `ler_canonico == payload da revisão corrente`. Não vale **entre** dois
   eventos de uma mesma mutação para os OUTROS agregados dela (capítulo já excluído, ordem ainda por chegar):
   uma mutação vira vários eventos, e o receptor os aplica um de cada vez. Tornar isso atômico exige agrupar

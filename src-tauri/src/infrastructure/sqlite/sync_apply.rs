@@ -1198,9 +1198,9 @@ mod tests {
             ORIGEM,
             1,
             "u1",
-            &AggregateRef::new("planning_item", "card-1"),
+            &AggregateRef::new("canvas_node", "no-1"),
             Operation::Upsert,
-            r#"{"id":"card-1"}"#,
+            r#"{"id":"no-1"}"#,
             "",
         );
 

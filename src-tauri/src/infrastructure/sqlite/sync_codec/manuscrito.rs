@@ -616,21 +616,8 @@ pub fn impactos_da_historia(
     connection: &Connection,
     id: &str,
 ) -> DatabaseCommandResult<Vec<Impacto>> {
-    let mut impactos = Vec::new();
-    // `planning_field_links.story_id ON DELETE CASCADE` reescreve o card (B4).
-    let cards: i64 = connection
-        .query_row(
-            "SELECT COUNT(DISTINCT planning_item_id) FROM planning_field_links WHERE story_id = ?1",
-            [id],
-            |row| row.get(0),
-        )
-        .map_err(erro)?;
-    if cards > 0 {
-        impactos.push(Impacto::Bloqueado(format!(
-            "a história está ligada a {cards} card(s) do planejamento, que ainda está sendo migrado \
-             para o Sync V2. Remova a história dos campos desses cards antes"
-        )));
-    }
+    // `planning_field_links.story_id ON DELETE CASCADE`: o card sobrevive sem a ligação (B4).
+    let mut impactos = super::planejamento::cards_que_perdem_ligacao(connection, "story_id", id)?;
     // A ordem dos livros sai primeiro (existência derivada), como a dos capítulos no livro.
     impactos.push(Impacto::Excluido(AggregateRef::new("book_order", id)));
     for livro in ids(
@@ -685,21 +672,15 @@ pub fn impactos_do_capitulo(
     connection: &Connection,
     id: &str,
 ) -> DatabaseCommandResult<Vec<Impacto>> {
-    let mut impactos = Vec::new();
-    // `planning_items.chapter_id ON DELETE SET NULL` reescreve o card (B4).
-    let cards: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM planning_items WHERE chapter_id = ?1",
-            [id],
-            |row| row.get(0),
-        )
-        .map_err(erro)?;
-    if cards > 0 {
-        impactos.push(Impacto::Bloqueado(format!(
-            "o capítulo está ligado a {cards} card(s) do planejamento, que ainda está sendo migrado \
-             para o Sync V2. Desvincule o capítulo desses cards antes"
-        )));
-    }
+    // `planning_items.chapter_id ON DELETE SET NULL`: o card sobrevive com o capítulo em nulo (B4).
+    let mut impactos: Vec<Impacto> = ids(
+        connection,
+        "SELECT id FROM planning_items WHERE chapter_id = ?1 ORDER BY id",
+        id,
+    )?
+    .into_iter()
+    .map(|card| Impacto::Reescrito(AggregateRef::new("planning_item", card)))
+    .collect();
     for anexo in ids(
         connection,
         "SELECT id FROM attachments WHERE owner_type = 'chapter' AND owner_id = ?1
