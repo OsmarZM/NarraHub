@@ -143,6 +143,90 @@ impl Aparelho {
         .expect("posição");
     }
 
+    fn tag(&self, universo: &str, nome: &str) -> String {
+        crate::application::knowledge_service::create_tag(
+            &self.banco.database,
+            &self.eu,
+            universo,
+            nome,
+            "#7d3650",
+        )
+        .expect("tag")
+        .id
+    }
+
+    fn marcar(&self, tag: &str, dono_tipo: &str, dono: &str, marcada: bool) {
+        crate::application::knowledge_service::set_tag(
+            &self.banco.database,
+            &self.eu,
+            dono_tipo,
+            dono,
+            tag,
+            marcada,
+        )
+        .expect("marcar");
+    }
+
+    fn no(&self, universo: &str, texto: &str, x: f64, y: f64) -> String {
+        canvas_service::create_node(
+            &self.banco.database,
+            &self.store,
+            &self.eu,
+            universo,
+            "note",
+            texto,
+            "",
+            x,
+            y,
+        )
+        .expect("elemento")
+        .id
+    }
+
+    fn mover_no(&self, no: &str, x: f64, y: f64) {
+        canvas_service::save_node_position(&self.banco.database, &self.eu, no, x, y)
+            .expect("mover");
+    }
+
+    fn escrever_no(&self, no: &str, texto: &str) {
+        canvas_service::update_node(
+            &self.banco.database,
+            &self.store,
+            &self.eu,
+            no,
+            crate::domain::canvas::CanvasNodePatch {
+                text: Some(texto.to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("editar elemento");
+    }
+
+    fn aresta(
+        &self,
+        universo: &str,
+        origem: (&str, &str),
+        destino: (&str, &str),
+        rotulo: &str,
+    ) -> String {
+        canvas_service::create_edge(
+            &self.banco.database,
+            &self.eu,
+            universo,
+            &crate::domain::canvas::CanvasEndpoint {
+                kind: origem.0.into(),
+                id: origem.1.into(),
+            },
+            &crate::domain::canvas::CanvasEndpoint {
+                kind: destino.0.into(),
+                id: destino.1.into(),
+            },
+            rotulo,
+        )
+        .expect("ligação")
+        .id
+    }
+
     fn card(&self, universo: &str, titulo: &str, capitulo: Option<&str>) -> String {
         crate::application::planning_service::create(
             &self.banco.database,
@@ -2607,5 +2691,333 @@ fn card_que_depende_de_outra_origem_espera_e_converge() {
     assert_eq!(relatorio.pendentes, 0, "{relatorio:?}");
     c.convergiu_com(&b, "planning_item", &card);
     c.convergiu_com(&b, "planning_order", &universo);
+    b.invariante_de_materializacao();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// B5 — conhecimento e canvas
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// **Mover não é editar.** Conteúdo e posição do elemento livre são agregados diferentes, então
+/// arrastar num aparelho e escrever no outro não colide com nada.
+#[test]
+fn mover_o_elemento_num_lado_e_escrever_nele_no_outro_nao_conflita() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let no = a.no(&universo, "rascunho", 0.0, 0.0);
+    sincronizar(&a, &b);
+
+    a.mover_no(&no, 120.0, -40.0);
+    b.escrever_no(&no, "rota comercial antiga");
+
+    let (em_b, em_a) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 0, "{em_b:?}");
+    assert_eq!(em_a.divergencias, 0, "{em_a:?}");
+    a.convergiu_com(&b, "canvas_node", &no);
+    a.convergiu_com(&b, "canvas_node_position", &no);
+    assert!(a
+        .canonico("canvas_node", &no)
+        .expect("nó")
+        .contains("rota comercial antiga"));
+    assert!(b
+        .canonico("canvas_node_position", &no)
+        .expect("posição")
+        .contains("120"));
+}
+
+/// Excluir o elemento emite a árvore inteira, e o cursor da origem continua contíguo.
+#[test]
+fn excluir_o_elemento_leva_a_ligacao_e_a_posicao_com_eventos_proprios() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let entidade = a.entidade(&universo, "Frodo");
+    let no = a.no(&universo, "rascunho", 0.0, 0.0);
+    let ligacao = a.aresta(&universo, ("canvas", &no), ("entity", &entidade), "cita");
+    sincronizar(&a, &b);
+
+    let antes = a.eventos().len();
+    canvas_service::delete_node(&a.banco.database, &a.eu, &no).expect("excluir");
+    let eventos = a.eventos();
+    assert_eq!(
+        &eventos[antes..],
+        &[
+            (
+                "canvas_edge".to_string(),
+                ligacao.clone(),
+                "delete".to_string()
+            ),
+            (
+                "canvas_node_position".to_string(),
+                no.clone(),
+                "delete".to_string()
+            ),
+            ("canvas_node".to_string(), no.clone(), "delete".to_string()),
+        ],
+        "descendentes antes do pai, cada um com o seu evento"
+    );
+
+    let (em_b, _) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 0, "{em_b:?}");
+    a.convergiu_com(&b, "canvas_node", &no);
+    a.convergiu_com(&b, "canvas_edge", &ligacao);
+    assert_eq!(b.contar("SELECT COUNT(*) FROM canvas_edges"), 0);
+}
+
+/// **Apagar a entidade leva a ligação do canvas.** Sem o gatilho da migration 22, ela ficaria no
+/// arquivo do outro aparelho para sempre — invisível na tela e viva no banco.
+#[test]
+fn excluir_a_entidade_leva_a_ligacao_do_canvas_nos_dois_aparelhos() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let entidade = a.entidade(&universo, "Frodo");
+    let no = a.no(&universo, "rascunho", 0.0, 0.0);
+    let ligacao = a.aresta(&universo, ("canvas", &no), ("entity", &entidade), "cita");
+    sincronizar(&a, &b);
+    assert_eq!(b.contar("SELECT COUNT(*) FROM canvas_edges"), 1);
+
+    crate::application::entity_service::delete(&a.banco.database, &a.eu, &entidade)
+        .expect("excluir entidade");
+
+    let (em_b, _) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 0, "{em_b:?}");
+    a.convergiu_com(&b, "canvas_edge", &ligacao);
+    assert_eq!(
+        b.contar("SELECT COUNT(*) FROM canvas_edges"),
+        0,
+        "a ligação invisível continuou no arquivo do outro aparelho"
+    );
+}
+
+/// Ligação criada num lado para um elemento que o outro apagou: a exclusão chega e é bloqueada,
+/// porque apagar o elemento levaria junto uma ligação que a origem não conhecia.
+#[test]
+fn elemento_apagado_num_lado_com_ligacao_criada_no_outro_vira_decisao() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let entidade = a.entidade(&universo, "Frodo");
+    let no = a.no(&universo, "rascunho", 0.0, 0.0);
+    sincronizar(&a, &b);
+
+    canvas_service::delete_node(&a.banco.database, &a.eu, &no).expect("A apaga o elemento");
+    let ligacao = b.aresta(&universo, ("canvas", &no), ("entity", &entidade), "cita");
+
+    let (em_b, _) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 1, "{em_b:?}");
+    assert_eq!(
+        b.divergencias_abertas("canvas_node"),
+        vec![(no.clone(), "parent_deletion_blocked".to_string())]
+    );
+    assert!(
+        b.canonico("canvas_edge", &ligacao).is_some(),
+        "a ligação de B foi apagada antes da decisão"
+    );
+    assert!(b.canonico("canvas_node", &no).is_some());
+    b.invariante_de_materializacao();
+}
+
+/// **A ligação chega antes de uma das pontas.** Dependência, não erro.
+///
+/// O elemento é de B, a ligação é de A: a origem de A é contígua e completa, e mesmo assim a
+/// ligação não pode materializar até o elemento de B chegar. O que segura é a **ponta que falta**,
+/// não uma lacuna de `seq`.
+#[test]
+fn ligacao_que_chega_antes_da_ponta_de_outra_origem_espera_por_ela() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let c = Aparelho::novo("c");
+    let universo = a.universo("Terra");
+    let entidade = a.entidade(&universo, "Frodo");
+    sincronizar(&a, &b);
+
+    let no = b.no(&universo, "rascunho", 0.0, 0.0);
+    sincronizar(&a, &b);
+    let ligacao = a.aresta(&universo, ("canvas", &no), ("entity", &entidade), "cita");
+
+    apresentar(&a, &c);
+    apresentar(&c, &a);
+    apresentar(&b, &c);
+    apresentar(&c, &b);
+
+    // C recebe só o que A tem de si mesma... e A já replicou o nó de B, então para provar a
+    // espera de verdade C recebe primeiro apenas os eventos DA ORIGEM A.
+    let para_c = eventos_para(
+        &a.banco.connection(),
+        &vetor_local(&c.banco.connection()).expect("vetor c"),
+    )
+    .expect("a → c");
+    let so_de_a: Vec<_> = para_c
+        .into_iter()
+        .filter(|envelope| envelope.device_id == a.eu.device_id())
+        .collect();
+    let em_c = receber_eventos(&mut c.banco.connection(), &so_de_a).expect("c recebe");
+    assert!(
+        c.canonico("canvas_edge", &ligacao).is_none(),
+        "a ligação materializou sem a ponta: {em_c:?}"
+    );
+    assert!(c.canonico("entity", &entidade).is_some());
+
+    // O nó de B chega, e a ligação entra.
+    sincronizar(&b, &c);
+    sincronizar(&a, &c);
+    a.convergiu_com(&c, "canvas_edge", &ligacao);
+    a.convergiu_com(&c, "canvas_node", &no);
+}
+
+/// Marcar a mesma tag no mesmo dono nos dois aparelhos é **a mesma marcação**: a identidade é
+/// `tagId:ownerType:ownerId`, não o `id` aleatório da linha. Converge sem divergência.
+#[test]
+fn a_mesma_marcacao_criada_dos_dois_lados_converge_sem_divergencia() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let historia = a.historia(&universo, "Saga").id;
+    let livro = a.livro(&historia, "Livro I").id;
+    let capitulo = a.capitulo(&livro, "Um").id;
+    let tag = a.tag(&universo, "Reescrever");
+    sincronizar(&a, &b);
+
+    a.marcar(&tag, "chapter", &capitulo, true);
+    b.marcar(&tag, "chapter", &capitulo, true);
+
+    let (em_b, em_a) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 0, "{em_b:?}");
+    assert_eq!(em_a.divergencias, 0, "{em_a:?}");
+    let marcacao = sync_codec::manuscrito::id_da_atribuicao(&tag, "chapter", &capitulo);
+    a.convergiu_com(&b, "tag_assignment", &marcacao);
+    assert_eq!(
+        a.contar("SELECT COUNT(*) FROM content_tag_assignments"),
+        1,
+        "dois ids aleatórios viraram duas marcações"
+    );
+}
+
+/// Tag renomeada num lado e marcada no outro: agregados diferentes, sem conflito.
+#[test]
+fn tag_renomeada_num_lado_e_marcada_no_outro_nao_conflita() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let entidade = a.entidade(&universo, "Frodo");
+    let tag = a.tag(&universo, "Rever");
+    sincronizar(&a, &b);
+
+    crate::application::knowledge_service::update_tag(
+        &a.banco.database,
+        &a.eu,
+        &tag,
+        "Reescrever",
+        "#2f6f7d",
+    )
+    .expect("renomear");
+    b.marcar(&tag, "entity", &entidade, true);
+
+    let (em_b, em_a) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 0, "{em_b:?}");
+    assert_eq!(em_a.divergencias, 0, "{em_a:?}");
+    a.convergiu_com(&b, "content_tag", &tag);
+    let marcacao = sync_codec::manuscrito::id_da_atribuicao(&tag, "entity", &entidade);
+    a.convergiu_com(&b, "tag_assignment", &marcacao);
+    assert!(a
+        .canonico("content_tag", &tag)
+        .expect("tag")
+        .contains("Reescrever"));
+}
+
+/// **Tag homônima criada dos dois lados.** O schema não deixa as duas existirem, e nenhuma está
+/// errada. Nada é aplicado, nada é alterado: vira decisão do escritor.
+#[test]
+fn tag_homonima_criada_dos_dois_lados_vira_decisao_em_vez_de_travar() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    sincronizar(&a, &b);
+
+    let tag_de_a = a.tag(&universo, "Mar");
+    let tag_de_b = b.tag(&universo, "mar"); // COLLATE NOCASE: é o mesmo nome
+
+    let (em_b, em_a) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 1, "{em_b:?}");
+    assert_eq!(em_a.divergencias, 1, "{em_a:?}");
+    assert_eq!(
+        a.divergencias_abertas("content_tag"),
+        vec![(tag_de_b.clone(), "tag_name_conflict".to_string())]
+    );
+    assert_eq!(
+        b.divergencias_abertas("content_tag"),
+        vec![(tag_de_a.clone(), "tag_name_conflict".to_string())]
+    );
+    // Cada um continua com a sua, intacta, e nenhuma revisão corrente foi inventada.
+    assert!(a.canonico("content_tag", &tag_de_b).is_none());
+    assert!(a.canonico("content_tag", &tag_de_a).is_some());
+    a.invariante_de_materializacao();
+    b.invariante_de_materializacao();
+
+    // Renomear a tag daqui libera o nome. A tag que estava esperando NÃO entra sozinha: o evento
+    // dela já está marcado como aplicado, e reaplicá-lo é a resolução da divergência — trabalho da
+    // etapa F, com a tela de decisão. O que a B5 garante é que nada foi perdido nem alterado.
+    crate::application::knowledge_service::update_tag(
+        &a.banco.database,
+        &a.eu,
+        &tag_de_a,
+        "Mar aberto",
+        "#7d3650",
+    )
+    .expect("renomear");
+    assert!(a.canonico("content_tag", &tag_de_b).is_none());
+    assert_eq!(
+        a.divergencias_abertas("content_tag"),
+        vec![(tag_de_b.clone(), "tag_name_conflict".to_string())],
+        "a decisão continua aberta até alguém tomá-la"
+    );
+    a.invariante_de_materializacao();
+}
+
+/// Tag apagada num lado, card editado no outro: a exclusão é bloqueada, e o card de B não muda
+/// antes da decisão. Mesmo padrão da propriedade de card na B4.
+#[test]
+fn tag_apagada_num_lado_com_card_editado_no_outro_bloqueia_a_exclusao() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let tag = a.tag(&universo, "Mar");
+    let campo_tag = a.campo(&universo, "Tags", "tags", None);
+    let card = a.card(&universo, "Cena do porto", None);
+    a.salvar_card(
+        &universo,
+        &card,
+        "Cena do porto",
+        None,
+        serde_json::json!({ campo_tag.clone(): [tag.clone()] }),
+    );
+    let (recebido, _) = sincronizar(&a, &b);
+    assert_eq!(recebido.divergencias, 0, "{recebido:?}");
+
+    b.salvar_card(
+        &universo,
+        &card,
+        "Cena do porto ao amanhecer",
+        None,
+        serde_json::json!({ campo_tag.clone(): [tag.clone()] }),
+    );
+    crate::application::knowledge_service::delete_tag(&a.banco.database, &a.eu, &tag)
+        .expect("A apaga a tag");
+
+    let (em_b, _) = sincronizar(&a, &b);
+    assert!(em_b.divergencias >= 1, "{em_b:?}");
+    assert_eq!(
+        b.divergencias_abertas("content_tag"),
+        vec![(tag.clone(), "parent_deletion_blocked".to_string())]
+    );
+    assert!(
+        b.canonico("planning_item", &card)
+            .expect("card")
+            .contains(&tag),
+        "a ligação do card de B sumiu antes da decisão"
+    );
+    assert!(b.canonico("content_tag", &tag).is_some());
     b.invariante_de_materializacao();
 }

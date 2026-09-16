@@ -1,7 +1,7 @@
 //! NarraHub — Database Migrations
 //! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 21;
+pub const LATEST_SCHEMA_VERSION: i64 = 22;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -26,6 +26,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         19 => Some(MIGRATION_V19),
         20 => Some(MIGRATION_V20),
         21 => Some(MIGRATION_V21),
+        22 => Some(MIGRATION_V22),
         _ => None,
     }
 }
@@ -1413,6 +1414,107 @@ ALTER TABLE sync_divergences ADD COLUMN kind TEXT NOT NULL DEFAULT 'concurrent'
     CHECK (kind IN ('concurrent', 'parent_deletion_blocked'));
 "#;
 
+pub const MIGRATION_V22: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v22
+-- NH-079 B5 - a aresta do canvas deixa de sobreviver a propria ponta
+-- ============================================
+--
+-- As pontas de `canvas_edges` sao polimorficas ('entity' | 'canvas'), entao nao
+-- ha FK para apaga-las. Ate aqui isso era resolvido de dois jeitos incompletos:
+--
+--   * `delete_node` apagava as arestas do no na mao, dentro da transacao;
+--   * apagar uma ENTIDADE nao apagava nada. A aresta ficava no arquivo para
+--     sempre e sumia da tela pelo filtro da leitura.
+--
+-- Invisivel nao e o mesmo que ausente. A partir da B5 a aresta e um agregado
+-- sincronizavel, e um dado que existe no banco sem existir causalmente e uma
+-- divergencia esperando para acontecer: o aparelho que apagou a entidade
+-- acharia que a aresta morreu junto, e o outro continuaria com ela.
+--
+-- O gatilho resolve nos dois sentidos, e a limpeza de uma vez tira o que o
+-- periodo sem gatilho deixou. A limpeza roda ANTES de os gatilhos existirem,
+-- de proposito: ela nao e uma exclusao autoral, e sim a correcao de um dado
+-- que nunca deveria ter ficado.
+DELETE FROM canvas_edges
+ WHERE NOT (
+         (source_kind = 'entity' AND source_id IN (SELECT id FROM entities))
+      OR (source_kind = 'canvas' AND source_id IN (SELECT id FROM canvas_nodes))
+       )
+    OR NOT (
+         (target_kind = 'entity' AND target_id IN (SELECT id FROM entities))
+      OR (target_kind = 'canvas' AND target_id IN (SELECT id FROM canvas_nodes))
+       );
+
+CREATE TRIGGER trg_entity_canvas_edges_delete
+AFTER DELETE ON entities
+BEGIN
+  DELETE FROM canvas_edges
+   WHERE (source_kind = 'entity' AND source_id = OLD.id)
+      OR (target_kind = 'entity' AND target_id = OLD.id);
+END;
+
+CREATE TRIGGER trg_canvas_node_edges_delete
+AFTER DELETE ON canvas_nodes
+BEGIN
+  DELETE FROM canvas_edges
+   WHERE (source_kind = 'canvas' AND source_id = OLD.id)
+      OR (target_kind = 'canvas' AND target_id = OLD.id);
+END;
+
+-- ── Tag homonima criada nos dois aparelhos ao mesmo tempo ───────────────────
+--
+-- `content_tags` tem UNIQUE(universe_id, name COLLATE NOCASE). A identidade
+-- causal da tag e o `id` da linha, entao "PC cria Mar" e "Android cria Mar"
+-- sao DOIS agregados, e o segundo a chegar bate na constraint. Isso nao e
+-- conflito de conteudo: e o schema recusando materializar um evento valido.
+--
+-- Nao aplicamos nem alteramos nada por conta propria. A colisao vira um tipo
+-- de divergencia, do mesmo jeito que a exclusao de pai bloqueada virou na v21:
+--
+--   concurrent                duas revisoes partiram da mesma base
+--   parent_deletion_blocked   a cascata apagaria um descendente concorrente
+--   tag_name_conflict         a tag que chegou tem o nome de uma tag daqui,
+--                             com identidade diferente. Nada e aplicado; o
+--                             escritor decide se sao a mesma coisa ou renomeia.
+--
+-- Um CHECK so muda reconstruindo a tabela. `sync_divergences` nao e pai de
+-- ninguem -- nenhuma FK aponta para ela --, entao a reconstrucao nao dispara
+-- cascata nenhuma.
+CREATE TABLE sync_divergences_v22 (
+    id TEXT PRIMARY KEY NOT NULL,
+    aggregate_type TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
+    base_rev TEXT NOT NULL,
+    local_rev TEXT NOT NULL,
+    remote_rev TEXT NOT NULL,
+    remote_event_id TEXT NOT NULL,
+    detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at TEXT NOT NULL DEFAULT '',
+    resolution TEXT NOT NULL DEFAULT ''
+        CHECK (resolution IN ('', 'local', 'remote', 'manual')),
+    local_operation TEXT NOT NULL DEFAULT ''
+        CHECK (local_operation IN ('', 'upsert', 'delete')),
+    remote_operation TEXT NOT NULL DEFAULT ''
+        CHECK (remote_operation IN ('', 'upsert', 'delete')),
+    kind TEXT NOT NULL DEFAULT 'concurrent'
+        CHECK (kind IN ('concurrent', 'parent_deletion_blocked', 'tag_name_conflict'))
+);
+
+INSERT INTO sync_divergences_v22
+  (id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev, remote_event_id,
+   detected_at, resolved_at, resolution, local_operation, remote_operation, kind)
+SELECT id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev, remote_event_id,
+       detected_at, resolved_at, resolution, local_operation, remote_operation, kind
+  FROM sync_divergences;
+
+DROP TABLE sync_divergences;
+ALTER TABLE sync_divergences_v22 RENAME TO sync_divergences;
+CREATE INDEX idx_sync_divergences_abertas
+    ON sync_divergences(aggregate_type, aggregate_id)
+    WHERE resolved_at = '';
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1428,6 +1530,7 @@ mod tests {
     const NATIVE_SCHEMA_V19_FIXTURE: &str = include_str!("../../fixtures/schema19_native.sql");
     const NATIVE_SCHEMA_V20_FIXTURE: &str = include_str!("../../fixtures/schema20_native.sql");
     const NATIVE_SCHEMA_V21_FIXTURE: &str = include_str!("../../fixtures/schema21_native.sql");
+    const NATIVE_SCHEMA_V22_FIXTURE: &str = include_str!("../../fixtures/schema22_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -2363,6 +2466,95 @@ mod tests {
             invalido.is_err(),
             "o schema aceitou um tipo de divergência inventado"
         );
+    }
+
+    /// Schema 22: a aresta do canvas nao sobrevive a propria ponta, nem pelo lado da entidade.
+    ///
+    /// A fixture nativa carrega as quatro combinacoes de ponta. Apagar a entidade e apagar o no
+    /// tem de levar exatamente as arestas daquela ponta -- e nenhuma outra.
+    #[test]
+    fn schema22_apaga_a_aresta_junto_com_a_ponta_dos_dois_lados() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V22_FIXTURE)
+            .expect("carregar a fixture nativa de schema 22");
+
+        let arestas = |connection: &Connection| -> Vec<String> {
+            let mut consulta = connection
+                .prepare("SELECT id FROM canvas_edges ORDER BY id")
+                .expect("consulta");
+            consulta
+                .query_map([], |row| row.get(0))
+                .expect("linhas")
+                .collect::<Result<_, _>>()
+                .expect("ids")
+        };
+        assert_eq!(
+            arestas(&connection),
+            vec![
+                "fx22-edge-ee",
+                "fx22-edge-en",
+                "fx22-edge-ne",
+                "fx22-edge-nn"
+            ]
+        );
+
+        connection
+            .execute("DELETE FROM entities WHERE id = 'fx22-ent-a'", [])
+            .expect("apagar a entidade");
+        // `ee` (ent-a -> ent-b) e `en` (ent-a -> node-a) tinham ponta nela, nos dois lados da
+        // aresta. `ne` aponta para ent-b e sobrevive: o gatilho nao pode ser amplo demais.
+        assert_eq!(
+            arestas(&connection),
+            vec!["fx22-edge-ne", "fx22-edge-nn"],
+            "apagar a entidade tinha que levar so as arestas com ponta NELA"
+        );
+
+        connection
+            .execute("DELETE FROM canvas_nodes WHERE id = 'fx22-node-a'", [])
+            .expect("apagar o no");
+        assert!(
+            arestas(&connection).is_empty(),
+            "apagar o no tinha que levar as arestas dele"
+        );
+    }
+
+    /// A migration 22 limpa a aresta orfa que o periodo sem gatilho deixou no arquivo.
+    #[test]
+    fn schema22_tira_a_aresta_orfa_que_ja_estava_no_arquivo() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, 21);
+        connection
+            .execute_batch(
+                "INSERT INTO universes (id, name) VALUES ('u1', 'Universo');
+                 INSERT INTO entities (id, universe_id, type, name, created_at, updated_at)
+                   VALUES ('e1', 'u1', 'Personagem', 'Frodo', '2026-01-01 00:00:00', '2026-01-01 00:00:00');
+                 INSERT INTO canvas_nodes (id, universe_id, kind, text) VALUES ('n1', 'u1', 'note', 'nota');
+                 INSERT INTO canvas_edges (id, universe_id, source_kind, source_id, target_kind, target_id)
+                   VALUES ('viva', 'u1', 'canvas', 'n1', 'entity', 'e1'),
+                          ('orfa', 'u1', 'canvas', 'n1', 'entity', 'sumiu-faz-tempo');",
+            )
+            .expect("semear o arquivo de antes");
+
+        connection
+            .execute_batch(sql_for_version(22).expect("migration 22"))
+            .expect("migrar");
+
+        let restantes: Vec<String> = connection
+            .prepare("SELECT id FROM canvas_edges ORDER BY id")
+            .expect("consulta")
+            .query_map([], |row| row.get(0))
+            .expect("linhas")
+            .collect::<Result<_, _>>()
+            .expect("ids");
+        assert_eq!(restantes, vec!["viva"]);
     }
 
     #[test]

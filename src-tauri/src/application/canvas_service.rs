@@ -26,10 +26,13 @@ pub fn list_nodes(
 // Oito parametros, um a mais que o limite do clippy, e o que passou do limite
 // foi o `store`. Agrupar num struct seria um refactor do contrato do comando
 // no meio do fechamento da etapa 13 -- registrado como divida (NH-070).
+/// Cria o elemento livre. **Duas revisões, de propósito:** o conteúdo e a posição são agregados
+/// diferentes desde a B5, então nascer já é dizer as duas coisas.
 #[allow(clippy::too_many_arguments)]
 pub fn create_node(
     database: &SqliteDatabase,
     store: &BlobStore,
+    identidade: &DeviceIdentity,
     universe_id: &str,
     kind: &str,
     text: &str,
@@ -55,79 +58,89 @@ pub fn create_node(
         created_at: timestamp.clone(),
         updated_at: timestamp,
     };
-    let mut connection = database.write()?;
-    let tx = connection
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    canvas_repository::insert_node(&tx, &node)?;
-    blob_fields::gravar_asset_direto(&tx, store, "canvas_nodes", &node.id, image)?;
-    tx.commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Mutacao::executar(database, identidade, |m| {
+        canvas_repository::insert_node(m.tx(), &node)?;
+        blob_fields::gravar_asset_direto(m.tx(), store, "canvas_nodes", &node.id, image)?;
+        m.gravou("canvas_node", &node.id)?;
+        m.gravou("canvas_node_position", &node.id)
+    })?;
     Ok(node)
 }
 
+/// Edita texto, imagem ou cor. **Não move o elemento**: posição é outro agregado.
 pub fn update_node(
     database: &SqliteDatabase,
     store: &BlobStore,
+    identidade: &DeviceIdentity,
     id: &str,
     patch: CanvasNodePatch,
 ) -> DatabaseCommandResult<()> {
     if patch.is_empty() {
         return Ok(());
     }
-    let mut conexao = database.write()?;
-    let connection = conexao
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    if !canvas_repository::update_node(&connection, id, &patch, &now_timestamp())? {
-        return Err(DatabaseCommandError::not_found(
-            "O elemento não existe mais no canvas.",
-        ));
-    }
-    if let Some(imagem) = patch.image.as_deref() {
-        blob_fields::gravar_asset_direto(&connection, store, "canvas_nodes", id, imagem)?;
-    }
-    connection
-        .commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        if !canvas_repository::update_node(m.tx(), id, &patch, &now_timestamp())? {
+            return Err(DatabaseCommandError::not_found(
+                "O elemento não existe mais no canvas.",
+            ));
+        }
+        if let Some(imagem) = patch.image.as_deref() {
+            blob_fields::gravar_asset_direto(m.tx(), store, "canvas_nodes", id, imagem)?;
+        }
+        m.gravou("canvas_node", id)
+    })
 }
 
-/// Exclui o elemento e as ligações dele na mesma transação.
+/// Exclui o elemento, as ligações dele e a posição — cada um com o seu evento.
 ///
-/// As pontas das ligações são polimórficas, então não há FK para cuidar disso.
-/// Sem a transação, uma falha entre os dois `DELETE` deixaria ligação apontando
-/// para elemento que não existe mais — e ela sumiria da tela pelo filtro da
-/// leitura, mas continuaria no arquivo para sempre.
-pub fn delete_node(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<()> {
-    let mut connection = database.write()?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    if !canvas_repository::delete_node(&transaction, id)? {
-        return Err(DatabaseCommandError::not_found(
-            "O elemento não existe mais no canvas.",
-        ));
-    }
-    transaction
-        .commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+/// ```text
+/// Excluido(canvas_edge…)          `trg_canvas_node_edges_delete` (migration 22)
+/// Excluido(canvas_node_position)  mora nas colunas do nó
+/// Excluido(canvas_node)
+/// ```
+///
+/// A limpeza das arestas era manual aqui até a B5. Virou gatilho de schema porque o mesmo efeito
+/// precisa acontecer quando quem sai é a **entidade** da outra ponta — e isso não passava por
+/// função nenhuma deste serviço.
+pub fn delete_node(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    id: &str,
+) -> DatabaseCommandResult<()> {
+    Mutacao::executar(database, identidade, |m| {
+        m.excluir("canvas_node", id).map_err(|erro| {
+            if erro.kind == crate::database::error::DatabaseErrorKind::NotFound {
+                DatabaseCommandError::not_found("O elemento não existe mais no canvas.")
+            } else {
+                erro
+            }
+        })?;
+        if !canvas_repository::delete_node(m.tx(), id)? {
+            return Err(DatabaseCommandError::not_found(
+                "O elemento não existe mais no canvas.",
+            ));
+        }
+        Ok(())
+    })
 }
 
+/// Arrastar o elemento é revisão da **posição**, não do conteúdo. Mover num aparelho e escrever
+/// no outro não pode virar conflito: não colidiu nada de verdade.
 pub fn save_node_position(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     id: &str,
     x: f64,
     y: f64,
 ) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    if !canvas_repository::save_node_position(&connection, id, x, y, &now_timestamp())? {
-        return Err(DatabaseCommandError::not_found(
-            "O elemento não existe mais no canvas.",
-        ));
-    }
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        if !canvas_repository::save_node_position(m.tx(), id, x, y, &now_timestamp())? {
+            return Err(DatabaseCommandError::not_found(
+                "O elemento não existe mais no canvas.",
+            ));
+        }
+        m.gravou("canvas_node_position", id)
+    })
 }
 
 pub fn list_entity_positions(
@@ -206,6 +219,7 @@ pub fn list_edges(
 /// deixava a ligação inválida morar no arquivo para sempre, invisível.
 pub fn create_edge(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     universe_id: &str,
     source: &CanvasEndpoint,
     target: &CanvasEndpoint,
@@ -225,20 +239,6 @@ pub fn create_edge(
         ));
     }
 
-    let connection = database.write()?;
-    for endpoint in [source, target] {
-        if !canvas_repository::endpoint_exists(
-            &connection,
-            universe_id,
-            &endpoint.kind,
-            &endpoint.id,
-        )? {
-            return Err(DatabaseCommandError::not_found(
-                "Uma das pontas da ligação não existe mais neste universo.",
-            ));
-        }
-    }
-
     let edge = CanvasEdge {
         id: new_id(),
         universe_id: universe_id.to_string(),
@@ -249,18 +249,47 @@ pub fn create_edge(
         label: label.trim().to_string(),
         created_at: now_timestamp(),
     };
-    canvas_repository::insert_edge(&connection, &edge)?;
+    Mutacao::executar(database, identidade, |m| {
+        // A checagem das pontas é a MESMA regra que o apply remoto cobra (`sync_codec::canvas`),
+        // e ela roda de novo na emissão: nenhum evento local sai estruturalmente inválido.
+        for endpoint in [source, target] {
+            if !canvas_repository::endpoint_exists(
+                m.tx(),
+                universe_id,
+                &endpoint.kind,
+                &endpoint.id,
+            )? {
+                return Err(DatabaseCommandError::not_found(
+                    "Uma das pontas da ligação não existe mais neste universo.",
+                ));
+            }
+        }
+        canvas_repository::insert_edge(m.tx(), &edge)?;
+        m.gravou("canvas_edge", &edge.id)
+    })?;
     Ok(edge)
 }
 
-pub fn delete_edge(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    if !canvas_repository::delete_edge(&connection, id)? {
-        return Err(DatabaseCommandError::not_found(
-            "A ligação não existe mais.",
-        ));
-    }
-    Ok(())
+pub fn delete_edge(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    id: &str,
+) -> DatabaseCommandResult<()> {
+    Mutacao::executar(database, identidade, |m| {
+        m.excluir("canvas_edge", id).map_err(|erro| {
+            if erro.kind == crate::database::error::DatabaseErrorKind::NotFound {
+                DatabaseCommandError::not_found("A ligação não existe mais.")
+            } else {
+                erro
+            }
+        })?;
+        if !canvas_repository::delete_edge(m.tx(), id)? {
+            return Err(DatabaseCommandError::not_found(
+                "A ligação não existe mais.",
+            ));
+        }
+        Ok(())
+    })
 }
 
 // ── Anexos ───────────────────────────────────────────────────────────────
@@ -446,6 +475,7 @@ mod tests {
         let node = create_node(
             &fixture.database,
             &loja_de_teste().1,
+            &identidade_de_teste(&fixture).1,
             "u1",
             "note",
             "x",
@@ -457,6 +487,7 @@ mod tests {
 
         let error = create_edge(
             &fixture.database,
+            &identidade_de_teste(&fixture).1,
             "u1",
             &endpoint("canvas", &node.id),
             &endpoint("entity", "nao-existe"),
@@ -477,6 +508,7 @@ mod tests {
         let node = create_node(
             &fixture.database,
             &loja_de_teste().1,
+            &identidade_de_teste(&fixture).1,
             "u1",
             "note",
             "x",
@@ -488,6 +520,7 @@ mod tests {
 
         let error = create_edge(
             &fixture.database,
+            &identidade_de_teste(&fixture).1,
             "u1",
             &endpoint("canvas", &node.id),
             &endpoint("canvas", &node.id),
@@ -505,6 +538,7 @@ mod tests {
         let error = create_node(
             &fixture.database,
             &loja_de_teste().1,
+            &identidade_de_teste(&fixture).1,
             "u1",
             "desenho",
             "x",
@@ -524,6 +558,7 @@ mod tests {
         let node = create_node(
             &fixture.database,
             &loja_de_teste().1,
+            &identidade_de_teste(&fixture).1,
             "u1",
             "note",
             "x",
@@ -534,6 +569,7 @@ mod tests {
         .expect("criar");
         create_edge(
             &fixture.database,
+            &identidade_de_teste(&fixture).1,
             "u1",
             &endpoint("canvas", &node.id),
             &endpoint("entity", "e1"),
@@ -541,7 +577,12 @@ mod tests {
         )
         .expect("ligar");
 
-        delete_node(&fixture.database, &node.id).expect("excluir");
+        delete_node(
+            &fixture.database,
+            &identidade_de_teste(&fixture).1,
+            &node.id,
+        )
+        .expect("excluir");
 
         let total: i64 = fixture
             .connection()

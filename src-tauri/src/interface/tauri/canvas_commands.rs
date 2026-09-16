@@ -27,6 +27,7 @@ pub fn canvas_node_create(
     canvas_service::create_node(
         &super::database(&app)?,
         &super::blob_store(&app)?,
+        &super::sync_identity(&app)?,
         &universe_id,
         &kind,
         &text,
@@ -45,6 +46,7 @@ pub fn canvas_node_update(
     canvas_service::update_node(
         &super::database(&app)?,
         &super::blob_store(&app)?,
+        &super::sync_identity(&app)?,
         &id,
         patch,
     )
@@ -52,7 +54,7 @@ pub fn canvas_node_update(
 
 #[tauri::command]
 pub fn canvas_node_delete(app: AppHandle, id: String) -> DatabaseCommandResult<()> {
-    canvas_service::delete_node(&super::database(&app)?, &id)
+    canvas_service::delete_node(&super::database(&app)?, &super::sync_identity(&app)?, &id)
 }
 
 #[tauri::command]
@@ -62,7 +64,13 @@ pub fn canvas_node_position(
     x: f64,
     y: f64,
 ) -> DatabaseCommandResult<()> {
-    canvas_service::save_node_position(&super::database(&app)?, &id, x, y)
+    canvas_service::save_node_position(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        &id,
+        x,
+        y,
+    )
 }
 
 #[tauri::command]
@@ -115,6 +123,7 @@ pub fn canvas_edge_create(
 ) -> DatabaseCommandResult<CanvasEdge> {
     canvas_service::create_edge(
         &super::database(&app)?,
+        &super::sync_identity(&app)?,
         &universe_id,
         &source,
         &target,
@@ -124,7 +133,7 @@ pub fn canvas_edge_create(
 
 #[tauri::command]
 pub fn canvas_edge_delete(app: AppHandle, id: String) -> DatabaseCommandResult<()> {
-    canvas_service::delete_edge(&super::database(&app)?, &id)
+    canvas_service::delete_edge(&super::database(&app)?, &super::sync_identity(&app)?, &id)
 }
 
 #[tauri::command]
