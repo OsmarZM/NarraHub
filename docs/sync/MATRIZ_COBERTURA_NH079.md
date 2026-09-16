@@ -450,6 +450,30 @@ fixo e conhecido (payload canônico de referência compilado nos dois lados). Re
 - Depois que o banco entra no V2, toda mutação sincronizável causada por conversão ou migração de dados passa
   pela `Mutacao` — ou por mecanismo que produza exatamente o mesmo resultado causal, documentado e testado.
 
+## 6.1 Decisões registradas para a B6, antes da gênese
+
+Duas coisas precisam estar resolvidas **antes** de a etapa C adotar os bancos, e nenhuma delas entra na
+B3:
+
+1. **`UNIQUE(entity_id)` em `canvas_entity_positions`.** Hoje a PK é `(universe_id, entity_id)` e o
+   agregado é identificado só pela entidade. O código já trata duas linhas como inconsistência (8.1), mas
+   a restrição física só pode ser adicionada depois de **auditar bancos existentes**: se algum acervo real
+   tiver duas linhas para a mesma entidade, a migration precisa decidir qual fica antes de criar o índice.
+   Decisão a tomar na B6, com a auditoria na mão.
+2. **`entity_template_set` em vez de linha por linha.** `entity_templates` (fichas em branco por tipo, por
+   universo) não tem escritor no app e é consumido **em conjunto** pela criação de entidade. Sincronizar
+   cada linha pelo `id` legado faria dois aparelhos criarem "o mesmo template" com ids diferentes. A
+   modelagem a implementar na B6:
+
+   ```text
+   entity_template_set
+   identity = (universeId, entityType)
+   payload  = [ { key, defaultValue }, … ]    em ordem canônica (sort_order, key)
+   ```
+
+   Determinístico, sem id de linha no payload, e é o conjunto inteiro que vira uma revisão — como
+   `chapter_order` fez com a ordem.
+
 ## 7. Subdivisão da B
 
 Nenhuma PR declara cobertura completa; cada uma atualiza as suas linhas da seção 2.
@@ -462,7 +486,8 @@ B2.1 story_order(universe), book_order(story) — antes da C
 B3  entidades: entity (+atributos), relation, timeline_event, canvas_entity_position  ← implementada
 B4  planejamento: planning_item, planning_order, planning_field_definition (gatilho que reescreve cards)
 B5  conhecimento e canvas: content_tag, tag_assignment, canvas_node, canvas_edge; gate autoral × efêmero
-B6  conteúdo final de colaboração aprovada e conversões de legado pela Mutacao; gate de cobertura total
+B6  conteúdo final de colaboração aprovada e conversões de legado pela Mutacao;
+    entity_template_set; decisão do UNIQUE(entity_id) da posição; gate de cobertura total
 ```
 
 ## 8. Payload canônico do manuscrito (B2)
@@ -520,6 +545,21 @@ Decisões que valem conferir na revisão:
   **uma revisão da entidade**, e a lista do payload substitui a daqui inteira na aplicação.
 - **`entityId` do evento é mutável só para nulo.** É a única transição que o app produz (`SET NULL` na
   exclusão da entidade). Apontar para outra entidade é inconsistência.
+- **A entidade de um evento se destaca, e não se reancora.** Para uma linha que já existe:
+
+  ```text
+  Some(E) → Some(E)    ok
+  Some(E) → None       ok       é o SET NULL da exclusão da entidade
+  Some(E1) → Some(E2)  recusa
+  None → Some(E)       recusa
+  None → None          ok
+  ```
+
+  Linha nova nasce com entidade ou sem, à vontade.
+- **Uma entidade tem uma posição.** O agregado é identificado só pela entidade, e a PK física é
+  `(universe_id, entity_id)`: o schema deixaria duas linhas. `ler_posicao` responde 0 → não existe,
+  1 → estado canônico, mais de uma → **erro de inconsistência** (nunca escolhe uma). Um evento que
+  criaria a segunda é recusado sem gravar.
 - **Números.** `sortKey` e `positionX/Y` são `REAL`. A serialização do `serde_json` é a representação
   mínima que faz round-trip — determinística para os mesmos bits; valor não finito é recusado na leitura.
   Dois aparelhos convergem no payload quando têm o mesmo `f64`, que é o que a replicação entrega.
@@ -591,6 +631,17 @@ e os A/B/C de `story_order` e `chapter_order`.
 Se mover capítulo entre livros virar funcionalidade, o contrato muda para "atualiza a FK na mesma
 transação" — e a checagem de materialização continua a mesma.
 
+**Uma validação, dois lados (B3).** `sync_codec::entidades::validar` é a mesma função para o apply
+remoto (`dependencias`) e para a emissão local (`sync_codec::validar_para_emissao`, chamada pela
+`Mutacao` antes de emitir cada evento). A invariante:
+
+> Nenhum evento produzido localmente pode ser estruturalmente inválido para o próprio apply remoto.
+
+No lado remoto, dependência ausente é espera (`PrecisaReconciliar`); no lado local é **erro**, porque o
+estado já está escrito — e o erro acontece dentro da `Mutacao`, então domínio e evento voltam juntos.
+Cobre: `relation.universeId == source.universeId == target.universeId`; evento com entidade no mesmo
+universo; posição no mesmo universo da entidade.
+
 **Entidade, relação, evento e posição (B3):**
 
 | caso | resultado |
@@ -602,7 +653,9 @@ transação" — e a checagem de materialização continua a mesma.
 | `timeline_event` com `entityId` que não existe aqui | `PrecisaReconciliar` |
 | `timeline_event` cujo `entityId` aponta para OUTRA entidade que não a daqui | erro — trocar a entidade de um evento não é operação do app |
 | `timeline_event` com `entityId: null` sobre um evento que tinha entidade | aplica — é a reescrita do `SET NULL` |
+| `timeline_event` com `entityId` sobre um evento que **já está nulo** aqui | erro — a entidade se destaca e não se reancora |
 | `canvas_entity_position` cuja entidade não existe aqui | `PrecisaReconciliar` |
+| `canvas_entity_position` cuja entidade **já tem posição em outro universo** | erro; a segunda linha não é criada |
 | `sortKey`/`positionX`/`positionY` não finito | erro — não há payload canônico para NaN ou infinito |
 
 **Asserção geral de materialização:**

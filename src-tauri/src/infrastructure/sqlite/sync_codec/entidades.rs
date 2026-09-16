@@ -261,30 +261,29 @@ pub fn ler_posicao(
     connection: &Connection,
     entity_id: &str,
 ) -> DatabaseCommandResult<Option<EstadoDoAgregado>> {
-    let Some(posicao) = connection
-        .query_row(
-            "SELECT universe_id, position_x, position_y
-               FROM canvas_entity_positions WHERE entity_id = ?1",
-            [entity_id],
-            |row| {
-                Ok(PosicaoCanonica {
-                    entity_id: entity_id.to_string(),
-                    universe_id: row.get(0)?,
-                    position_x: row.get(1)?,
-                    position_y: row.get(2)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(erro)?
-    else {
+    // 0 → não existe · 1 → estado canônico · mais de uma → inconsistência, nunca "escolhe uma".
+    let Some(universe_id) = universo_da_posicao(connection, entity_id)? else {
         return Ok(None);
     };
-    exigir_finito(posicao.position_x, "positionX", entity_id)?;
-    exigir_finito(posicao.position_y, "positionY", entity_id)?;
+    let (position_x, position_y): (f64, f64) = connection
+        .query_row(
+            "SELECT position_x, position_y FROM canvas_entity_positions
+              WHERE entity_id = ?1 AND universe_id = ?2",
+            [entity_id, universe_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(erro)?;
+    exigir_finito(position_x, "positionX", entity_id)?;
+    exigir_finito(position_y, "positionY", entity_id)?;
+    let payload = para_json(&PosicaoCanonica {
+        entity_id: entity_id.to_string(),
+        universe_id: universe_id.clone(),
+        position_x,
+        position_y,
+    })?;
     Ok(Some(EstadoDoAgregado {
-        universe_id: posicao.universe_id.clone(),
-        payload: para_json(&posicao)?,
+        universe_id,
+        payload,
     }))
 }
 
@@ -399,10 +398,127 @@ fn ponta(
     match universo_da_entidade(connection, entity_id)? {
         None => Ok(Some(format!("entity {entity_id}"))),
         Some(outro) if outro != universo => Err(DatabaseCommandError::storage(format!(
-            "A {papel} {entity_id} está no universo {outro}, e o evento diz {universo}. Estado \
-             incompatível: o evento não é aplicado."
+            "A {papel} {entity_id} está no universo {outro}, e o payload diz {universo}. Estado \
+             incompatível."
         ))),
         Some(_) => Ok(None),
+    }
+}
+
+/// **As regras estruturais dos quatro tipos da B3, num lugar só.**
+///
+/// A mesma função responde as duas perguntas:
+///
+/// ```text
+/// apply remoto     este evento pode ser aplicado aqui?        (falta = espera; erro = recusa)
+/// Mutacao local    este estado pode virar evento?             (qualquer não-Ok = rollback)
+/// ```
+///
+/// Duas implementações separadas divergiriam, e o lado local produziria evento que o lado remoto
+/// recusa — a pior forma de divergir, porque o autor só descobre no outro aparelho.
+pub(super) fn validar(
+    connection: &Connection,
+    tipo: &str,
+    payload: &str,
+) -> DatabaseCommandResult<Option<String>> {
+    match tipo {
+        "entity" => {
+            let entidade: EntidadeCanonica = serde_json::from_str(payload).map_err(de_erro)?;
+            Ok((!existe(connection, "universes", &entidade.universe_id)?)
+                .then(|| format!("universe {}", entidade.universe_id)))
+        }
+        "relation" => {
+            let relacao: RelacaoCanonica = serde_json::from_str(payload).map_err(de_erro)?;
+            if !existe(connection, "universes", &relacao.universe_id)? {
+                return Ok(Some(format!("universe {}", relacao.universe_id)));
+            }
+            if let Some(falta) = ponta(
+                connection,
+                &relacao.source_id,
+                &relacao.universe_id,
+                "ponta de origem",
+            )? {
+                return Ok(Some(falta));
+            }
+            ponta(
+                connection,
+                &relacao.target_id,
+                &relacao.universe_id,
+                "ponta de destino",
+            )
+        }
+        "timeline_event" => {
+            let evento: EventoCanonico = serde_json::from_str(payload).map_err(de_erro)?;
+            exigir_finito(evento.sort_key, "sortKey", &evento.id)?;
+            if !existe(connection, "universes", &evento.universe_id)? {
+                return Ok(Some(format!("universe {}", evento.universe_id)));
+            }
+            match evento.entity_id.as_deref() {
+                Some(entidade) => ponta(
+                    connection,
+                    entidade,
+                    &evento.universe_id,
+                    "entidade do evento",
+                ),
+                None => Ok(None),
+            }
+        }
+        "canvas_entity_position" => {
+            let posicao: PosicaoCanonica = serde_json::from_str(payload).map_err(de_erro)?;
+            exigir_finito(posicao.position_x, "positionX", &posicao.entity_id)?;
+            exigir_finito(posicao.position_y, "positionY", &posicao.entity_id)?;
+            // Uma entidade tem UMA posição. O schema deixaria duas (a PK é (universe_id, entity_id)),
+            // e o agregado é identificado só pela entidade: linha em outro universo é incompatível,
+            // e criar a segunda seria inventar um segundo estado para o mesmo agregado.
+            if let Some(outro) = universo_da_posicao(connection, &posicao.entity_id)? {
+                if outro != posicao.universe_id {
+                    return Err(DatabaseCommandError::storage(format!(
+                        "A entidade {} já tem posição no universo {outro}, e o payload diz {}. Estado \
+                         incompatível: uma entidade tem uma posição.",
+                        posicao.entity_id, posicao.universe_id
+                    )));
+                }
+            }
+            ponta(
+                connection,
+                &posicao.entity_id,
+                &posicao.universe_id,
+                "entidade da posição",
+            )
+        }
+        _ => Ok(None),
+    }
+}
+
+fn de_erro(error: serde_json::Error) -> DatabaseCommandError {
+    DatabaseCommandError::storage(format!("Payload canônico ilegível: {error}"))
+}
+
+/// O universo da (única) posição daquela entidade. Mais de uma linha é inconsistência.
+fn universo_da_posicao(
+    connection: &Connection,
+    entity_id: &str,
+) -> DatabaseCommandResult<Option<String>> {
+    let mut consulta = connection
+        .prepare(
+            "SELECT universe_id FROM canvas_entity_positions WHERE entity_id = ?1
+              ORDER BY universe_id",
+        )
+        .map_err(erro)?;
+    let universos: Vec<String> = consulta
+        .query_map([entity_id], |row| row.get(0))
+        .map_err(erro)?
+        .collect::<Result<_, _>>()
+        .map_err(erro)?;
+    match universos.len() {
+        0 => Ok(None),
+        1 => Ok(Some(universos[0].clone())),
+        _ => Err(DatabaseCommandError::storage(format!(
+            "A entidade {entity_id} tem {} posições no canvas ({}). O agregado é identificado pela \
+             entidade: não há estado canônico com duas.",
+            universos.len(),
+            universos.join(", ")
+        ))),
     }
 }
 
@@ -436,6 +552,7 @@ pub fn dependencias(
     connection: &Connection,
     envelope: &EventEnvelope,
 ) -> DatabaseCommandResult<Option<String>> {
+    // Imutabilidade é pergunta do lado remoto: um evento que diga outro pai descreve outra árvore.
     match envelope.aggregate_type.as_str() {
         "entity" => {
             let entidade: EntidadeCanonica = de_json(envelope)?;
@@ -447,8 +564,6 @@ pub fn dependencias(
                 &entidade.universe_id,
                 envelope,
             )?;
-            Ok((!existe(connection, "universes", &entidade.universe_id)?)
-                .then(|| format!("universe {}", entidade.universe_id)))
         }
         "relation" => {
             let relacao: RelacaoCanonica = de_json(envelope)?;
@@ -466,27 +581,9 @@ pub fn dependencias(
                     envelope,
                 )?;
             }
-            if !existe(connection, "universes", &relacao.universe_id)? {
-                return Ok(Some(format!("universe {}", relacao.universe_id)));
-            }
-            if let Some(falta) = ponta(
-                connection,
-                &relacao.source_id,
-                &relacao.universe_id,
-                "origem",
-            )? {
-                return Ok(Some(falta));
-            }
-            ponta(
-                connection,
-                &relacao.target_id,
-                &relacao.universe_id,
-                "ponta de destino",
-            )
         }
         "timeline_event" => {
             let evento: EventoCanonico = de_json(envelope)?;
-            exigir_finito(evento.sort_key, "sortKey", &envelope.aggregate_id)?;
             imutavel(
                 connection,
                 "timeline_events",
@@ -495,52 +592,68 @@ pub fn dependencias(
                 &evento.universe_id,
                 envelope,
             )?;
-            if !existe(connection, "universes", &evento.universe_id)? {
-                return Ok(Some(format!("universe {}", evento.universe_id)));
-            }
-            // A entidade do evento muda por uma via só: para nulo, quando ela é excluída
-            // (`SET NULL`). Apontar para OUTRA entidade nunca acontece no app.
-            let atual: Option<Option<String>> = connection
-                .query_row(
-                    "SELECT entity_id FROM timeline_events WHERE id = ?1",
-                    [&envelope.aggregate_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(erro)?;
-            if let (Some(Some(aqui)), Some(no_evento)) = (atual, evento.entity_id.as_ref()) {
-                if &aqui != no_evento {
-                    return Err(DatabaseCommandError::storage(format!(
-                        "O evento {} está ligado à entidade {aqui} aqui, e o payload diz \
-                         {no_evento}. Trocar a entidade de um evento não é uma operação do app; o \
-                         evento não é aplicado.",
-                        envelope.aggregate_id
-                    )));
-                }
-            }
-            match evento.entity_id.as_deref() {
-                Some(entidade) => ponta(connection, entidade, &evento.universe_id, "entidade"),
-                None => Ok(None),
-            }
+            conferir_destacamento(
+                connection,
+                &envelope.aggregate_id,
+                evento.entity_id.as_deref(),
+            )?;
         }
         "canvas_entity_position" => {
             let posicao: PosicaoCanonica = de_json(envelope)?;
-            exigir_finito(posicao.position_x, "positionX", &envelope.aggregate_id)?;
-            exigir_finito(posicao.position_y, "positionY", &envelope.aggregate_id)?;
             if posicao.entity_id != envelope.aggregate_id {
                 return Err(DatabaseCommandError::storage(format!(
                     "A posição descreve a entidade {}, e o envelope é de {}.",
                     posicao.entity_id, envelope.aggregate_id
                 )));
             }
-            ponta(
-                connection,
-                &posicao.entity_id,
-                &posicao.universe_id,
-                "entidade da posição",
-            )
         }
-        _ => Ok(None),
+        _ => {}
+    }
+    // E depois a MESMA validação estrutural que a `Mutacao` local usa.
+    validar(connection, &envelope.aggregate_type, &envelope.payload)
+}
+
+/// **A entidade de um evento se destaca, e não se reancora.**
+///
+/// ```text
+/// linha existente:  Some(E) → Some(E)   ok
+///                   Some(E) → None      ok      é o SET NULL da exclusão da entidade
+///                   Some(E1) → Some(E2) recusa  trocar a entidade não é operação do app
+///                   None → Some(E)      recusa  reancorar não é operação do app
+///                   None → None         ok
+/// linha nova:       nasce com Some(E) ou None, à vontade
+/// ```
+///
+/// Reancorar chegando como **sequencial** significaria que a origem partiu da revisão que já tem a
+/// entidade em nulo e mesmo assim a trouxe de volta: isso o app não faz.
+fn conferir_destacamento(
+    connection: &Connection,
+    id: &str,
+    no_payload: Option<&str>,
+) -> DatabaseCommandResult<()> {
+    let atual: Option<Option<String>> = connection
+        .query_row(
+            "SELECT entity_id FROM timeline_events WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(erro)?;
+    let Some(aqui) = atual else {
+        return Ok(());
+    };
+    match (aqui.as_deref(), no_payload) {
+        (Some(aqui), Some(payload)) if aqui != payload => {
+            Err(DatabaseCommandError::storage(format!(
+                "O evento {id} está ligado à entidade {aqui} aqui, e o payload diz {payload}. \
+                 Trocar a entidade de um evento não é uma operação do app; o evento não é aplicado."
+            )))
+        }
+        (None, Some(payload)) => Err(DatabaseCommandError::storage(format!(
+            "O evento {id} está sem entidade aqui (ela foi excluída), e o payload diz {payload}. \
+             Reancorar a entidade de um evento não é uma operação do app; o evento não é aplicado."
+        ))),
+        _ => Ok(()),
     }
 }
 

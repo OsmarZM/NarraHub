@@ -192,6 +192,32 @@ pub fn aplicar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseComman
     }
 }
 
+/// **Um evento local não pode ser estruturalmente inválido para o próprio apply remoto.**
+///
+/// A `Mutacao` chama isto com o payload que acabou de ler do banco, antes de emitir. É a MESMA
+/// função que a aplicação remota usa em `dependencias` — nenhum caminho local escapa de uma regra
+/// que o outro lado cobra. Aqui, "dependência faltando" também é erro: localmente o estado já está
+/// escrito, então faltar é inconsistência, não espera.
+pub fn validar_para_emissao(
+    connection: &Connection,
+    agregado: &AggregateRef,
+    payload: &str,
+) -> DatabaseCommandResult<()> {
+    let falta = match agregado.aggregate_type.as_str() {
+        "entity" | "relation" | "timeline_event" | "canvas_entity_position" => {
+            entidades::validar(connection, &agregado.aggregate_type, payload)?
+        }
+        _ => None,
+    };
+    match falta {
+        None => Ok(()),
+        Some(falta) => Err(DatabaseCommandError::storage(format!(
+            "{} {} não pode ser sincronizado: falta {falta}. Nada foi confirmado.",
+            agregado.aggregate_type, agregado.aggregate_id
+        ))),
+    }
+}
+
 /// O payload de um evento, no tipo canônico. Campo desconhecido é recusado: outro formato de
 /// canonicalização não pode ser aplicado como se fosse este.
 pub(crate) fn de_json<T: serde::de::DeserializeOwned>(

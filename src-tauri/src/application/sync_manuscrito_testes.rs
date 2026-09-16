@@ -1717,3 +1717,206 @@ fn evento_que_troca_de_entidade_e_recusado() {
         .expect("evento")
         .contains(&elenco.e1));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// B3, revisão: simetria local ↔ remoto, identidade da posição, destacamento
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// **Nenhum caminho local grava o que o apply remoto recusaria.** A validação é a mesma função nos
+/// dois lados; falhar acontece dentro da `Mutacao`, então domínio e evento voltam juntos.
+#[test]
+fn escrita_local_entre_universos_diferentes_nao_grava_nem_emite() {
+    let pc = Aparelho::novo("pc");
+    let u1 = pc.universo("Primeiro");
+    let u2 = pc.universo("Segundo");
+    let daqui = pc.entidade(&u1, "Frodo");
+    let de_la = pc.entidade(&u2, "Estranho");
+    let eventos_antes = pc.contar("SELECT COUNT(*) FROM sync_events");
+
+    // Relação declarada em u2 com uma ponta de u1.
+    let erro = crate::application::workspace_service::create_relation(
+        &pc.banco.database,
+        &pc.eu,
+        &u2,
+        &daqui,
+        &de_la,
+        "impossível",
+    )
+    .expect_err("relação entre universos");
+    assert!(erro.message.contains("incompatível"), "{}", erro.message);
+    assert_eq!(pc.contar("SELECT COUNT(*) FROM relations"), 0);
+
+    // Evento em u2 apontando para entidade de u1.
+    let erro = crate::application::workspace_service::create_timeline_event(
+        &pc.banco.database,
+        &pc.eu,
+        &u2,
+        crate::domain::workspace::NewTimelineEvent {
+            title: "Impossível".into(),
+            date: "1400-01-01".into(),
+            description: String::new(),
+            entity_id: Some(daqui.clone()),
+            display_date: String::new(),
+            sort_key: 1.0,
+        },
+    )
+    .expect_err("evento entre universos");
+    assert!(erro.message.contains("incompatível"), "{}", erro.message);
+    assert_eq!(pc.contar("SELECT COUNT(*) FROM timeline_events"), 0);
+
+    // Posição declarada em u2 para entidade de u1.
+    let erro =
+        canvas_service::save_entity_position(&pc.banco.database, &pc.eu, &u2, &daqui, 1.0, 2.0)
+            .expect_err("posição entre universos");
+    assert!(erro.message.contains("incompatível"), "{}", erro.message);
+    assert_eq!(pc.contar("SELECT COUNT(*) FROM canvas_entity_positions"), 0);
+
+    assert_eq!(
+        pc.contar("SELECT COUNT(*) FROM sync_events"),
+        eventos_antes,
+        "nenhum evento pode ter sobrado de uma escrita recusada"
+    );
+}
+
+/// Uma entidade tem UMA posição. Duas linhas (o schema deixaria, a PK é composta) não têm estado
+/// canônico, e um evento que criaria a segunda é recusado sem gravar.
+#[test]
+fn posicao_da_entidade_e_unica() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let u1 = pc.universo("Primeiro");
+    let u2 = pc.universo("Segundo");
+    let entidade = pc.entidade(&u1, "Frodo");
+    pc.posicao(&u1, &entidade, 5.0, 6.0);
+    sincronizar(&pc, &android);
+    pc.convergiu_com(&android, "canvas_entity_position", &entidade);
+
+    // Um evento remoto que declara a mesma entidade em OUTRO universo: recusado, e nada gravado.
+    let payload = format!(
+        r#"{{"entityId":"{entidade}","universeId":"{u2}","positionX":9.0,"positionY":9.0}}"#
+    );
+    let base = {
+        let connection = android.banco.connection();
+        sync_codec::revisao_corrente(
+            &connection,
+            &AggregateRef::new("canvas_entity_position", &entidade),
+        )
+        .expect("rev")
+        .expect("tem revisão")
+    };
+    let seq = pc.contar(
+        "SELECT COALESCE(MAX(seq), 0) FROM sync_events
+          WHERE device_id IN (SELECT device_id FROM sync_devices WHERE is_self = 1)",
+    ) + 1;
+    let mut envelope = envelope_de_origem(
+        pc.eu.device_id(),
+        seq,
+        &u2,
+        &AggregateRef::new("canvas_entity_position", &entidade),
+        Operation::Upsert,
+        &payload,
+        &base,
+    );
+    envelope.signature = pc.eu.sign(&envelope);
+    let erro = receber_eventos(&mut android.banco.connection(), &[envelope])
+        .expect_err("segunda posição para a mesma entidade");
+    assert!(
+        erro.message.contains("uma entidade tem uma posição"),
+        "{}",
+        erro.message
+    );
+    assert_eq!(
+        android.contar("SELECT COUNT(*) FROM canvas_entity_positions"),
+        1,
+        "a segunda linha não pode ter sido criada"
+    );
+
+    // E se um banco JÁ tiver duas linhas (legado, fora do app), não há estado canônico: erro.
+    android
+        .banco
+        .connection()
+        .execute(
+            "INSERT INTO canvas_entity_positions
+               (universe_id, entity_id, position_x, position_y, updated_at)
+             VALUES (?1, ?2, 1.0, 1.0, '2026-01-01')",
+            [&u2, &entidade],
+        )
+        .expect("linha legada");
+    let connection = android.banco.connection();
+    let erro = sync_codec::ler_canonico(
+        &connection,
+        &AggregateRef::new("canvas_entity_position", &entidade),
+    )
+    .expect_err("duas posições não têm estado canônico");
+    assert!(erro.message.contains("2 posições"), "{}", erro.message);
+}
+
+/// A entidade de um evento se destaca (`SET NULL`) e **não** se reancora.
+#[test]
+fn evento_destacado_nao_pode_ser_reancorado() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let elenco = elenco(&pc, &android);
+
+    // A exclusão da entidade destaca o evento nos dois aparelhos.
+    crate::application::entity_service::delete(&pc.banco.database, &pc.eu, &elenco.e1)
+        .expect("apagar entidade");
+    let (em_android, _) = sincronizar(&pc, &android);
+    assert_eq!(em_android.divergencias, 0, "{em_android:?}");
+    let evento_agora = android
+        .canonico("timeline_event", &elenco.evento)
+        .expect("evento");
+    assert!(
+        evento_agora.contains(r#""entityId":null"#),
+        "{evento_agora}"
+    );
+
+    // Um evento posterior tentando reancorar a entidade: recusado.
+    let payload = evento_agora.replace(
+        r#""entityId":null"#,
+        &format!(r#""entityId":"{}""#, elenco.e2),
+    );
+    let base = {
+        let connection = android.banco.connection();
+        sync_codec::revisao_corrente(
+            &connection,
+            &AggregateRef::new("timeline_event", &elenco.evento),
+        )
+        .expect("rev")
+        .expect("tem revisão")
+    };
+    let seq = pc.contar(
+        "SELECT COALESCE(MAX(seq), 0) FROM sync_events
+          WHERE device_id IN (SELECT device_id FROM sync_devices WHERE is_self = 1)",
+    ) + 1;
+    let mut envelope = envelope_de_origem(
+        pc.eu.device_id(),
+        seq,
+        &elenco.universo,
+        &AggregateRef::new("timeline_event", &elenco.evento),
+        Operation::Upsert,
+        &payload,
+        &base,
+    );
+    envelope.signature = pc.eu.sign(&envelope);
+    let erro = receber_eventos(&mut android.banco.connection(), &[envelope.clone()])
+        .expect_err("reancorar não é operação do app");
+    assert!(erro.message.contains("Reancorar"), "{}", erro.message);
+
+    // O estado continua nulo, e o cursor não finge que aplicou.
+    assert!(android
+        .canonico("timeline_event", &elenco.evento)
+        .expect("evento")
+        .contains(r#""entityId":null"#));
+    let aplicado: bool = android
+        .banco
+        .connection()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_applied_events WHERE event_id = ?1)",
+            [&envelope.event_id],
+            |row| row.get(0),
+        )
+        .expect("aplicado");
+    assert!(!aplicado);
+    android.invariante_de_materializacao();
+}

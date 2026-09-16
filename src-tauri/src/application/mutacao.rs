@@ -287,6 +287,9 @@ impl<'t, 'c> Mutacao<'t, 'c> {
                         ))
                     })?;
                     let universe_id = universo_do_afetado(agregado, Some(estado.clone()))?;
+                    // O evento que sai daqui tem de ser aceitável pelo apply remoto. Mesma função
+                    // dos dois lados: falhar aqui desfaz domínio e evento juntos.
+                    sync_codec::validar_para_emissao(self.tx, agregado, &estado.payload)?;
                     emitidos.push(agregado.clone());
                     // Mesmo estado, mesmo payload: nada a revisar.
                     if sync_codec::payload_da_revisao_corrente(self.tx, agregado)?.as_deref()
