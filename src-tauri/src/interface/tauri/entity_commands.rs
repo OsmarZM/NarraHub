@@ -22,7 +22,12 @@ pub fn entity_details(
 
 #[tauri::command]
 pub fn entity_create(app: AppHandle, input: NewEntity) -> DatabaseCommandResult<Entity> {
-    entity_service::create(&super::database(&app)?, &super::blob_store(&app)?, input)
+    entity_service::create(
+        &super::database(&app)?,
+        &super::blob_store(&app)?,
+        &super::sync_identity(&app)?,
+        input,
+    )
 }
 
 #[tauri::command]
@@ -30,6 +35,7 @@ pub fn entity_update(app: AppHandle, id: String, patch: EntityUpdate) -> Databas
     entity_service::update(
         &super::database(&app)?,
         &super::blob_store(&app)?,
+        &super::sync_identity(&app)?,
         &id,
         patch,
     )
@@ -37,7 +43,7 @@ pub fn entity_update(app: AppHandle, id: String, patch: EntityUpdate) -> Databas
 
 #[tauri::command]
 pub fn entity_delete(app: AppHandle, id: String) -> DatabaseCommandResult<()> {
-    entity_service::delete(&super::database(&app)?, &id)
+    entity_service::delete(&super::database(&app)?, &super::sync_identity(&app)?, &id)
 }
 
 #[tauri::command]
@@ -45,10 +51,14 @@ pub fn entity_attribute_save(
     app: AppHandle,
     attribute: EntityAttribute,
 ) -> DatabaseCommandResult<()> {
-    entity_service::save_attribute(&super::database(&app)?, attribute)
+    entity_service::save_attribute(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        attribute,
+    )
 }
 
 #[tauri::command]
 pub fn entity_attribute_delete(app: AppHandle, id: String) -> DatabaseCommandResult<()> {
-    entity_service::remove_attribute(&super::database(&app)?, &id)
+    entity_service::remove_attribute(&super::database(&app)?, &super::sync_identity(&app)?, &id)
 }

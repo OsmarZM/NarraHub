@@ -138,27 +138,56 @@ pub fn list_entity_positions(
     canvas_repository::list_entity_positions(&connection, universe_id)
 }
 
+/// A posição que o escritor arrastou é autoral e sincroniza (B3). Zoom, pan, seleção e hover não
+/// passam por aqui: eles vivem na memória do componente.
 pub fn save_entity_position(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     universe_id: &str,
     entity_id: &str,
     x: f64,
     y: f64,
 ) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    canvas_repository::save_entity_position(
-        &connection,
-        universe_id,
-        entity_id,
-        x,
-        y,
-        &now_timestamp(),
-    )
+    Mutacao::executar(database, identidade, |m| {
+        canvas_repository::save_entity_position(
+            m.tx(),
+            universe_id,
+            entity_id,
+            x,
+            y,
+            &now_timestamp(),
+        )?;
+        m.gravou("canvas_entity_position", entity_id)
+    })
 }
 
-pub fn clear_layout(database: &SqliteDatabase, universe_id: &str) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    canvas_repository::clear_layout(&connection, universe_id)
+/// Desfaz o layout do universo: cada posição persistida é excluída, e cada exclusão é um evento.
+pub fn clear_layout(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    universe_id: &str,
+) -> DatabaseCommandResult<()> {
+    Mutacao::executar(database, identidade, |m| {
+        let entidades: Vec<String> = {
+            let mut consulta = m
+                .tx()
+                .prepare(
+                    "SELECT entity_id FROM canvas_entity_positions WHERE universe_id = ?1
+                      ORDER BY entity_id",
+                )
+                .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+            let linhas = consulta
+                .query_map([universe_id], |row| row.get(0))
+                .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+            linhas
+                .collect::<Result<_, _>>()
+                .map_err(|error| DatabaseCommandError::storage(error.to_string()))?
+        };
+        for entidade in &entidades {
+            m.excluir("canvas_entity_position", entidade)?;
+        }
+        canvas_repository::clear_layout(m.tx(), universe_id)
+    })
 }
 
 pub fn list_edges(

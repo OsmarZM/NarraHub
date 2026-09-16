@@ -39,8 +39,9 @@ revisões / eventos
 | --- | --- | --- |
 | **B1** | integrada | fronteira `Mutacao`; `attachment` create e delete; exclusão remota bloqueada e a resolução dela (4.4.1); fronteira com o blob store (4.4.2); migration 21 (`sync_divergences.kind`) |
 | **B2** | integrada (#59) | `universe` create/update; `story`, `book`, `chapter` create/update/delete; `chapter_order` (create/delete de capítulo e reorder); campos personalizados dentro desses agregados; `tag_assignment` apagado pelos gatilhos do manuscrito; impacto de exclusão `Excluido`/`Reescrito`/`Bloqueado` (4.3); catálogo de efeitos com gate (3); payload canônico definitivo (8); dependência de criação pai → filho na aplicação remota; capa de livro pelo blob store |
-| **B2.1** | implementada (branch `sync-b2-1-ordem`), em revisão | `story_order(universe)` e `book_order(story)` com o contrato de `chapter_order`; **ponte de ordem** transacional (8.1), que destrava ordens entre três origens sem nunca confirmar revisão corrente não materializada — inclusive o travamento que existia em `chapter_order` desde a B2 |
-| B3–B6 | não iniciadas | ver seção 7 |
+| **B2.1** | integrada (#60) | `story_order(universe)` e `book_order(story)` com o contrato de `chapter_order`; **ponte de ordem** transacional (8.1), que destrava ordens entre três origens sem nunca confirmar revisão corrente não materializada — inclusive o travamento que existia em `chapter_order` desde a B2 |
+| **B3** | implementada (branch `sync-b3-entidades`), em revisão | `entity` (ficha inteira: `entities` + `entity_attributes` + campos personalizados, uma revisão só), `relation`, `timeline_event` e `canvas_entity_position`; exclusão de entidade com árvore completa de efeitos, inclusive o `SET NULL` da linha do tempo como **reescrita**; `entity_service`, `workspace_service` e a posição do canvas pela `Mutacao` |
+| B4–B6 | não iniciadas | ver seção 7 |
 
 **Fora da B2, dito às claras:**
 
@@ -53,6 +54,11 @@ revisões / eventos
 - Marcar e desmarcar tag (`knowledge_service::set_tag`) ainda não emite evento (B5). A B2 só emite o fim
   das marcações que os gatilhos do manuscrito apagam.
 - `attachment` mantém o payload da B1 (com `created_at` e `sortOrder`); a revisão dele é da B5.
+- **Fora da B3:** excluir entidade ligada a card do planejamento é **recusado** até a B4 (o
+  `planning_field_links.entity_id` reescreveria o card). `entity_templates` (as fichas em branco por
+  tipo, por universo) **não tem escritor no app** — é acervo legado que `create` de entidade lê; precisa
+  de codec antes da gênese e entra no gate de cobertura total da B6. Nó e aresta do canvas continuam na
+  B5, e as funções deles estão nomeadas no gate estrutural com o motivo.
 
 ## 2. Agregados
 
@@ -72,7 +78,7 @@ e concorrência próprias.
 | `story_order` | `stories.sort_order` de um universo | `universe.id` | universe, stories | **só a ordem** (B2.1) |
 | `book_order` | `books.sort_order` de uma história | `story.id` | story, books | **só a ordem** (B2.1) |
 | `chapter_order` | `chapters.sort_order` de um livro | `book.id` | book, chapters | **só a ordem**; reordenar não conflita com texto |
-| `entity` | `entities`, `entity_attributes`, `content_custom_fields` (owner entity) | `entities.id` | universe | atributos são internos |
+| `entity` | `entities`, `entity_attributes`, `content_custom_fields` (owner entity) | `entities.id` | universe | atributos são internos (B3) |
 | `relation` | `relations` | `relations.id` | 2 entities | independente da entidade |
 | `timeline_event` | `timeline_events` | `timeline_events.id` | universe; entity (opcional, `SET NULL`) | |
 | `planning_item` | `planning_items` (sem `sort_order`), valores em `custom_field_values`, `planning_field_links` | `planning_items.id` | universe; chapter (opcional) | valores e links são internos |
@@ -349,6 +355,25 @@ não viu a exclusão continua `ConcurrentComExclusao`, e nada ressuscita sozinho
 
 Testes: `resolucao_divergencia::tests` (6) e `domain::sync::tests::restauracao_a_partir_da_revisao_da_exclusao_e_sequencial`.
 
+#### 4.4.1.1 Árvore de efeitos da exclusão de entidade (B3)
+
+Medida no schema migrado, não suposta:
+
+```text
+delete entity
+  ├─ relation (cada uma com a entidade em qualquer ponta)   → Delete   (FK CASCADE nas duas pontas)
+  ├─ canvas_entity_position(entity)                         → Delete   (FK CASCADE)
+  ├─ attachment (owner_type = 'entity')                     → Delete   (trg_entity_attachments_delete)
+  ├─ tag_assignment (owner_type = 'entity')                 → Delete   (trg_entity_metadata_delete)
+  ├─ entity_attributes, content_custom_fields               → interno  (somem com a ficha)
+  ├─ timeline_event (entity_id = E)                         → REWRITE  (FK SET NULL → entityId nulo)
+  ├─ mentions                                               → local, fora do sync
+  └─ planning_field_links (entity_id)                       → BLOQUEADO até a B4
+```
+
+Emissão: os excluídos primeiro (relação, posição, anexo, marcação), a entidade, e por último a
+reescrita de cada evento da linha do tempo — que é relido depois do `DELETE`, já com `entityId` nulo.
+
 #### 4.4.2 Fronteira SQLite × blob store
 
 O arquivo do anexo é gravado dentro da `Mutacao`, mas o sistema de arquivos não participa do `ROLLBACK`.
@@ -392,7 +417,14 @@ Testes: `mutacao::tests::rollback_depois_do_blob_deixa_so_o_arquivo_orfao_e_repe
    recusada nos dois lados; reescrita de agregado em divergência recusa a exclusão; exclusão de universo
    recusada local e remotamente; salvar o mesmo estado não gera revisão. Convergência = payload canônico
    igual nos dois **e** igual ao payload da revisão corrente de cada um.
-9. **Materialização exata (B2):** cada evento aplicado um por vez com o estado conferido
+9. **Entidades em dois e três aparelhos (B3):** criação/edição/exclusão de entidade, relação, evento e
+   posição PC ↔ Android; atributo como revisão da entidade; entidade editada nos dois lados (as duas
+   revisões ficam); entidade apagada num lado com relação criada no outro; com evento editado no outro;
+   `SET NULL` sem concorrência (o evento sobrevive com `entityId` nulo nos dois); relação, evento e posição
+   que chegam antes das entidades (de outra origem, contíguos — o que segura é a dependência, não a lacuna
+   de `seq`); três origens com a relação de A citando entidade de C; `clear_layout`; evento que troca de
+   entidade recusado.
+10. **Materialização exata (B2):** cada evento aplicado um por vez com o estado conferido
    (`cada_aplicado_materializa_o_proprio_evento`); asserção geral em repouso depois de toda sessão dos testes
    de dois aparelhos; causalidade cruzada A/B/C (`ordem_que_cita_capitulo_de_outra_origem_espera_o_capitulo_chegar`);
    ordem com capítulo repetido, de outro livro, inexistente e não citado; pai trocado em `story`/`book`/`chapter`.
@@ -427,7 +459,7 @@ B1  infraestrutura: Mutacao, exclusão com preflight, exclusão remota bloqueada
     chapter (update, delete) + attachment migrados; gates 1–4        — sem cobertura nova além disso
 B2  manuscrito: universe, story, book, chapter create, chapter_order, custom fields, tag assignments por gatilho
 B2.1 story_order(universe), book_order(story) — antes da C
-B3  entidades: entity (+atributos), relation, timeline_event, canvas_entity_position
+B3  entidades: entity (+atributos), relation, timeline_event, canvas_entity_position  ← implementada
 B4  planejamento: planning_item, planning_order, planning_field_definition (gatilho que reescreve cards)
 B5  conhecimento e canvas: content_tag, tag_assignment, canvas_node, canvas_edge; gate autoral × efêmero
 B6  conteúdo final de colaboração aprovada e conversões de legado pela Mutacao; gate de cobertura total
@@ -453,6 +485,10 @@ Campos personalizados: `[{key, value}]` na ordem `sort_order, key`.
 | `book_order` | `stories.id` | `{storyId, bookIds}` — ids na ordem `sort_order, id` | posições numéricas |
 | `chapter_order` | `books.id` | `{bookId, chapterIds}` — ids na ordem `sort_order, id` | posições numéricas |
 | `tag_assignment` | `tagId:ownerType:ownerId` | `{tagId, ownerType, ownerId}` | `id` da linha (local), `created_at` |
+| `entity` | `entities.id` | `{id, universeId, type, name, description, summary, canonStatus, imageBlobHash, imageMimeType, attributes:[{key,value}], customFields:[{key,value}]}` | timestamps, `image` legada, ids e `sort_order` das linhas internas |
+| `relation` | `relations.id` | `{id, universeId, sourceId, targetId, type, label, bidirectional, importance}` | `created_at` |
+| `timeline_event` | `timeline_events.id` | `{id, universeId, title, description, eventType, startDate, endDate, entityId, displayDate, sortKey}` | timestamps |
+| `canvas_entity_position` | `entities.id` | `{entityId, universeId, positionX, positionY}` | `updated_at` |
 
 Decisões que valem conferir na revisão:
 
@@ -477,6 +513,18 @@ Decisões que valem conferir na revisão:
   e a mutação falha sem alterar nada, até o backfill converter.
 - **`chapter_order` existe enquanto o livro existe**, inclusive vazia. `create_book` emite a ordem vazia;
   `create_chapter`/`delete_chapter` a reescrevem na mesma mutação; `reorder_chapters` altera só ela.
+
+**Decisões da B3 que valem conferir:**
+
+- **Atributos são internos.** `entity_attributes` não tem evento próprio: salvar ou remover um atributo é
+  **uma revisão da entidade**, e a lista do payload substitui a daqui inteira na aplicação.
+- **`entityId` do evento é mutável só para nulo.** É a única transição que o app produz (`SET NULL` na
+  exclusão da entidade). Apontar para outra entidade é inconsistência.
+- **Números.** `sortKey` e `positionX/Y` são `REAL`. A serialização do `serde_json` é a representação
+  mínima que faz round-trip — determinística para os mesmos bits; valor não finito é recusado na leitura.
+  Dois aparelhos convergem no payload quando têm o mesmo `f64`, que é o que a replicação entrega.
+- **Posição do grafo é autoral e sincroniza; viewport não.** Zoom, pan, seleção e hover vivem na memória
+  do componente e não passam por serviço nenhum. `clear_layout` exclui cada posição, com evento.
 
 ### 8.1 Contrato da aplicação remota (upsert)
 
@@ -542,6 +590,20 @@ e os A/B/C de `story_order` e `chapter_order`.
 
 Se mover capítulo entre livros virar funcionalidade, o contrato muda para "atualiza a FK na mesma
 transação" — e a checagem de materialização continua a mesma.
+
+**Entidade, relação, evento e posição (B3):**
+
+| caso | resultado |
+| --- | --- |
+| `entity` com `universeId` diferente do daqui | erro — o universo da entidade é imutável (nenhuma operação do app move entidade de universo) |
+| `relation` cujo `sourceId`/`targetId` não existe aqui | `PrecisaReconciliar` |
+| `relation` cuja ponta existe **em outro universo** | erro — estado incompatível |
+| `relation` com ponta ou universo diferente do que já está aqui | erro — as pontas são imutáveis (o app só cria e exclui relação) |
+| `timeline_event` com `entityId` que não existe aqui | `PrecisaReconciliar` |
+| `timeline_event` cujo `entityId` aponta para OUTRA entidade que não a daqui | erro — trocar a entidade de um evento não é operação do app |
+| `timeline_event` com `entityId: null` sobre um evento que tinha entidade | aplica — é a reescrita do `SET NULL` |
+| `canvas_entity_position` cuja entidade não existe aqui | `PrecisaReconciliar` |
+| `sortKey`/`positionX`/`positionY` não finito | erro — não há payload canônico para NaN ou infinito |
 
 **Asserção geral de materialização:**
 

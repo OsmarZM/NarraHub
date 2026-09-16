@@ -82,6 +82,68 @@ impl Aparelho {
         .expect("escrever");
     }
 
+    fn entidade(&self, universo: &str, nome: &str) -> String {
+        crate::application::entity_service::create(
+            &self.banco.database,
+            &self.store,
+            &self.eu,
+            crate::domain::entity::NewEntity {
+                universe_id: universo.to_string(),
+                entity_type: "Personagem".into(),
+                name: nome.to_string(),
+                description: String::new(),
+                image: String::new(),
+                attributes: vec![crate::domain::entity::NewEntityAttribute {
+                    key: "Idade".into(),
+                    value: "50".into(),
+                }],
+            },
+        )
+        .expect("entidade")
+        .id
+    }
+
+    fn relacao(&self, universo: &str, origem: &str, destino: &str, rotulo: &str) -> String {
+        crate::application::workspace_service::create_relation(
+            &self.banco.database,
+            &self.eu,
+            universo,
+            origem,
+            destino,
+            rotulo,
+        )
+        .expect("relação")
+    }
+
+    fn evento(&self, universo: &str, titulo: &str, entidade: Option<&str>, ordem: f64) -> String {
+        crate::application::workspace_service::create_timeline_event(
+            &self.banco.database,
+            &self.eu,
+            universo,
+            crate::domain::workspace::NewTimelineEvent {
+                title: titulo.to_string(),
+                date: "1400-01-01".into(),
+                description: String::new(),
+                entity_id: entidade.map(|e| e.to_string()),
+                display_date: String::new(),
+                sort_key: ordem,
+            },
+        )
+        .expect("evento")
+    }
+
+    fn posicao(&self, universo: &str, entidade: &str, x: f64, y: f64) {
+        canvas_service::save_entity_position(
+            &self.banco.database,
+            &self.eu,
+            universo,
+            entidade,
+            x,
+            y,
+        )
+        .expect("posição");
+    }
+
     fn canonico(&self, tipo: &str, id: &str) -> Option<String> {
         let connection = self.banco.connection();
         sync_codec::ler_canonico(&connection, &AggregateRef::new(tipo, id))
@@ -1201,4 +1263,457 @@ mod ponte_de_ordem {
         assert!(!cena.aplicado(&rc));
         cena.receptor.coerente("chapter_order", "b1");
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// B3: entidade, relação, linha do tempo e posição no grafo
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Universo com duas entidades, uma relação entre elas, um evento ligado à primeira e a posição
+/// dela no grafo — criado no `autor` e já sincronizado.
+struct Elenco {
+    universo: String,
+    e1: String,
+    e2: String,
+    relacao: String,
+    evento: String,
+}
+
+fn elenco(autor: &Aparelho, outro: &Aparelho) -> Elenco {
+    let universo = autor.universo("Terra");
+    let e1 = autor.entidade(&universo, "Frodo");
+    let e2 = autor.entidade(&universo, "Sam");
+    let relacao = autor.relacao(&universo, &e1, &e2, "amigo");
+    let evento = autor.evento(&universo, "Partida", Some(&e1), 1.0);
+    autor.posicao(&universo, &e1, 10.0, -20.5);
+    let (recebido, _) = sincronizar(autor, outro);
+    assert_eq!(recebido.divergencias, 0);
+    assert!(
+        recebido.precisam_reconciliar.is_empty(),
+        "{:?}",
+        recebido.precisam_reconciliar
+    );
+    Elenco {
+        universo,
+        e1,
+        e2,
+        relacao,
+        evento,
+    }
+}
+
+fn convergencia_do_elenco(a: &Aparelho, b: &Aparelho, elenco: &Elenco) {
+    for (tipo, id) in [
+        ("entity", elenco.e1.as_str()),
+        ("entity", elenco.e2.as_str()),
+        ("relation", elenco.relacao.as_str()),
+        ("timeline_event", elenco.evento.as_str()),
+        ("canvas_entity_position", elenco.e1.as_str()),
+    ] {
+        a.convergiu_com(b, tipo, id);
+    }
+}
+
+#[test]
+fn entidade_relacao_evento_e_posicao_criados_no_pc_chegam_ao_android() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let elenco = elenco(&pc, &android);
+    convergencia_do_elenco(&pc, &android, &elenco);
+
+    // Os atributos são estado interno da ficha: chegaram com ela, sem evento próprio.
+    let atributos: i64 = android
+        .banco
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM entity_attributes WHERE entity_id = ?1",
+            [&elenco.e1],
+            |row| row.get(0),
+        )
+        .expect("atributos");
+    assert!(atributos >= 14, "{atributos}");
+    assert_eq!(
+        android.eventos_do_tipo("entity"),
+        0,
+        "o Android não emitiu nada"
+    );
+}
+
+#[test]
+fn criado_no_android_e_editado_no_pc_converge() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let elenco = elenco(&android, &pc);
+    convergencia_do_elenco(&android, &pc, &elenco);
+
+    crate::application::entity_service::update(
+        &pc.banco.database,
+        &pc.store,
+        &pc.eu,
+        &elenco.e1,
+        crate::domain::entity::EntityUpdate {
+            summary: Some("resumo do PC".into()),
+            ..Default::default()
+        },
+    )
+    .expect("editar");
+    crate::application::workspace_service::rename_timeline_event(
+        &pc.banco.database,
+        &pc.eu,
+        &elenco.evento,
+        "Partida (revisada)",
+    )
+    .expect("renomear");
+    pc.posicao(&elenco.universo, &elenco.e1, 33.0, 44.0);
+
+    let (no_android, _) = sincronizar(&pc, &android);
+    assert_eq!(no_android.divergencias, 0);
+    convergencia_do_elenco(&pc, &android, &elenco);
+    assert!(android
+        .canonico("entity", &elenco.e1)
+        .expect("ficha")
+        .contains("resumo do PC"));
+}
+
+#[test]
+fn atributo_da_ficha_e_uma_revisao_da_entidade_e_nao_de_um_agregado_proprio() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let elenco = elenco(&pc, &android);
+    let antes = pc.eventos_do_tipo("entity");
+
+    crate::application::entity_service::save_attribute(
+        &pc.banco.database,
+        &pc.eu,
+        crate::domain::entity::EntityAttribute {
+            id: "temp_novo".into(),
+            entity_id: elenco.e1.clone(),
+            key: "Apelido".into(),
+            value: "Portador".into(),
+            sort_order: 0,
+        },
+    )
+    .expect("atributo");
+    assert_eq!(
+        pc.eventos_do_tipo("entity"),
+        antes + 1,
+        "uma revisão da entidade"
+    );
+
+    sincronizar(&pc, &android);
+    pc.convergiu_com(&android, "entity", &elenco.e1);
+    assert!(android
+        .canonico("entity", &elenco.e1)
+        .expect("ficha")
+        .contains("Portador"));
+}
+
+#[test]
+fn entidade_editada_nos_dois_lados_vira_decisao_sem_perder_nada() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let elenco = elenco(&pc, &android);
+    let editar = |aparelho: &Aparelho, texto: &str| {
+        crate::application::entity_service::update(
+            &aparelho.banco.database,
+            &aparelho.store,
+            &aparelho.eu,
+            &elenco.e1,
+            crate::domain::entity::EntityUpdate {
+                summary: Some(texto.into()),
+                ..Default::default()
+            },
+        )
+        .expect("editar");
+    };
+    editar(&pc, "versão do PC");
+    editar(&android, "versão do Android");
+
+    let (no_android, no_pc) = sincronizar(&pc, &android);
+    assert_eq!(no_android.divergencias, 1, "{no_android:?}");
+    assert_eq!(no_pc.divergencias, 1, "{no_pc:?}");
+    assert!(pc
+        .canonico("entity", &elenco.e1)
+        .expect("ficha")
+        .contains("versão do PC"));
+    assert!(android
+        .canonico("entity", &elenco.e1)
+        .expect("ficha")
+        .contains("versão do Android"));
+    // As duas revisões existem nos dois lados: nada foi sobrescrito.
+    for aparelho in [&pc, &android] {
+        let revisoes: i64 = aparelho
+            .banco
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sync_revision_history WHERE aggregate_type = 'entity' AND aggregate_id = ?1",
+                [&elenco.e1],
+                |row| row.get(0),
+            )
+            .expect("revisões");
+        assert!(revisoes >= 3, "{revisoes}");
+    }
+}
+
+#[test]
+fn entidade_apagada_em_a_com_relacao_criada_em_b_nao_perde_a_relacao() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let elenco = elenco(&a, &b);
+    let terceira = b.entidade(&elenco.universo, "Merry");
+    let nova = b.relacao(&elenco.universo, &elenco.e1, &terceira, "primo");
+    crate::application::entity_service::delete(&a.banco.database, &a.eu, &elenco.e1)
+        .expect("apagar entidade");
+
+    let (em_b, em_a) = sincronizar(&a, &b);
+
+    // Em B a exclusão vira decisão: a relação nova continua lá.
+    assert!(em_b.divergencias >= 1, "{em_b:?}");
+    assert_eq!(
+        b.divergencias_abertas("entity"),
+        vec![(elenco.e1.clone(), "parent_deletion_blocked".to_string())]
+    );
+    assert!(b.canonico("relation", &nova).is_some());
+    assert!(b.canonico("entity", &elenco.e1).is_some());
+    // Em A a relação nova não tem onde se apoiar: fica pendente, não é descartada.
+    assert!(
+        em_a.precisam_reconciliar.contains(&nova) || em_a.pendentes >= 1,
+        "{em_a:?}"
+    );
+    assert!(a.canonico("relation", &nova).is_none());
+    let guardado: bool = a
+        .banco
+        .connection()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_events WHERE aggregate_id = ?1)",
+            [&nova],
+            |row| row.get(0),
+        )
+        .expect("guardado");
+    assert!(guardado);
+}
+
+#[test]
+fn entidade_apagada_em_a_com_evento_editado_em_b_nao_perde_a_edicao() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let elenco = elenco(&a, &b);
+    crate::application::workspace_service::rename_timeline_event(
+        &b.banco.database,
+        &b.eu,
+        &elenco.evento,
+        "Editado no B",
+    )
+    .expect("renomear");
+    crate::application::entity_service::delete(&a.banco.database, &a.eu, &elenco.e1)
+        .expect("apagar");
+
+    let (em_b, _) = sincronizar(&a, &b);
+    assert!(em_b.divergencias >= 1, "{em_b:?}");
+    // A edição de B continua no banco de B, e o evento não sumiu em nenhum dos dois.
+    assert!(b
+        .canonico("timeline_event", &elenco.evento)
+        .expect("evento")
+        .contains("Editado no B"));
+    assert!(a.canonico("timeline_event", &elenco.evento).is_some());
+}
+
+/// O `SET NULL` sem concorrência: o evento sobrevive nos dois lados, sem a entidade.
+#[test]
+fn entidade_apagada_deixa_o_evento_vivo_com_entidade_nula_nos_dois() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let elenco = elenco(&a, &b);
+    crate::application::entity_service::delete(&a.banco.database, &a.eu, &elenco.e1)
+        .expect("apagar");
+
+    let (em_b, _) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 0, "{em_b:?}");
+    for (tipo, id) in [
+        ("entity", elenco.e1.as_str()),
+        ("relation", elenco.relacao.as_str()),
+        ("canvas_entity_position", elenco.e1.as_str()),
+        ("timeline_event", elenco.evento.as_str()),
+    ] {
+        a.convergiu_com(&b, tipo, id);
+    }
+    let evento = b
+        .canonico("timeline_event", &elenco.evento)
+        .expect("evento");
+    assert!(evento.contains(r#""entityId":null"#), "{evento}");
+    assert!(b.canonico("entity", &elenco.e1).is_none());
+    assert!(b.canonico("relation", &elenco.relacao).is_none());
+    assert!(b.canonico("canvas_entity_position", &elenco.e1).is_none());
+}
+
+/// Relação, evento e posição que chegam antes das entidades de que dependem: esperam, não são
+/// dadas como aplicadas, e entram quando as entidades chegam.
+///
+/// Os dependentes vêm de **outra origem** (C), contíguos na sequência dela: o que os segura aqui é a
+/// dependência de domínio, não a lacuna de `seq`.
+#[test]
+fn dependencia_que_chega_depois_espera_e_converge() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let c = Aparelho::novo("c");
+    let universo = a.universo("Terra");
+    // B já tem o universo: o que vai segurar os eventos de C é a dependência das ENTIDADES.
+    sincronizar(&a, &b);
+    let e1 = a.entidade(&universo, "Frodo");
+    let e2 = a.entidade(&universo, "Sam");
+    sincronizar(&a, &c);
+    let relacao = c.relacao(&universo, &e1, &e2, "amigo");
+    let evento = c.evento(&universo, "Partida", Some(&e1), 1.0);
+    c.posicao(&universo, &e1, 1.0, 2.0);
+
+    apresentar(&a, &b);
+    apresentar(&c, &b);
+    let vetor = vetor_local(&b.banco.connection()).expect("vetor");
+    let todos = eventos_para(&c.banco.connection(), &vetor).expect("eventos");
+    let (de_c, de_a): (Vec<_>, Vec<_>) = todos
+        .into_iter()
+        .partition(|evento| evento.device_id == c.eu.device_id());
+    assert_eq!(
+        de_c.len(),
+        3,
+        "relação, evento e posição, contíguos na origem C"
+    );
+
+    let relatorio = receber_eventos(&mut b.banco.connection(), &de_c).expect("de C");
+    assert_eq!(relatorio.aplicados, 0, "{relatorio:?}");
+    assert_eq!(relatorio.pendentes, 3, "{relatorio:?}");
+    for evento in &de_c {
+        let aplicado: bool = b
+            .banco
+            .connection()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_applied_events WHERE event_id = ?1)",
+                [&evento.event_id],
+                |row| row.get(0),
+            )
+            .expect("aplicado");
+        assert!(
+            !aplicado,
+            "{} avançou sem a entidade",
+            evento.aggregate_type
+        );
+    }
+    assert_eq!(b.contar("SELECT COUNT(*) FROM relations"), 0);
+    assert_eq!(b.contar("SELECT COUNT(*) FROM timeline_events"), 0);
+    assert_eq!(b.contar("SELECT COUNT(*) FROM canvas_entity_positions"), 0);
+
+    let relatorio = receber_eventos(&mut b.banco.connection(), &de_a).expect("de A");
+    assert!(relatorio.precisam_reconciliar.is_empty(), "{relatorio:?}");
+    assert_eq!(relatorio.pendentes, 0, "{relatorio:?}");
+    for (tipo, id) in [
+        ("entity", e1.as_str()),
+        ("entity", e2.as_str()),
+        ("relation", relacao.as_str()),
+        ("timeline_event", evento.as_str()),
+        ("canvas_entity_position", e1.as_str()),
+    ] {
+        c.convergiu_com(&b, tipo, id);
+    }
+    b.invariante_de_materializacao();
+}
+
+/// Três origens: a relação de A depende de uma entidade de C. Chegando em qualquer ordem, converge.
+#[test]
+fn relacao_de_a_com_entidade_de_c_converge_em_qualquer_ordem() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let c = Aparelho::novo("c");
+    let universo = a.universo("Terra");
+    let e1 = a.entidade(&universo, "Frodo");
+    sincronizar(&a, &b);
+    sincronizar(&a, &c);
+
+    let de_c = c.entidade(&universo, "Gandalf");
+    sincronizar(&a, &c);
+    let relacao = a.relacao(&universo, &e1, &de_c, "guia");
+
+    apresentar(&a, &b);
+    apresentar(&c, &b);
+    let vetor = vetor_local(&b.banco.connection()).expect("vetor");
+    let todos = eventos_para(&a.banco.connection(), &vetor).expect("eventos");
+    let (eventos_de_a, eventos_de_c): (Vec<_>, Vec<_>) = todos
+        .into_iter()
+        .partition(|evento| evento.device_id == a.eu.device_id());
+
+    // Primeiro o que é de A (a relação cita uma entidade de C que ainda não chegou).
+    let relatorio = receber_eventos(&mut b.banco.connection(), &eventos_de_a).expect("de A");
+    assert!(relatorio.pendentes >= 1, "{relatorio:?}");
+    assert!(b.canonico("relation", &relacao).is_none());
+
+    let relatorio = receber_eventos(&mut b.banco.connection(), &eventos_de_c).expect("de C");
+    assert!(relatorio.precisam_reconciliar.is_empty(), "{relatorio:?}");
+    assert_eq!(relatorio.pendentes, 0, "{relatorio:?}");
+    a.convergiu_com(&b, "relation", &relacao);
+    a.convergiu_com(&b, "entity", &de_c);
+    b.invariante_de_materializacao();
+}
+
+/// Posição do grafo é autoral e sincroniza; `clear_layout` exclui cada posição, com evento.
+#[test]
+fn limpar_layout_exclui_as_posicoes_nos_dois_aparelhos() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let elenco = elenco(&pc, &android);
+    pc.convergiu_com(&android, "canvas_entity_position", &elenco.e1);
+
+    canvas_service::clear_layout(&pc.banco.database, &pc.eu, &elenco.universo).expect("limpar");
+    let (no_android, _) = sincronizar(&pc, &android);
+    assert_eq!(no_android.divergencias, 0, "{no_android:?}");
+    pc.convergiu_com(&android, "canvas_entity_position", &elenco.e1);
+    assert_eq!(
+        android.contar("SELECT COUNT(*) FROM canvas_entity_positions"),
+        0
+    );
+}
+
+/// Trocar a entidade de um evento não é operação do app: um payload assim é inconsistência.
+#[test]
+fn evento_que_troca_de_entidade_e_recusado() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let elenco = elenco(&pc, &android);
+    let payload = android
+        .canonico("timeline_event", &elenco.evento)
+        .expect("evento")
+        .replace(&elenco.e1, &elenco.e2);
+    let base = {
+        let connection = android.banco.connection();
+        sync_codec::revisao_corrente(
+            &connection,
+            &AggregateRef::new("timeline_event", &elenco.evento),
+        )
+        .expect("rev")
+        .expect("tem revisão")
+    };
+    let seq = pc.contar(
+        "SELECT COALESCE(MAX(seq), 0) FROM sync_events
+          WHERE device_id IN (SELECT device_id FROM sync_devices WHERE is_self = 1)",
+    ) + 1;
+    let mut envelope = envelope_de_origem(
+        pc.eu.device_id(),
+        seq,
+        &elenco.universo,
+        &AggregateRef::new("timeline_event", &elenco.evento),
+        Operation::Upsert,
+        &payload,
+        &base,
+    );
+    envelope.signature = pc.eu.sign(&envelope);
+
+    let erro = receber_eventos(&mut android.banco.connection(), &[envelope])
+        .expect_err("trocar a entidade do evento não é operação do app");
+    assert!(
+        erro.message.contains("não é uma operação do app"),
+        "{}",
+        erro.message
+    );
+    assert!(android
+        .canonico("timeline_event", &elenco.evento)
+        .expect("evento")
+        .contains(&elenco.e1));
 }

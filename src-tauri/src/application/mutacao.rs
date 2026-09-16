@@ -946,9 +946,9 @@ pub(crate) mod tests {
     fn agregado_nao_coberto_nao_pode_ser_declarado() {
         let aparelho = Aparelho::novo();
         let erro = Mutacao::executar(&aparelho.banco.database, &aparelho.eu, |m| {
-            m.gravou("entity", "e1")
+            m.gravou("planning_item", "p1")
         })
-        .expect_err("entidade ainda não é coberta");
+        .expect_err("card do planejamento ainda não é coberto");
         assert!(erro.message.contains("NH-079"), "{}", erro.message);
     }
 
@@ -1272,24 +1272,44 @@ mod gate_estrutural {
         }
     }
 
-    /// **Nenhuma escrita sincronizável do manuscrito fica fora da `Mutacao` (gate da B2).**
+    /// **Nenhuma escrita sincronizável coberta fica fora da `Mutacao` (gates da B2 e B3).**
     ///
-    /// Varre TODA função pública de `manuscript_service` e de `universe_service`. Leitura
-    /// (`list_*`, `get*`, `stats`) é dispensada pelo nome; qualquer outra precisa passar pela
-    /// fronteira, ou estar em `FORA_DE_PROPOSITO` com o motivo. Uma função nova que escreva por conta
-    /// própria reprova aqui sem ninguém precisar lembrar de listá-la.
+    /// Varre TODA função pública dos serviços já cobertos. Leitura (`list_*`, `get*`, `stats`) é
+    /// dispensada pelo nome; qualquer outra precisa passar pela fronteira, ou estar em
+    /// `FORA_DE_PROPOSITO` **com o motivo**. Uma função nova que escreva por conta própria reprova
+    /// aqui sem ninguém precisar lembrar de listá-la.
     #[test]
     fn escritas_do_manuscrito_passam_todas_pela_mutacao() {
-        const FORA_DE_PROPOSITO: &[(&str, &str)] = &[(
-            "delete",
-            "universe_service::delete recusa sempre (a árvore do universo ainda não é coberta) e não escreve",
-        )];
-        let leitura =
-            |nome: &str| nome.starts_with("list_") || nome.starts_with("get") || nome == "stats";
+        const FORA_DE_PROPOSITO: &[(&str, &str, &str)] = &[
+            (
+                "universe_service",
+                "delete",
+                "recusa sempre (a árvore do universo ainda não é coberta) e não escreve",
+            ),
+            ("canvas_service", "create_node", "canvas_node entra na B5"),
+            ("canvas_service", "update_node", "canvas_node entra na B5"),
+            ("canvas_service", "delete_node", "canvas_node entra na B5"),
+            (
+                "canvas_service",
+                "save_node_position",
+                "posição de nó do canvas entra na B5, junto do agregado canvas_node",
+            ),
+            ("canvas_service", "create_edge", "canvas_edge entra na B5"),
+            ("canvas_service", "delete_edge", "canvas_edge entra na B5"),
+        ];
+        let leitura = |nome: &str| {
+            nome == "list"
+                || nome == "stats"
+                || nome.starts_with("list_")
+                || nome.starts_with("get")
+        };
         let mut conferidas = 0;
         for (servico, fonte) in [
             ("manuscript_service", include_str!("manuscript_service.rs")),
             ("universe_service", include_str!("universe_service.rs")),
+            ("entity_service", include_str!("entity_service.rs")),
+            ("workspace_service", include_str!("workspace_service.rs")),
+            ("canvas_service", include_str!("canvas_service.rs")),
         ] {
             let codigo = sem_testes(fonte);
             let mut resto = codigo;
@@ -1301,16 +1321,15 @@ mod gate_estrutural {
                     continue;
                 }
                 let corpo = corpo(codigo, nome);
-                if let Some((_, motivo)) = FORA_DE_PROPOSITO
+                if let Some((_, _, motivo)) = FORA_DE_PROPOSITO
                     .iter()
-                    .find(|(fora, _)| *fora == nome && servico == "universe_service")
+                    .find(|(fora_servico, fora, _)| *fora_servico == servico && *fora == nome)
                 {
-                    for proibido in ["database.write()", ".execute(", "Mutacao::executar("] {
-                        assert!(
-                            !corpo.contains(proibido),
-                            "{servico}::{nome} está fora da Mutacao ({motivo}) e passou a escrever"
-                        );
-                    }
+                    assert!(
+                        !corpo.contains("Mutacao::executar("),
+                        "{servico}::{nome} está em FORA_DE_PROPOSITO ({motivo}) e passou pela \
+                         fronteira: tire da lista"
+                    );
                     continue;
                 }
                 assert!(
@@ -1331,7 +1350,8 @@ mod gate_estrutural {
                 conferidas += 1;
             }
         }
-        // 10 do manuscrito + create/update do universo. Se cair, o gate perdeu funções de vista.
-        assert_eq!(conferidas, 12, "o gate conferiu {conferidas} escritas");
+        // 10 do manuscrito, 2 do universo (B2); 5 de entidade, 5 de workspace e 4 de canvas
+        // (anexos da B1 e posição de entidade da B3). Se cair, o gate perdeu funções de vista.
+        assert_eq!(conferidas, 26, "o gate conferiu {conferidas} escritas");
     }
 }
