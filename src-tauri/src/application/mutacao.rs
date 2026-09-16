@@ -21,8 +21,9 @@
 //!     m.gravou(tipo, id)      create/update — o estado é lido no fim, depois da escrita
 //!     m.excluir(tipo, id)     ANTES do DELETE: impactos, estado causal, preflight, eventos preparados
 //!   fim:
+//!     reescritos com linha própria: relê o estado canônico → upsert, ANTES das exclusões
 //!     excluídos:  confere que sumiram → delete (descendentes antes do pai)
-//!     reescritos: confere que continuam existindo, relê o estado canônico → upsert (depois)
+//!     reescritos de existência derivada (ordens): upsert depois das exclusões
 //!     agregado cujo estado canônico já é o da revisão corrente não gera evento
 //!   COMMIT
 //! ```
@@ -37,7 +38,7 @@
 //!     Bloqueado(motivo)                      → efeito sobre tipo ainda não coberto → recusa tudo
 //!   cada afetado: divergência aberta ou evento pendente → recusa (nada de alteração silenciosa)
 //! serviço executa o DELETE
-//! fim: excluídos antes dos reescritos, tudo na mesma transação
+//! fim: reescrita de quem tem linha própria, exclusões, reescrita das ordens — tudo numa transação
 //! ```
 //!
 //! **Uma ação, um conjunto coerente de revisões.** O serviço declara agregados, não SQLs: cinco
@@ -115,6 +116,11 @@ enum Operacao {
     /// Declarado pelo serviço: criado ou alterado.
     Gravou(AggregateRef),
     /// Sobrevivente de uma exclusão: mudou por FK/gatilho/derivação e continua existindo.
+    ///
+    /// **`Excluiu` domina `Reescreveu` do mesmo agregado**: se o agregado já vai desaparecer nesta
+    /// operação, a reescrita que a cascata causaria nele é absorvida e não gera revisão intermediária
+    /// (ver `coletar` e `finalizar`). É o caso do card que possui um campo exclusivo: apagar o card
+    /// apaga o campo, e o efeito do campo sobre o card não vira evento.
     Reescreveu(AggregateRef),
     Excluiu {
         agregado: AggregateRef,
@@ -228,9 +234,28 @@ impl<'t, 'c> Mutacao<'t, 'c> {
             }
         }
 
-        // Excluídos antes dos reescritos: quem recebe aplica a reescrita do sobrevivente já sem o
-        // que sumiu, e o estado materializado dele é exatamente o payload (ex.: a ordem do livro
-        // chega depois da exclusão do capítulo, sem ele).
+        // **A ordem de emissão depende do tipo de sobrevivente.**
+        //
+        // ```text
+        // 1  reescrita de agregado com linha própria (card)  ANTES das exclusões
+        // 2  exclusões (descendentes → raiz)
+        // 3  reescrita de existência derivada (ordens)       DEPOIS das exclusões
+        // ```
+        //
+        // O card sobrevive com linha própria: o estado dele sem o campo é materializável antes de o
+        // campo ser apagado, e vir primeiro é o que faz o receptor conhecer a concorrência ANTES do
+        // SQL destrutivo — uma edição concorrente abre divergência e o delete seguinte é bloqueado.
+        //
+        // A ordem de um livro é o contrário: a lista sem o capítulo só materializa depois de o
+        // capítulo sair. Como o cursor de uma origem é contíguo, pôr a ordem primeiro travaria a
+        // origem inteira — foi o travamento que a B2.1 encontrou.
+        let (derivados, com_linha): (Vec<_>, Vec<_>) = coleta
+            .reescritos
+            .into_iter()
+            .partition(|agregado| sync_codec::existencia_derivada(&agregado.aggregate_type));
+        for agregado in com_linha {
+            self.declarar_reescrita(agregado);
+        }
         for (agregado, universe_id) in preparados {
             let ja = self.operacoes.iter().any(|operacao| {
                 matches!(operacao, Operacao::Excluiu { agregado: existente, .. } if existente == &agregado)
@@ -243,15 +268,19 @@ impl<'t, 'c> Mutacao<'t, 'c> {
                 universe_id,
             });
         }
-        for agregado in coleta.reescritos {
-            let ja = self.operacoes.iter().any(
-                |operacao| matches!(operacao, Operacao::Reescreveu(existente) if existente == &agregado),
-            );
-            if !ja {
-                self.operacoes.push(Operacao::Reescreveu(agregado));
-            }
+        for agregado in derivados {
+            self.declarar_reescrita(agregado);
         }
         Ok(())
+    }
+
+    fn declarar_reescrita(&mut self, agregado: AggregateRef) {
+        let ja = self.operacoes.iter().any(
+            |operacao| matches!(operacao, Operacao::Reescreveu(existente) if existente == &agregado),
+        );
+        if !ja {
+            self.operacoes.push(Operacao::Reescreveu(agregado));
+        }
     }
 
     fn finalizar(self, identidade: &DeviceIdentity) -> DatabaseCommandResult<()> {

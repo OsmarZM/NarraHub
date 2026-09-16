@@ -249,6 +249,24 @@ impl Aparelho {
             .expect("contar")
     }
 
+    /// Os eventos deste aparelho, na ordem de emissão: (tipo, id, operação).
+    fn eventos(&self) -> Vec<(String, String, String)> {
+        let connection = self.banco.connection();
+        let mut consulta = connection
+            .prepare(
+                "SELECT aggregate_type, aggregate_id, operation FROM sync_events
+                  WHERE device_id = ?1 ORDER BY seq",
+            )
+            .expect("consulta");
+        consulta
+            .query_map([self.eu.device_id()], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .expect("linhas")
+            .collect::<Result<_, _>>()
+            .expect("eventos")
+    }
+
     fn eventos_do_tipo(&self, tipo: &str) -> i64 {
         self.banco
             .connection()
@@ -2224,9 +2242,16 @@ fn excluir_historia_e_entidade_tira_a_ligacao_do_card_com_revisao() {
     );
 }
 
-/// Card editado num lado, propriedade apagada no outro: decisão, sem perda silenciosa.
+/// **Concorrência não altera o estado vivo antes da decisão.**
+///
+/// ```text
+/// A edita o valor do campo F no card
+/// B apaga o campo F
+/// A recebe:  reescrita do card (sem F) → concorrente → divergência; o card de A fica intacto
+///            exclusão de F            → preflight vê o card divergente → o DELETE não roda
+/// ```
 #[test]
-fn card_editado_em_a_e_propriedade_apagada_em_b_vira_decisao() {
+fn propriedade_apagada_no_outro_lado_nao_muda_o_card_antes_da_decisao() {
     let a = Aparelho::novo("a");
     let b = Aparelho::novo("b");
     let quadro = quadro(&a, &b);
@@ -2246,41 +2271,246 @@ fn card_editado_em_a_e_propriedade_apagada_em_b_vira_decisao() {
     )
     .expect("B apaga a propriedade");
 
-    let (em_b, em_a) = sincronizar(&a, &b);
-    assert!(
-        em_b.divergencias + em_a.divergencias >= 1,
-        "{em_b:?} {em_a:?}"
-    );
+    sincronizar(&a, &b);
 
-    // A propriedade deixou de existir nos dois: o valor dela sair do card é consequência, não
-    // perda — e a decisão sobre a edição de A fica registrada como divergência do card.
-    assert!(a
-        .canonico("planning_field_definition", &quadro.campo_texto)
-        .is_none());
-    assert!(b
-        .canonico("planning_field_definition", &quadro.campo_texto)
-        .is_none());
+    // Em A nada foi executado por conta própria: o campo continua, com o valor que A escreveu.
+    let card = a.canonico("planning_item", &quadro.card_a).expect("card");
+    assert!(
+        card.contains("mudado em A"),
+        "o valor de A foi apagado antes da decisão: {card}"
+    );
+    assert!(
+        a.canonico("planning_field_definition", &quadro.campo_texto)
+            .is_some(),
+        "a propriedade foi apagada em A antes da decisão"
+    );
+    assert_eq!(
+        a.divergencias_abertas("planning_field_definition"),
+        vec![(
+            quadro.campo_texto.clone(),
+            "parent_deletion_blocked".to_string()
+        )]
+    );
     assert_eq!(
         a.divergencias_abertas("planning_item")
             .iter()
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>(),
         vec![quadro.card_a.clone()],
-        "a edição de A sobre o campo apagado precisa virar decisão"
+        "a edição concorrente do card tem de virar decisão"
     );
-    // E o que A escreveu continua no log de A, íntegro, para essa decisão ser possível.
-    let guardado: i64 = a
+
+    // A sessão seguinte não duplica decisão nenhuma.
+    let abertas_antes = a.divergencias_abertas("planning_item").len()
+        + a.divergencias_abertas("planning_field_definition").len();
+    let (_, em_a) = sincronizar(&a, &b);
+    assert_eq!(em_a.divergencias, 0, "{em_a:?}");
+    assert_eq!(
+        a.divergencias_abertas("planning_item").len()
+            + a.divergencias_abertas("planning_field_definition").len(),
+        abertas_antes
+    );
+    a.invariante_de_materializacao();
+}
+
+/// Resolver mantendo o local: o campo e o valor continuam.
+#[test]
+fn manter_local_preserva_a_propriedade_e_o_valor() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let quadro = quadro(&a, &b);
+    a.salvar_card(
+        &quadro.universo,
+        &quadro.card_a,
+        "Cena do porto",
+        Some(&quadro.capitulo),
+        serde_json::json!({ quadro.campo_texto.clone(): "mudado em A" }),
+    );
+    crate::application::planning_service::delete_field_definition(
+        &b.banco.database,
+        &b.eu,
+        &quadro.campo_texto,
+        &quadro.universo,
+    )
+    .expect("B apaga");
+    sincronizar(&a, &b);
+
+    let bloqueada = a
+        .divergencias_abertas("planning_field_definition")
+        .first()
+        .map(|(id, _)| id.clone())
+        .expect("a exclusão bloqueada");
+    let id_da_divergencia: String = a
         .banco
         .connection()
         .query_row(
-            "SELECT COUNT(*) FROM sync_events WHERE payload LIKE '%mudado em A%'",
+            "SELECT id FROM sync_divergences
+              WHERE aggregate_type = 'planning_field_definition' AND aggregate_id = ?1
+                AND resolved_at = ''",
+            [&bloqueada],
+            |row| row.get(0),
+        )
+        .expect("divergência");
+
+    crate::application::resolucao_divergencia::resolver(
+        &a.banco.database,
+        &a.eu,
+        &id_da_divergencia,
+        crate::application::resolucao_divergencia::Escolha::ManterLocal,
+    )
+    .expect("manter o local");
+
+    assert!(a
+        .canonico("planning_field_definition", &quadro.campo_texto)
+        .is_some());
+    assert!(a
+        .canonico("planning_item", &quadro.card_a)
+        .expect("card")
+        .contains("mudado em A"));
+    a.invariante_de_materializacao();
+}
+
+/// Resolver aceitando o remoto: o campo e o valor somem — e o card ganha revisão por isso.
+#[test]
+fn aceitar_a_exclusao_da_propriedade_tira_o_campo_e_o_valor_com_revisao() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let quadro = quadro(&a, &b);
+    a.salvar_card(
+        &quadro.universo,
+        &quadro.card_a,
+        "Cena do porto",
+        Some(&quadro.capitulo),
+        serde_json::json!({ quadro.campo_texto.clone(): "mudado em A" }),
+    );
+    crate::application::planning_service::delete_field_definition(
+        &b.banco.database,
+        &b.eu,
+        &quadro.campo_texto,
+        &quadro.universo,
+    )
+    .expect("B apaga");
+    sincronizar(&a, &b);
+
+    let id_da_divergencia: String = a
+        .banco
+        .connection()
+        .query_row(
+            "SELECT id FROM sync_divergences
+              WHERE aggregate_type = 'planning_field_definition' AND resolved_at = ''",
             [],
             |row| row.get(0),
         )
-        .expect("contar");
-    assert!(guardado >= 1, "a edição de A não pode desaparecer do log");
+        .expect("divergência da propriedade");
+
+    // Enquanto o card estiver em decisão aberta, aceitar a exclusão é recusado.
+    let erro = crate::application::resolucao_divergencia::resolver(
+        &a.banco.database,
+        &a.eu,
+        &id_da_divergencia,
+        crate::application::resolucao_divergencia::Escolha::AceitarRemoto,
+    )
+    .expect_err("o card ainda está em decisão");
+    assert!(erro.message.contains("planning_item"), "{}", erro.message);
+
+    // A decisão do card em si é da etapa F; aqui simulamos que ela foi tomada (mantendo o de A).
+    a.banco
+        .connection()
+        .execute(
+            "UPDATE sync_divergences SET resolved_at = '2026-09-16 00:00:00', resolution = 'local'
+              WHERE aggregate_type = 'planning_item' AND resolved_at = ''",
+            [],
+        )
+        .expect("decisão do card");
+
+    crate::application::resolucao_divergencia::resolver(
+        &a.banco.database,
+        &a.eu,
+        &id_da_divergencia,
+        crate::application::resolucao_divergencia::Escolha::AceitarRemoto,
+    )
+    .expect("aceitar a exclusão");
+
+    assert!(a
+        .canonico("planning_field_definition", &quadro.campo_texto)
+        .is_none());
+    let card = a.canonico("planning_item", &quadro.card_a).expect("card");
+    assert!(
+        !card.contains("mudado em A"),
+        "o valor do campo apagado continuou: {card}"
+    );
+    // O card mudou por causa da exclusão: isso tem de ser uma revisão dele, não uma alteração muda.
     a.invariante_de_materializacao();
-    b.invariante_de_materializacao();
+}
+
+/// **`Delete` domina `Rewrite` do mesmo agregado.** O card que possui um campo exclusivo, com valor
+/// dele dentro do próprio card: apagar o card apaga o campo, e o efeito do campo sobre o card é
+/// absorvido — nenhuma revisão intermediária do card.
+#[test]
+fn excluir_card_com_campo_exclusivo_preenchido_nao_revisa_o_card() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let quadro = quadro(&pc, &android);
+    let exclusivo = pc.campo(
+        &quadro.universo,
+        "Só deste card",
+        "text",
+        Some(&quadro.card_b),
+    );
+    pc.salvar_card(
+        &quadro.universo,
+        &quadro.card_b,
+        "Cena da ponte",
+        None,
+        serde_json::json!({
+            quadro.campo_texto.clone(): "calmo",
+            exclusivo.clone(): "valor do campo exclusivo",
+        }),
+    );
+    sincronizar(&pc, &android);
+    assert!(pc
+        .canonico("planning_item", &quadro.card_b)
+        .expect("card")
+        .contains("valor do campo exclusivo"));
+
+    let antes = pc.eventos().len();
+    crate::application::planning_service::delete(
+        &pc.banco.database,
+        &pc.eu,
+        &quadro.card_b,
+        &quadro.universo,
+    )
+    .expect("excluir card");
+
+    let eventos = pc.eventos();
+    let novos = &eventos[antes..];
+    assert_eq!(
+        novos,
+        &[
+            (
+                "planning_field_definition".to_string(),
+                exclusivo.clone(),
+                "delete".to_string()
+            ),
+            (
+                "planning_item".to_string(),
+                quadro.card_b.clone(),
+                "delete".to_string()
+            ),
+            (
+                "planning_order".to_string(),
+                quadro.universo.clone(),
+                "upsert".to_string()
+            ),
+        ],
+        "o card condenado não pode ganhar revisão pela cascata do campo dele"
+    );
+
+    let (no_android, _) = sincronizar(&pc, &android);
+    assert_eq!(no_android.divergencias, 0, "{no_android:?}");
+    pc.convergiu_com(&android, "planning_item", &quadro.card_b);
+    pc.convergiu_com(&android, "planning_field_definition", &exclusivo);
+    pc.convergiu_com(&android, "planning_order", &quadro.universo);
 }
 
 /// Card movido num lado e ficha editada no outro: agregados diferentes, nenhuma decisão.

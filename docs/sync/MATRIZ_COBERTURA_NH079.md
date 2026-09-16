@@ -274,9 +274,10 @@ m.excluir(parent)
     universe_id de todo afetado lido agora; vazio → erro
 serviço executa o DELETE
 fim da transação:
+  Reescrito com linha própria → estado canônico relido → upsert, ANTES das exclusões
   Excluido  → precisa ter sumido → evento delete (descendentes antes do pai)
-  Reescrito → precisa continuar existindo → estado canônico relido → evento upsert
-  excluídos são emitidos ANTES dos reescritos
+  Reescrito de existência derivada (ordens) → upsert DEPOIS das exclusões
+  Excluido(A) domina Reescrito(A): agregado condenado não ganha revisão intermediária
   agregado cujo canônico já é o payload da revisão corrente → nenhum evento
 COMMIT
 ```
@@ -284,9 +285,18 @@ COMMIT
 Na B2 o `Reescrito` real é `chapter_order(livro)` quando um capítulo é excluído. Os `Reescrito` por
 `SET NULL` (planning, timeline) são `Bloqueado` até a etapa que cobre o agregado.
 
-**Por que excluídos antes dos reescritos.** Quem recebe materializa cada evento exatamente (seção 8.1).
-A ordem do livro sem o capítulo só pode ser materializada quando o capítulo já saiu; se a reescrita viesse
-antes, ela esperaria um capítulo sumir que ainda está no banco.
+**A ordem de emissão depende do tipo de sobrevivente.**
+
+| sobrevivente | quando é emitido | por quê |
+| --- | --- | --- |
+| tem linha própria (card do planejamento) | **antes** das exclusões | o estado dele sem o item apagado já é materializável, e vir primeiro faz o receptor conhecer a concorrência **antes** do SQL destrutivo: edição concorrente abre divergência e a exclusão seguinte é bloqueada pelo preflight |
+| existência derivada (`*_order`) | **depois** das exclusões | a lista sem o item só materializa quando o item sai; e como o cursor de uma origem é contíguo, pôr a ordem primeiro travaria a origem inteira (o travamento que a B2.1 encontrou) |
+
+**`Excluido(A)` domina `Reescrito(A)`.** Se um agregado já vai desaparecer nesta operação, a reescrita que a
+cascata causaria nele é absorvida — sem revisão intermediária. É o card que possui um campo exclusivo com
+valor dentro dele: apagar o card apaga o campo, e o efeito do campo sobre o card não vira evento. A regra
+está em dois lugares de propósito (`coletar` descarta, `finalizar` ignora), e um teste de mutação que
+remove as duas reprova.
 
 **Exclusão remota com sobrevivente.** Quem recebe a exclusão não bloqueia porque o sobrevivente vai mudar —
 a reescrita dele é o evento seguinte da mesma origem. Bloqueia se o sobrevivente tem **decisão aberta** ou
@@ -499,11 +509,12 @@ B3:
 
    Determinístico, sem id de linha no payload, e é o conjunto inteiro que vira uma revisão — como
    `chapter_order` fez com a ordem.
-3. **`planning_field_order(universe)`.** A B4 deixou o `sort_order` das definições de campo fora do
-   payload, pelo mesmo motivo de história e livro: não existe reordenação no app hoje. Enquanto isso, dois
-   aparelhos podem listar as propriedades em ordens diferentes. Se a ordem das propriedades passar a ser
-   arrastável — ou se a divergência visível incomodar antes disso —, ela vira agregado próprio no padrão de
-   `chapter_order`. Decidir antes da gênese, junto de `story_order`/`book_order`.
+3. **`planning_field_order(universe)` — requisito obrigatório da B6, não "talvez".** A B4 deixou o
+   `sort_order` das definições de campo fora do payload. Isso já diverge sem drag-and-drop: se A cria
+   F1 e B cria F2, cada aparelho calcula o próprio `sort_order` e a ordem visual continua diferente depois de
+   convergir. Antes da C, uma das duas coisas tem de existir: o agregado `planning_field_order(universe)` no
+   padrão de `chapter_order`, **ou** uma decisão formal, escrita, de que a ordem das propriedades é estado
+   local. A preferência registrada é sincronizar.
 
 ## 7. Subdivisão da B
 
@@ -708,6 +719,22 @@ universo; posição no mesmo universo da entidade.
 | `canvas_entity_position` cuja entidade não existe aqui | `PrecisaReconciliar` |
 | `canvas_entity_position` cuja entidade **já tem posição em outro universo** | erro; a segunda linha não é criada |
 | `sortKey`/`positionX`/`positionY` não finito | erro — não há payload canônico para NaN ou infinito |
+
+**Concorrência nunca altera o estado vivo antes da decisão (B4).** Uma exclusão remota que reescreveria um
+card com edição concorrente **não executa**:
+
+```text
+A edita o valor do campo F no card       B apaga o campo F
+A recebe:  reescrita do card (sem F)  → concorrente → divergência; o card de A fica intacto
+           exclusão de F              → preflight vê o card divergente → o DELETE não roda
+                                      → parent_deletion_blocked
+resolvendo: manter o local  → campo e valor continuam
+            aceitar remoto  → campo e valor somem, e o card ganha revisão por isso
+```
+
+A resolução que aceita a exclusão **declara a reescrita dos sobreviventes**: o card muda porque o campo
+deixou de existir, e isso tem de ser uma revisão dele, não uma alteração muda. A decisão sobre a
+divergência do próprio card (concorrente) continua sendo da etapa F.
 
 **Card, quadro e propriedade (B4):**
 
