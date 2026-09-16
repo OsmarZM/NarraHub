@@ -513,18 +513,25 @@ fn bloquear_exclusao(
 /// Registra o conflito de nome de tag, do mesmo jeito que a exclusão bloqueada: a revisão entra
 /// na história (um evento posterior que parta dela precisa ser reconhecido), o evento fica
 /// aplicado como decisão pendente, e **o domínio não é tocado**.
+/// **A identidade que colidiu é guardada.** `aggregate_id` é a tag que chegou (T2), e
+/// `related_aggregate_id` é a tag daqui que ocupava o nome (T1). Guardar só o nome não serviria:
+/// renomear T1 depois apagaria o rastro de com quem T2 colidiu, e a etapa F precisa das duas
+/// identidades para poder oferecer "são a mesma tag" — decisão que tem de juntar as marcações das
+/// duas.
 fn conflito_de_nome_de_tag(
     tx: &Transaction<'_>,
     envelope: &EventEnvelope,
     historia: &crate::domain::sync::AggregateHistory,
-    _homonima: &str,
+    homonima: &str,
 ) -> DatabaseCommandResult<String> {
     registrar_revisao(tx, envelope)?;
     marcar_aplicado(tx, &envelope.event_id)?;
     let id = registrar_divergencia(tx, envelope, &envelope.base_rev, historia)?;
     tx.execute(
-        "UPDATE sync_divergences SET kind = 'tag_name_conflict' WHERE id = ?1",
-        [&id],
+        "UPDATE sync_divergences
+            SET kind = 'tag_name_conflict', related_aggregate_id = ?2
+          WHERE id = ?1",
+        [&id, &homonima.to_string()],
     )
     .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     Ok(id)

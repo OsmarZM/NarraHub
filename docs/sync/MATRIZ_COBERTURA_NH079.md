@@ -547,12 +547,12 @@ B3:
 
    Determinístico, sem id de linha no payload, e é o conjunto inteiro que vira uma revisão — como
    `chapter_order` fez com a ordem.
-3. **`attachment_order(owner)`.** A B5 tirou `sortOrder` do payload do anexo: é número físico local
+3. **`attachment_order(owner)` — requisito obrigatório da B6, não "talvez".** A B5 tirou `sortOrder` do payload do anexo: é número físico local
    (`MAX+1` no `INSERT`) e não existe reordenação de anexo no app — nenhum comando, nenhum gateway. A
    consequência é que cada aparelho calcula a posição na chegada, e duas galerias podem ficar em ordens
    diferentes depois de convergir. É a mesma pergunta do item abaixo, com a mesma saída: ou nasce o
-   agregado de ordem no padrão de `chapter_order`, ou fica escrito que a ordem da galeria é estado
-   local. Decidir antes da gênese.
+   agregado de ordem no padrão de `chapter_order`, **ou** uma decisão formal, escrita, de que a
+   ordem da galeria é estado local. Uma das duas tem de existir antes da gênese.
 4. **`planning_field_order(universe)` — requisito obrigatório da B6, não "talvez".** A B4 deixou o
    `sort_order` das definições de campo fora do payload. Isso já diverge sem drag-and-drop: se A cria
    F1 e B cria F2, cada aparelho calcula o próprio `sort_order` e a ordem visual continua diferente depois de

@@ -1498,7 +1498,22 @@ CREATE TABLE sync_divergences_v22 (
     remote_operation TEXT NOT NULL DEFAULT ''
         CHECK (remote_operation IN ('', 'upsert', 'delete')),
     kind TEXT NOT NULL DEFAULT 'concurrent'
-        CHECK (kind IN ('concurrent', 'parent_deletion_blocked', 'tag_name_conflict'))
+        CHECK (kind IN ('concurrent', 'parent_deletion_blocked', 'tag_name_conflict')),
+    -- O OUTRO agregado envolvido, quando a divergencia e entre DOIS agregados.
+    --
+    -- `concurrent` e `parent_deletion_blocked` sao do mesmo agregado dos dois lados, e aqui fica
+    -- vazio. `tag_name_conflict` nao e: a tag que chegou (T2) colidiu com uma tag DAQUI (T1), e
+    -- sem guardar T1 a decisao perde a identidade com que ela colidiu -- inclusive se T1 for
+    -- renomeada depois.
+    --
+    -- A etapa F precisa disso para distinguir duas decisoes diferentes:
+    --
+    --   renomear uma delas        duas tags continuam existindo, com nomes diferentes
+    --   sao a mesma tag           uma identidade absorve a outra, e as `tag_assignment` das DUAS
+    --                             precisam ser tratadas juntas
+    --
+    -- Sem T1 guardado, a segunda decisao nao tem como saber quais marcacoes juntar.
+    related_aggregate_id TEXT NOT NULL DEFAULT ''
 );
 
 INSERT INTO sync_divergences_v22

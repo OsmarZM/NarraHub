@@ -113,16 +113,85 @@ pub(super) fn validar(
     if !existe(connection, "universes", &anexo.universe_id)? {
         return Ok(Some(format!("universe {}", anexo.universe_id)));
     }
-    let tabela = match anexo.owner_type.as_str() {
-        "entity" => "entities",
-        "chapter" => "chapters",
-        // O universo é o próprio dono, e já foi conferido acima.
-        _ => return Ok(None),
-    };
-    if !existe(connection, tabela, &anexo.owner_id)? {
-        return Ok(Some(format!("{} {}", anexo.owner_type, anexo.owner_id)));
+
+    // **Identidade parental imutável.** Um anexo não muda de dono nem de universo: não existe
+    // operação de mover anexo no app, e um evento que dissesse isso moveria a imagem de uma ficha
+    // para outra em silêncio. Se um dia existir "mover anexo", o contrato muda de propósito, aqui.
+    if let Some((universo, tipo, dono)) = connection
+        .query_row(
+            "SELECT universe_id, owner_type, owner_id FROM attachments WHERE id = ?1",
+            [&anexo.id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(erro)?
+    {
+        if (universo.as_str(), tipo.as_str(), dono.as_str())
+            != (
+                anexo.universe_id.as_str(),
+                anexo.owner_type.as_str(),
+                anexo.owner_id.as_str(),
+            )
+        {
+            return Err(DatabaseCommandError::storage(format!(
+                "O anexo {} é de {tipo} {dono} no universo {universo}, e o evento diz {} {} no \
+                 universo {}. O dono do anexo é imutável: estado incompatível.",
+                anexo.id, anexo.owner_type, anexo.owner_id, anexo.universe_id
+            )));
+        }
     }
-    Ok(None)
+
+    // **O dono precisa ser DESTE universo.** Conferir só a existência deixaria um anexo atravessar
+    // a fronteira entre dois acervos: a imagem de um romance apareceria na ficha de outro.
+    let universo_do_dono: Option<String> = match anexo.owner_type.as_str() {
+        "universe" => {
+            if anexo.owner_id != anexo.universe_id {
+                return Err(DatabaseCommandError::storage(format!(
+                    "O anexo {} diz ser do universo {}, e o dono declarado é o universo {}. \
+                     Estado incompatível.",
+                    anexo.id, anexo.universe_id, anexo.owner_id
+                )));
+            }
+            return Ok(None);
+        }
+        "entity" => connection
+            .query_row(
+                "SELECT universe_id FROM entities WHERE id = ?1",
+                [&anexo.owner_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(erro)?,
+        "chapter" => connection
+            .query_row(
+                "SELECT s.universe_id FROM chapters c JOIN books b ON b.id = c.book_id
+                   JOIN stories s ON s.id = b.story_id WHERE c.id = ?1",
+                [&anexo.owner_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(erro)?,
+        outro => {
+            return Err(DatabaseCommandError::storage(format!(
+                "Tipo de dono desconhecido para anexo: '{outro}'. Estado incompatível."
+            )))
+        }
+    };
+    match universo_do_dono {
+        None => Ok(Some(format!("{} {}", anexo.owner_type, anexo.owner_id))),
+        Some(outro) if outro != anexo.universe_id => Err(DatabaseCommandError::storage(format!(
+            "O anexo {} é do universo {}, e {} {} é do universo {outro}. Um anexo não pertence a \
+             conteúdo de outro universo: estado incompatível.",
+            anexo.id, anexo.universe_id, anexo.owner_type, anexo.owner_id
+        ))),
+        Some(_) => Ok(None),
+    }
 }
 
 pub(super) fn pai_ausente(

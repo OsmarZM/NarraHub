@@ -251,6 +251,7 @@ pub fn validar_para_emissao(
             planejamento::validar(connection, &agregado.aggregate_type, payload)?
         }
         "attachment" => anexo::validar(connection, payload)?,
+        "tag_assignment" => manuscrito::validar_atribuicao(connection, payload)?,
         "content_tag" => conhecimento::validar(connection, payload)?,
         "canvas_node" | "canvas_node_position" | "canvas_edge" => {
             canvas::validar(connection, &agregado.aggregate_type, payload)?
