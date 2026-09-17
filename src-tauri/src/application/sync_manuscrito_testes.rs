@@ -2080,6 +2080,309 @@ fn propriedade_apagada_no_outro_lado_nao_muda_o_card_antes_da_decisao() {
     a.invariante_de_materializacao();
 }
 
+/// Entrega num sentido só: `para` recebe o que `de` tem.
+fn entregar(de: &Aparelho, para: &Aparelho) -> Relatorio {
+    apresentar(de, para);
+    apresentar(para, de);
+    let vetor = vetor_local(&para.banco.connection()).expect("vetor");
+    let eventos = eventos_para(&de.banco.connection(), &vetor).expect("eventos");
+    let relatorio = receber_eventos(&mut para.banco.connection(), &eventos).expect("receber");
+    para.invariante_de_materializacao();
+    relatorio
+}
+
+fn revisao(aparelho: &Aparelho, tipo: &str, id: &str) -> Option<String> {
+    sync_codec::revisao_corrente(&aparelho.banco.connection(), &AggregateRef::new(tipo, id))
+        .expect("revisão")
+}
+
+/// **Manter o local fecha a causalidade de todo membro — inclusive do que já estava igual.**
+///
+/// ```text
+/// A muda F no card_b e depois o tira; edita F no card_a  card_b de A: sem F, revisão de A
+/// B apaga F: UMA ação (card_a e card_b sem F, posição, F) card_b de B: o mesmo payload, revisão de B
+/// A recebe: card_a concorrente e diferente → uma decisão; A mantém o local
+/// C, que recebeu a ação de B, edita card_b a partir da revisão de B
+/// A recebe C: sequencial, nenhuma decisão nova
+/// ```
+///
+/// Ignorar o card_b por já estar igual deixaria A na revisão dele, e a edição de C — que partiu da
+/// revisão de B, que A conhece — viraria uma decisão entre dois estados que nunca divergiram.
+#[test]
+fn manter_local_adota_a_revisao_da_origem_quando_o_estado_ja_e_igual() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let c = Aparelho::novo("c");
+    let quadro = quadro(&a, &b);
+    let (em_c, _) = sincronizar(&a, &c);
+    assert_eq!(em_c.divergencias, 0, "{em_c:?}");
+
+    // A chega ao mesmo card_b de B por outro caminho (duas edições): mesmo payload, outra revisão.
+    a.salvar_card(
+        &quadro.universo,
+        &quadro.card_b,
+        "Cena da ponte",
+        None,
+        serde_json::json!({ quadro.campo_texto.clone(): "agitado" }),
+    );
+    a.salvar_card(
+        &quadro.universo,
+        &quadro.card_b,
+        "Cena da ponte",
+        None,
+        serde_json::json!({}),
+    );
+    a.salvar_card(
+        &quadro.universo,
+        &quadro.card_a,
+        "Cena do porto",
+        Some(&quadro.capitulo),
+        serde_json::json!({ quadro.campo_texto.clone(): "mudado em A" }),
+    );
+    crate::application::planning_service::delete_field_definition(
+        &b.banco.database,
+        &b.eu,
+        &quadro.campo_texto,
+        &quadro.universo,
+    )
+    .expect("B apaga a propriedade");
+
+    let rev_de_b = revisao(&b, "planning_item", &quadro.card_b).expect("revisão de B");
+    assert_eq!(
+        a.canonico("planning_item", &quadro.card_b),
+        b.canonico("planning_item", &quadro.card_b),
+        "o cenário exige o mesmo card_b nos dois"
+    );
+    assert_ne!(
+        revisao(&a, "planning_item", &quadro.card_b).as_deref(),
+        Some(rev_de_b.as_str()),
+        "o cenário exige revisões diferentes"
+    );
+
+    let em_c = entregar(&b, &c);
+    assert_eq!(em_c.divergencias, 0, "{em_c:?}");
+    let em_a = entregar(&b, &a);
+    assert_eq!(em_a.divergencias, 1, "{em_a:?}");
+    let decisao = a
+        .divergencias_abertas("planning_field_definition")
+        .first()
+        .map(|(id, _)| id.clone())
+        .expect("a decisão da ação");
+    let id_da_divergencia: String = a
+        .banco
+        .connection()
+        .query_row(
+            "SELECT id FROM sync_divergences
+              WHERE aggregate_type = 'planning_field_definition' AND aggregate_id = ?1
+                AND resolved_at = ''",
+            [&decisao],
+            |row| row.get(0),
+        )
+        .expect("divergência");
+    crate::application::resolucao_divergencia::resolver(
+        &a.banco.database,
+        &a.eu,
+        &id_da_divergencia,
+        crate::application::resolucao_divergencia::Escolha::ManterLocal,
+    )
+    .expect("manter o local");
+    assert_eq!(
+        revisao(&a, "planning_item", &quadro.card_b).as_deref(),
+        Some(rev_de_b.as_str()),
+        "A adotou a revisão de B para o estado que já era igual"
+    );
+    a.invariante_de_materializacao();
+
+    assert_eq!(
+        revisao(&c, "planning_item", &quadro.card_b).as_deref(),
+        Some(rev_de_b.as_str())
+    );
+    c.salvar_card(
+        &quadro.universo,
+        &quadro.card_b,
+        "Cena da ponte ao luar",
+        None,
+        serde_json::json!({}),
+    );
+    let em_a = entregar(&c, &a);
+    assert_eq!(em_a.divergencias, 0, "{em_a:?}");
+    assert!(a.divergencias().is_empty(), "{:?}", a.divergencias());
+    assert_eq!(
+        a.canonico("planning_item", &quadro.card_b),
+        c.canonico("planning_item", &quadro.card_b),
+        "a edição de C entrou em A como sequencial"
+    );
+}
+
+/// **Manter o local quando o local é a ausência.** A apagou o card_b; B apagou a propriedade, e a
+/// ação de B reescreve o card_b. Manter o local não pode ignorar o card: nasce aqui uma exclusão que
+/// descende da reescrita de B.
+#[test]
+fn manter_local_com_o_card_apagado_aqui_exclui_sobre_a_revisao_da_origem() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let quadro = quadro(&a, &b);
+
+    crate::application::planning_service::delete(
+        &a.banco.database,
+        &a.eu,
+        &quadro.card_b,
+        &quadro.universo,
+    )
+    .expect("A apaga o card");
+    crate::application::planning_service::delete_field_definition(
+        &b.banco.database,
+        &b.eu,
+        &quadro.campo_texto,
+        &quadro.universo,
+    )
+    .expect("B apaga a propriedade");
+    let rev_de_b = revisao(&b, "planning_item", &quadro.card_b).expect("revisão de B");
+
+    let em_a = entregar(&b, &a);
+    assert_eq!(em_a.divergencias, 1, "{em_a:?}");
+    let (campo, tipo) = a
+        .divergencias_abertas("planning_field_definition")
+        .first()
+        .cloned()
+        .expect("a decisão da ação");
+    assert_eq!(tipo, "parent_deletion_blocked");
+    let id_da_divergencia: String = a
+        .banco
+        .connection()
+        .query_row(
+            "SELECT id FROM sync_divergences
+              WHERE aggregate_type = 'planning_field_definition' AND aggregate_id = ?1
+                AND resolved_at = ''",
+            [&campo],
+            |row| row.get(0),
+        )
+        .expect("divergência");
+    crate::application::resolucao_divergencia::resolver(
+        &a.banco.database,
+        &a.eu,
+        &id_da_divergencia,
+        crate::application::resolucao_divergencia::Escolha::ManterLocal,
+    )
+    .expect("manter o local");
+
+    assert!(a.canonico("planning_item", &quadro.card_b).is_none());
+    let (operacao, base): (String, String) = a
+        .banco
+        .connection()
+        .query_row(
+            "SELECT operation, base_rev FROM sync_events
+              WHERE device_id = ?1 AND aggregate_type = 'planning_item' AND aggregate_id = ?2
+              ORDER BY seq DESC LIMIT 1",
+            [a.eu.device_id(), quadro.card_b.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("o último evento de A sobre o card_b");
+    assert_eq!(
+        (operacao.as_str(), base.as_str()),
+        ("delete", rev_de_b.as_str()),
+        "a ausência escolhida tem de descender da reescrita de B"
+    );
+    a.invariante_de_materializacao();
+}
+
+/// **Manter o local quando os dois lados excluíram, por caminhos diferentes.** A renomeou F e
+/// depois o apagou; B apagou F direto. As exclusões têm revisões diferentes. Manter o local não
+/// emite nada — a ausência já é o estado dos dois —, mas o tombstone daqui passa a ser o da origem:
+/// um evento futuro que parta da exclusão de B é sequencial aqui.
+#[test]
+fn manter_local_com_os_dois_lados_excluindo_adota_o_tombstone_da_origem() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let quadro = quadro(&a, &b);
+
+    crate::application::planning_service::rename_field_definition(
+        &a.banco.database,
+        &a.eu,
+        &quadro.campo_texto,
+        &quadro.universo,
+        "Clima",
+    )
+    .expect("A renomeia");
+    a.salvar_card(
+        &quadro.universo,
+        &quadro.card_a,
+        "Cena do porto",
+        Some(&quadro.capitulo),
+        serde_json::json!({ quadro.campo_texto.clone(): "mudado em A" }),
+    );
+    crate::application::planning_service::delete_field_definition(
+        &a.banco.database,
+        &a.eu,
+        &quadro.campo_texto,
+        &quadro.universo,
+    )
+    .expect("A apaga");
+    crate::application::planning_service::delete_field_definition(
+        &b.banco.database,
+        &b.eu,
+        &quadro.campo_texto,
+        &quadro.universo,
+    )
+    .expect("B apaga");
+    let tombstone_de = |aparelho: &Aparelho| -> String {
+        aparelho
+            .banco
+            .connection()
+            .query_row(
+                "SELECT deleted_rev FROM sync_tombstones
+                  WHERE aggregate_type = 'planning_field_definition' AND aggregate_id = ?1",
+                [&quadro.campo_texto],
+                |row| row.get(0),
+            )
+            .expect("tombstone")
+    };
+    let exclusao_de_b = tombstone_de(&b);
+    assert_ne!(
+        tombstone_de(&a),
+        exclusao_de_b,
+        "o cenário exige exclusões diferentes"
+    );
+
+    let em_a = entregar(&b, &a);
+    assert_eq!(em_a.divergencias, 1, "{em_a:?}");
+    let id_da_divergencia: String = a
+        .banco
+        .connection()
+        .query_row(
+            "SELECT id FROM sync_divergences
+              WHERE kind = 'parent_deletion_blocked' AND resolved_at = ''",
+            [],
+            |row| row.get(0),
+        )
+        .expect("a decisão da ação");
+    let eventos_antes = a.eventos();
+    crate::application::resolucao_divergencia::resolver(
+        &a.banco.database,
+        &a.eu,
+        &id_da_divergencia,
+        crate::application::resolucao_divergencia::Escolha::ManterLocal,
+    )
+    .expect("manter o local");
+
+    assert_eq!(tombstone_de(&a), exclusao_de_b);
+    assert!(revisao(&a, "planning_field_definition", &quadro.campo_texto).is_none());
+    // A ausência igual não gera evento. O card_a de A é outro estado (perdeu as ligações ao ser
+    // salvo) e ganha revisão sobre a de B, pela regra de estado diferente.
+    let novos: Vec<_> = a.eventos()[eventos_antes.len()..].to_vec();
+    assert_eq!(
+        novos,
+        vec![(
+            "planning_item".to_string(),
+            quadro.card_a.clone(),
+            "upsert".to_string()
+        )],
+        "a ausência igual gerou evento"
+    );
+    assert!(a.divergencias().is_empty(), "{:?}", a.divergencias());
+    a.invariante_de_materializacao();
+}
+
 /// Resolver mantendo o local: o campo e o valor continuam.
 #[test]
 fn manter_local_preserva_a_propriedade_e_o_valor() {

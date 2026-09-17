@@ -1572,8 +1572,10 @@ BEGIN
      WHERE NEW.mutation_id = '' AND NEW.mutation_count > 1;
 END;
 
+-- A identidade de um grupo e (origem, mutation_id): duas origens podem gerar o
+-- mesmo id, e um grupo nunca captura membros de outra.
 CREATE INDEX IF NOT EXISTS idx_sync_events_mutacao
-    ON sync_events(mutation_id)
+    ON sync_events(device_id, mutation_id)
     WHERE mutation_id <> '';
 
 -- A decisao de um grupo bloqueado e UMA, ancorada no primeiro membro que nao

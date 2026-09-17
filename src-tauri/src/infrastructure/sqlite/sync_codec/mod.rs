@@ -352,7 +352,9 @@ pub fn estado_concorrente(
             "SELECT EXISTS(SELECT 1 FROM sync_divergences
                             WHERE aggregate_type = ?1 AND aggregate_id = ?2 AND resolved_at = '')
                  OR EXISTS(SELECT 1 FROM sync_divergences d
-                             JOIN sync_events e ON e.mutation_id = d.mutation_id
+                             JOIN sync_events ancora ON ancora.event_id = d.remote_event_id
+                             JOIN sync_events e ON e.device_id = ancora.device_id
+                                               AND e.mutation_id = d.mutation_id
                             WHERE d.mutation_id <> '' AND d.resolved_at = ''
                               AND e.aggregate_type = ?1 AND e.aggregate_id = ?2)",
             [&agregado.aggregate_type, &agregado.aggregate_id],

@@ -281,6 +281,19 @@ impl<'t, 'c> Mutacao<'t, 'c> {
         Ok(())
     }
 
+    /// Declara a exclusão de um agregado que **já não existe** aqui — para torná-la descendente de
+    /// uma revisão que chegou de fora. Só a resolução de uma decisão usa isto: "manter o local"
+    /// quando o local é a ausência e o outro aparelho reescreveu o agregado.
+    ///
+    /// Sem preflight nem cascata: nada é apagado agora. O evento parte da revisão corrente, que o
+    /// chamador ajustou antes.
+    pub fn reafirmou_exclusao(&mut self, agregado: AggregateRef, universe_id: &str) {
+        self.operacoes.push(Operacao::Excluiu {
+            agregado,
+            universe_id: universe_id.to_string(),
+        });
+    }
+
     fn declarar_reescrita(&mut self, agregado: AggregateRef) {
         let ja = self.operacoes.iter().any(
             |operacao| matches!(operacao, Operacao::Reescreveu(existente) if existente == &agregado),
@@ -377,7 +390,17 @@ impl<'t, 'c> Mutacao<'t, 'c> {
         // Um id, índices contíguos, o total. É o que permite ao receptor não aplicar metade de uma
         // ação: nenhum membro altera o domínio de lá antes de o grupo inteiro chegar e poder entrar.
         let mutation_id = crate::domain::ids::new_id();
-        let total = pendentes.len() as i64;
+        let total = i64::try_from(pendentes.len())
+            .ok()
+            .filter(|total| *total <= crate::domain::sync::MAXIMO_DE_MEMBROS_DO_GRUPO)
+            .ok_or_else(|| {
+                DatabaseCommandError::conflict(format!(
+                    "Esta ação altera {} itens de uma vez, acima do máximo de {} que a \
+                     sincronização transporta como uma ação só. Nada foi alterado.",
+                    pendentes.len(),
+                    crate::domain::sync::MAXIMO_DE_MEMBROS_DO_GRUPO
+                ))
+            })?;
         let (kind, root_type, root_id) = match &self.raiz_da_exclusao {
             Some(raiz) => (
                 "delete_tree".to_string(),
@@ -841,6 +864,15 @@ pub(crate) mod tests {
         origem: &DeviceIdentity,
         rev_do_capitulo: &str,
     ) -> [crate::domain::sync::EventEnvelope; 2] {
+        exclusao_remota_do_capitulo_no_grupo(origem, rev_do_capitulo, &crate::domain::ids::new_id())
+    }
+
+    /// A mesma ação, com o `mutation_id` escolhido: para provar que o grupo é da origem.
+    pub(crate) fn exclusao_remota_do_capitulo_no_grupo(
+        origem: &DeviceIdentity,
+        rev_do_capitulo: &str,
+        mutation_id: &str,
+    ) -> [crate::domain::sync::EventEnvelope; 2] {
         let mut posicao = envelope_de_origem(
             origem.device_id(),
             1,
@@ -859,10 +891,9 @@ pub(crate) mod tests {
             "",
             rev_do_capitulo,
         );
-        let mutation_id = crate::domain::ids::new_id();
         for (indice, envelope) in [&mut posicao, &mut capitulo].into_iter().enumerate() {
             envelope.grupo = GrupoDeMutacao {
-                mutation_id: mutation_id.clone(),
+                mutation_id: mutation_id.to_string(),
                 index: indice as i64,
                 count: 2,
                 kind: "delete_tree".into(),

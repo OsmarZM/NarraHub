@@ -134,6 +134,17 @@ pub fn receber_eventos(
                 continue;
             }
         }
+        // A forma do grupo é conferida antes de o evento entrar no log: um `mutation_count`
+        // absurdo nunca vira grupo guardado, nem chega a dimensionar nada. A assinatura é válida
+        // (é a origem confiável que emitiu algo que nenhum emissor legítimo produz), e a sessão
+        // inteira falha fechada, sem guardar nada.
+        if let Err(motivo) = envelope.grupo.validar() {
+            return Err(DatabaseCommandError::storage(format!(
+                "O evento {} da origem {} tem um grupo de mutação inválido: {motivo}. Nada desta \
+                 sessão foi guardado.",
+                envelope.seq, envelope.device_id
+            )));
+        }
         guardar(&tx, envelope)?;
         origens.insert(envelope.device_id.clone(), ());
     }
@@ -291,7 +302,24 @@ fn aplicar_grupo(
         )));
     }
 
-    let mut membros = Vec::with_capacity(grupo.count as usize);
+    // O log já só guarda grupo válido, mas nada aqui confia nisso: o total é conferido, convertido
+    // sem truncar e somado à seq sem estourar, ANTES de dimensionar ou iterar.
+    let invalido = |motivo: String| {
+        DatabaseCommandError::storage(format!(
+            "O evento {} da origem {origem} tem um grupo de mutação inválido: {motivo}. Nada foi \
+             aplicado.",
+            primeiro.seq
+        ))
+    };
+    grupo.validar().map_err(invalido)?;
+    let total = usize::try_from(grupo.count)
+        .map_err(|_| invalido(format!("total {} não cabe na memória", grupo.count)))?;
+    primeiro
+        .seq
+        .checked_add(grupo.count - 1)
+        .ok_or_else(|| invalido("a última seq do grupo estoura".into()))?;
+
+    let mut membros = Vec::with_capacity(total);
     for deslocamento in 0..grupo.count {
         let Some(membro) = evento_de(tx, origem, primeiro.seq + deslocamento)? else {
             // O resto da ação ainda não chegou. Nenhum membro altera o domínio antes disso — nem
@@ -768,5 +796,95 @@ mod tests {
         let relatorio = receber_eventos(&mut connection, &embaralhado).expect("receber");
         assert_eq!(relatorio.aplicados, 3);
         assert_eq!(cursor(&connection, remota.device_id()), 3);
+    }
+
+    fn grupo(mutation_id: &str, index: i64, count: i64) -> crate::domain::sync::GrupoDeMutacao {
+        crate::domain::sync::GrupoDeMutacao {
+            mutation_id: mutation_id.into(),
+            index,
+            count,
+            kind: String::new(),
+            root_type: String::new(),
+            root_id: String::new(),
+        }
+    }
+
+    fn eventos_no_log(connection: &Connection, origem: &str) -> i64 {
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM sync_events WHERE device_id = ?1",
+                [origem],
+                |row| row.get(0),
+            )
+            .expect("contar")
+    }
+
+    /// **Grupo de forma absurda é recusado na entrada**, assinado ou não: nada entra no log e nada é
+    /// dimensionado pelo `mutation_count` que veio de fora.
+    #[test]
+    fn grupo_de_forma_absurda_e_recusado_sem_entrar_no_log() {
+        use crate::domain::sync::MAXIMO_DE_MEMBROS_DO_GRUPO;
+        let fixture = TemporaryDatabase::new();
+        let (mut connection, _eu, remota) = preparar(&fixture);
+        for (descricao, forma) in [
+            ("total máximo de i64", grupo("m", 0, i64::MAX)),
+            (
+                "um acima do teto",
+                grupo("m", 0, MAXIMO_DE_MEMBROS_DO_GRUPO + 1),
+            ),
+            ("total negativo", grupo("m", 0, -1)),
+            ("total zero com id", grupo("m", 0, 0)),
+            ("índice igual ao total", grupo("m", 2, 2)),
+            ("índice negativo", grupo("m", -1, 2)),
+            ("grupo sem id", grupo("", 0, 3)),
+            ("id gigante", grupo(&"x".repeat(129), 0, 2)),
+        ] {
+            let mut evento = cadeia(&remota, 1).remove(0);
+            evento.grupo = forma;
+            evento.signature = remota.sign(&evento);
+            let erro = receber_eventos(&mut connection, std::slice::from_ref(&evento))
+                .expect_err(descricao);
+            assert!(
+                erro.message.contains("grupo de mutação inválido"),
+                "{descricao}: {}",
+                erro.message
+            );
+            assert_eq!(
+                eventos_no_log(&connection, remota.device_id()),
+                0,
+                "{descricao}: entrou no log"
+            );
+        }
+        // Contraprova: o mesmo evento com grupo coerente entra.
+        let mut evento = cadeia(&remota, 1).remove(0);
+        evento.grupo = grupo("m", 0, 1);
+        evento.signature = remota.sign(&evento);
+        receber_eventos(&mut connection, &[evento]).expect("grupo coerente");
+        assert_eq!(eventos_no_log(&connection, remota.device_id()), 1);
+    }
+
+    /// Um grupo absurdo que já esteja no log (banco adulterado, versão antiga com bug) não é
+    /// iterado nem dimensionado: a drenagem recusa antes.
+    #[test]
+    fn grupo_absurdo_no_log_nao_e_iterado() {
+        let fixture = TemporaryDatabase::new();
+        let (mut connection, _eu, remota) = preparar(&fixture);
+        let mut evento = cadeia(&remota, 1).remove(0);
+        evento.grupo = grupo("m", 0, i64::MAX);
+        evento.signature = remota.sign(&evento);
+        crate::infrastructure::sqlite::sync_repository::gravar_envelope(
+            &connection,
+            &evento,
+            false,
+        )
+        .expect("gravar direto, sem a checagem da entrada");
+
+        let erro = receber_eventos(&mut connection, &[]).expect_err("grupo absurdo no log");
+        assert!(
+            erro.message.contains("grupo de mutação inválido"),
+            "{}",
+            erro.message
+        );
+        assert_eq!(cursor(&connection, remota.device_id()), 0);
     }
 }

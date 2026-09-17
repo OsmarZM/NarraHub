@@ -483,6 +483,16 @@ c1 sozinho ou como parte do livro é o mesmo efeito sobre c1 e dá a mesma `new_
 no caminho — tirar um membro, mudar a contagem — invalida a assinatura. Evento sem grupo (anterior à v23)
 mantém os bytes assinados de antes.
 
+**A identidade de um grupo é `(origem, mutation_id)`.** Duas origens podem gerar o mesmo id; o
+receptor lê os membros pela origem e pela seq, a resolução pela origem do evento em que a decisão foi
+ancorada, e o índice é `(device_id, mutation_id)`.
+
+**A forma do grupo é conferida antes de guardar e antes de iterar.** `1 ≤ count ≤ 50 000`,
+`0 ≤ index < count`, `mutation_id` de até 128 bytes, e evento sem id tem a forma de um membro só.
+Fora disso a sessão falha fechada e nada entra no log — mesmo com assinatura válida. A drenagem
+confere de novo (`usize::try_from`, `checked_add` na seq) antes de dimensionar qualquer coisa, e a
+origem recusa emitir uma ação acima do teto.
+
 **No receptor:**
 
 ```text
@@ -506,13 +516,30 @@ a decisão.
 grupo com decisão aberta — não só a âncora. A resolução (4.4.1):
 
 ```text
-manter o local   cada membro que existe aqui é reafirmado a partir da revisão dele no grupo
+manter o local   fecha a causalidade de TODO membro (tabela abaixo)
 aceitar          refaz AGORA o preflight de cada membro, na ordem, e aplica todos numa transação;
                  sobrevivente reescrito pela exclusão e editado aqui depois da base NÃO recebe o
                  payload da origem: a exclusão roda sobre o estado daqui e ele ganha revisão nova,
                  descendente da reescrita da origem (a edição local fica, a origem a recebe como
                  sequencial)
 ```
+
+**Manter o local fecha a causalidade de todo membro.** Depois dela, a revisão corrente de cada
+agregado da ação descende da revisão que a origem emitiu. Um membro deixado para trás — mesmo com o
+estado igual — faria o próximo evento de quem partiu da revisão da origem virar decisão fantasma.
+
+```text
+membro   aqui                       efeito
+upsert   existe, payload igual      adota new_rev da origem; sem evento
+upsert   existe, payload diferente  o estado daqui vira revisão nova sobre new_rev da origem
+upsert   não existe (excluído aqui) exclusão nova sobre new_rev da origem
+delete   não existe                 adota new_rev da origem como tombstone; sem evento
+delete   existe                     restauração sobre o tombstone da origem
+```
+
+A reafirmação sai **da raiz para as folhas, depois os sobreviventes** — o contrário da ação da
+origem. O card que cita o campo restaurado não materializa antes do campo; na ordem da origem, o
+receptor seguraria a ação inteira esperando uma dependência que vem dentro dela.
 
 **O lote da troca não corta uma ação ao meio.** O receptor não aplica grupo incompleto e o vetor dele só
 anda pelo aplicado: um lote que terminasse no meio de um grupo maior que ele faria a sessão seguinte pedir o
@@ -578,7 +605,12 @@ mesmo começo para sempre. Ao atingir o limite dentro de um grupo, a resposta co
     exclusão bloqueada por anexo concorrente não deixa posição órfã, e "manter o local" restaura a ação
     inteira; ação que chega pela metade não toca o domínio até completar em outra sessão; falha injetada no
     meio do grupo não deixa membro aplicado; lote menor que a ação entrega a ação inteira; o grupo entra na
-    assinatura, fica fora da revisão, e evento sem grupo mantém a assinatura antiga.
+    assinatura, fica fora da revisão, e evento sem grupo mantém a assinatura antiga. Manter o local: com
+    três aparelhos, estado igual com revisão diferente adota a da origem e a edição seguinte de um
+    terceiro entra como sequencial; card excluído aqui vira exclusão sobre a reescrita da origem;
+    exclusão dos dois lados adota o tombstone da origem sem evento; a restauração sai da raiz para as
+    folhas. Grupo de forma absurda é recusado sem entrar no log, e o que já estiver no log não é
+    iterado; o mesmo `mutation_id` em duas origens são dois grupos.
 
 ## 5. Negociação de compatibilidade (etapa E)
 

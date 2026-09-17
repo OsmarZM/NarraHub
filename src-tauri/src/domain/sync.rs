@@ -127,10 +127,58 @@ pub struct GrupoDeMutacao {
     pub root_id: String,
 }
 
+/// Teto de membros de um grupo. Nenhuma ação legítima chega perto: é a proteção contra um
+/// `mutation_count` que faria o receptor alocar ou iterar sem fim.
+pub const MAXIMO_DE_MEMBROS_DO_GRUPO: i64 = 50_000;
+
+/// Tamanho máximo de um `mutation_id`. Os emitidos são UUIDs.
+pub const TAMANHO_MAXIMO_DO_MUTATION_ID: usize = 128;
+
 impl GrupoDeMutacao {
     /// Grupo de um membro (inclusive evento anterior à B2.2): aplica sozinho, como sempre aplicou.
     pub fn e_isolado(&self) -> bool {
         self.mutation_id.is_empty() || self.count <= 1
+    }
+
+    /// A forma do grupo, antes de ele ser guardado ou iterado. A identidade de um grupo é
+    /// `(origem, mutation_id)`: esta checagem é só da forma, a origem vem do envelope.
+    ///
+    /// ```text
+    /// sem mutation_id   evento anterior à B2.2: um membro, índice 0, sem kind nem raiz
+    /// com mutation_id   1 ≤ count ≤ teto, 0 ≤ index < count, id de tamanho limitado
+    /// ```
+    pub fn validar(&self) -> Result<(), String> {
+        if self.mutation_id.is_empty() {
+            let legado = self.index == 0
+                && (self.count == 0 || self.count == 1)
+                && self.kind.is_empty()
+                && self.root_type.is_empty()
+                && self.root_id.is_empty();
+            return if legado {
+                Ok(())
+            } else {
+                Err("grupo de mutação sem mutation_id com forma de grupo".into())
+            };
+        }
+        if self.mutation_id.len() > TAMANHO_MAXIMO_DO_MUTATION_ID {
+            return Err(format!(
+                "mutation_id com {} bytes, acima do máximo de {TAMANHO_MAXIMO_DO_MUTATION_ID}",
+                self.mutation_id.len()
+            ));
+        }
+        if !(1..=MAXIMO_DE_MEMBROS_DO_GRUPO).contains(&self.count) {
+            return Err(format!(
+                "grupo de mutação com {} membros, fora de 1..={MAXIMO_DE_MEMBROS_DO_GRUPO}",
+                self.count
+            ));
+        }
+        if !(0..self.count).contains(&self.index) {
+            return Err(format!(
+                "membro {} de um grupo de {} membros",
+                self.index, self.count
+            ));
+        }
+        Ok(())
     }
 }
 
