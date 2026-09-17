@@ -33,7 +33,7 @@
 //! prova de quem escreveu.
 
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
-use crate::domain::sync::{EventEnvelope, Operation};
+use crate::domain::sync::EventEnvelope;
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 
@@ -138,8 +138,23 @@ pub fn eventos_para(
     connection: &Connection,
     vetor_do_outro: &VetorDeSequencias,
 ) -> DatabaseCommandResult<Vec<EventEnvelope>> {
+    eventos_para_com_limite(connection, vetor_do_outro, LOTE_MAXIMO)
+}
+
+/// Como [`eventos_para`], com o tamanho do lote explícito.
+///
+/// **O lote nunca corta uma ação ao meio** (B2.2). O receptor não aplica membro nenhum de um grupo
+/// incompleto, e o vetor dele só anda pelo que foi aplicado — então, se a resposta terminasse no
+/// meio de um grupo maior que o lote, a sessão seguinte pediria a partir do mesmo ponto, receberia o
+/// mesmo começo, e a ação nunca terminaria de chegar. Ao atingir o limite dentro de um grupo, a
+/// resposta completa o grupo. Uma ação só passa do limite pelo tamanho dela mesma.
+pub(crate) fn eventos_para_com_limite(
+    connection: &Connection,
+    vetor_do_outro: &VetorDeSequencias,
+    limite: usize,
+) -> DatabaseCommandResult<Vec<EventEnvelope>> {
     let meu = vetor_local(connection)?;
-    let mut saida = Vec::new();
+    let mut saida: Vec<EventEnvelope> = Vec::new();
 
     for (origem, meu_topo) in &meu {
         let topo_dele = vetor_do_outro.get(origem).copied().unwrap_or(0);
@@ -147,8 +162,10 @@ pub fn eventos_para(
             continue;
         }
         for envelope in eventos_da_origem(connection, origem, topo_dele, *meu_topo)? {
+            let fecha_um_grupo =
+                envelope.grupo.e_isolado() || envelope.grupo.index == envelope.grupo.count - 1;
             saida.push(envelope);
-            if saida.len() >= LOTE_MAXIMO {
+            if saida.len() >= limite && fecha_um_grupo {
                 return Ok(saida);
             }
         }
@@ -169,41 +186,22 @@ fn eventos_da_origem(
     ate: i64,
 ) -> DatabaseCommandResult<Vec<EventEnvelope>> {
     let mut statement = connection
-        .prepare(
-            "SELECT e.event_id, e.device_id, e.seq, e.universe_id, e.aggregate_type,
-                    e.aggregate_id, e.operation, e.payload, e.base_rev, e.new_rev, e.signature
+        .prepare(&format!(
+            "SELECT {}
                FROM sync_events e
                JOIN sync_applied_events a ON a.event_id = e.event_id
               WHERE e.device_id = ?1 AND e.seq > ?2 AND e.seq <= ?3
            ORDER BY e.seq",
-        )
+            crate::infrastructure::sqlite::sync_repository::colunas_do_envelope("e.")
+        ))
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
 
+    // Repassado intacto, assinatura e grupo inclusos. O relay é carteiro, não autor.
     let linhas = statement
-        .query_map(rusqlite::params![origem, depois_de, ate], |row| {
-            let operacao: String = row.get(6)?;
-            let operation = Operation::parse(&operacao).ok_or_else(|| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    6,
-                    rusqlite::types::Type::Text,
-                    format!("operação desconhecida no log: {operacao:?}").into(),
-                )
-            })?;
-            Ok(EventEnvelope {
-                event_id: row.get(0)?,
-                device_id: row.get(1)?,
-                seq: row.get(2)?,
-                universe_id: row.get(3)?,
-                aggregate_type: row.get(4)?,
-                aggregate_id: row.get(5)?,
-                operation,
-                payload: row.get(7)?,
-                base_rev: row.get(8)?,
-                new_rev: row.get(9)?,
-                // Repassada intacta. O relay é carteiro, não autor.
-                signature: row.get(10)?,
-            })
-        })
+        .query_map(
+            rusqlite::params![origem, depois_de, ate],
+            crate::infrastructure::sqlite::sync_repository::envelope_da_linha,
+        )
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
 
     linhas
@@ -217,6 +215,7 @@ mod tests {
     use crate::application::sync_bootstrap;
     use crate::domain::identity::{verify, DeviceIdentity};
     use crate::domain::sync::AggregateRef;
+    use crate::domain::sync::Operation;
     use crate::infrastructure::sqlite::sync_repository::{append_local_event, LocalChange};
     use crate::infrastructure::sqlite::sync_session::receber_eventos;
     use crate::infrastructure::sqlite::test_support::{seed_universe, TemporaryDatabase};
@@ -285,6 +284,7 @@ mod tests {
                     aggregate: AggregateRef::new("chapter", id),
                     operation: Operation::Upsert,
                     payload: &payload,
+                    grupo: Default::default(),
                 },
             )
             .expect("escrever")

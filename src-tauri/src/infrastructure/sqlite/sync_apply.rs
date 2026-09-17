@@ -35,7 +35,7 @@ use crate::domain::sync::{
     classify, compute_revision, AggregateRef, Causality, EventEnvelope, Operation,
 };
 use crate::infrastructure::sqlite::sync_codec::{self, Impacto};
-use crate::infrastructure::sqlite::sync_repository::aggregate_history;
+use crate::infrastructure::sqlite::sync_repository::{self, aggregate_history};
 use rusqlite::{OptionalExtension, Transaction};
 
 /// O que aconteceu com o evento que chegou.
@@ -67,10 +67,6 @@ pub enum Applied {
     /// `base_rev` que não conhecemos. Não é conflito: falta história
     /// intermediária, e o agregado precisa de reconciliação.
     PrecisaReconciliar,
-    /// Revisão de ordem que não pode ser materializada aqui, atravessada por uma **ponte** que
-    /// terminou, na mesma transação, numa revisão sucessora materializada exatamente. Ela entra na
-    /// história e fica aplicada; a revisão corrente é a do fim da ponte. Ver `atravessar_ponte`.
-    Superado,
 }
 
 /// Aplica um evento recebido, dentro de uma transação que já existe.
@@ -133,9 +129,6 @@ pub fn apply_remote_event(
                 // Não aplica, não marca; o cursor espera. Pai divergente é erro (pai imutável).
                 Operation::Upsert => {
                     if sync_codec::dependencias(tx, envelope)?.is_some() {
-                        if atravessar_ponte(tx, envelope)? {
-                            return Ok(Applied::Superado);
-                        }
                         return Ok(Applied::PrecisaReconciliar);
                     }
                     // Esperar não resolve nome de tag ocupado, e aplicar é impossível: o
@@ -192,8 +185,10 @@ pub fn apply_remote_event(
 ///                          a reescrita dele chega da origem como o evento seguinte
 /// ```
 ///
-/// Um filho de existência derivada (`chapter_order`) só conta como vivo se ainda tiver revisão
-/// corrente: a linha que o sustenta é a do pai, e a origem já emitiu a exclusão dele.
+/// Um filho **sem linha própria** (a posição do item, B2.2) só conta como vivo se ainda tiver revisão
+/// corrente: a linha que o sustenta é a do item, e a origem já emitiu a exclusão dele antes. Se a
+/// posição tiver sido movida aqui, a revisão corrente é a daqui — e a exclusão do item é bloqueada,
+/// porque o movimento concorrente é trabalho autoral.
 pub fn motivo_para_bloquear_exclusao_remota(
     tx: &Transaction<'_>,
     envelope: &EventEnvelope,
@@ -234,209 +229,6 @@ pub fn motivo_para_bloquear_exclusao_remota(
     Ok(None)
 }
 
-/// **Ponte de ordem.** Uma ordem sequencial que não pode ser materializada só é superada se a cadeia
-/// de sucessores dela chegar, NESTA transação, a uma revisão que materializa exatamente.
-///
-/// O travamento que isto destrava, sem inventar merge:
-///
-/// ```text
-/// C cria c3 e reescreve a ordem          ordem Rc = [c1, c2, c3]
-/// A recebe, cria c4 e reescreve a ordem  ordem Ra = [c1, c2, c3, c4], base Rc
-/// B recebe tudo:  c4 aplica · Ra espera (base Rc desconhecida) · c3 aplica · Rc espera (c4 não citado)
-/// ```
-///
-/// `c4` é causalmente posterior a `Rc`, mas eventos de agregados diferentes não carregam essa relação;
-/// a história da ordem carrega. A ponte:
-///
-/// ```text
-/// SAVEPOINT ponte_de_ordem
-///   Rc → revisão corrente provisória, aplicada provisoriamente (sem tocar o domínio)
-///   sucessor alcançável de Rc?          não → ROLLBACK TO: Rc continua pendente, como antes
-///   dependências do sucessor presentes? sim → aplica, confere materialização → RELEASE
-///   sucessor também não materializa?    atravessa ele também (até o limite)
-///   inconsistência permanente no sucessor → ROLLBACK TO (o erro aparece quando ele for drenado)
-/// ```
-///
-/// **Invariante estrutural preservada:** `sync_aggregate_state.current_rev` só é confirmado apontando
-/// para uma revisão materializada. Nenhuma escrita local parte de uma revisão que o domínio nunca teve:
-/// se a ponte não fecha, nada dela sobrevive ao `ROLLBACK TO`. Os envelopes continuam no log.
-fn atravessar_ponte(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<bool> {
-    if !sync_codec::existencia_derivada(&envelope.aggregate_type) {
-        return Ok(false);
-    }
-    let sql = |comando: &str| {
-        tx.execute_batch(comando)
-            .map_err(|error| DatabaseCommandError::storage(error.to_string()))
-    };
-    sql("SAVEPOINT ponte_de_ordem")?;
-    match avancar_ponte(tx, envelope, 0) {
-        Ok(true) => {
-            sql("RELEASE ponte_de_ordem")?;
-            Ok(true)
-        }
-        Ok(false) => {
-            sql("ROLLBACK TO ponte_de_ordem; RELEASE ponte_de_ordem")?;
-            Ok(false)
-        }
-        Err(erro) => {
-            sql("ROLLBACK TO ponte_de_ordem; RELEASE ponte_de_ordem")?;
-            Err(erro)
-        }
-    }
-}
-
-/// Quantas revisões intermediárias uma ponte atravessa, no máximo.
-const LIMITE_DA_PONTE: usize = 64;
-
-fn avancar_ponte(
-    tx: &Transaction<'_>,
-    intermediaria: &EventEnvelope,
-    profundidade: usize,
-) -> DatabaseCommandResult<bool> {
-    if profundidade >= LIMITE_DA_PONTE {
-        return Ok(false);
-    }
-    // Provisório: só sobrevive se a ponte fechar.
-    registrar_revisao(tx, intermediaria)?;
-    marcar_aplicado(tx, &intermediaria.event_id)?;
-    tx.execute(
-        "INSERT INTO sync_aggregate_state (aggregate_type, aggregate_id, current_rev)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT(aggregate_type, aggregate_id) DO UPDATE SET current_rev = excluded.current_rev",
-        rusqlite::params![
-            &intermediaria.aggregate_type,
-            &intermediaria.aggregate_id,
-            &intermediaria.new_rev
-        ],
-    )
-    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-
-    let Some(sucessor) = sucessor_alcancavel(tx, intermediaria)? else {
-        return Ok(false);
-    };
-    let agregado = AggregateRef::new(&sucessor.aggregate_type, &sucessor.aggregate_id);
-    let historia = aggregate_history(tx, &agregado)?;
-    if classify(&historia, &sucessor.base_rev, &sucessor.new_rev) != Causality::Sequential {
-        return Ok(false);
-    }
-    match sync_codec::dependencias(tx, &sucessor) {
-        // Inconsistência permanente: não é caminho. O erro aparece quando o sucessor for drenado.
-        Err(_) => Ok(false),
-        Ok(Some(_)) => avancar_ponte(tx, &sucessor, profundidade + 1),
-        Ok(None) => {
-            aplicar_com_estado_causal(tx, &sucessor)?;
-            conferir_materializacao(tx, &sucessor)?;
-            registrar_revisao(tx, &sucessor)?;
-            marcar_aplicado(tx, &sucessor.event_id)?;
-            Ok(true)
-        }
-    }
-}
-
-/// O evento que parte desta revisão e que a sessão poderia aplicar agora.
-///
-/// ```text
-/// mesmo agregado, base_rev == new_rev da intermediária, ainda não aplicado
-/// guardado no log  → já passou pela cadeia de confiança (verificar_origem vem antes de guardar)
-/// alcançável       → todas as seq da origem dele entre o cursor e ele já estão aplicadas
-///                     (as marcações provisórias desta ponte contam); lacuna → não é caminho
-/// ```
-fn sucessor_alcancavel(
-    tx: &Transaction<'_>,
-    intermediaria: &EventEnvelope,
-) -> DatabaseCommandResult<Option<EventEnvelope>> {
-    let erro = |error: rusqlite::Error| DatabaseCommandError::storage(error.to_string());
-    let candidatos: Vec<String> = tx
-        .prepare(
-            "SELECT e.event_id FROM sync_events e
-              WHERE e.aggregate_type = ?1 AND e.aggregate_id = ?2 AND e.base_rev = ?3
-                AND NOT EXISTS (SELECT 1 FROM sync_applied_events a WHERE a.event_id = e.event_id)
-              ORDER BY e.device_id, e.seq",
-        )
-        .map_err(erro)?
-        .query_map(
-            rusqlite::params![
-                &intermediaria.aggregate_type,
-                &intermediaria.aggregate_id,
-                &intermediaria.new_rev
-            ],
-            |row| row.get(0),
-        )
-        .map_err(erro)?
-        .collect::<Result<_, _>>()
-        .map_err(erro)?;
-    for event_id in candidatos {
-        let Some(candidato) = envelope_guardado(tx, &event_id)? else {
-            continue;
-        };
-        let cursor: i64 = tx
-            .query_row(
-                "SELECT last_seq_applied FROM sync_cursors WHERE origin_device_id = ?1",
-                [&candidato.device_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(erro)?
-            .unwrap_or(0);
-        let antes_aplicados: i64 = tx
-            .query_row(
-                "SELECT COUNT(*) FROM sync_events e
-                   JOIN sync_applied_events a ON a.event_id = e.event_id
-                  WHERE e.device_id = ?1 AND e.seq > ?2 AND e.seq < ?3",
-                rusqlite::params![&candidato.device_id, cursor, candidato.seq],
-                |row| row.get(0),
-            )
-            .map_err(erro)?;
-        if candidato.seq > cursor && antes_aplicados == candidato.seq - cursor - 1 {
-            return Ok(Some(candidato));
-        }
-    }
-    Ok(None)
-}
-
-/// Um envelope guardado no log, pelo id.
-fn envelope_guardado(
-    tx: &Transaction<'_>,
-    event_id: &str,
-) -> DatabaseCommandResult<Option<EventEnvelope>> {
-    let linha = tx
-        .query_row(
-            "SELECT event_id, device_id, seq, universe_id, aggregate_type, aggregate_id,
-                    operation, payload, base_rev, new_rev, signature
-               FROM sync_events WHERE event_id = ?1",
-            [event_id],
-            |row| {
-                Ok((
-                    EventEnvelope {
-                        event_id: row.get(0)?,
-                        device_id: row.get(1)?,
-                        seq: row.get(2)?,
-                        universe_id: row.get(3)?,
-                        aggregate_type: row.get(4)?,
-                        aggregate_id: row.get(5)?,
-                        operation: Operation::Upsert,
-                        payload: row.get(7)?,
-                        base_rev: row.get(8)?,
-                        new_rev: row.get(9)?,
-                        signature: row.get(10)?,
-                    },
-                    row.get::<_, String>(6)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    let Some((mut envelope, operacao)) = linha else {
-        return Ok(None);
-    };
-    envelope.operation = Operation::parse(&operacao).ok_or_else(|| {
-        DatabaseCommandError::storage(format!(
-            "Operação desconhecida no log para o evento {event_id}: {operacao:?}"
-        ))
-    })?;
-    Ok(Some(envelope))
-}
-
 /// **Invariante estrutural no fim da sessão:** para um agregado coberto, sem decisão aberta nem
 /// evento pendente, revisão corrente presente ⇒ o domínio é o payload dela.
 pub fn conferir_revisao_corrente(
@@ -465,7 +257,7 @@ pub fn conferir_revisao_corrente(
 ///
 /// ```text
 /// upsert   ler_canonico(agregado).payload == envelope.payload
-/// delete   ler_canonico(agregado) == None      (exceto existência derivada: some com o pai)
+/// delete   ler_canonico(agregado) == None      (exceto sem linha própria: some com o item)
 /// ```
 ///
 /// Falhar aqui desfaz tudo (a sessão para): registrar a revisão com outro estado no domínio seria o
@@ -537,6 +329,106 @@ fn conflito_de_nome_de_tag(
     Ok(id)
 }
 
+/// **A decisão de um grupo que não pôde entrar inteiro** (B2.2).
+///
+/// O receptor tentou o grupo num `SAVEPOINT`, um membro divergiu ou foi bloqueado, e tudo foi
+/// desfeito. Aqui o grupo vira decisão:
+///
+/// ```text
+/// cada membro   revisão entra na história e evento fica aplicado    o cursor anda; um evento futuro
+///                                                                    que parta de um membro é reconhecido
+/// o domínio     NÃO muda                                            nenhum membro entra sozinho
+/// a decisão     UMA, ancorada no membro que não entrou, com o mutation_id
+/// ```
+///
+/// Uma decisão por ação, e não uma por efeito: o escritor decide "o livro foi excluído no outro
+/// aparelho", não cinco conflitos em posições e capítulos. A resolução aplica ou restaura o grupo
+/// inteiro.
+pub fn registrar_decisao_do_grupo(
+    tx: &Transaction<'_>,
+    membros: &[EventEnvelope],
+    ancora: usize,
+    resultado: &Applied,
+) -> DatabaseCommandResult<String> {
+    let envelope = &membros[ancora];
+    // A história da âncora é lida ANTES de registrar as revisões: é contra ela que a divergência
+    // descreve os dois lados.
+    let historia = aggregate_history(
+        tx,
+        &AggregateRef::new(&envelope.aggregate_type, &envelope.aggregate_id),
+    )?;
+    for membro in membros {
+        registrar_revisao(tx, membro)?;
+        marcar_aplicado(tx, &membro.event_id)?;
+    }
+    let id = match resultado {
+        Applied::ExclusaoDoPaiBloqueada { .. } => bloquear_exclusao(tx, envelope, &historia, "")?,
+        Applied::ConflitoDeNomeDeTag { .. } => {
+            let homonima =
+                sync_codec::conhecimento::tag_homonima(tx, envelope)?.unwrap_or_default();
+            conflito_de_nome_de_tag(tx, envelope, &historia, &homonima)?
+        }
+        Applied::Divergente { .. } | Applied::DivergenteComExclusao { .. } => {
+            let base = match classify(&historia, &envelope.base_rev, &envelope.new_rev) {
+                Causality::Concurrent { base_rev }
+                | Causality::ConcurrentComExclusao { base_rev } => base_rev,
+                _ => envelope.base_rev.clone(),
+            };
+            registrar_divergencia(tx, envelope, &base, &historia)?
+        }
+        outro => {
+            return Err(DatabaseCommandError::storage(format!(
+                "Grupo de mutação sem decisão a registrar ({outro:?}). Nada foi confirmado."
+            )))
+        }
+    };
+    tx.execute(
+        "UPDATE sync_divergences SET mutation_id = ?1 WHERE id = ?2",
+        [&envelope.grupo.mutation_id, &id],
+    )
+    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Ok(id)
+}
+
+/// Aplica um membro de um grupo cuja decisão foi "aceitar" — refazendo, AGORA, tudo o que o apply
+/// normal cobraria: a revisão daqui ainda é a base do membro, a dependência existe, e a exclusão não
+/// apagaria descendente vivo. Qualquer recusa derruba a resolução inteira.
+pub fn aplicar_membro_decidido(
+    tx: &Transaction<'_>,
+    envelope: &EventEnvelope,
+) -> DatabaseCommandResult<()> {
+    let agregado = AggregateRef::new(&envelope.aggregate_type, &envelope.aggregate_id);
+    let atual = sync_codec::revisao_corrente(tx, &agregado)?.unwrap_or_default();
+    if atual != envelope.base_rev {
+        return Err(DatabaseCommandError::conflict(format!(
+            "{} {} foi alterado depois que a ação do outro aparelho chegou. Aceitar agora apagaria \
+             essa alteração. Nada foi aplicado.",
+            envelope.aggregate_type, envelope.aggregate_id
+        )));
+    }
+    match envelope.operation {
+        Operation::Delete => {
+            if let Some(motivo) = motivo_para_bloquear_exclusao_remota(tx, envelope)? {
+                return Err(DatabaseCommandError::conflict(format!(
+                    "Não dá para aceitar a exclusão de {} {}: {motivo}. Resolva isso antes. Nada foi \
+                     apagado.",
+                    envelope.aggregate_type, envelope.aggregate_id
+                )));
+            }
+        }
+        Operation::Upsert => {
+            if let Some(falta) = sync_codec::dependencias(tx, envelope)? {
+                return Err(DatabaseCommandError::conflict(format!(
+                    "Não dá para aceitar {} {} ainda: falta {falta}. Nada foi aplicado.",
+                    envelope.aggregate_type, envelope.aggregate_id
+                )));
+            }
+        }
+    }
+    aplicar_com_estado_causal(tx, envelope)?;
+    conferir_materializacao(tx, envelope)
+}
+
 /// Domínio (pelo codec) e estado causal do agregado, juntos.
 ///
 /// ```text
@@ -599,37 +491,21 @@ pub fn aplicar_exclusao_bloqueada(
 ) -> DatabaseCommandResult<()> {
     let envelope = tx
         .query_row(
-            "SELECT event_id, device_id, seq, universe_id, aggregate_type, aggregate_id,
-                    operation, payload, base_rev, new_rev, signature
-               FROM sync_events WHERE event_id = ?1",
+            &format!(
+                "SELECT {} FROM sync_events WHERE event_id = ?1",
+                sync_repository::colunas_do_envelope("")
+            ),
             [event_id],
-            |row| {
-                Ok((
-                    EventEnvelope {
-                        event_id: row.get(0)?,
-                        device_id: row.get(1)?,
-                        seq: row.get(2)?,
-                        universe_id: row.get(3)?,
-                        aggregate_type: row.get(4)?,
-                        aggregate_id: row.get(5)?,
-                        operation: Operation::Delete,
-                        payload: row.get(7)?,
-                        base_rev: row.get(8)?,
-                        new_rev: row.get(9)?,
-                        signature: row.get(10)?,
-                    },
-                    row.get::<_, String>(6)?,
-                ))
-            },
+            sync_repository::envelope_da_linha,
         )
         .optional()
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    let Some((envelope, operacao)) = envelope else {
+    let Some(envelope) = envelope else {
         return Err(DatabaseCommandError::storage(format!(
             "O evento {event_id} da exclusão bloqueada não está no log."
         )));
     };
-    if Operation::parse(&operacao) != Some(Operation::Delete) {
+    if envelope.operation != Operation::Delete {
         return Err(DatabaseCommandError::storage(format!(
             "O evento {event_id} não é uma exclusão; aceitar não pode apagar nada."
         )));
@@ -645,27 +521,7 @@ pub fn aplicar_exclusao_bloqueada(
 }
 
 fn guardar_envelope(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {
-    tx.execute(
-        "INSERT OR IGNORE INTO sync_events
-            (event_id, device_id, seq, universe_id, aggregate_type, aggregate_id,
-             operation, payload, base_rev, new_rev, signature)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        rusqlite::params![
-            &envelope.event_id,
-            &envelope.device_id,
-            envelope.seq,
-            &envelope.universe_id,
-            &envelope.aggregate_type,
-            &envelope.aggregate_id,
-            envelope.operation.as_str(),
-            &envelope.payload,
-            &envelope.base_rev,
-            &envelope.new_rev,
-            &envelope.signature,
-        ],
-    )
-    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+    sync_repository::gravar_envelope(tx, envelope, true)
 }
 
 fn marcar_aplicado(tx: &Transaction<'_>, event_id: &str) -> DatabaseCommandResult<()> {
@@ -767,6 +623,7 @@ pub fn envelope_de_origem(
         base_rev: base_rev.to_string(),
         new_rev: compute_revision(base_rev, aggregate, operation, payload),
         signature: String::new(),
+        grupo: crate::domain::sync::GrupoDeMutacao::default(),
     }
 }
 
@@ -801,17 +658,6 @@ mod tests {
         )
         .replace('\n', "")
         .replace("                 ", "")
-    }
-
-    fn ordem(capitulos: &[&str]) -> String {
-        format!(
-            r#"{{"bookId":"b1","chapterIds":[{}]}}"#,
-            capitulos
-                .iter()
-                .map(|c| format!("\"{c}\""))
-                .collect::<Vec<_>>()
-                .join(",")
-        )
     }
 
     fn agregado() -> AggregateRef {
@@ -1463,19 +1309,30 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // B2: dependências, pai imutável e ordem exata
+    // B2: dependências, pai imutável — e posição por item (B2.2)
     // ═══════════════════════════════════════════════════════════════════════
 
-    fn ordem_env(seq: i64, base: &str, capitulos: &[&str]) -> EventEnvelope {
+    /// A posição de um capítulo, no formato canônico da B2.2.
+    fn posicao_env(seq: i64, capitulo: &str, livro: &str, sort_order: i64) -> EventEnvelope {
         envelope_de_origem(
             ORIGEM,
             seq,
             "u1",
-            &AggregateRef::new("chapter_order", "b1"),
+            &AggregateRef::new("chapter_position", capitulo),
             Operation::Upsert,
-            &ordem(capitulos),
-            base,
+            &format!(r#"{{"chapterId":"{capitulo}","bookId":"{livro}","sortOrder":{sort_order}}}"#),
+            "",
         )
+    }
+
+    fn sort_order(connection: &Connection, capitulo: &str) -> i64 {
+        connection
+            .query_row(
+                "SELECT sort_order FROM chapters WHERE id = ?1",
+                [capitulo],
+                |row| row.get(0),
+            )
+            .expect("sort_order")
     }
 
     fn semear_capitulos(connection: &Connection, livro: &str, ids: &[&str]) {
@@ -1517,58 +1374,59 @@ mod tests {
             .map(|estado| estado.payload)
     }
 
+    /// A posição aplicada é exatamente o payload — e só o item citado muda.
     #[test]
-    fn ordem_aplicada_e_exatamente_o_payload() {
+    fn posicao_aplicada_e_exatamente_o_payload_e_nao_mexe_nos_irmaos() {
         let fixture = TemporaryDatabase::new();
         let mut connection = preparar(&fixture);
         semear_capitulos(&connection, "b1", &["c1", "c2", "c3"]);
 
-        let envelope = ordem_env(1, "", &["c3", "c1", "c2"]);
+        let envelope = posicao_env(1, "c3", "b1", -1);
         assert_eq!(aplicar(&mut connection, &envelope), Applied::Aplicado);
         assert_eq!(
-            materializado(&connection, "chapter_order", "b1").as_deref(),
+            materializado(&connection, "chapter_position", "c3").as_deref(),
             Some(envelope.payload.as_str())
+        );
+        assert_eq!(
+            (sort_order(&connection, "c1"), sort_order(&connection, "c2")),
+            (0, 1),
+            "a posição de um capítulo mexeu nos irmãos"
         );
     }
 
+    /// Empate de posição é estado válido: dois itens com o mesmo número.
     #[test]
-    fn ordem_com_capitulo_inexistente_espera_sem_marcar() {
+    fn posicao_empatada_com_um_irmao_e_aplicada() {
+        let fixture = TemporaryDatabase::new();
+        let mut connection = preparar(&fixture);
+        semear_capitulos(&connection, "b1", &["c1", "c2"]);
+
+        let envelope = posicao_env(1, "c2", "b1", 0);
+        assert_eq!(aplicar(&mut connection, &envelope), Applied::Aplicado);
+        assert_eq!(sort_order(&connection, "c1"), sort_order(&connection, "c2"));
+    }
+
+    #[test]
+    fn posicao_de_capitulo_que_nao_chegou_espera_sem_marcar() {
         let fixture = TemporaryDatabase::new();
         let mut connection = preparar(&fixture);
         semear_capitulos(&connection, "b1", &["c1"]);
 
-        let envelope = ordem_env(1, "", &["c1", "c-ainda-nao-chegou"]);
+        let envelope = posicao_env(1, "c-ainda-nao-chegou", "b1", 0);
         assert_eq!(
             aplicar(&mut connection, &envelope),
             Applied::PrecisaReconciliar
         );
         assert!(
             !marcado(&connection, &envelope),
-            "ordem incompleta marcada como aplicada"
+            "posição de item ausente marcada como aplicada"
         );
-        assert_eq!(
-            materializado(&connection, "chapter_order", "b1").as_deref(),
-            Some(r#"{"bookId":"b1","chapterIds":["c1"]}"#),
-            "a ordem foi mexida"
-        );
+        assert_eq!(sort_order(&connection, "c1"), 0);
     }
 
+    /// A posição não muda o item de pai: pai diferente é erro, nada marcado.
     #[test]
-    fn ordem_que_nao_cita_capitulo_daqui_espera_sem_marcar() {
-        let fixture = TemporaryDatabase::new();
-        let mut connection = preparar(&fixture);
-        semear_capitulos(&connection, "b1", &["c1", "c2"]);
-
-        let envelope = ordem_env(1, "", &["c2"]);
-        assert_eq!(
-            aplicar(&mut connection, &envelope),
-            Applied::PrecisaReconciliar
-        );
-        assert!(!marcado(&connection, &envelope));
-    }
-
-    #[test]
-    fn ordem_com_capitulo_repetido_ou_de_outro_livro_e_recusada() {
+    fn posicao_com_outro_pai_e_recusada_e_nao_marca() {
         let fixture = TemporaryDatabase::new();
         let mut connection = preparar(&fixture);
         connection
@@ -1577,18 +1435,12 @@ mod tests {
                 [],
             )
             .expect("livro 2");
-        semear_capitulos(&connection, "b1", &["c1", "c2"]);
-        semear_capitulos(&connection, "b2", &["x1"]);
+        semear_capitulos(&connection, "b1", &["c1"]);
 
-        let repetido = ordem_env(1, "", &["c1", "c2", "c1"]);
-        let erro = aplicar_tentando(&mut connection, &repetido).expect_err("repetido");
-        assert!(erro.message.contains("duas vezes"), "{}", erro.message);
-        assert!(!marcado(&connection, &repetido));
-
-        let de_outro = ordem_env(1, "", &["c1", "c2", "x1"]);
-        let erro = aplicar_tentando(&mut connection, &de_outro).expect_err("outro livro");
-        assert!(erro.message.contains("que é de b2"), "{}", erro.message);
-        assert!(!marcado(&connection, &de_outro));
+        let envelope = posicao_env(1, "c1", "b2", 0);
+        let erro = aplicar_tentando(&mut connection, &envelope).expect_err("outro pai");
+        assert!(erro.message.contains("imutável"), "{}", erro.message);
+        assert!(!marcado(&connection, &envelope));
     }
 
     /// Pai imutável: capítulo, livro e história que já existem aqui com outro pai.
@@ -1646,7 +1498,7 @@ mod tests {
             ("story", "s9", r#"{"id":"s9","universeId":"u9","name":"S","description":"","customFields":[]}"#.to_string()),
             ("book", "b9", r#"{"id":"b9","storyId":"s9","name":"L","description":"","coverBlobHash":"","coverMimeType":"","customFields":[{"key":"Série","value":"I"}]}"#.to_string()),
             ("chapter", "c9", r#"{"id":"c9","bookId":"b9","title":"T","content":"<p>um dois</p>","summary":"","sceneOrigin":"","sceneDestination":"","status":"IDEIA","canonStatus":"CANON","customFields":[]}"#.to_string()),
-            ("chapter_order", "b9", r#"{"bookId":"b9","chapterIds":["c9"]}"#.to_string()),
+            ("chapter_position", "c9", r#"{"chapterId":"c9","bookId":"b9","sortOrder":4}"#.to_string()),
         ];
         for (seq, (tipo, id, payload)) in eventos.iter().enumerate() {
             let envelope = envelope_de_origem(
@@ -1671,26 +1523,18 @@ mod tests {
         }
     }
 
-    /// `story_order` e `book_order` seguem o contrato de `chapter_order` (B2.1).
+    /// História e livro seguem o mesmo contrato de posição do capítulo (B2.2).
     #[test]
-    fn ordem_de_historias_e_de_livros_tem_o_mesmo_contrato() {
+    fn posicao_de_historia_e_de_livro_tem_o_mesmo_contrato() {
         let fixture = TemporaryDatabase::new();
         let mut connection = preparar(&fixture);
         crate::infrastructure::sqlite::test_support::seed_universe(&connection, "u2");
-        connection
-            .execute_batch(
-                "INSERT INTO stories (id, universe_id, name, sort_order) VALUES ('s2', 'u1', 'S2', 1);
-                 INSERT INTO stories (id, universe_id, name) VALUES ('s-outro', 'u2', 'Outro');
-                 INSERT INTO books (id, story_id, name, sort_order) VALUES ('b2', 's1', 'L2', 1);
-                 INSERT INTO books (id, story_id, name) VALUES ('b-outro', 's2', 'Outro');",
-            )
-            .expect("semear");
-        let evento = |seq: i64, tipo: &str, pai: &str, payload: &str, base: &str| {
+        let evento = |seq: i64, tipo: &str, id: &str, payload: &str, base: &str| {
             envelope_de_origem(
                 ORIGEM,
                 seq,
                 "u1",
-                &AggregateRef::new(tipo, pai),
+                &AggregateRef::new(tipo, id),
                 Operation::Upsert,
                 payload,
                 base,
@@ -1698,105 +1542,77 @@ mod tests {
         };
 
         // Exato.
-        let historias = evento(
+        let historia = evento(
             1,
-            "story_order",
-            "u1",
-            r#"{"universeId":"u1","storyIds":["s2","s1"]}"#,
-            "",
-        );
-        assert_eq!(aplicar(&mut connection, &historias), Applied::Aplicado);
-        assert_eq!(
-            materializado(&connection, "story_order", "u1").as_deref(),
-            Some(historias.payload.as_str())
-        );
-        let livros = evento(
-            2,
-            "book_order",
+            "story_position",
             "s1",
-            r#"{"storyId":"s1","bookIds":["b2","b1"]}"#,
+            r#"{"storyId":"s1","universeId":"u1","sortOrder":9}"#,
             "",
         );
-        assert_eq!(aplicar(&mut connection, &livros), Applied::Aplicado);
+        assert_eq!(aplicar(&mut connection, &historia), Applied::Aplicado);
         assert_eq!(
-            materializado(&connection, "book_order", "s1").as_deref(),
-            Some(livros.payload.as_str())
+            materializado(&connection, "story_position", "s1").as_deref(),
+            Some(historia.payload.as_str())
+        );
+        let livro = evento(
+            2,
+            "book_position",
+            "b1",
+            r#"{"bookId":"b1","storyId":"s1","sortOrder":5}"#,
+            "",
+        );
+        assert_eq!(aplicar(&mut connection, &livro), Applied::Aplicado);
+        assert_eq!(
+            materializado(&connection, "book_position", "b1").as_deref(),
+            Some(livro.payload.as_str())
         );
 
-        // Repetido e de outro pai: erro, nada marcado.
-        for (tipo, pai, payload, trecho) in [
+        // Outro pai: erro, nada marcado. A partir da revisão corrente, para o evento ser
+        // SEQUENCIAL e chegar à validação — com base vazia ele seria concorrente, viraria
+        // divergência, e a regra do pai nem seria consultada.
+        for (tipo, id, payload) in [
             (
-                "story_order",
-                "u1",
-                r#"{"universeId":"u1","storyIds":["s1","s2","s1"]}"#,
-                "duas vezes",
-            ),
-            (
-                "story_order",
-                "u1",
-                r#"{"universeId":"u1","storyIds":["s1","s2","s-outro"]}"#,
-                "que é de u2",
-            ),
-            (
-                "book_order",
+                "story_position",
                 "s1",
-                r#"{"storyId":"s1","bookIds":["b1","b1","b2"]}"#,
-                "duas vezes",
+                r#"{"storyId":"s1","universeId":"u2","sortOrder":0}"#,
             ),
             (
-                "book_order",
-                "s1",
-                r#"{"storyId":"s1","bookIds":["b1","b2","b-outro"]}"#,
-                "que é de s2",
+                "book_position",
+                "b1",
+                r#"{"bookId":"b1","storyId":"s-outra","sortOrder":0}"#,
             ),
         ] {
-            let base = if tipo == "story_order" {
-                &historias.new_rev
+            let base = if tipo == "story_position" {
+                &historia.new_rev
             } else {
-                &livros.new_rev
+                &livro.new_rev
             };
-            let envelope = evento(3, tipo, pai, payload, base);
-            let erro = aplicar_tentando(&mut connection, &envelope).expect_err(trecho);
-            assert!(erro.message.contains(trecho), "{}", erro.message);
+            let envelope = evento(3, tipo, id, payload, base);
+            let erro = aplicar_tentando(&mut connection, &envelope).expect_err(tipo);
+            assert!(erro.message.contains("imutável"), "{}", erro.message);
             assert!(!marcado(&connection, &envelope));
         }
 
-        // Inexistente e não citado: espera, nada marcado, ordem intacta.
-        for (i, (tipo, pai, payload)) in [
+        // Item que não chegou: espera, nada marcado.
+        for (tipo, id, payload) in [
             (
-                "story_order",
-                "u1",
-                r#"{"universeId":"u1","storyIds":["s1","s2","s-nao-chegou"]}"#,
+                "story_position",
+                "s-nao-chegou",
+                r#"{"storyId":"s-nao-chegou","universeId":"u1","sortOrder":0}"#,
             ),
             (
-                "story_order",
-                "u1",
-                r#"{"universeId":"u1","storyIds":["s1"]}"#,
+                "book_position",
+                "b-nao-chegou",
+                r#"{"bookId":"b-nao-chegou","storyId":"s1","sortOrder":0}"#,
             ),
-            (
-                "book_order",
-                "s1",
-                r#"{"storyId":"s1","bookIds":["b1","b2","b-nao-chegou"]}"#,
-            ),
-            ("book_order", "s1", r#"{"storyId":"s1","bookIds":["b2"]}"#),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let antes = materializado(&connection, tipo, pai);
-            let base = if tipo == "story_order" {
-                &historias.new_rev
-            } else {
-                &livros.new_rev
-            };
-            let envelope = evento(3 + i as i64, tipo, pai, payload, base);
+        ] {
+            let envelope = evento(3, tipo, id, payload, "");
             assert_eq!(
                 aplicar(&mut connection, &envelope),
                 Applied::PrecisaReconciliar,
                 "{payload}"
             );
             assert!(!marcado(&connection, &envelope));
-            assert_eq!(materializado(&connection, tipo, pai), antes);
         }
     }
 }

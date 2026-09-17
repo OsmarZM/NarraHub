@@ -79,7 +79,7 @@ use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::identity::DeviceIdentity;
 use crate::domain::ids::new_id;
 use crate::domain::sync::{
-    compute_revision, AggregateHistory, AggregateRef, EventEnvelope, Operation,
+    compute_revision, AggregateHistory, AggregateRef, EventEnvelope, GrupoDeMutacao, Operation,
 };
 use crate::infrastructure::sqlite::connection::BUSY_TIMEOUT;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -118,6 +118,8 @@ pub struct LocalChange<'a> {
     /// JSON já serializado. **Não é reserializado em lugar nenhum** — veja
     /// `payload_atravessa_o_log_sem_reserializacao`.
     pub payload: &'a str,
+    /// A ação de onde o evento sai. Vazio só fora da `Mutacao` (testes e ferramentas de log).
+    pub grupo: GrupoDeMutacao,
 }
 
 /// Quem é este aparelho, no roster.
@@ -311,29 +313,11 @@ pub fn append_event_in_transaction(
         base_rev,
         new_rev,
         signature: String::new(),
+        grupo: change.grupo.clone(),
     };
     envelope.signature = identidade.sign(&envelope);
 
-    tx.execute(
-        "INSERT INTO sync_events
-            (event_id, device_id, seq, universe_id, aggregate_type, aggregate_id,
-             operation, payload, base_rev, new_rev, signature)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        rusqlite::params![
-            &envelope.event_id,
-            &envelope.device_id,
-            envelope.seq,
-            &envelope.universe_id,
-            &envelope.aggregate_type,
-            &envelope.aggregate_id,
-            envelope.operation.as_str(),
-            &envelope.payload,
-            &envelope.base_rev,
-            &envelope.new_rev,
-            &envelope.signature,
-        ],
-    )
-    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    gravar_envelope(tx, &envelope, false)?;
 
     // Escrita local entra em `sync_applied_events` também: "aplicado" quer
     // dizer "refletido nos agregados", e uma escrita local está refletida por
@@ -467,6 +451,117 @@ pub fn aggregate_history(
     })
 }
 
+/// As colunas do envelope, na ordem que [`envelope_da_linha`] lê. `prefixo` é o alias da tabela
+/// (`"e."`) ou vazio.
+///
+/// **Um lugar só.** Até a B2.2 cinco consultas montavam o envelope cada uma do seu jeito; um campo
+/// novo esquecido em uma delas faria a assinatura falhar naquele caminho e passar nos outros.
+pub fn colunas_do_envelope(prefixo: &str) -> String {
+    [
+        "event_id",
+        "device_id",
+        "seq",
+        "universe_id",
+        "aggregate_type",
+        "aggregate_id",
+        "operation",
+        "payload",
+        "base_rev",
+        "new_rev",
+        "signature",
+        "mutation_id",
+        "mutation_index",
+        "mutation_count",
+        "mutation_kind",
+        "mutation_root_type",
+        "mutation_root_id",
+    ]
+    .iter()
+    .map(|coluna| format!("{prefixo}{coluna}"))
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
+/// Lê um envelope de uma linha selecionada com [`colunas_do_envelope`]. Operação desconhecida falha
+/// fechada: tratá-la como `upsert` faria um evento corrompido virar escrita de conteúdo.
+pub fn envelope_da_linha(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventEnvelope> {
+    let operacao: String = row.get(6)?;
+    let operation = Operation::parse(&operacao).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            6,
+            rusqlite::types::Type::Text,
+            Box::new(OperacaoDesconhecida(operacao.clone())),
+        )
+    })?;
+    Ok(EventEnvelope {
+        event_id: row.get(0)?,
+        device_id: row.get(1)?,
+        seq: row.get(2)?,
+        universe_id: row.get(3)?,
+        aggregate_type: row.get(4)?,
+        aggregate_id: row.get(5)?,
+        operation,
+        payload: row.get(7)?,
+        base_rev: row.get(8)?,
+        new_rev: row.get(9)?,
+        signature: row.get(10)?,
+        grupo: GrupoDeMutacao {
+            mutation_id: row.get(11)?,
+            index: row.get(12)?,
+            count: row.get(13)?,
+            kind: row.get(14)?,
+            root_type: row.get(15)?,
+            root_id: row.get(16)?,
+        },
+    })
+}
+
+/// Grava o envelope inteiro no log. `ignorar_repetido` para o receptor, que vê o mesmo evento
+/// chegar por mais de um caminho.
+pub fn gravar_envelope(
+    connection: &Connection,
+    envelope: &EventEnvelope,
+    ignorar_repetido: bool,
+) -> DatabaseCommandResult<()> {
+    let verbo = if ignorar_repetido {
+        "INSERT OR IGNORE"
+    } else {
+        "INSERT"
+    };
+    let grupo = &envelope.grupo;
+    // Evento sem grupo grava total 1: é o que ele é, e o CHECK da migration 23 cobra isso.
+    let total = grupo.count.max(1);
+    connection
+        .execute(
+            &format!(
+                "{verbo} INTO sync_events ({}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                  ?12, ?13, ?14, ?15, ?16, ?17)",
+                colunas_do_envelope("")
+            ),
+            rusqlite::params![
+                &envelope.event_id,
+                &envelope.device_id,
+                envelope.seq,
+                &envelope.universe_id,
+                &envelope.aggregate_type,
+                &envelope.aggregate_id,
+                envelope.operation.as_str(),
+                &envelope.payload,
+                &envelope.base_rev,
+                &envelope.new_rev,
+                &envelope.signature,
+                &grupo.mutation_id,
+                grupo.index,
+                total,
+                &grupo.kind,
+                &grupo.root_type,
+                &grupo.root_id,
+            ],
+        )
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Ok(())
+}
+
 /// O outbox. Não é tabela: é o recorte do log originado aqui.
 pub fn outbox_since(
     connection: &Connection,
@@ -474,41 +569,13 @@ pub fn outbox_since(
     depois_de: i64,
 ) -> DatabaseCommandResult<Vec<EventEnvelope>> {
     let mut statement = connection
-        .prepare(
-            "SELECT event_id, device_id, seq, universe_id, aggregate_type, aggregate_id,
-                    operation, payload, base_rev, new_rev, signature
-               FROM sync_events
-              WHERE device_id = ?1 AND seq > ?2
-           ORDER BY seq",
-        )
+        .prepare(&format!(
+            "SELECT {} FROM sync_events WHERE device_id = ?1 AND seq > ?2 ORDER BY seq",
+            colunas_do_envelope("")
+        ))
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     let eventos = statement
-        .query_map(rusqlite::params![device_id, depois_de], |row| {
-            let operacao: String = row.get(6)?;
-            // Falha fechada. Tratar operação desconhecida como `upsert` faria
-            // um evento corrompido virar uma escrita de conteúdo — e um
-            // `delete` ilegível viraria ressurreição silenciosa do agregado.
-            let operation = Operation::parse(&operacao).ok_or_else(|| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    6,
-                    rusqlite::types::Type::Text,
-                    Box::new(OperacaoDesconhecida(operacao.clone())),
-                )
-            })?;
-            Ok(EventEnvelope {
-                event_id: row.get(0)?,
-                device_id: row.get(1)?,
-                seq: row.get(2)?,
-                universe_id: row.get(3)?,
-                aggregate_type: row.get(4)?,
-                aggregate_id: row.get(5)?,
-                operation,
-                payload: row.get(7)?,
-                base_rev: row.get(8)?,
-                new_rev: row.get(9)?,
-                signature: row.get(10)?,
-            })
-        })
+        .query_map(rusqlite::params![device_id, depois_de], envelope_da_linha)
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
@@ -558,6 +625,7 @@ mod tests {
             aggregate: AggregateRef::new("chapter", id),
             operation: Operation::Upsert,
             payload,
+            grupo: Default::default(),
         }
     }
 
@@ -823,6 +891,7 @@ mod tests {
                 aggregate: AggregateRef::new("chapter", "cap-1"),
                 operation: Operation::Delete,
                 payload: "",
+                grupo: Default::default(),
             },
         )
         .expect("delete");
@@ -1121,6 +1190,7 @@ mod tests {
                 aggregate: AggregateRef::new("chapter", "cap-1"),
                 operation: Operation::Delete,
                 payload: "",
+                grupo: Default::default(),
             },
         )
         .expect("apagar");

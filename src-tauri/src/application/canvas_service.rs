@@ -368,6 +368,7 @@ pub fn create_attachment(
             })?;
         // O evento é lido pela fronteira do banco, com a referência de blob e sem `data_url`.
         m.gravou("attachment", &attachment.id)?;
+        m.gravou("attachment_position", &attachment.id)?;
         // O que volta para a tela leva a referência; a `data:` URL é montada na leitura seguinte.
         attachment.blob_hash = gravado.blob_hash;
         attachment.mime_type = gravado.mime_type;
@@ -722,7 +723,9 @@ mod tests {
         // No evento: referência, e nada de bytes.
         let (tipo, payload): (String, String) = conexao
             .query_row(
-                "SELECT aggregate_type, payload FROM sync_events ORDER BY seq DESC LIMIT 1",
+                // Filtra pelo tipo: desde a B2.2 a posição do anexo sai logo depois dele.
+                "SELECT aggregate_type, payload FROM sync_events
+                  WHERE aggregate_type = 'attachment' ORDER BY seq DESC LIMIT 1",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )

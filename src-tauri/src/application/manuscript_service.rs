@@ -58,8 +58,7 @@ pub fn create_story(
             &now_timestamp(),
         )?;
         m.gravou("story", &story.id)?;
-        m.gravou("story_order", universe_id)?;
-        m.gravou("book_order", &story.id)?;
+        m.gravou("story_position", &story.id)?;
         Ok(story)
     })
 }
@@ -159,8 +158,7 @@ pub fn create_book(
             &now_timestamp(),
         )?;
         m.gravou("book", &book.id)?;
-        m.gravou("book_order", story_id)?;
-        m.gravou("chapter_order", &book.id)?;
+        m.gravou("book_position", &book.id)?;
         Ok(book)
     })
 }
@@ -261,7 +259,7 @@ pub fn create_chapter(
             &now_timestamp(),
         )?;
         m.gravou("chapter", &chapter.id)?;
-        m.gravou("chapter_order", book_id)?;
+        m.gravou("chapter_position", &chapter.id)?;
         Ok(chapter)
     })
 }
@@ -348,7 +346,12 @@ pub fn reorder_chapters(
                 "A lista de capítulos mudou. Atualize e tente novamente.",
             ));
         }
-        m.gravou("chapter_order", book_id)
+        // Declara a posição de cada capítulo da lista. Os que não mudaram não geram evento: a
+        // Mutacao descarta revisão idêntica à corrente, e o conflito fica só em quem se moveu.
+        for chapter_id in chapter_ids {
+            m.gravou("chapter_position", chapter_id)?;
+        }
+        Ok(())
     })
 }
 

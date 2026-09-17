@@ -557,13 +557,13 @@ fn arvore(autor: &Aparelho, outro: &Aparelho) -> Arvore {
 
 fn convergencia_da_arvore(a: &Aparelho, b: &Aparelho, arvore: &Arvore) {
     a.convergiu_com(b, "universe", &arvore.universo);
-    a.convergiu_com(b, "story_order", &arvore.universo);
     a.convergiu_com(b, "story", &arvore.historia);
-    a.convergiu_com(b, "book_order", &arvore.historia);
+    a.convergiu_com(b, "story_position", &arvore.historia);
     a.convergiu_com(b, "book", &arvore.livro);
-    a.convergiu_com(b, "chapter_order", &arvore.livro);
+    a.convergiu_com(b, "book_position", &arvore.livro);
     for capitulo in &arvore.capitulos {
         a.convergiu_com(b, "chapter", capitulo);
+        a.convergiu_com(b, "chapter_position", capitulo);
     }
 }
 
@@ -616,7 +616,7 @@ fn conteudo_independente_dos_dois_lados_vira_uniao() {
 }
 
 #[test]
-fn reordenar_muda_so_a_ordem_e_chega_igual() {
+fn reordenar_muda_so_as_posicoes_e_chega_igual() {
     let pc = Aparelho::novo("pc");
     let android = Aparelho::novo("android");
     let mut arvore = arvore(&pc, &android);
@@ -625,7 +625,7 @@ fn reordenar_muda_so_a_ordem_e_chega_igual() {
     sincronizar(&pc, &android);
 
     let capitulos_antes = pc.eventos_do_tipo("chapter");
-    let ordens_antes = pc.eventos_do_tipo("chapter_order");
+    let posicoes_antes = pc.eventos_do_tipo("chapter_position");
     let nova = vec![
         c3.clone(),
         arvore.capitulos[0].clone(),
@@ -638,21 +638,16 @@ fn reordenar_muda_so_a_ordem_e_chega_igual() {
         capitulos_antes,
         "reordenar revisou capítulo"
     );
-    assert_eq!(pc.eventos_do_tipo("chapter_order"), ordens_antes + 1);
+    // [c1, c2, c3] → [c3, c1, c2]: os três números mudam, então três posições. Nenhuma lista.
+    assert_eq!(pc.eventos_do_tipo("chapter_position"), posicoes_antes + 3);
 
     sincronizar(&pc, &android);
     convergencia_da_arvore(&pc, &android, &arvore);
-    let ordem = android
-        .canonico("chapter_order", &arvore.livro)
-        .expect("ordem");
-    assert!(
-        ordem.contains(&format!("\"chapterIds\":[\"{c3}\",")),
-        "{ordem}"
-    );
+    assert_eq!(android.ids_dos_capitulos(&arvore.livro), nova);
 }
 
 #[test]
-fn excluir_capitulo_leva_anexo_e_marcacao_e_reescreve_a_ordem() {
+fn excluir_capitulo_leva_anexo_marcacao_e_posicoes_sem_mexer_no_irmao() {
     let pc = Aparelho::novo("pc");
     let android = Aparelho::novo("android");
     let arvore = arvore(&pc, &android);
@@ -691,8 +686,10 @@ fn excluir_capitulo_leva_anexo_e_marcacao_e_reescreve_a_ordem() {
     assert_eq!(no_android.divergencias, 0);
     pc.convergiu_com(&android, "chapter", &alvo);
     pc.convergiu_com(&android, "attachment", &anexo.id);
-    pc.convergiu_com(&android, "chapter_order", &arvore.livro);
+    pc.convergiu_com(&android, "attachment_position", &anexo.id);
+    pc.convergiu_com(&android, "chapter_position", &alvo);
     pc.convergiu_com(&android, "chapter", &arvore.capitulos[1]);
+    pc.convergiu_com(&android, "chapter_position", &arvore.capitulos[1]);
 }
 
 #[test]
@@ -713,23 +710,14 @@ fn excluir_livro_e_historia_converge_com_tombstone_de_toda_a_arvore() {
         android.divergencias_abertas("chapter")
     );
     pc.convergiu_com(&android, "book", &arvore.livro);
-    pc.convergiu_com(&android, "chapter_order", &arvore.livro);
+    pc.convergiu_com(&android, "book_position", &arvore.livro);
     for capitulo in &arvore.capitulos {
         pc.convergiu_com(&android, "chapter", capitulo);
+        pc.convergiu_com(&android, "chapter_position", capitulo);
     }
+    // O livro irmão não é revisado: posição por item, nada compactado.
     pc.convergiu_com(&android, "book", &segundo);
-    // book delete → book_order(história) reescrita, igual nos dois.
-    pc.convergiu_com(&android, "book_order", &arvore.historia);
-    assert_eq!(
-        android.canonico("book_order", &arvore.historia).as_deref(),
-        Some(
-            format!(
-                r#"{{"storyId":"{}","bookIds":["{segundo}"]}}"#,
-                arvore.historia
-            )
-            .as_str()
-        )
-    );
+    pc.convergiu_com(&android, "book_position", &segundo);
 
     manuscript_service::delete_story(&pc.banco.database, &pc.eu, &arvore.historia)
         .expect("história");
@@ -737,19 +725,14 @@ fn excluir_livro_e_historia_converge_com_tombstone_de_toda_a_arvore() {
     assert_eq!(no_android.divergencias, 0);
     for (tipo, id) in [
         ("story", &arvore.historia),
+        ("story_position", &arvore.historia),
         ("book", &segundo),
-        ("chapter_order", &segundo),
+        ("book_position", &segundo),
         ("chapter", &solto),
-        ("book_order", &arvore.historia),
-        ("story_order", &arvore.universo),
+        ("chapter_position", &solto),
     ] {
         pc.convergiu_com(&android, tipo, id);
     }
-    // story delete → story_order(universo) reescrita sem a história.
-    assert_eq!(
-        android.canonico("story_order", &arvore.universo).as_deref(),
-        Some(format!(r#"{{"universeId":"{}","storyIds":[]}}"#, arvore.universo).as_str())
-    );
     assert_eq!(android.contar("SELECT COUNT(*) FROM chapters"), 0);
     pc.convergiu_com(&android, "universe", &arvore.universo);
 }
@@ -836,33 +819,48 @@ fn excluir_capitulo_ligado_a_card_reescreve_o_card_nos_dois() {
         .contains(r#""chapterId":null"#));
 }
 
-/// Reescrita também passa pelo preflight: com a ordem do livro em divergência, excluir capítulo
-/// alteraria a ordem em silêncio, e é recusado.
+/// O preflight vale para a posição do item: com a posição de um capítulo em decisão aberta, excluir o
+/// capítulo apagaria uma das duas versões em silêncio, e é recusado.
 #[test]
-fn reescrita_de_agregado_em_divergencia_recusa_a_exclusao() {
+fn posicao_em_divergencia_recusa_a_exclusao_do_item() {
     let pc = Aparelho::novo("pc");
     let android = Aparelho::novo("android");
     let arvore = arvore(&pc, &android);
+    let [c1, c2] = [arvore.capitulos[0].clone(), arvore.capitulos[1].clone()];
 
-    let nova = vec![arvore.capitulos[1].clone(), arvore.capitulos[0].clone()];
-    manuscript_service::reorder_chapters(&pc.banco.database, &pc.eu, &arvore.livro, &nova)
-        .expect("pc reordena");
-    android.capitulo(&arvore.livro, "Três");
-    let (no_android, _) = sincronizar(&pc, &android);
-    assert_eq!(
-        android.divergencias_abertas("chapter_order"),
-        vec![(arvore.livro.clone(), "concurrent".to_string())],
-        "{no_android:?}"
-    );
-
-    let erro = manuscript_service::delete_chapter(
+    // Os dois trocam os capítulos de lugar, cada um do seu jeito: c1 muda nos dois lados.
+    manuscript_service::reorder_chapters(
+        &pc.banco.database,
+        &pc.eu,
+        &arvore.livro,
+        &[c2.clone(), c1.clone()],
+    )
+    .expect("pc reordena");
+    let c3 = android.capitulo(&arvore.livro, "Três").id;
+    manuscript_service::reorder_chapters(
         &android.banco.database,
         &android.eu,
-        &arvore.capitulos[0],
+        &arvore.livro,
+        &[c3, c2, c1.clone()],
     )
-    .expect_err("ordem em divergência");
-    assert!(erro.message.contains("chapter_order"), "{}", erro.message);
-    assert!(android.canonico("chapter", &arvore.capitulos[0]).is_some());
+    .expect("android reordena");
+    let (no_android, _) = sincronizar(&pc, &android);
+    assert!(
+        android
+            .divergencias_abertas("chapter_position")
+            .contains(&(c1.clone(), "concurrent".to_string())),
+        "{no_android:?} {:?}",
+        android.divergencias_abertas("chapter_position")
+    );
+
+    let erro = manuscript_service::delete_chapter(&android.banco.database, &android.eu, &c1)
+        .expect_err("posição em divergência");
+    assert!(
+        erro.message.contains("chapter_position"),
+        "{}",
+        erro.message
+    );
+    assert!(android.canonico("chapter", &c1).is_some());
 }
 
 /// `delete_universe` recusa com a mensagem combinada; uma exclusão de universo que chegue de fora
@@ -932,8 +930,9 @@ fn salvar_o_mesmo_estado_nao_gera_revisao() {
     assert_eq!(pc.eventos_do_tipo("chapter"), antes);
 }
 
-/// **Após todo `Aplicado`, o agregado aplicado é exatamente o evento.** Os eventos de uma árvore
-/// inteira (criação, edição, reorder, exclusão) chegam ao Android um por vez.
+/// **Após todo `Aplicado`, o agregado aplicado é exatamente o evento.** As ações de uma árvore
+/// inteira (criação, edição, reorder, exclusão) chegam ao Android uma por vez — cada ação com todos
+/// os seus membros, que é a menor unidade que o receptor aplica (B2.2).
 #[test]
 fn cada_aplicado_materializa_o_proprio_evento() {
     let pc = Aparelho::novo("pc");
@@ -958,49 +957,59 @@ fn cada_aplicado_materializa_o_proprio_evento() {
     let vetor = vetor_local(&android.banco.connection()).expect("vetor");
     let eventos = eventos_para(&pc.banco.connection(), &vetor).expect("eventos");
     assert!(eventos.len() >= 10, "{}", eventos.len());
-    for evento in &eventos {
-        let relatorio = receber_eventos(
-            &mut android.banco.connection(),
-            std::slice::from_ref(evento),
-        )
-        .expect("receber");
+    let mut acoes: Vec<&[crate::domain::sync::EventEnvelope]> = Vec::new();
+    let mut inicio = 0;
+    for (indice, evento) in eventos.iter().enumerate() {
+        if evento.grupo.e_isolado() || evento.grupo.index + 1 == evento.grupo.count {
+            acoes.push(&eventos[inicio..=indice]);
+            inicio = indice + 1;
+        }
+    }
+    assert_eq!(inicio, eventos.len(), "sobrou ação pela metade no log");
+    assert!(acoes.iter().any(|acao| acao.len() > 1));
+    for acao in acoes {
+        let relatorio = receber_eventos(&mut android.banco.connection(), acao).expect("receber");
         assert_eq!(
-            relatorio.aplicados, 1,
-            "{} {} não foi aplicado",
-            evento.aggregate_type, evento.aggregate_id
+            relatorio.aplicados,
+            acao.len(),
+            "ação {:?} não entrou inteira",
+            acao[0].grupo
         );
-        let materializado = android.canonico(&evento.aggregate_type, &evento.aggregate_id);
-        match evento.operation {
-            Operation::Upsert => assert_eq!(
-                materializado.as_deref(),
-                Some(evento.payload.as_str()),
-                "{} {}",
-                evento.aggregate_type,
-                evento.aggregate_id
-            ),
-            Operation::Delete => {
-                if !sync_codec::existencia_derivada(&evento.aggregate_type) {
-                    assert!(materializado.is_none());
+        for evento in acao {
+            let materializado = android.canonico(&evento.aggregate_type, &evento.aggregate_id);
+            match evento.operation {
+                Operation::Upsert => assert_eq!(
+                    materializado.as_deref(),
+                    Some(evento.payload.as_str()),
+                    "{} {}",
+                    evento.aggregate_type,
+                    evento.aggregate_id
+                ),
+                Operation::Delete => {
+                    if !sync_codec::existencia_derivada(&evento.aggregate_type) {
+                        assert!(materializado.is_none());
+                    }
                 }
             }
         }
     }
     android.invariante_de_materializacao();
-    pc.convergiu_com(&android, "chapter_order", &livro);
+    pc.convergiu_com(&android, "chapter_position", &c2);
+    pc.convergiu_com(&android, "chapter_position", &c1);
 }
 
 /// **Causalidade cruzada entre origens.**
 ///
 /// ```text
-/// C cria c3 (capítulo + ordem)
-/// A recebe de C, conhece c3, reordena incluindo c3
-/// B recebe a ordem de A ANTES do create de c3, que é de C
-///   → a ordem fica pendente, não conta como aplicada, a ordem de B não muda
+/// C cria c3 (capítulo + posição)
+/// A recebe de C, conhece c3, move c3
+/// B recebe a posição de c3 que A emitiu ANTES do create de c3, que é de C
+///   → a posição fica pendente, não conta como aplicada
 /// B recebe os eventos de C
-///   → c3 entra, a ordem de A é reaplicada, e o estado final é o payload dela
+///   → c3 entra, a posição de A é reaplicada, e o estado final é o payload dela
 /// ```
 #[test]
-fn ordem_que_cita_capitulo_de_outra_origem_espera_o_capitulo_chegar() {
+fn posicao_que_cita_capitulo_de_outra_origem_espera_o_capitulo_chegar() {
     let a = Aparelho::novo("a");
     let b = Aparelho::novo("b");
     let c = Aparelho::novo("c");
@@ -1024,386 +1033,42 @@ fn ordem_que_cita_capitulo_de_outra_origem_espera_o_capitulo_chegar() {
     let (de_a, de_c): (Vec<_>, Vec<_>) = todos
         .into_iter()
         .partition(|evento| evento.device_id == a.eu.device_id());
-    let ordem_de_a = de_a
+    let posicao_de_a = de_a
         .iter()
-        .find(|evento| evento.aggregate_type == "chapter_order")
-        .expect("a ordem de A")
+        .find(|evento| evento.aggregate_type == "chapter_position" && evento.aggregate_id == c3)
+        .expect("a posição de c3 emitida por A")
         .clone();
     assert!(
         !de_c.is_empty(),
         "A precisa ter os eventos de C para repassar"
     );
 
-    let ordem_antes = b.canonico("chapter_order", &arvore.livro);
     let relatorio = receber_eventos(&mut b.banco.connection(), &de_a).expect("B recebe de A");
-    assert_eq!(relatorio.aplicados, 0);
     assert!(relatorio.pendentes >= 1, "{relatorio:?}");
     let aplicado: bool = b
         .banco
         .connection()
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sync_applied_events WHERE event_id = ?1)",
-            [&ordem_de_a.event_id],
+            [&posicao_de_a.event_id],
             |row| row.get(0),
         )
         .expect("aplicado");
-    assert!(
-        !aplicado,
-        "a ordem que cita c3 foi dada como aplicada sem c3"
-    );
-    assert_eq!(b.canonico("chapter_order", &arvore.livro), ordem_antes);
+    assert!(!aplicado, "a posição de c3 foi dada como aplicada sem c3");
     assert!(b.canonico("chapter", &c3).is_none());
 
     let relatorio = receber_eventos(&mut b.banco.connection(), &de_c).expect("B recebe de C");
     assert!(relatorio.precisam_reconciliar.is_empty(), "{relatorio:?}");
     assert!(b.canonico("chapter", &c3).is_some());
     assert_eq!(
-        b.canonico("chapter_order", &arvore.livro).as_deref(),
-        Some(ordem_de_a.payload.as_str()),
-        "o estado final da ordem em B é o payload de A"
+        b.canonico("chapter_position", &c3).as_deref(),
+        Some(posicao_de_a.payload.as_str()),
+        "o estado final da posição em B é o payload de A"
     );
     b.invariante_de_materializacao();
-    a.convergiu_com(&b, "chapter_order", &arvore.livro);
+    a.convergiu_com(&b, "chapter_position", &c3);
     a.convergiu_com(&b, "chapter", &c3);
-}
-
-/// **A/B/C para `story_order` (B2.1) — o cenário que travava.**
-///
-/// ```text
-/// C cria s3                       ordem de C = [s1, s3]
-/// A recebe de C e cria s4         ordem de A = [s1, s3, s4], base = ordem de C
-/// B recebe o que é de A ANTES do que é de C
-///   → s4 entra; a ordem de A espera (base desconhecida), não é dada como aplicada
-/// B recebe o que é de C
-///   → s3 entra; a ordem de C não cita s4 e o sucessor dela está no log → superada
-///   → a ordem de A vira sequencial e materializa exatamente
-/// ```
-#[test]
-fn story_order_entre_tres_origens_converge_sem_travar() {
-    let a = Aparelho::novo("a");
-    let b = Aparelho::novo("b");
-    let c = Aparelho::novo("c");
-    let arvore = arvore(&a, &b);
-    sincronizar(&a, &c);
-
-    let s3 = c.historia(&arvore.universo, "Três").id;
-    sincronizar(&a, &c);
-    let s4 = a.historia(&arvore.universo, "Quatro").id;
-
-    apresentar(&a, &b);
-    apresentar(&c, &b);
-    let vetor_b = vetor_local(&b.banco.connection()).expect("vetor");
-    let todos = eventos_para(&a.banco.connection(), &vetor_b).expect("eventos");
-    let (de_a, de_c): (Vec<_>, Vec<_>) = todos
-        .into_iter()
-        .partition(|evento| evento.device_id == a.eu.device_id());
-    let ordem_de_a = de_a
-        .iter()
-        .find(|evento| evento.aggregate_type == "story_order")
-        .expect("ordem de A")
-        .clone();
-
-    let relatorio = receber_eventos(&mut b.banco.connection(), &de_a).expect("B recebe de A");
-    assert!(relatorio.pendentes >= 1, "{relatorio:?}");
-    let aplicada = |evento: &crate::domain::sync::EventEnvelope| -> bool {
-        b.banco
-            .connection()
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sync_applied_events WHERE event_id = ?1)",
-                [&evento.event_id],
-                |row| row.get(0),
-            )
-            .expect("aplicado")
-    };
-    assert!(!aplicada(&ordem_de_a), "a ordem de A avançou sem a de C");
-    assert!(b.canonico("story", &s3).is_none());
-
-    let relatorio = receber_eventos(&mut b.banco.connection(), &de_c).expect("B recebe de C");
-    assert!(relatorio.precisam_reconciliar.is_empty(), "{relatorio:?}");
-    assert_eq!(relatorio.superados, 1, "{relatorio:?}");
-    assert!(aplicada(&ordem_de_a));
-    assert_eq!(
-        b.canonico("story_order", &arvore.universo).as_deref(),
-        Some(ordem_de_a.payload.as_str())
-    );
-    b.invariante_de_materializacao();
-    for (tipo, id) in [
-        ("story_order", arvore.universo.as_str()),
-        ("story", s3.as_str()),
-        ("story", s4.as_str()),
-        ("book_order", s3.as_str()),
-        ("book_order", s4.as_str()),
-    ] {
-        a.convergiu_com(&b, tipo, id);
-    }
-}
-
-/// O mesmo travamento existia em `chapter_order` desde a B2. Com o lote inteiro, depende de qual
-/// origem a sessão drena primeiro; entregando o que é de A antes do que é de C, ele é certo.
-#[test]
-fn chapter_order_entre_tres_origens_converge_sem_travar() {
-    let a = Aparelho::novo("a");
-    let b = Aparelho::novo("b");
-    let c = Aparelho::novo("c");
-    let arvore = arvore(&a, &b);
-    sincronizar(&a, &c);
-
-    let c3 = c.capitulo(&arvore.livro, "Três").id;
-    sincronizar(&a, &c);
-    let c4 = a.capitulo(&arvore.livro, "Quatro").id;
-
-    apresentar(&a, &b);
-    apresentar(&c, &b);
-    let vetor_b = vetor_local(&b.banco.connection()).expect("vetor");
-    let todos = eventos_para(&a.banco.connection(), &vetor_b).expect("eventos");
-    let (de_a, de_c): (Vec<_>, Vec<_>) = todos
-        .into_iter()
-        .partition(|evento| evento.device_id == a.eu.device_id());
-    receber_eventos(&mut b.banco.connection(), &de_a).expect("B recebe de A");
-    let em_b = receber_eventos(&mut b.banco.connection(), &de_c).expect("B recebe de C");
-    assert!(em_b.precisam_reconciliar.is_empty(), "{em_b:?}");
-    assert_eq!(em_b.pendentes, 0, "{em_b:?}");
-    assert_eq!(em_b.superados, 1, "{em_b:?}");
-    b.invariante_de_materializacao();
-    a.convergiu_com(&b, "chapter_order", &arvore.livro);
-    a.convergiu_com(&b, "chapter", &c3);
-    a.convergiu_com(&b, "chapter", &c4);
-}
-
-/// Superar não é merge: uma ordem concorrente (mesma base que a daqui) vira decisão.
-#[test]
-fn ordem_concorrente_vira_decisao_e_nao_e_superada() {
-    let a = Aparelho::novo("a");
-    let b = Aparelho::novo("b");
-    let c = Aparelho::novo("c");
-    let arvore = arvore(&a, &b);
-    sincronizar(&a, &c);
-
-    // B cria s-local e nunca manda; C cria s3 e manda para B diretamente.
-    let local = b.historia(&arvore.universo, "Só de B").id;
-    let _ = local;
-    c.historia(&arvore.universo, "Três");
-    let (em_b, _) = sincronizar(&c, &b);
-    // A ordem de C parte da mesma base que a de B: é concorrente, não sequencial. Vira decisão,
-    // não é superada nem inventa ordem.
-    assert_eq!(em_b.superados, 0, "{em_b:?}");
-    assert_eq!(
-        b.divergencias_abertas("story_order"),
-        vec![(arvore.universo.clone(), "concurrent".to_string())]
-    );
-}
-
-/// **Ponte de ordem: nenhuma revisão corrente sem materialização.** Eventos assinados de três origens
-/// confiáveis (X, Y, Z) chegando a um receptor com `c1` e `c4` legados no livro `b1`.
-mod ponte_de_ordem {
-    use super::*;
-    use crate::application::mutacao::tests::Aparelho as Receptor;
-    use crate::domain::sync::EventEnvelope;
-    use crate::infrastructure::sqlite::sync_codec::manuscrito::{
-        CapituloCanonico, OrdemDosCapitulos,
-    };
-    use crate::infrastructure::sqlite::test_support::origem_remota_confiavel;
-
-    struct Cena {
-        receptor: Receptor,
-        x: DeviceIdentity,
-        y: DeviceIdentity,
-        z: DeviceIdentity,
-    }
-
-    fn cena() -> Cena {
-        let receptor = Receptor::novo();
-        let connection = receptor.banco.database.write().expect("escrita");
-        connection
-            .execute_batch(
-                "INSERT INTO chapters (id, book_id, title, sort_order) VALUES ('c4', 'b1', 'Quatro', 1);
-                 INSERT INTO books (id, story_id, name) VALUES ('b2', 's1', 'Outro');",
-            )
-            .expect("legado");
-        let x = origem_remota_confiavel(&connection, &receptor.eu);
-        let y = origem_remota_confiavel(&connection, &receptor.eu);
-        let z = origem_remota_confiavel(&connection, &receptor.eu);
-        drop(connection);
-        Cena { receptor, x, y, z }
-    }
-
-    fn assinado(
-        origem: &DeviceIdentity,
-        seq: i64,
-        tipo: &str,
-        id: &str,
-        payload: &str,
-        base: &str,
-    ) -> EventEnvelope {
-        let mut envelope = envelope_de_origem(
-            origem.device_id(),
-            seq,
-            "u1",
-            &AggregateRef::new(tipo, id),
-            Operation::Upsert,
-            payload,
-            base,
-        );
-        envelope.signature = origem.sign(&envelope);
-        envelope
-    }
-
-    fn ordem(origem: &DeviceIdentity, seq: i64, base: &str, ids: &[&str]) -> EventEnvelope {
-        let payload = sync_codec::para_json(&OrdemDosCapitulos {
-            book_id: "b1".into(),
-            chapter_ids: ids.iter().map(|c| c.to_string()).collect(),
-        })
-        .expect("json");
-        assinado(origem, seq, "chapter_order", "b1", &payload, base)
-    }
-
-    fn capitulo(origem: &DeviceIdentity, seq: i64, id: &str, livro: &str) -> EventEnvelope {
-        let payload = sync_codec::para_json(&CapituloCanonico {
-            id: id.into(),
-            book_id: livro.into(),
-            title: id.into(),
-            content: String::new(),
-            summary: String::new(),
-            scene_origin: String::new(),
-            scene_destination: String::new(),
-            status: "IDEIA".into(),
-            canon_status: "CANON".into(),
-            custom_fields: vec![],
-        })
-        .expect("json");
-        assinado(origem, seq, "chapter", id, &payload, "")
-    }
-
-    impl Cena {
-        fn receber(&self, eventos: &[EventEnvelope]) -> Relatorio {
-            receber_eventos(&mut self.receptor.banco.connection(), eventos).expect("receber")
-        }
-        fn aplicado(&self, evento: &EventEnvelope) -> bool {
-            self.receptor
-                .conexao()
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sync_applied_events WHERE event_id = ?1)",
-                    [&evento.event_id],
-                    |row| row.get(0),
-                )
-                .expect("aplicado")
-        }
-        fn revisao_da_ordem(&self) -> Option<String> {
-            self.receptor.estado_causal("chapter_order", "b1")
-        }
-        fn ordem_materializada(&self) -> String {
-            sync_codec::ler_canonico(
-                &self.receptor.conexao(),
-                &AggregateRef::new("chapter_order", "b1"),
-            )
-            .expect("ler")
-            .expect("existe")
-            .payload
-        }
-    }
-
-    /// Rc não materializa; o sucessor Ra também não (cita c5, que não chegou). A ponte não fecha:
-    /// nada fica aplicado, e a revisão corrente continua sendo a do domínio. Quando c5 chega, a
-    /// cadeia Rc → Ra fecha e Ra materializa.
-    #[test]
-    fn ponte_que_nao_fecha_desfaz_tudo_e_fecha_quando_a_dependencia_chega() {
-        let cena = cena();
-        let rc = ordem(&cena.x, 1, "", &["c1"]);
-        let ra = ordem(&cena.y, 1, &rc.new_rev, &["c1", "c4", "c5"]);
-
-        let relatorio = cena.receber(&[rc.clone(), ra.clone()]);
-        assert_eq!(relatorio.superados, 0, "{relatorio:?}");
-        assert_eq!(relatorio.pendentes, 2, "{relatorio:?}");
-        assert!(!cena.aplicado(&rc), "Rc ficou aplicada sem materializar");
-        assert!(!cena.aplicado(&ra));
-        assert_eq!(
-            cena.revisao_da_ordem(),
-            None,
-            "revisão corrente que o domínio nunca teve"
-        );
-        let historia: i64 = cena
-            .receptor
-            .conexao()
-            .query_row(
-                "SELECT COUNT(*) FROM sync_revision_history WHERE aggregate_type = 'chapter_order'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("história");
-        assert_eq!(historia, 0, "a ponte desfeita deixou revisão na história");
-
-        let c5 = capitulo(&cena.z, 1, "c5", "b1");
-        let relatorio = cena.receber(&[c5]);
-        assert_eq!(relatorio.superados, 1, "{relatorio:?}");
-        assert_eq!(relatorio.pendentes, 0, "{relatorio:?}");
-        assert!(cena.aplicado(&rc) && cena.aplicado(&ra));
-        assert_eq!(
-            cena.revisao_da_ordem().as_deref(),
-            Some(ra.new_rev.as_str())
-        );
-        assert_eq!(cena.ordem_materializada(), ra.payload);
-        cena.receptor.coerente("chapter_order", "b1");
-    }
-
-    /// O sucessor está no log, mas a origem dele tem lacuna antes dele: não é caminho ainda.
-    #[test]
-    fn sucessor_com_lacuna_na_origem_nao_fecha_a_ponte() {
-        let cena = cena();
-        let rc = ordem(&cena.x, 1, "", &["c1"]);
-        let y1 = capitulo(&cena.y, 1, "c9", "b2");
-        let ra = ordem(&cena.y, 2, &rc.new_rev, &["c1", "c4"]);
-
-        let relatorio = cena.receber(&[rc.clone(), ra.clone()]);
-        assert_eq!(relatorio.superados, 0, "{relatorio:?}");
-        assert!(!cena.aplicado(&rc));
-        assert_eq!(cena.revisao_da_ordem(), None);
-
-        let relatorio = cena.receber(&[y1]);
-        assert_eq!(relatorio.superados, 1, "{relatorio:?}");
-        assert!(cena.aplicado(&rc) && cena.aplicado(&ra));
-        assert_eq!(
-            cena.revisao_da_ordem().as_deref(),
-            Some(ra.new_rev.as_str())
-        );
-        assert_eq!(cena.ordem_materializada(), ra.payload);
-    }
-
-    /// Ponte que não fechou, e o escritor reordena aqui: a escrita local parte da revisão que o
-    /// domínio realmente tem, nunca de Rc.
-    #[test]
-    fn reorder_local_depois_de_ponte_desfeita_parte_do_estado_real() {
-        let cena = cena();
-        let rc = ordem(&cena.x, 1, "", &["c1"]);
-        let ra = ordem(&cena.y, 1, &rc.new_rev, &["c1", "c4", "c5"]);
-        cena.receber(&[rc.clone(), ra]);
-        assert_eq!(cena.revisao_da_ordem(), None);
-
-        manuscript_service::reorder_chapters(
-            &cena.receptor.banco.database,
-            &cena.receptor.eu,
-            "b1",
-            &["c4".to_string(), "c1".to_string()],
-        )
-        .expect("reordenar");
-
-        let base: String = cena
-            .receptor
-            .conexao()
-            .query_row(
-                "SELECT base_rev FROM sync_events
-                  WHERE device_id = ?1 AND aggregate_type = 'chapter_order' ORDER BY seq DESC LIMIT 1",
-                [cena.receptor.eu.device_id()],
-                |row| row.get(0),
-            )
-            .expect("evento local");
-        assert_eq!(
-            base, "",
-            "a escrita local partiu de uma revisão nunca materializada"
-        );
-        assert_ne!(base, rc.new_rev);
-        assert!(!cena.aplicado(&rc));
-        cena.receptor.coerente("chapter_order", "b1");
-    }
+    assert_eq!(b.ids_dos_capitulos(&arvore.livro), nova);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2131,12 +1796,16 @@ fn quadro(autor: &Aparelho, outro: &Aparelho) -> Quadro {
 
 fn convergencia_do_quadro(a: &Aparelho, b: &Aparelho, quadro: &Quadro) {
     for (tipo, id) in [
-        ("planning_order", quadro.universo.as_str()),
         ("planning_item", quadro.card_a.as_str()),
+        ("planning_item_position", quadro.card_a.as_str()),
         ("planning_item", quadro.card_b.as_str()),
+        ("planning_item_position", quadro.card_b.as_str()),
         ("planning_field_definition", quadro.campo_texto.as_str()),
+        ("planning_field_position", quadro.campo_texto.as_str()),
         ("planning_field_definition", quadro.campo_entidade.as_str()),
+        ("planning_field_position", quadro.campo_entidade.as_str()),
         ("planning_field_definition", quadro.campo_historia.as_str()),
+        ("planning_field_position", quadro.campo_historia.as_str()),
     ] {
         a.convergiu_com(b, tipo, id);
     }
@@ -2165,14 +1834,15 @@ fn card_quadro_e_propriedades_criados_no_pc_chegam_ao_android() {
     );
 }
 
-/// Mover card mexe **só** no quadro; editar a ficha mexe no card (e no quadro, se a etapa mudar).
+/// Mover card mexe **só** na posição dele; editar a ficha mexe no conteúdo (e na posição, se a etapa
+/// mudar).
 #[test]
 fn mover_card_nao_revisa_o_conteudo_do_card() {
     let pc = Aparelho::novo("pc");
     let android = Aparelho::novo("android");
     let quadro = quadro(&pc, &android);
     let cards_antes = pc.eventos_do_tipo("planning_item");
-    let quadros_antes = pc.eventos_do_tipo("planning_order");
+    let posicoes_antes = pc.eventos_do_tipo("planning_item_position");
 
     pc.mover_card(&quadro.universo, &quadro.card_b, "ESCREVENDO", 0);
     assert_eq!(
@@ -2180,7 +1850,11 @@ fn mover_card_nao_revisa_o_conteudo_do_card() {
         cards_antes,
         "mover revisou o conteúdo do card"
     );
-    assert_eq!(pc.eventos_do_tipo("planning_order"), quadros_antes + 1);
+    assert_eq!(
+        pc.eventos_do_tipo("planning_item_position"),
+        posicoes_antes + 1,
+        "mover um card revisou outra posição além da dele"
+    );
 
     let (no_android, _) = sincronizar(&pc, &android);
     assert_eq!(no_android.divergencias, 0, "{no_android:?}");
@@ -2219,7 +1893,7 @@ fn ficha_do_card_editada_no_android_chega_ao_pc() {
 }
 
 #[test]
-fn excluir_card_leva_os_campos_exclusivos_dele_e_reescreve_o_quadro() {
+fn excluir_card_leva_os_campos_exclusivos_dele_e_as_posicoes() {
     let pc = Aparelho::novo("pc");
     let android = Aparelho::novo("android");
     let quadro = quadro(&pc, &android);
@@ -2244,7 +1918,10 @@ fn excluir_card_leva_os_campos_exclusivos_dele_e_reescreve_o_quadro() {
     assert_eq!(no_android.divergencias, 0, "{no_android:?}");
     pc.convergiu_com(&android, "planning_item", &quadro.card_b);
     pc.convergiu_com(&android, "planning_field_definition", &exclusivo);
-    pc.convergiu_com(&android, "planning_order", &quadro.universo);
+    pc.convergiu_com(&android, "planning_field_position", &exclusivo);
+    pc.convergiu_com(&android, "planning_item_position", &quadro.card_b);
+    // O card irmão não é revisado.
+    pc.convergiu_com(&android, "planning_item_position", &quadro.card_a);
     assert!(android.canonico("planning_item", &quadro.card_b).is_none());
     assert!(android
         .canonico("planning_field_definition", &exclusivo)
@@ -2330,9 +2007,9 @@ fn excluir_historia_e_entidade_tira_a_ligacao_do_card_com_revisao() {
 ///
 /// ```text
 /// A edita o valor do campo F no card
-/// B apaga o campo F
-/// A recebe:  reescrita do card (sem F) → concorrente → divergência; o card de A fica intacto
-///            exclusão de F            → preflight vê o card divergente → o DELETE não roda
+/// B apaga o campo F  — UMA ação: reescrita do card (sem F) + posição de F + F
+/// A recebe a ação:  a reescrita do card é concorrente → a ação inteira vira UMA decisão, sobre a
+///                   raiz (a exclusão de F); nenhum membro toca o domínio (B2.2)
 /// ```
 #[test]
 fn propriedade_apagada_no_outro_lado_nao_muda_o_card_antes_da_decisao() {
@@ -2376,12 +2053,18 @@ fn propriedade_apagada_no_outro_lado_nao_muda_o_card_antes_da_decisao() {
         )]
     );
     assert_eq!(
-        a.divergencias_abertas("planning_item")
-            .iter()
-            .map(|(id, _)| id.clone())
-            .collect::<Vec<_>>(),
-        vec![quadro.card_a.clone()],
-        "a edição concorrente do card tem de virar decisão"
+        a.divergencias_abertas("planning_item"),
+        vec![],
+        "o card é efeito da ação: a decisão é da exclusão de F, não uma segunda decisão"
+    );
+    assert!(
+        crate::infrastructure::sqlite::sync_codec::estado_concorrente(
+            &a.banco.connection(),
+            &crate::domain::sync::AggregateRef::new("planning_item", &quadro.card_a),
+        )
+        .expect("estado")
+        .is_some(),
+        "o card faz parte da ação em decisão"
     );
 
     // A sessão seguinte não duplica decisão nenhuma.
@@ -2487,26 +2170,8 @@ fn aceitar_a_exclusao_da_propriedade_tira_o_campo_e_o_valor_com_revisao() {
         )
         .expect("divergência da propriedade");
 
-    // Enquanto o card estiver em decisão aberta, aceitar a exclusão é recusado.
-    let erro = crate::application::resolucao_divergencia::resolver(
-        &a.banco.database,
-        &a.eu,
-        &id_da_divergencia,
-        crate::application::resolucao_divergencia::Escolha::AceitarRemoto,
-    )
-    .expect_err("o card ainda está em decisão");
-    assert!(erro.message.contains("planning_item"), "{}", erro.message);
-
-    // A decisão do card em si é da etapa F; aqui simulamos que ela foi tomada (mantendo o de A).
-    a.banco
-        .connection()
-        .execute(
-            "UPDATE sync_divergences SET resolved_at = '2026-09-16 00:00:00', resolution = 'local'
-              WHERE aggregate_type = 'planning_item' AND resolved_at = ''",
-            [],
-        )
-        .expect("decisão do card");
-
+    // Uma decisão só, da ação: aceitar tira F e recalcula o card de A sem ele — a edição de A no
+    // resto do card não é trocada pelo card de B.
     crate::application::resolucao_divergencia::resolver(
         &a.banco.database,
         &a.eu,
@@ -2525,6 +2190,13 @@ fn aceitar_a_exclusao_da_propriedade_tira_o_campo_e_o_valor_com_revisao() {
     );
     // O card mudou por causa da exclusão: isso tem de ser uma revisão dele, não uma alteração muda.
     a.invariante_de_materializacao();
+
+    // E a revisão nova descende da reescrita de B: B a recebe como sequencial, sem nova decisão.
+    let (em_b, em_a) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 0, "{em_b:?}");
+    assert_eq!(em_a.divergencias, 0, "{em_a:?}");
+    a.convergiu_com(&b, "planning_item", &quadro.card_a);
+    b.invariante_de_materializacao();
 }
 
 /// **`Delete` domina `Rewrite` do mesmo agregado.** O card que possui um campo exclusivo, com valor
@@ -2572,6 +2244,16 @@ fn excluir_card_com_campo_exclusivo_preenchido_nao_revisa_o_card() {
         novos,
         &[
             (
+                "planning_item_position".to_string(),
+                quadro.card_b.clone(),
+                "delete".to_string()
+            ),
+            (
+                "planning_field_position".to_string(),
+                exclusivo.clone(),
+                "delete".to_string()
+            ),
+            (
                 "planning_field_definition".to_string(),
                 exclusivo.clone(),
                 "delete".to_string()
@@ -2581,11 +2263,6 @@ fn excluir_card_com_campo_exclusivo_preenchido_nao_revisa_o_card() {
                 quadro.card_b.clone(),
                 "delete".to_string()
             ),
-            (
-                "planning_order".to_string(),
-                quadro.universo.clone(),
-                "upsert".to_string()
-            ),
         ],
         "o card condenado não pode ganhar revisão pela cascata do campo dele"
     );
@@ -2594,7 +2271,8 @@ fn excluir_card_com_campo_exclusivo_preenchido_nao_revisa_o_card() {
     assert_eq!(no_android.divergencias, 0, "{no_android:?}");
     pc.convergiu_com(&android, "planning_item", &quadro.card_b);
     pc.convergiu_com(&android, "planning_field_definition", &exclusivo);
-    pc.convergiu_com(&android, "planning_order", &quadro.universo);
+    pc.convergiu_com(&android, "planning_item_position", &quadro.card_b);
+    pc.convergiu_com(&android, "planning_field_position", &exclusivo);
 }
 
 /// Card movido num lado e ficha editada no outro: agregados diferentes, nenhuma decisão.
@@ -2690,7 +2368,7 @@ fn card_que_depende_de_outra_origem_espera_e_converge() {
     assert!(relatorio.precisam_reconciliar.is_empty(), "{relatorio:?}");
     assert_eq!(relatorio.pendentes, 0, "{relatorio:?}");
     c.convergiu_com(&b, "planning_item", &card);
-    c.convergiu_com(&b, "planning_order", &universo);
+    c.convergiu_com(&b, "planning_item_position", &card);
     b.invariante_de_materializacao();
 }
 
@@ -3297,4 +2975,612 @@ fn o_conflito_de_nome_guarda_a_tag_daqui_e_sobrevive_ao_rename() {
         (t2, t1),
         "o rename apagou a identidade com que o conflito aconteceu"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// B2.2 — posição por item: a unidade de conflito da ordem é o item, não a lista
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Aparelho {
+    /// Toda divergência aberta, de qualquer tipo. Os testes de criação concorrente exigem ZERO, e não
+    /// só zero de posição: uma lista inteira que ainda existisse colidiria aqui.
+    fn divergencias(&self) -> Vec<(String, String, String)> {
+        let connection = self.banco.connection();
+        let mut consulta = connection
+            .prepare(
+                "SELECT aggregate_type, aggregate_id, kind FROM sync_divergences
+                  WHERE resolved_at = '' ORDER BY aggregate_type, aggregate_id",
+            )
+            .expect("consulta");
+        consulta
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("linhas")
+            .collect::<Result<_, _>>()
+            .expect("divergências")
+    }
+
+    fn reordenar_capitulos(&self, livro: &str, ordem: &[&str]) {
+        let ids: Vec<String> = ordem.iter().map(|id| id.to_string()).collect();
+        manuscript_service::reorder_chapters(&self.banco.database, &self.eu, livro, &ids)
+            .expect("reordenar");
+    }
+
+    fn ids_dos_capitulos(&self, livro: &str) -> Vec<String> {
+        manuscript_service::list_chapters_by_book(&self.banco.database, livro)
+            .expect("capítulos")
+            .into_iter()
+            .map(|capitulo| capitulo.id)
+            .collect()
+    }
+
+    fn anexar_em(&self, universo: &str, dono_tipo: &str, dono: &str, bytes: &str) -> String {
+        canvas_service::create_attachment(
+            &self.banco.database,
+            &self.store,
+            &self.eu,
+            universo,
+            dono_tipo,
+            dono,
+            bytes,
+            "",
+        )
+        .expect("anexo")
+        .id
+    }
+}
+
+/// Criação concorrente converge sem decisão, e as duas telas mostram a MESMA ordem.
+fn converge_sem_divergencia(
+    a: &Aparelho,
+    b: &Aparelho,
+    tipo_da_posicao: &str,
+    criados: &[&str],
+    ordem_em: impl Fn(&Aparelho) -> Vec<String>,
+) {
+    let (em_b, em_a) = sincronizar(a, b);
+    assert!(
+        a.divergencias().is_empty(),
+        "divergências em {}: {:?}",
+        a.nome,
+        a.divergencias()
+    );
+    assert!(
+        b.divergencias().is_empty(),
+        "divergências em {}: {:?}",
+        b.nome,
+        b.divergencias()
+    );
+    assert_eq!(em_b.divergencias, 0, "{em_b:?}");
+    assert_eq!(em_a.divergencias, 0, "{em_a:?}");
+    for id in criados {
+        a.convergiu_com(b, tipo_da_posicao, id);
+    }
+    assert_eq!(
+        ordem_em(a),
+        ordem_em(b),
+        "convergiram causalmente e mostram ordens diferentes"
+    );
+}
+
+/// 1. Duas histórias criadas ao mesmo tempo.
+#[test]
+fn b22_historias_criadas_ao_mesmo_tempo_convergem_sem_decisao() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    sincronizar(&pc, &android);
+
+    let do_pc = pc.historia(&universo, "Saga do PC").id;
+    let do_android = android.historia(&universo, "Saga do Android").id;
+
+    converge_sem_divergencia(
+        &pc,
+        &android,
+        "story_position",
+        &[&do_pc, &do_android],
+        |ap| {
+            manuscript_service::list_stories(&ap.banco.database, &universo)
+                .expect("histórias")
+                .into_iter()
+                .map(|h| h.id)
+                .collect()
+        },
+    );
+}
+
+/// 2. Dois livros criados ao mesmo tempo na mesma história.
+#[test]
+fn b22_livros_criados_ao_mesmo_tempo_convergem_sem_decisao() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    let historia = pc.historia(&universo, "Saga").id;
+    sincronizar(&pc, &android);
+
+    let do_pc = pc.livro(&historia, "Livro do PC").id;
+    let do_android = android.livro(&historia, "Livro do Android").id;
+
+    converge_sem_divergencia(
+        &pc,
+        &android,
+        "book_position",
+        &[&do_pc, &do_android],
+        |ap| {
+            manuscript_service::list_books_by_story(&ap.banco.database, &ap.store, &historia)
+                .expect("livros")
+                .into_iter()
+                .map(|l| l.id)
+                .collect()
+        },
+    );
+}
+
+/// 3. Dois capítulos criados ao mesmo tempo no mesmo livro.
+#[test]
+fn b22_capitulos_criados_ao_mesmo_tempo_convergem_sem_decisao() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    let historia = pc.historia(&universo, "Saga").id;
+    let livro = pc.livro(&historia, "Livro").id;
+    sincronizar(&pc, &android);
+
+    let do_pc = pc.capitulo(&livro, "Cap do PC").id;
+    let do_android = android.capitulo(&livro, "Cap do Android").id;
+
+    converge_sem_divergencia(
+        &pc,
+        &android,
+        "chapter_position",
+        &[&do_pc, &do_android],
+        |ap| ap.ids_dos_capitulos(&livro),
+    );
+}
+
+/// 4. Duas propriedades do planejamento criadas ao mesmo tempo.
+#[test]
+fn b22_propriedades_criadas_ao_mesmo_tempo_convergem_sem_decisao() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    sincronizar(&pc, &android);
+
+    let do_pc = pc.campo(&universo, "Tom", "text", None);
+    let do_android = android.campo(&universo, "Clima", "text", None);
+
+    converge_sem_divergencia(
+        &pc,
+        &android,
+        "planning_field_position",
+        &[&do_pc, &do_android],
+        |ap| {
+            crate::application::planning_service::list_field_definitions(
+                &ap.banco.database,
+                &universo,
+                None,
+            )
+            .expect("propriedades")
+            .into_iter()
+            .map(|campo| campo.id)
+            .collect()
+        },
+    );
+}
+
+/// 5. Dois anexos criados ao mesmo tempo na mesma galeria: os dois existem, mesma ordem, nenhuma
+///    decisão. É o caso que a B6 mostrou abrindo divergência e deixando as galerias em ordens opostas.
+#[test]
+fn b22_anexos_criados_ao_mesmo_tempo_convergem_na_mesma_ordem() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    let entidade = pc.entidade(&universo, "Frodo");
+    sincronizar(&pc, &android);
+
+    let do_pc = pc.anexar_em(&universo, "entity", &entidade, "data:image/png;base64,YQ==");
+    let do_android =
+        android.anexar_em(&universo, "entity", &entidade, "data:image/png;base64,Yg==");
+
+    converge_sem_divergencia(
+        &pc,
+        &android,
+        "attachment_position",
+        &[&do_pc, &do_android],
+        |ap| {
+            canvas_service::list_attachments(
+                &ap.banco.database,
+                &ap.store,
+                &universo,
+                "entity",
+                &entidade,
+            )
+            .expect("galeria")
+            .into_iter()
+            .map(|anexo| anexo.id)
+            .collect()
+        },
+    );
+    for anexo in [&do_pc, &do_android] {
+        pc.convergiu_com(&android, "attachment", anexo);
+    }
+}
+
+/// 6. Dois cards criados ao mesmo tempo no mesmo quadro.
+#[test]
+fn b22_cards_criados_ao_mesmo_tempo_convergem_sem_decisao() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    sincronizar(&pc, &android);
+
+    let do_pc = pc.card(&universo, "Cena do PC", None);
+    let do_android = android.card(&universo, "Cena do Android", None);
+
+    converge_sem_divergencia(
+        &pc,
+        &android,
+        "planning_item_position",
+        &[&do_pc, &do_android],
+        |ap| {
+            crate::application::planning_service::list(&ap.banco.database, &ap.store, &universo)
+                .expect("quadro")
+                .into_iter()
+                .map(|card| card.id)
+                .collect()
+        },
+    );
+}
+
+/// Livro com três capítulos, sincronizado nos dois aparelhos.
+fn livro_com_tres_capitulos(pc: &Aparelho, android: &Aparelho) -> (String, [String; 3]) {
+    let universo = pc.universo("Terra");
+    let historia = pc.historia(&universo, "Saga").id;
+    let livro = pc.livro(&historia, "Livro").id;
+    let c1 = pc.capitulo(&livro, "Um").id;
+    let c2 = pc.capitulo(&livro, "Dois").id;
+    let c3 = pc.capitulo(&livro, "Três").id;
+    let (recebido, _) = sincronizar(pc, android);
+    assert_eq!(recebido.divergencias, 0, "{recebido:?}");
+    (livro, [c1, c2, c3])
+}
+
+/// 7. **O mesmo capítulo movido nos dois lados: conflito na unidade certa, decidido pela ação.**
+///
+/// ```text
+/// PC       troca c1 e c2   → uma ação: posições de c1 e c2
+/// Android  troca c2 e c3   → uma ação: posições de c2 e c3
+/// ```
+///
+/// A colisão real é só em c2, e é nela que a decisão fica ancorada — uma por aparelho, nenhuma em c1
+/// ou c3. Mas a ação é atômica (B2.2): a reordenação do outro lado não entra pela metade. Aplicar só c1
+/// do PC sobre c2 e c3 do Android comporia uma terceira ordem que nenhum dos dois escritores escolheu;
+/// cada aparelho continua com a ordem que o seu escritor fez, até a decisão.
+#[test]
+fn b22_o_mesmo_capitulo_movido_nos_dois_lados_diverge_so_nele() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let (livro, [c1, c2, c3]) = livro_com_tres_capitulos(&pc, &android);
+
+    pc.reordenar_capitulos(&livro, &[&c2, &c1, &c3]);
+    android.reordenar_capitulos(&livro, &[&c1, &c3, &c2]);
+    sincronizar(&pc, &android);
+
+    let esperado = vec![(
+        "chapter_position".to_string(),
+        c2.clone(),
+        "concurrent".to_string(),
+    )];
+    assert_eq!(pc.divergencias(), esperado, "no PC");
+    assert_eq!(android.divergencias(), esperado, "no Android");
+    // Nenhuma ação entrou pela metade: cada lado mostra a ordem que o seu escritor fez.
+    assert_eq!(
+        pc.ids_dos_capitulos(&livro),
+        vec![c2.clone(), c1.clone(), c3.clone()]
+    );
+    assert_eq!(
+        android.ids_dos_capitulos(&livro),
+        vec![c1.clone(), c3.clone(), c2.clone()]
+    );
+    for capitulo in [&c1, &c2, &c3] {
+        pc.convergiu_com(&android, "chapter", capitulo);
+    }
+}
+
+/// 8. **Um move o capítulo, o outro o exclui: conflito, sem perda silenciosa.**
+#[test]
+fn b22_capitulo_movido_num_lado_e_excluido_no_outro_nao_perde_nada_em_silencio() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let (livro, [c1, c2, _c3]) = livro_com_tres_capitulos(&pc, &android);
+
+    pc.reordenar_capitulos(&livro, &[&c2, &c1, &_c3]);
+    manuscript_service::delete_chapter(&android.banco.database, &android.eu, &c2)
+        .expect("Android exclui");
+    let revisao_do_pc = pc
+        .payload_corrente("chapter_position", &c2)
+        .expect("revisão do movimento no PC");
+    sincronizar(&pc, &android);
+
+    // Cada lado decide sobre a AÇÃO que recebeu, pela raiz dela: no PC, a exclusão de c2 (e não o
+    // efeito sobre a posição); no Android, o movimento de c2.
+    assert_eq!(
+        pc.divergencias(),
+        vec![(
+            "chapter".to_string(),
+            c2.clone(),
+            "parent_deletion_blocked".to_string()
+        )],
+        "no PC"
+    );
+    assert_eq!(
+        android.divergencias(),
+        vec![(
+            "chapter_position".to_string(),
+            c2.clone(),
+            "concurrent".to_string()
+        )],
+        "no Android"
+    );
+    // No PC o capítulo não some sem decisão.
+    assert!(
+        pc.canonico("chapter", &c2).is_some(),
+        "o PC perdeu o capítulo que tinha movido, sem decisão"
+    );
+    // O movimento do PC não se perdeu no Android: a revisão dele está no log de lá.
+    let guardada: bool = android
+        .banco
+        .connection()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_events WHERE aggregate_type = 'chapter_position'
+                             AND aggregate_id = ?1 AND payload = ?2)",
+            [&c2, &revisao_do_pc],
+            |row| row.get(0),
+        )
+        .expect("consulta");
+    assert!(guardada, "o movimento do PC não está guardado no Android");
+    // A reordenação do PC é uma ação só: com c2 em conflito, c1 também não se move no Android.
+    assert_eq!(
+        android.ids_dos_capitulos(&livro),
+        vec![c1.clone(), _c3.clone()],
+        "a ação do PC entrou pela metade no Android"
+    );
+}
+
+/// 9. **Mover o card e editar o conteúdo dele não conflitam.**
+#[test]
+fn b22_mover_o_card_num_lado_e_editar_o_conteudo_no_outro_nao_conflitam() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    let card = pc.card(&universo, "Cena do porto", None);
+    sincronizar(&pc, &android);
+
+    crate::application::planning_service::save_order(
+        &pc.banco.database,
+        &pc.eu,
+        &universo,
+        &[crate::domain::planning::PlanningCardPlacement {
+            id: card.clone(),
+            status: "ESCREVENDO".into(),
+            sort_order: 0,
+        }],
+    )
+    .expect("PC move o card");
+    android.salvar_card(
+        &universo,
+        &card,
+        "Cena do porto ao amanhecer",
+        None,
+        serde_json::json!({}),
+    );
+
+    let (em_android, em_pc) = sincronizar(&pc, &android);
+    assert!(pc.divergencias().is_empty(), "{:?}", pc.divergencias());
+    assert!(
+        android.divergencias().is_empty(),
+        "{:?}",
+        android.divergencias()
+    );
+    assert_eq!(em_android.divergencias, 0, "{em_android:?}");
+    assert_eq!(em_pc.divergencias, 0, "{em_pc:?}");
+    pc.convergiu_com(&android, "planning_item", &card);
+    pc.convergiu_com(&android, "planning_item_position", &card);
+    assert!(pc
+        .canonico("planning_item", &card)
+        .expect("card")
+        .contains("ao amanhecer"));
+    assert!(android
+        .canonico("planning_item_position", &card)
+        .expect("posição")
+        .contains("ESCREVENDO"));
+}
+
+/// 10. **Excluir um filho não revisa os irmãos.** Nada é compactado, nenhuma lista é reescrita.
+#[test]
+fn b22_excluir_um_capitulo_nao_gera_revisao_nos_irmaos() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let (_livro, [c1, c2, c3]) = livro_com_tres_capitulos(&pc, &android);
+
+    let antes = pc.eventos().len();
+    manuscript_service::delete_chapter(&pc.banco.database, &pc.eu, &c2).expect("excluir");
+    let novos = pc.eventos()[antes..].to_vec();
+    assert_eq!(
+        novos,
+        vec![
+            (
+                "chapter_position".to_string(),
+                c2.clone(),
+                "delete".to_string()
+            ),
+            ("chapter".to_string(), c2.clone(), "delete".to_string()),
+        ],
+        "a exclusão de um capítulo mexeu em algo além dele e da posição dele"
+    );
+
+    let (em_android, _) = sincronizar(&pc, &android);
+    assert_eq!(em_android.divergencias, 0, "{em_android:?}");
+    for irmao in [&c1, &c3] {
+        pc.convergiu_com(&android, "chapter_position", irmao);
+    }
+}
+
+/// **Uma ação que chega pela metade não toca o domínio.**
+///
+/// O lote é cortado no meio do grupo, como numa queda de Wi-Fi. Até o resto chegar — em outra sessão —
+/// nenhum membro entra, nem os que já estão no log.
+#[test]
+fn b22_acao_que_chega_pela_metade_nao_toca_o_dominio_ate_completar() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let (livro, [c1, c2, c3]) = livro_com_tres_capitulos(&pc, &android);
+
+    manuscript_service::delete_book(&pc.banco.database, &pc.eu, &livro).expect("PC apaga o livro");
+    apresentar(&pc, &android);
+    let vetor = vetor_local(&android.banco.connection()).expect("vetor");
+    let eventos = eventos_para(&pc.banco.connection(), &vetor).expect("eventos");
+    let grupo = eventos[0].grupo.clone();
+    assert!(
+        grupo.count >= 4,
+        "a exclusão do livro é uma ação de vários eventos: {grupo:?}"
+    );
+    assert_eq!(eventos.len() as i64, grupo.count);
+    assert!(eventos
+        .iter()
+        .all(|e| e.grupo.mutation_id == grupo.mutation_id));
+    let cursor = |aparelho: &Aparelho| -> i64 {
+        aparelho
+            .banco
+            .connection()
+            .query_row(
+                "SELECT COALESCE(MAX(last_seq_applied), 0) FROM sync_cursors WHERE origin_device_id = ?1",
+                [pc.eu.device_id()],
+                |row| row.get(0),
+            )
+            .expect("cursor")
+    };
+    let cursor_antes = cursor(&android);
+
+    let (primeira, segunda) = eventos.split_at(eventos.len() / 2);
+    let relatorio = receber_eventos(&mut android.banco.connection(), primeira).expect("sessão 1");
+    assert_eq!(relatorio.aplicados, 0, "{relatorio:?}");
+    assert_eq!(relatorio.pendentes, primeira.len(), "{relatorio:?}");
+    assert_eq!(
+        cursor(&android),
+        cursor_antes,
+        "o cursor andou com o grupo pela metade"
+    );
+    assert!(android.canonico("book", &livro).is_some());
+    for capitulo in [&c1, &c2, &c3] {
+        assert!(
+            android.canonico("chapter", capitulo).is_some(),
+            "{capitulo} saiu antes de a ação inteira chegar"
+        );
+        assert!(android.canonico("chapter_position", capitulo).is_some());
+    }
+
+    let relatorio = receber_eventos(&mut android.banco.connection(), segunda).expect("sessão 2");
+    assert_eq!(relatorio.aplicados as i64, grupo.count, "{relatorio:?}");
+    assert_eq!(relatorio.pendentes, 0, "{relatorio:?}");
+    assert_eq!(relatorio.divergencias, 0, "{relatorio:?}");
+    assert!(android.canonico("book", &livro).is_none());
+    for capitulo in [&c1, &c2, &c3] {
+        pc.convergiu_com(&android, "chapter", capitulo);
+        pc.convergiu_com(&android, "chapter_position", capitulo);
+    }
+    android.invariante_de_materializacao();
+}
+
+/// **Falha no meio da ação: nenhum membro fica aplicado.**
+#[test]
+fn b22_falha_no_meio_da_acao_desfaz_todos_os_membros() {
+    use crate::infrastructure::sqlite::sync_session::falha_de_grupo;
+
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let (livro, [c1, c2, c3]) = livro_com_tres_capitulos(&pc, &android);
+
+    manuscript_service::delete_book(&pc.banco.database, &pc.eu, &livro).expect("PC apaga o livro");
+    apresentar(&pc, &android);
+    let vetor = vetor_local(&android.banco.connection()).expect("vetor");
+    let eventos = eventos_para(&pc.banco.connection(), &vetor).expect("eventos");
+    assert!(eventos[0].grupo.count > 3, "{:?}", eventos[0].grupo);
+
+    falha_de_grupo::armar(Some(2));
+    let erro = receber_eventos(&mut android.banco.connection(), &eventos)
+        .expect_err("a falha injetada depois do membro 2 tinha que derrubar a sessão");
+    falha_de_grupo::armar(None);
+    assert!(erro.message.contains("membro 2"), "{}", erro.message);
+
+    assert!(android.canonico("book", &livro).is_some());
+    for capitulo in [&c1, &c2, &c3] {
+        assert!(
+            android.canonico("chapter", capitulo).is_some(),
+            "{capitulo} ficou apagado depois da falha"
+        );
+        assert!(
+            android.canonico("chapter_position", capitulo).is_some(),
+            "a posição de {capitulo} ficou apagada depois da falha"
+        );
+    }
+    android.invariante_de_materializacao();
+
+    // Sem a falha, a mesma ação entra inteira.
+    let relatorio = receber_eventos(&mut android.banco.connection(), &eventos).expect("de novo");
+    assert_eq!(relatorio.divergencias, 0, "{relatorio:?}");
+    assert!(android.canonico("book", &livro).is_none());
+    for capitulo in [&c1, &c2, &c3] {
+        pc.convergiu_com(&android, "chapter", capitulo);
+    }
+}
+
+/// **O lote da troca não corta uma ação ao meio.**
+///
+/// Sem isto, uma ação maior que o lote nunca terminaria de chegar: o receptor não aplica grupo
+/// incompleto, o vetor dele não anda, e a sessão seguinte mandaria o mesmo começo para sempre.
+#[test]
+fn b22_lote_menor_que_a_acao_entrega_a_acao_inteira() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let (livro, [c1, c2, c3]) = livro_com_tres_capitulos(&pc, &android);
+    manuscript_service::delete_book(&pc.banco.database, &pc.eu, &livro).expect("PC apaga o livro");
+    apresentar(&pc, &android);
+
+    let total_da_acao = {
+        let vetor = vetor_local(&android.banco.connection()).expect("vetor");
+        eventos_para(&pc.banco.connection(), &vetor).expect("eventos")[0]
+            .grupo
+            .count
+    };
+    assert!(total_da_acao > 3, "{total_da_acao}");
+
+    // Lote de 2, bem menor que a ação: a troca repete até o vetor parar de andar, como a sessão faz.
+    let mut rodadas = 0;
+    loop {
+        rodadas += 1;
+        assert!(
+            rodadas < 20,
+            "a troca não terminou: a ação ficou presa no corte do lote"
+        );
+        let vetor = vetor_local(&android.banco.connection()).expect("vetor");
+        let lote = crate::infrastructure::sqlite::sync_exchange::eventos_para_com_limite(
+            &pc.banco.connection(),
+            &vetor,
+            2,
+        )
+        .expect("lote");
+        if lote.is_empty() {
+            break;
+        }
+        let ultimo = &lote[lote.len() - 1].grupo;
+        assert!(
+            ultimo.e_isolado() || ultimo.index == ultimo.count - 1,
+            "o lote terminou no meio de uma ação: {ultimo:?}"
+        );
+        receber_eventos(&mut android.banco.connection(), &lote).expect("receber");
+    }
+    assert!(android.canonico("book", &livro).is_none());
+    for capitulo in [&c1, &c2, &c3] {
+        pc.convergiu_com(&android, "chapter", capitulo);
+    }
 }

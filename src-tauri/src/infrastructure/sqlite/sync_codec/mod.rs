@@ -40,6 +40,7 @@ pub mod entidades;
 pub mod manuscrito;
 pub mod palavras;
 pub mod planejamento;
+pub mod posicao;
 
 /// O estado de um agregado como o evento o carrega.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,15 +66,11 @@ pub const TIPOS_COBERTOS: &[&str] = &[
     "story",
     "book",
     "chapter",
-    "chapter_order",
-    "story_order",
-    "book_order",
     "entity",
     "relation",
     "timeline_event",
     "canvas_entity_position",
     "planning_item",
-    "planning_order",
     "planning_field_definition",
     "attachment",
     "tag_assignment",
@@ -81,6 +78,12 @@ pub const TIPOS_COBERTOS: &[&str] = &[
     "canvas_node",
     "canvas_node_position",
     "canvas_edge",
+    "story_position",
+    "book_position",
+    "chapter_position",
+    "planning_field_position",
+    "attachment_position",
+    "planning_item_position",
 ];
 
 pub fn coberto(tipo: &str) -> bool {
@@ -98,15 +101,22 @@ pub(crate) fn erro(error: rusqlite::Error) -> DatabaseCommandError {
     DatabaseCommandError::storage(error.to_string())
 }
 
-/// Agregado cuja existência é derivada de outro: não tem linha própria.
+/// Agregado **sem linha própria**: o estado dele mora na linha de outro.
 ///
-/// `chapter_order(livro)` existe enquanto o livro existe. Na exclusão remota, ele só conta como
-/// "descendente vivo" se ainda tiver revisão corrente — a linha que o sustenta é o livro.
+/// ```text
+/// *_position               o sort_order (e a etapa, no card) mora na linha do item (B2.2)
+/// canvas_node_position     position_x/y moram na linha do elemento livre (B5)
+/// ```
+///
+/// Isto diz só **onde o estado está**, e serve a duas coisas mecânicas: a exclusão dele, que chega
+/// antes da exclusão do item, materializa quando o item sair; e, na exclusão remota do item, ele só
+/// conta como vivo se ainda tiver revisão corrente.
+///
+/// **Não é classificação semântica.** Estes agregados são autorais — existe ação do escritor que os
+/// muda sozinhos (arrastar, reordenar, trocar etapa) — e conflitam como qualquer outro, inclusive
+/// contra a exclusão do item. Nunca use isto para decidir que uma revisão pode ser descartada.
 pub fn existencia_derivada(tipo: &str) -> bool {
-    manuscrito::tipo_de_ordem(tipo).is_some()
-        || tipo == "planning_order"
-        // A posição do elemento livre mora nas colunas do próprio `canvas_nodes`.
-        || tipo == "canvas_node_position"
+    posicao::tipo_de_posicao(tipo).is_some() || tipo == "canvas_node_position"
 }
 
 /// O estado canônico atual, lido na conexão/transação recebida.
@@ -115,23 +125,20 @@ pub fn ler_canonico(
     agregado: &AggregateRef,
 ) -> DatabaseCommandResult<Option<EstadoDoAgregado>> {
     let id = agregado.aggregate_id.as_str();
+    if let Some(tipo) = posicao::tipo_de_posicao(&agregado.aggregate_type) {
+        return posicao::ler(connection, tipo, id);
+    }
     match agregado.aggregate_type.as_str() {
         "universe" => manuscrito::ler_universo(connection, id),
         "story" => manuscrito::ler_historia(connection, id),
         "book" => manuscrito::ler_livro(connection, id),
         "chapter" => manuscrito::ler_capitulo(connection, id),
-        "story_order" | "book_order" | "chapter_order" => manuscrito::ler_ordem(
-            connection,
-            manuscrito::tipo_de_ordem(&agregado.aggregate_type).expect("tipo de ordem"),
-            id,
-        ),
         "tag_assignment" => manuscrito::ler_atribuicao(connection, id),
         "entity" => entidades::ler_entidade(connection, id),
         "relation" => entidades::ler_relacao(connection, id),
         "timeline_event" => entidades::ler_evento(connection, id),
         "canvas_entity_position" => entidades::ler_posicao(connection, id),
         "planning_item" => planejamento::ler_card(connection, id),
-        "planning_order" => planejamento::ler_quadro(connection, id),
         "planning_field_definition" => planejamento::ler_campo(connection, id),
         "attachment" => anexo::ler(connection, id),
         "content_tag" => conhecimento::ler(connection, id),
@@ -151,6 +158,24 @@ pub fn impactos_da_exclusao(
     agregado: &AggregateRef,
 ) -> DatabaseCommandResult<Vec<Impacto>> {
     let id = agregado.aggregate_id.as_str();
+    if posicao::tipo_de_posicao(&agregado.aggregate_type).is_some() {
+        return Ok(Vec::new());
+    }
+    let mut impactos = impactos_do_item(connection, agregado)?;
+    // **A posição do item sai junto, e sai daqui.** Um lugar só, para nenhum codec esquecer: foi
+    // exatamente "cobertura declarada num lugar e esquecida em outro" que a B6 encontrou três vezes.
+    // Vem antes dos outros impactos, e todos saem antes do próprio item.
+    if let Some(tipo) = posicao::posicao_do_item(&agregado.aggregate_type) {
+        impactos.insert(0, Impacto::Excluido(AggregateRef::new(tipo, id)));
+    }
+    Ok(impactos)
+}
+
+fn impactos_do_item(
+    connection: &Connection,
+    agregado: &AggregateRef,
+) -> DatabaseCommandResult<Vec<Impacto>> {
+    let id = agregado.aggregate_id.as_str();
     match agregado.aggregate_type.as_str() {
         "universe" => Ok(manuscrito::impactos_do_universo()),
         "story" => manuscrito::impactos_da_historia(connection, id),
@@ -162,16 +187,12 @@ pub fn impactos_da_exclusao(
         "planning_field_definition" => planejamento::impactos_do_campo(connection, id),
         "content_tag" => conhecimento::impactos_da_tag(connection, id),
         "canvas_node" => canvas::impactos_do_no(connection, id),
-        "story_order"
-        | "book_order"
-        | "chapter_order"
-        | "attachment"
+        "attachment"
         | "tag_assignment"
         | "relation"
         | "canvas_entity_position"
         | "canvas_node_position"
-        | "canvas_edge"
-        | "planning_order" => Ok(Vec::new()),
+        | "canvas_edge" => Ok(Vec::new()),
         outro => Err(nao_coberto(outro)),
     }
 }
@@ -188,15 +209,19 @@ pub fn dependencias(
     if envelope.operation != Operation::Upsert {
         return Ok(None);
     }
+    if let Some(tipo) = posicao::tipo_de_posicao(&envelope.aggregate_type) {
+        return posicao::dependencias(connection, tipo, envelope);
+    }
     match envelope.aggregate_type.as_str() {
         "universe" => Ok(None),
-        "story" | "book" | "chapter" | "story_order" | "book_order" | "chapter_order"
-        | "tag_assignment" => manuscrito::dependencias(connection, envelope),
+        "story" | "book" | "chapter" | "tag_assignment" => {
+            manuscrito::dependencias(connection, envelope)
+        }
         "attachment" => anexo::pai_ausente(connection, envelope),
         "entity" | "relation" | "timeline_event" | "canvas_entity_position" => {
             entidades::dependencias(connection, envelope)
         }
-        "planning_item" | "planning_order" | "planning_field_definition" => {
+        "planning_item" | "planning_field_definition" => {
             planejamento::dependencias(connection, envelope)
         }
         "content_tag" => conhecimento::dependencias(connection, envelope),
@@ -212,15 +237,17 @@ pub fn dependencias(
 /// **Falha fechada em tipo desconhecido.** Ignorar um agregado que ainda não sabemos aplicar
 /// produziria o pior estado possível: o evento constaria como aplicado e o dado nunca chegaria.
 pub fn aplicar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {
+    if let Some(tipo) = posicao::tipo_de_posicao(&envelope.aggregate_type) {
+        return posicao::aplicar(tx, tipo, envelope);
+    }
     match envelope.aggregate_type.as_str() {
-        "universe" | "story" | "book" | "chapter" | "story_order" | "book_order"
-        | "chapter_order" | "tag_assignment" => manuscrito::aplicar(tx, envelope),
+        "universe" | "story" | "book" | "chapter" | "tag_assignment" => {
+            manuscrito::aplicar(tx, envelope)
+        }
         "entity" | "relation" | "timeline_event" | "canvas_entity_position" => {
             entidades::aplicar(tx, envelope)
         }
-        "planning_item" | "planning_order" | "planning_field_definition" => {
-            planejamento::aplicar(tx, envelope)
-        }
+        "planning_item" | "planning_field_definition" => planejamento::aplicar(tx, envelope),
         "attachment" => anexo::aplicar(tx, envelope),
         "content_tag" => conhecimento::aplicar(tx, envelope),
         "canvas_node" | "canvas_node_position" | "canvas_edge" => canvas::aplicar(tx, envelope),
@@ -244,10 +271,15 @@ pub fn validar_para_emissao(
     payload: &str,
 ) -> DatabaseCommandResult<()> {
     let falta = match agregado.aggregate_type.as_str() {
+        tipo if posicao::tipo_de_posicao(tipo).is_some() => posicao::validar(
+            connection,
+            posicao::tipo_de_posicao(tipo).expect("tipo de posição"),
+            payload,
+        )?,
         "entity" | "relation" | "timeline_event" | "canvas_entity_position" => {
             entidades::validar(connection, &agregado.aggregate_type, payload)?
         }
-        "planning_item" | "planning_order" | "planning_field_definition" => {
+        "planning_item" | "planning_field_definition" => {
             planejamento::validar(connection, &agregado.aggregate_type, payload)?
         }
         "attachment" => anexo::validar(connection, payload)?,
@@ -312,10 +344,17 @@ pub fn estado_concorrente(
     connection: &Connection,
     agregado: &AggregateRef,
 ) -> DatabaseCommandResult<Option<EstadoConcorrente>> {
+    // A decisão de um grupo é ancorada num membro, mas vale para a AÇÃO: todo agregado que é membro
+    // de um grupo em decisão aberta está em decisão (B2.2). Sem isto, excluir aqui um capítulo que
+    // faz parte de uma ação esperando decisão passaria pelo preflight.
     let divergencia: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sync_divergences
-                            WHERE aggregate_type = ?1 AND aggregate_id = ?2 AND resolved_at = '')",
+                            WHERE aggregate_type = ?1 AND aggregate_id = ?2 AND resolved_at = '')
+                 OR EXISTS(SELECT 1 FROM sync_divergences d
+                             JOIN sync_events e ON e.mutation_id = d.mutation_id
+                            WHERE d.mutation_id <> '' AND d.resolved_at = ''
+                              AND e.aggregate_type = ?1 AND e.aggregate_id = ?2)",
             [&agregado.aggregate_type, &agregado.aggregate_id],
             |row| row.get(0),
         )

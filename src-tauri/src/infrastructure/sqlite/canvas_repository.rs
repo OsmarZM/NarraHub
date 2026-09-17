@@ -291,7 +291,7 @@ pub fn list_attachments(
                     created_at
                FROM attachments
               WHERE universe_id = ?1 AND owner_type = ?2 AND owner_id = ?3
-              ORDER BY sort_order, created_at",
+              ORDER BY sort_order, id",
         )
         .map_err(map_sqlite_error)?;
     let rows = statement

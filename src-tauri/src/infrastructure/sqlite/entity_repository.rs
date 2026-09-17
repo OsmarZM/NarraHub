@@ -344,7 +344,7 @@ pub fn list_mentions_for_entity(
                JOIN chapters c ON m.chapter_id = c.id
                JOIN books b ON c.book_id = b.id
               WHERE m.entity_id = ?1
-              ORDER BY c.sort_order",
+              ORDER BY c.sort_order, c.id",
         )
         .map_err(map_sqlite_error)?;
     let rows = statement

@@ -90,6 +90,48 @@ pub struct EventEnvelope {
     /// append-only, então evento nascido sem assinatura não pode ser assinado
     /// depois. A etapa 7 cuida da **verificação** de origem de terceiros.
     pub signature: String,
+    /// A ação local de onde o evento saiu (B2.2). Ver [`GrupoDeMutacao`].
+    #[serde(default)]
+    pub grupo: GrupoDeMutacao,
+}
+
+/// **A ação que produziu o evento.** Todo evento de uma mesma `Mutacao::executar` recebe o mesmo
+/// `mutation_id`, com índices contíguos `0..count`.
+///
+/// ## O que isto resolve
+///
+/// Na origem, uma ação ("apagar este livro") é uma transação só: domínio, revisões e eventos entram
+/// juntos ou nada entra. Na rede ela virava uma sequência de eventos independentes, e o receptor
+/// podia aplicar metade — capítulos apagados, livro bloqueado por um capítulo concorrente. O grupo
+/// devolve ao receptor a mesma atomicidade: nenhum membro altera o domínio antes de o grupo inteiro
+/// ter chegado e poder ser aplicado inteiro.
+///
+/// ## Por que no envelope e não no payload
+///
+/// O grupo descreve **a ação**, não o estado do agregado. No payload, "apagar o capítulo c1" e
+/// "apagar o livro, o que apaga c1" produziriam revisões diferentes de c1 pelo mesmo efeito. Por isso
+/// ele entra na **assinatura** (ninguém reagrupa eventos no caminho) e fica **fora** de
+/// [`compute_revision`].
+///
+/// `mutation_id` vazio é evento anterior à B2.2: grupo de um, e a assinatura dele não muda.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrupoDeMutacao {
+    pub mutation_id: String,
+    pub index: i64,
+    pub count: i64,
+    /// `delete_tree` quando a ação é uma exclusão composta; vazio nas demais.
+    pub kind: String,
+    /// A raiz da exclusão composta: o que a decisão apresenta ao escritor.
+    pub root_type: String,
+    pub root_id: String,
+}
+
+impl GrupoDeMutacao {
+    /// Grupo de um membro (inclusive evento anterior à B2.2): aplica sozinho, como sempre aplicou.
+    pub fn e_isolado(&self) -> bool {
+        self.mutation_id.is_empty() || self.count <= 1
+    }
 }
 
 /// Calcula a revisão que uma mudança produz.

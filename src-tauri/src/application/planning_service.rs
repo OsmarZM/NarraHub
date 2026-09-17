@@ -100,7 +100,7 @@ pub fn create(
         )?;
         blob_fields::gravar_asset_direto(m.tx(), store, "planning_items", &id, image)?;
         m.gravou("planning_item", &id)?;
-        m.gravou("planning_order", universe_id)
+        m.gravou("planning_item_position", &id)
     })?;
     Ok(id)
 }
@@ -167,7 +167,10 @@ pub fn save_order(
                 "O quadro mudou enquanto o card era movido. Atualize e tente novamente.",
             ));
         }
-        m.gravou("planning_order", universe_id)
+        for placement in placements {
+            m.gravou("planning_item_position", &placement.id)?;
+        }
+        Ok(())
     })
 }
 
@@ -266,6 +269,7 @@ pub fn create_field_definition(
         };
         planning_repository::insert_field_definition(m.tx(), &definition)?;
         m.gravou("planning_field_definition", &definition.id)?;
+        m.gravou("planning_field_position", &definition.id)?;
         planning_repository::get_field_definition(m.tx(), &definition.id, universe_id)?.ok_or_else(
             || DatabaseCommandError::storage("O campo criado não pôde ser lido de volta."),
         )
@@ -388,14 +392,13 @@ pub fn save_card(
     identidade: &DeviceIdentity,
     request: PlanningCardSaveRequest,
 ) -> DatabaseCommandResult<()> {
-    let universe_id = request.universe_id.clone();
     let id = request.id.clone();
     Mutacao::executar(database, identidade, |m| {
         save_card_na_transacao(m.tx(), store, request)?;
         m.gravou("planning_item", &id)?;
-        // A gravação da ficha também recoloca o card quando a etapa muda: o quadro é revisado
-        // junto, e não sai evento nenhum se a ordem não mudou de fato.
-        m.gravou("planning_order", &universe_id)
+        // A ficha também troca a etapa do card: isso é revisão da POSIÇÃO dele, não do conteúdo.
+        // Sem mudança de etapa, a revisão sai idêntica à corrente e não gera evento.
+        m.gravou("planning_item_position", &id)
     })
 }
 

@@ -1,15 +1,16 @@
-//! Codecs do planejamento (B4): `planning_item`, `planning_order` e `planning_field_definition`.
+//! Codecs do planejamento (B4): `planning_item` e `planning_field_definition`.
 //!
-//! ## O que é card e o que é quadro
+//! ## O que é card e o que é lugar
 //!
 //! ```text
-//! planning_item            o card inteiro: texto, imagem, capítulo ligado, valores e relações
-//! planning_order(universe) a coluna de cada card e a ordem dentro dela
-//! planning_field_definition  a propriedade do universo (ou exclusiva de um card)
+//! planning_item                 o card inteiro: texto, imagem, capítulo ligado, valores e relações
+//! planning_item_position(item)  a etapa (coluna) e a posição do card — ver `super::posicao`
+//! planning_field_definition     a propriedade do universo (ou exclusiva de um card)
 //! ```
 //!
-//! Mover um card de coluna é **uma revisão do quadro**, não do card: arrastar no quadro e editar o
-//! texto são ações diferentes e não podem conflitar entre si.
+//! Mover um card é **revisão da posição dele**, não do conteúdo: arrastar no quadro e editar o texto
+//! são ações diferentes e não podem conflitar entre si. Até a B2.2 o lugar de todos os cards era uma
+//! lista só por universo (`planning_order`), e dois cards criados ao mesmo tempo viravam divergência.
 //!
 //! ## Valores do card: duas tabelas, um conceito, sem duplicata
 //!
@@ -30,7 +31,7 @@ use serde_json::Value;
 use super::{de_json, erro, existe, para_json, EstadoDoAgregado, Impacto};
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::ids::{new_id, now_timestamp};
-use crate::domain::planning::{is_known_field_scope, is_known_status, SCOPE_CARD, STATUS_ORDER};
+use crate::domain::planning::{is_known_field_scope, SCOPE_CARD};
 use crate::domain::sync::{AggregateRef, EventEnvelope, Operation};
 
 /// Um valor escalar do card, identificado pela definição de campo.
@@ -67,22 +68,6 @@ pub struct CardCanonico {
     pub values: Vec<ValorDeCampo>,
     /// Estado interno: relações, em ordem de (`fieldId`, `kind`, `targetId`).
     pub links: Vec<LigacaoDeCampo>,
-}
-
-/// Onde cada card está no quadro. A posição dentro da coluna é a da lista — o `sort_order` físico
-/// não entra no payload.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct LugarDoCard {
-    pub item_id: String,
-    pub status: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct QuadroCanonico {
-    pub universe_id: String,
-    pub items: Vec<LugarDoCard>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -200,47 +185,6 @@ pub fn ler_card(
     }))
 }
 
-/// O quadro inteiro do universo: coluna e posição de cada card, na ordem do fluxo de trabalho.
-pub fn ler_quadro(
-    connection: &Connection,
-    universe_id: &str,
-) -> DatabaseCommandResult<Option<EstadoDoAgregado>> {
-    if !existe(connection, "universes", universe_id)? {
-        return Ok(None);
-    }
-    let mut consulta = connection
-        .prepare(
-            "SELECT id, status FROM planning_items
-              WHERE universe_id = ?1 ORDER BY status, sort_order, id",
-        )
-        .map_err(erro)?;
-    let mut por_status: Vec<LugarDoCard> = consulta
-        .query_map([universe_id], |row| {
-            Ok(LugarDoCard {
-                item_id: row.get(0)?,
-                status: row.get(1)?,
-            })
-        })
-        .map_err(erro)?
-        .collect::<Result<_, _>>()
-        .map_err(erro)?;
-    // A ordem das colunas é a do fluxo de trabalho, não a alfabética do SQL.
-    por_status.sort_by_key(|lugar| {
-        STATUS_ORDER
-            .iter()
-            .position(|status| *status == lugar.status)
-            .unwrap_or(STATUS_ORDER.len())
-    });
-    let payload = para_json(&QuadroCanonico {
-        universe_id: universe_id.to_string(),
-        items: por_status,
-    })?;
-    Ok(Some(EstadoDoAgregado {
-        universe_id: universe_id.to_string(),
-        payload,
-    }))
-}
-
 pub fn ler_campo(
     connection: &Connection,
     id: &str,
@@ -312,21 +256,7 @@ pub fn impactos_do_card(connection: &Connection, id: &str) -> DatabaseCommandRes
     impactos.extend(super::manuscrito::atribuicoes_do_dono(
         connection, "planning", id,
     )?);
-    // O quadro perde o card.
-    let universo: Option<String> = connection
-        .query_row(
-            "SELECT universe_id FROM planning_items WHERE id = ?1",
-            [id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(erro)?;
-    if let Some(universo) = universo {
-        impactos.push(Impacto::Reescrito(AggregateRef::new(
-            "planning_order",
-            universo,
-        )));
-    }
+    // Nenhum card irmão muda: a posição é por item, e nada é compactado (B2.2).
     Ok(impactos)
 }
 
@@ -487,49 +417,6 @@ pub(super) fn validar(
             }
             Ok(None)
         }
-        "planning_order" => {
-            let quadro: QuadroCanonico = serde_json::from_str(payload).map_err(de_erro)?;
-            if !existe(connection, "universes", &quadro.universe_id)? {
-                return Ok(Some(format!("universe {}", quadro.universe_id)));
-            }
-            let mut vistos = std::collections::HashSet::new();
-            for lugar in &quadro.items {
-                if !is_known_status(&lugar.status) {
-                    return Err(DatabaseCommandError::storage(format!(
-                        "Coluna desconhecida no quadro de {}: '{}'.",
-                        quadro.universe_id, lugar.status
-                    )));
-                }
-                if !vistos.insert(&lugar.item_id) {
-                    return Err(DatabaseCommandError::storage(format!(
-                        "O quadro de {} cita o card {} duas vezes.",
-                        quadro.universe_id, lugar.item_id
-                    )));
-                }
-                match universo_de(connection, "planning_items", &lugar.item_id)? {
-                    None => return Ok(Some(format!("planning_item {}", lugar.item_id))),
-                    Some(outro) if outro != quadro.universe_id => {
-                        return Err(DatabaseCommandError::storage(format!(
-                            "O quadro de {} cita o card {}, que é do universo {outro}.",
-                            quadro.universe_id, lugar.item_id
-                        )))
-                    }
-                    Some(_) => {}
-                }
-            }
-            // Card daqui que o quadro não cita: a lista não descreve o universo inteiro.
-            let daqui = ids(
-                connection,
-                "SELECT id FROM planning_items WHERE universe_id = ?1 ORDER BY id",
-                &quadro.universe_id,
-            )?;
-            if let Some(nao_citado) = daqui.into_iter().find(|card| !vistos.contains(card)) {
-                return Ok(Some(format!(
-                    "planning_item {nao_citado} existe aqui e não está no quadro recebido"
-                )));
-            }
-            Ok(None)
-        }
         "planning_field_definition" => {
             let campo: CampoCanonico = serde_json::from_str(payload).map_err(de_erro)?;
             if !is_known_field_scope(&campo.scope) {
@@ -677,8 +564,6 @@ pub fn aplicar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseComman
         let sql = match envelope.aggregate_type.as_str() {
             "planning_item" => "DELETE FROM planning_items WHERE id = ?1",
             "planning_field_definition" => "DELETE FROM planning_field_definitions WHERE id = ?1",
-            // O quadro não tem linha própria: ele some com o universo.
-            "planning_order" => return Ok(()),
             outro => return Err(super::nao_coberto(outro)),
         };
         tx.execute(sql, [id]).map_err(erro)?;
@@ -764,46 +649,6 @@ pub fn aplicar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseComman
             }
             Ok(())
         }
-        "planning_order" => {
-            let quadro: QuadroCanonico = de_json(envelope)?;
-            if quadro.universe_id != envelope.aggregate_id {
-                return Err(DatabaseCommandError::storage(format!(
-                    "O quadro descreve o universo {}, e o envelope é de {id}.",
-                    quadro.universe_id
-                )));
-            }
-            // `validar` já garantiu: todos existem, todos são deste universo, sem repetição, e
-            // nenhum card daqui ficou de fora. A posição é a da lista, dentro de cada coluna.
-            let mut por_coluna: std::collections::HashMap<&str, i64> =
-                std::collections::HashMap::new();
-            let mut atualizar = tx
-                .prepare(
-                    "UPDATE planning_items SET status = ?1, sort_order = ?2, updated_at = ?3
-                      WHERE id = ?4 AND universe_id = ?5",
-                )
-                .map_err(erro)?;
-            for lugar in &quadro.items {
-                let posicao = por_coluna.entry(lugar.status.as_str()).or_insert(0);
-                if atualizar
-                    .execute(rusqlite::params![
-                        &lugar.status,
-                        *posicao,
-                        &agora,
-                        &lugar.item_id,
-                        id
-                    ])
-                    .map_err(erro)?
-                    != 1
-                {
-                    return Err(DatabaseCommandError::storage(format!(
-                        "O card {} sumiu do universo {id} no meio da aplicação do quadro.",
-                        lugar.item_id
-                    )));
-                }
-                *posicao += 1;
-            }
-            Ok(())
-        }
         "planning_field_definition" => {
             let campo: CampoCanonico = de_json(envelope)?;
             if campo.id != envelope.aggregate_id {
@@ -874,23 +719,6 @@ mod tests {
                 })
                 .expect("json"),
                 r#"{"id":"p1","universeId":"u1","chapterId":"c1","title":"Cena do porto","description":"d","targetWords":1200,"imageBlobHash":"","imageMimeType":"","values":[{"fieldId":"f1","value":"tenso"}],"links":[{"fieldId":"f2","kind":"entity","targetId":"e1"}]}"#,
-            ),
-            (
-                para_json(&QuadroCanonico {
-                    universe_id: "u1".into(),
-                    items: vec![
-                        LugarDoCard {
-                            item_id: "p2".into(),
-                            status: "IDEIAS".into(),
-                        },
-                        LugarDoCard {
-                            item_id: "p1".into(),
-                            status: "ESCREVENDO".into(),
-                        },
-                    ],
-                })
-                .expect("json"),
-                r#"{"universeId":"u1","items":[{"itemId":"p2","status":"IDEIAS"},{"itemId":"p1","status":"ESCREVENDO"}]}"#,
             ),
             (
                 para_json(&CampoCanonico {

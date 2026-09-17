@@ -173,7 +173,7 @@ migration — não pegar a versão mais recente:
 | 0.8.0 | 14 |
 | 0.9.0 e 0.9.1 | 15 |
 | 0.9.2 (publicada) | 15 |
-| `main` hoje | **22** — a aresta do canvas morre com a ponta, e tag homônima vira divergência (NH-079 B5) |
+| `main` hoje | **23** — grupos de mutação atômicos e posição por item (NH-079 B2.2) |
 
 Consequência prática, e ela **mudou** com a migration 16: a próxima versão publicada será a
 primeira desde a 0.9.2 a carregar migration de verdade. O par `0.9.2 → próxima` deixa de ser

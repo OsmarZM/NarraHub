@@ -204,7 +204,7 @@ pub fn list_mentions_by_universe(
                JOIN books b ON b.id = c.book_id
                JOIN stories s ON s.id = b.story_id
               WHERE s.universe_id = ?1
-              ORDER BY s.sort_order, b.sort_order, c.sort_order, m.created_at",
+              ORDER BY s.sort_order, s.id, b.sort_order, b.id, c.sort_order, c.id, m.created_at",
         )
         .map_err(map_sqlite_error)?;
     let rows = statement
