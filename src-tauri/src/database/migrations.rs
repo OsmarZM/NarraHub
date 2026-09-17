@@ -1,7 +1,7 @@
 //! NarraHub — Database Migrations
 //! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 24;
+pub const LATEST_SCHEMA_VERSION: i64 = 25;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -29,6 +29,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         22 => Some(MIGRATION_V22),
         23 => Some(MIGRATION_V23),
         24 => Some(MIGRATION_V24),
+        25 => Some(MIGRATION_V25),
         _ => None,
     }
 }
@@ -1652,6 +1653,96 @@ CREATE INDEX IF NOT EXISTS idx_sync_divergences_chave
     WHERE conflict_key <> '';
 "#;
 
+pub const MIGRATION_V25: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v25
+-- NH-079 B6 - UNIQUE(entity_id) na posicao da entidade no grafo
+-- ============================================
+--
+-- O agregado `canvas_entity_position` e identificado SO pela entidade: o
+-- payload canonico e (entityId, universeId, positionX, positionY), e a
+-- identidade do evento e o entity_id. A tabela, porem, tem
+-- PRIMARY KEY (universe_id, entity_id) -- ela aceita duas linhas para a mesma
+-- entidade, em universos diferentes.
+--
+-- O codec ja trata duas linhas como INCONSISTENCIA e se recusa a escolher uma
+-- (`universo_da_posicao`). O que faltava era a restricao fisica, e ela nao
+-- podia entrar sem decidir o que fazer com acervos que ja tenham a duplicata.
+-- Esta migration decide, e decide de forma auditavel.
+--
+-- ## A regra do desempate, escrita antes de apagar qualquer coisa
+--
+--   1. fica a linha cujo universo e o universo DA ENTIDADE (entities.universe_id);
+--   2. persistindo empate, fica a mais recente (updated_at);
+--   3. persistindo empate, fica a de menor universe_id (BINARY, estavel).
+--
+-- A entidade pertence a um universo so, entao a linha de outro universo e
+-- resto de importacao ou de bug antigo: ela nunca foi visivel naquele grafo.
+--
+-- ## Nada e apagado em silencio
+--
+-- As linhas perdedoras vao para `canvas_entity_positions_descartadas`, com a
+-- data e o motivo. Uma migration que apaga dado do escritor sem deixar rastro
+-- e indistinguivel de perda de dado; com a quarentena, a auditoria depois do
+-- upgrade ainda consegue dizer o que existia.
+--
+-- Para a sincronizacao isso NAO gera evento: a v25 roda antes da genese (etapa
+-- C), e o baseline levara o estado ja saneado. Depois da genese, toda escritura
+-- deste agregado passa pela Mutacao, como as demais.
+CREATE TABLE IF NOT EXISTS canvas_entity_positions_descartadas (
+    entity_id TEXT NOT NULL,
+    universe_id TEXT NOT NULL,
+    position_x REAL NOT NULL,
+    position_y REAL NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT '',
+    descartada_em TEXT NOT NULL DEFAULT (datetime('now')),
+    motivo TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (entity_id, universe_id)
+);
+
+INSERT OR IGNORE INTO canvas_entity_positions_descartadas
+    (entity_id, universe_id, position_x, position_y, updated_at, motivo)
+SELECT p.entity_id, p.universe_id, p.position_x, p.position_y,
+       COALESCE(p.updated_at, ''),
+       'duplicata de canvas_entity_position resolvida pela migration 25'
+  FROM canvas_entity_positions p
+ WHERE p.rowid NOT IN (
+        SELECT rowid FROM (
+            SELECT q.rowid AS rowid,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY q.entity_id
+                       ORDER BY (q.universe_id = (SELECT e.universe_id FROM entities e
+                                                   WHERE e.id = q.entity_id)) DESC,
+                                COALESCE(q.updated_at, '') DESC,
+                                q.universe_id ASC
+                   ) AS posicao
+              FROM canvas_entity_positions q
+        ) WHERE posicao = 1
+       );
+
+DELETE FROM canvas_entity_positions
+ WHERE rowid NOT IN (
+        SELECT rowid FROM (
+            SELECT q.rowid AS rowid,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY q.entity_id
+                       ORDER BY (q.universe_id = (SELECT e.universe_id FROM entities e
+                                                   WHERE e.id = q.entity_id)) DESC,
+                                COALESCE(q.updated_at, '') DESC,
+                                q.universe_id ASC
+                   ) AS posicao
+              FROM canvas_entity_positions q
+        ) WHERE posicao = 1
+       );
+
+-- A PRIMARY KEY (universe_id, entity_id) continua: ela nao atrapalha, e trocar
+-- a chave primaria exigiria recriar a tabela. O que entra e a restricao que
+-- faltava -- a identidade do agregado vira invariante do banco, e nao so do
+-- codigo que le.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_canvas_entity_positions_entidade
+    ON canvas_entity_positions(entity_id);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1670,6 +1761,7 @@ mod tests {
     const NATIVE_SCHEMA_V22_FIXTURE: &str = include_str!("../../fixtures/schema22_native.sql");
     const NATIVE_SCHEMA_V23_FIXTURE: &str = include_str!("../../fixtures/schema23_native.sql");
     const NATIVE_SCHEMA_V24_FIXTURE: &str = include_str!("../../fixtures/schema24_native.sql");
+    const NATIVE_SCHEMA_V25_FIXTURE: &str = include_str!("../../fixtures/schema25_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -2992,6 +3084,141 @@ mod tests {
             )
             .expect("contar");
         assert!(com_grupo > 0, "a v23 sumiu do banco existente");
+    }
+
+    /// Schema 25: a identidade do agregado vira invariante do BANCO.
+    ///
+    /// Um banco nativo no 25 nunca teve duplicata; o que se prova aqui e que ele nao pode passar a
+    /// ter -- o INSERT de uma segunda linha para a mesma entidade e recusado, mesmo em outro
+    /// universo, que era exatamente a brecha que a PRIMARY KEY (universe_id, entity_id) deixava.
+    #[test]
+    fn schema25_recusa_duas_posicoes_para_a_mesma_entidade() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V25_FIXTURE)
+            .expect("carregar a fixture nativa de schema 25");
+
+        let uma: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM canvas_entity_positions WHERE entity_id = 'fx25-ent-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert_eq!(uma, 1);
+
+        let erro = connection.execute(
+            "INSERT INTO canvas_entity_positions (universe_id, entity_id, position_x, position_y)
+             VALUES ('fx25-uni-b', 'fx25-ent-1', 10.0, 10.0)",
+            [],
+        );
+        assert!(
+            erro.is_err(),
+            "o banco aceitou duas posicoes da mesma entidade"
+        );
+
+        // A quarentena da migration existe e esta vazia num banco nativo: nada foi descartado.
+        let descartadas: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM canvas_entity_positions_descartadas",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert_eq!(descartadas, 0);
+    }
+
+    /// **Banco existente com a duplicata que a v25 veio resolver.**
+    ///
+    /// A regra e a do cabecalho da migration: fica a linha do universo DA ENTIDADE; a outra vai
+    /// para a quarentena, com motivo. Nada e apagado em silencio, e a posicao que o escritor via
+    /// no grafo (a do universo dela) e a que sobra.
+    #[test]
+    fn schema25_desempata_a_duplicata_e_guarda_a_descartada() {
+        let connection = Connection::open_in_memory().expect("banco");
+        apply_migrations(&connection, 1, 24);
+        connection
+            .execute_batch(
+                "INSERT INTO universes (id, name, description, cover_image, created_at, updated_at)
+                 VALUES ('u-certo', 'Certo', '', '', '', ''),
+                        ('u-errado', 'Errado', '', '', '', '');
+                 INSERT INTO entities (id, universe_id, name, type, description, image,
+                                       created_at, updated_at)
+                 VALUES ('e1', 'u-certo', 'Frodo', 'character', '', '', '', '');
+                 INSERT INTO canvas_entity_positions
+                    (universe_id, entity_id, position_x, position_y, updated_at)
+                 VALUES ('u-errado', 'e1', 1.0, 1.0, '2026-09-10 00:00:00'),
+                        ('u-certo',  'e1', 2.0, 2.0, '2026-01-01 00:00:00');",
+            )
+            .expect("semear a duplicata");
+
+        connection
+            .execute_batch(sql_for_version(25).expect("migration 25"))
+            .expect("migrar");
+
+        let (universo, x): (String, f64) = connection
+            .query_row(
+                "SELECT universe_id, position_x FROM canvas_entity_positions WHERE entity_id = 'e1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("a unica linha que sobrou");
+        assert_eq!((universo.as_str(), x), ("u-certo", 2.0));
+
+        let (descartado, motivo): (String, String) = connection
+            .query_row(
+                "SELECT universe_id, motivo FROM canvas_entity_positions_descartadas
+                  WHERE entity_id = 'e1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("a linha descartada ficou guardada");
+        assert_eq!(descartado, "u-errado");
+        assert!(motivo.contains("migration 25"), "{motivo}");
+    }
+
+    /// Sem duplicata, a migration nao mexe em nada -- e um banco que ja migrou pode migrar de novo.
+    #[test]
+    fn schema25_nao_mexe_em_banco_sem_duplicata_e_e_idempotente() {
+        let connection = Connection::open_in_memory().expect("banco");
+        apply_migrations(&connection, 1, 24);
+        connection
+            .execute_batch(
+                "INSERT INTO universes (id, name, description, cover_image, created_at, updated_at)
+                 VALUES ('u1', 'Um', '', '', '', '');
+                 INSERT INTO entities (id, universe_id, name, type, description, image,
+                                       created_at, updated_at)
+                 VALUES ('e1', 'u1', 'Frodo', 'character', '', '', '', ''),
+                        ('e2', 'u1', 'Sam', 'character', '', '', '', '');
+                 INSERT INTO canvas_entity_positions
+                    (universe_id, entity_id, position_x, position_y, updated_at)
+                 VALUES ('u1', 'e1', 1.0, 1.0, ''), ('u1', 'e2', 2.0, 2.0, '');",
+            )
+            .expect("semear");
+
+        for _ in 0..2 {
+            connection
+                .execute_batch(sql_for_version(25).expect("migration 25"))
+                .expect("migrar");
+        }
+
+        let posicoes: i64 = connection
+            .query_row("SELECT COUNT(*) FROM canvas_entity_positions", [], |row| {
+                row.get(0)
+            })
+            .expect("contar");
+        let descartadas: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM canvas_entity_positions_descartadas",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert_eq!((posicoes, descartadas), (2, 0));
     }
 
     #[test]

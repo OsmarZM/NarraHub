@@ -97,6 +97,10 @@ pub const CATALOGO: &[(&str, Categoria)] = &[
     ("canvas_nodes", TransferidaNoBundle),
     ("canvas_edges", TransferidaNoBundle),
     ("canvas_entity_positions", TransferidaNoBundle),
+    // Quarentena da migration 25: o que ela descartou ao impor uma posição por entidade. É
+    // evidência do que aconteceu NESTE arquivo, não acervo — o aparelho novo nasce do estado já
+    // saneado e não teria o que fazer com ela.
+    ("canvas_entity_positions_descartadas", LocalNaoTransferida),
     ("timeline_events", TransferidaNoBundle),
     // ── sync: roster, estado causal e o vetor ──────────────────────────────
     ("sync_devices", TransferidaNoBundle),
