@@ -610,7 +610,8 @@ mesmo começo para sempre. Ao atingir o limite dentro de um grupo, a resposta co
     terceiro entra como sequencial; card excluído aqui vira exclusão sobre a reescrita da origem;
     exclusão dos dois lados adota o tombstone da origem sem evento; a restauração sai da raiz para as
     folhas. Grupo de forma absurda é recusado sem entrar no log, e o que já estiver no log não é
-    iterado; o mesmo `mutation_id` em duas origens são dois grupos.
+    iterado; o mesmo `mutation_id` em duas origens são dois grupos, tanto na resolução quanto no
+    estado concorrente (teste isolado de `estado_concorrente`).
 
 ## 5. Negociação de compatibilidade (etapa E)
 

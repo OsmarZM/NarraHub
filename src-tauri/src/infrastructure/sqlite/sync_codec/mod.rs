@@ -449,3 +449,86 @@ pub fn payload_da_revisao_corrente(
         .optional()
         .map_err(erro)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infrastructure::sqlite::test_support::{seed_universe, TemporaryDatabase};
+
+    /// **A decisão de um grupo é `(origem, mutation_id)`.** Duas origens podem emitir ações com o
+    /// mesmo `mutation_id` — ele é sorteado em cada aparelho, sem coordenação. Se o estado
+    /// concorrente casasse só pelo id, a decisão aberta sobre a ação de A poria em decisão os
+    /// agregados da ação de B, e o escritor veria o trabalho dele travado por uma decisão que não
+    /// é sobre ele.
+    #[test]
+    fn a_decisao_de_grupo_e_da_origem_e_nao_so_do_mutation_id() {
+        let fixture = TemporaryDatabase::new();
+        let connection = fixture.database.write().expect("escrita");
+        seed_universe(&connection, "u1");
+        connection
+            .execute_batch(
+                "INSERT INTO sync_devices
+                    (device_id, name, ed25519_public, x25519_public, state, introduced_by, is_self,
+                     state_changed_at)
+                 VALUES ('dev-a', 'A', 'pa', 'xa', 'active', '', 0, ''),
+                        ('dev-b', 'B', 'pb', 'xb', 'active', '', 0, '');
+
+                 -- A ação de A (mutation_id 'M'): o agregado X.
+                 INSERT INTO sync_events
+                    (event_id, device_id, seq, universe_id, aggregate_type, aggregate_id, operation,
+                     payload, base_rev, new_rev, signature,
+                     mutation_id, mutation_index, mutation_count, mutation_kind)
+                 VALUES ('ev-a1', 'dev-a', 1, 'u1', 'chapter', 'X', 'delete', '', 'r0', 'ra',
+                         'sa', 'M', 0, 1, 'delete_tree');
+
+                 -- A ação de B, com o MESMO mutation_id: o agregado Y.
+                 INSERT INTO sync_events
+                    (event_id, device_id, seq, universe_id, aggregate_type, aggregate_id, operation,
+                     payload, base_rev, new_rev, signature,
+                     mutation_id, mutation_index, mutation_count, mutation_kind)
+                 VALUES ('ev-b1', 'dev-b', 1, 'u1', 'chapter', 'Y', 'delete', '', 'r0', 'rb',
+                         'sb', 'M', 0, 1, 'delete_tree');
+
+                 -- Os dois eventos estão aplicados: o que sobrar de concorrência é decisão, não
+                 -- pendência.
+                 INSERT INTO sync_applied_events (event_id) VALUES ('ev-a1'), ('ev-b1');
+
+                 -- A decisão aberta é a da ação de A, ancorada no evento de A.
+                 INSERT INTO sync_divergences
+                    (id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev,
+                     remote_event_id, resolved_at, resolution, local_operation, remote_operation,
+                     kind, related_aggregate_id, mutation_id)
+                 VALUES ('div-a', 'chapter', 'X', 'r0', 'rx', 'ra', 'ev-a1', '', '',
+                         'upsert', 'delete', 'parent_deletion_blocked', '', 'M');",
+            )
+            .expect("semear");
+
+        let x = AggregateRef::new("chapter", "X");
+        let y = AggregateRef::new("chapter", "Y");
+        assert_eq!(
+            estado_concorrente(&connection, &x).expect("X"),
+            Some(EstadoConcorrente::DivergenciaAberta)
+        );
+        assert_eq!(
+            estado_concorrente(&connection, &y).expect("Y"),
+            None,
+            "a decisão sobre a ação de A pôs em decisão um agregado da ação de B"
+        );
+
+        // Agora a ação de B também tem decisão aberta, ancorada no evento de B.
+        connection
+            .execute_batch(
+                "INSERT INTO sync_divergences
+                    (id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev,
+                     remote_event_id, resolved_at, resolution, local_operation, remote_operation,
+                     kind, related_aggregate_id, mutation_id)
+                 VALUES ('div-b', 'chapter', 'Y', 'r0', 'ry', 'rb', 'ev-b1', '', '',
+                         'upsert', 'delete', 'parent_deletion_blocked', '', 'M');",
+            )
+            .expect("decisão de B");
+        assert_eq!(
+            estado_concorrente(&connection, &y).expect("Y"),
+            Some(EstadoConcorrente::DivergenciaAberta)
+        );
+    }
+}
