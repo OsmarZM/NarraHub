@@ -25,6 +25,18 @@
 //! exatamente a perda silenciosa que o bloqueio existe para impedir. O descendente se resolve
 //! primeiro, por uma mutação normal (excluir o anexo, por exemplo); depois aceitar conclui.
 //!
+//! ## Decisão sobre uma ação, não sobre um efeito (B2.2)
+//!
+//! Quando a divergência nasceu de um **grupo de mutação** (`mutation_id`), ela representa a ação
+//! inteira do outro aparelho — "o livro foi excluído lá" —, e a resolução vale para todos os membros:
+//!
+//! ```text
+//! ManterLocal     cada membro que ainda existe aqui ganha uma restauração que parte da revisão
+//!                 dele no grupo: os outros aparelhos a recebem como sequencial, membro a membro
+//! AceitarRemoto   refaz, AGORA, o preflight de cada membro na ordem do grupo e aplica todos na
+//!                 mesma transação; qualquer recusa desfaz tudo e a decisão continua aberta
+//! ```
+//!
 //! ## Tudo numa transação
 //!
 //! Roda dentro de [`Mutacao::executar`]: a decisão, a escrita no domínio, o evento (quando há) e a
@@ -59,6 +71,7 @@ struct Divergencia {
     remote_rev: String,
     remote_event_id: String,
     kind: String,
+    mutation_id: String,
 }
 
 fn erro(error: rusqlite::Error) -> DatabaseCommandError {
@@ -73,7 +86,12 @@ pub fn resolver(
 ) -> DatabaseCommandResult<Resolucao> {
     Mutacao::executar(database, identidade, |m| {
         let divergencia = ler_aberta(m, id_divergencia)?;
+        let membros = membros_do_grupo(m, &divergencia)?;
         match divergencia.kind.as_str() {
+            "parent_deletion_blocked" if membros.len() > 1 => match escolha {
+                Escolha::ManterLocal => manter_local_o_grupo(m, id_divergencia, &membros),
+                Escolha::AceitarRemoto => aceitar_o_grupo(m, id_divergencia, &membros),
+            },
             "parent_deletion_blocked" => match escolha {
                 Escolha::ManterLocal => manter_local(m, id_divergencia, &divergencia),
                 Escolha::AceitarRemoto => aceitar_exclusao(m, id_divergencia, &divergencia),
@@ -92,7 +110,8 @@ pub fn resolver(
 fn ler_aberta(m: &Mutacao<'_, '_>, id: &str) -> DatabaseCommandResult<Divergencia> {
     m.tx()
         .query_row(
-            "SELECT aggregate_type, aggregate_id, local_rev, remote_rev, remote_event_id, kind
+            "SELECT aggregate_type, aggregate_id, local_rev, remote_rev, remote_event_id, kind,
+                    mutation_id
                FROM sync_divergences WHERE id = ?1 AND resolved_at = ''",
             [id],
             |row| {
@@ -102,6 +121,7 @@ fn ler_aberta(m: &Mutacao<'_, '_>, id: &str) -> DatabaseCommandResult<Divergenci
                     remote_rev: row.get(3)?,
                     remote_event_id: row.get(4)?,
                     kind: row.get(5)?,
+                    mutation_id: row.get(6)?,
                 })
             },
         )
@@ -112,6 +132,214 @@ fn ler_aberta(m: &Mutacao<'_, '_>, id: &str) -> DatabaseCommandResult<Divergenci
                 "Não há divergência aberta com id {id}. Ela pode já ter sido resolvida."
             ))
         })
+}
+
+/// Os membros do grupo da decisão, na ordem do grupo. Vazio quando a divergência é de um evento só.
+///
+/// O grupo é `(origem, mutation_id)`: a origem é a do evento em que a decisão foi ancorada. Um
+/// `mutation_id` igual vindo de outra origem é outro grupo.
+fn membros_do_grupo(
+    m: &Mutacao<'_, '_>,
+    divergencia: &Divergencia,
+) -> DatabaseCommandResult<Vec<crate::domain::sync::EventEnvelope>> {
+    if divergencia.mutation_id.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut consulta = m
+        .tx()
+        .prepare(&format!(
+            "SELECT {} FROM sync_events
+              WHERE mutation_id = ?1
+                AND device_id = (SELECT device_id FROM sync_events WHERE event_id = ?2)
+              ORDER BY mutation_index",
+            crate::infrastructure::sqlite::sync_repository::colunas_do_envelope("")
+        ))
+        .map_err(erro)?;
+    let membros = consulta
+        .query_map(
+            [&divergencia.mutation_id, &divergencia.remote_event_id],
+            crate::infrastructure::sqlite::sync_repository::envelope_da_linha,
+        )
+        .map_err(erro)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(erro)?;
+    Ok(membros)
+}
+
+/// "Manter o local" vale para a ação inteira, e fecha a causalidade de **todo** membro: depois
+/// dela, a revisão corrente de cada agregado da ação descende da revisão que a origem emitiu. Um
+/// membro deixado para trás faria o próximo evento de qualquer aparelho que partiu da revisão da
+/// origem ser classificado como concorrente — uma decisão fantasma, sobre estados iguais.
+///
+/// ```text
+/// membro   aqui                       efeito
+/// upsert   existe, payload igual      adota new_rev da origem; sem evento
+/// upsert   existe, payload diferente  o estado daqui vira revisão nova sobre new_rev da origem
+/// upsert   não existe (excluído aqui) exclusão nova sobre new_rev da origem
+/// delete   não existe                 adota new_rev da origem como tombstone; sem evento
+/// delete   existe                     restauração sobre o tombstone da origem
+/// ```
+///
+/// **Ordem de emissão: exclusões reafirmadas da raiz para as folhas, depois os sobreviventes.** O
+/// grupo da origem vai das folhas à raiz; a restauração é o contrário — um card que cita o campo
+/// restaurado não materializa antes do campo, e o receptor seguraria a ação inteira esperando uma
+/// dependência que vem dentro dela.
+fn manter_local_o_grupo(
+    m: &mut Mutacao<'_, '_>,
+    id: &str,
+    membros: &[crate::domain::sync::EventEnvelope],
+) -> DatabaseCommandResult<Resolucao> {
+    use crate::domain::sync::Operation;
+
+    let exclusoes = membros
+        .iter()
+        .rev()
+        .filter(|membro| membro.operation == Operation::Delete);
+    let reescritas = membros
+        .iter()
+        .filter(|membro| membro.operation == Operation::Upsert);
+    for membro in exclusoes.chain(reescritas) {
+        let agregado = AggregateRef::new(&membro.aggregate_type, &membro.aggregate_id);
+        let estado = sync_codec::ler_canonico(m.tx(), &agregado)?;
+        match (membro.operation, estado) {
+            (Operation::Upsert, Some(estado)) if estado.payload == membro.payload => {
+                adotar_revisao(m, &agregado, &membro.new_rev)?;
+            }
+            (Operation::Upsert, Some(_)) | (Operation::Delete, Some(_)) => {
+                adotar_revisao(m, &agregado, &membro.new_rev)?;
+                m.gravou(&agregado.aggregate_type, &agregado.aggregate_id)?;
+            }
+            (Operation::Upsert, None) => {
+                adotar_revisao(m, &agregado, &membro.new_rev)?;
+                m.reafirmou_exclusao(agregado, &membro.universe_id);
+            }
+            (Operation::Delete, None) => {
+                m.tx()
+                    .execute(
+                        "INSERT INTO sync_tombstones
+                            (aggregate_type, aggregate_id, deleted_rev, origin_device_id, origin_seq)
+                         VALUES (?1, ?2, ?3, ?4, ?5)
+                         ON CONFLICT(aggregate_type, aggregate_id)
+                         DO UPDATE SET deleted_rev = excluded.deleted_rev,
+                                       origin_device_id = excluded.origin_device_id,
+                                       origin_seq = excluded.origin_seq",
+                        rusqlite::params![
+                            &agregado.aggregate_type,
+                            &agregado.aggregate_id,
+                            &membro.new_rev,
+                            &membro.device_id,
+                            membro.seq
+                        ],
+                    )
+                    .map_err(erro)?;
+                m.tx()
+                    .execute(
+                        "DELETE FROM sync_aggregate_state WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+                        [&agregado.aggregate_type, &agregado.aggregate_id],
+                    )
+                    .map_err(erro)?;
+            }
+        }
+    }
+    marcar_resolvida(m, id, "local")?;
+    Ok(Resolucao::MantidoLocal)
+}
+
+/// A revisão da origem passa a ser a corrente daqui, e o tombstone sai. O que o chamador emitir
+/// depois parte dela.
+fn adotar_revisao(
+    m: &Mutacao<'_, '_>,
+    agregado: &AggregateRef,
+    rev: &str,
+) -> DatabaseCommandResult<()> {
+    m.tx()
+        .execute(
+            "INSERT INTO sync_aggregate_state (aggregate_type, aggregate_id, current_rev)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(aggregate_type, aggregate_id) DO UPDATE SET current_rev = excluded.current_rev",
+            rusqlite::params![&agregado.aggregate_type, &agregado.aggregate_id, rev],
+        )
+        .map_err(erro)?;
+    m.tx()
+        .execute(
+            "DELETE FROM sync_tombstones WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+            [&agregado.aggregate_type, &agregado.aggregate_id],
+        )
+        .map_err(erro)?;
+    Ok(())
+}
+
+/// "Aceitar" aplica a ação inteira, e só se ela puder entrar inteira AGORA.
+///
+/// ```text
+/// membro sem trabalho concorrente aqui     entra com o payload da origem
+/// sobrevivente reescrito pela exclusão,    o efeito é recalculado sobre o estado DAQUI: a exclusão
+///   editado aqui depois da base            roda, e o sobrevivente ganha revisão nova que descende
+///                                          da reescrita da origem — a edição local não se perde
+/// ```
+///
+/// A decisão é marcada resolvida antes dos membros entrarem: enquanto aberta, ela mesma faria o
+/// preflight de cada membro recusar a exclusão. Qualquer recusa desfaz a resolução inteira.
+fn aceitar_o_grupo(
+    m: &mut Mutacao<'_, '_>,
+    id: &str,
+    membros: &[crate::domain::sync::EventEnvelope],
+) -> DatabaseCommandResult<Resolucao> {
+    marcar_resolvida(m, id, "remote")?;
+    let mut sobreviventes_editados = Vec::new();
+    for membro in membros {
+        let outra_pendencia: bool = m
+            .tx()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_divergences
+                                WHERE aggregate_type = ?1 AND aggregate_id = ?2
+                                  AND resolved_at = '' AND id <> ?3)
+                     OR EXISTS(SELECT 1 FROM sync_events e
+                                WHERE e.aggregate_type = ?1 AND e.aggregate_id = ?2
+                                  AND NOT EXISTS (SELECT 1 FROM sync_applied_events a
+                                                   WHERE a.event_id = e.event_id))",
+                rusqlite::params![&membro.aggregate_type, &membro.aggregate_id, id],
+                |row| row.get(0),
+            )
+            .map_err(erro)?;
+        if outra_pendencia {
+            return Err(DatabaseCommandError::conflict(format!(
+                "{} {} tem outra decisão ou alteração pendente. Resolva isso antes. Nada foi aplicado.",
+                membro.aggregate_type, membro.aggregate_id
+            )));
+        }
+        let agregado = AggregateRef::new(&membro.aggregate_type, &membro.aggregate_id);
+        let e_efeito_sobre_sobrevivente = membro.grupo.kind == "delete_tree"
+            && membro.operation == crate::domain::sync::Operation::Upsert
+            && !(membro.aggregate_type == membro.grupo.root_type
+                && membro.aggregate_id == membro.grupo.root_id);
+        if e_efeito_sobre_sobrevivente
+            && sync_codec::revisao_corrente(m.tx(), &agregado)?.as_deref()
+                != Some(membro.base_rev.as_str())
+        {
+            sobreviventes_editados.push((agregado, membro.new_rev.clone()));
+            continue;
+        }
+        sync_apply::aplicar_membro_decidido(m.tx(), membro)?;
+    }
+    for (sobrevivente, rev_da_origem) in sobreviventes_editados {
+        if sync_codec::ler_canonico(m.tx(), &sobrevivente)?.is_none() {
+            continue;
+        }
+        m.tx()
+            .execute(
+                "UPDATE sync_aggregate_state SET current_rev = ?3
+                  WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+                rusqlite::params![
+                    &sobrevivente.aggregate_type,
+                    &sobrevivente.aggregate_id,
+                    &rev_da_origem
+                ],
+            )
+            .map_err(erro)?;
+        m.gravou(&sobrevivente.aggregate_type, &sobrevivente.aggregate_id)?;
+    }
+    Ok(Resolucao::ExclusaoConcluida)
 }
 
 fn marcar_resolvida(m: &Mutacao<'_, '_>, id: &str, resolucao: &str) -> DatabaseCommandResult<()> {
@@ -249,7 +477,9 @@ fn aceitar_exclusao(
 mod tests {
     use super::*;
     use crate::application::canvas_service;
-    use crate::application::mutacao::tests::{ordem_remota, Aparelho};
+    use crate::application::mutacao::tests::{
+        exclusao_remota_do_capitulo, exclusao_remota_do_capitulo_no_grupo, Aparelho,
+    };
     use crate::domain::identity::DeviceIdentity;
     use crate::domain::sync::{EventEnvelope, Operation};
     use crate::infrastructure::sqlite::sync_apply::envelope_de_origem;
@@ -277,25 +507,15 @@ mod tests {
                 let connection = aparelho.banco.database.write().expect("escrita");
                 origem_remota_confiavel(&connection, &aparelho.eu)
             };
-            // A origem exclui o capítulo e DEPOIS reescreve a ordem sem ele.
-            let ordem = ordem_remota(&outra, 2, "", &[]);
-            let mut exclusao = envelope_de_origem(
-                outra.device_id(),
-                1,
-                "u1",
-                &AggregateRef::new("chapter", "c1"),
-                Operation::Delete,
-                "",
-                &rev_conhecida,
-            );
-            exclusao.signature = outra.sign(&exclusao);
+            // A origem exclui a posição do capítulo e o capítulo, como UMA ação (B2.2).
+            let [posicao, exclusao] = exclusao_remota_do_capitulo(&outra, &rev_conhecida);
             let cenario = Self {
                 aparelho,
                 outra,
                 exclusao,
                 rev_conhecida,
             };
-            let relatorio = cenario.entregar(&[ordem, cenario.exclusao.clone()]);
+            let relatorio = cenario.entregar(&[posicao, cenario.exclusao.clone()]);
             assert_eq!(relatorio.divergencias, 1, "a exclusão tinha que bloquear");
             cenario
         }
@@ -360,7 +580,7 @@ mod tests {
         let cenario = Cenario::bloqueado();
         assert_eq!(
             cenario.cursor(),
-            1,
+            2,
             "o cursor não pode travar na exclusão bloqueada"
         );
         assert_eq!(cenario.divergencias_abertas().len(), 1);
@@ -373,8 +593,8 @@ mod tests {
             1,
             "divergência duplicada"
         );
-        // A ordem sem c1 espera: c1 continua aqui, e a ordem não pode ser materializada.
-        assert_eq!(cenario.cursor(), 1);
+        // Nada mais da origem espera: a exclusão bloqueada é decisão registrada, não pendência.
+        assert_eq!(cenario.cursor(), 2);
         assert!(cenario.aparelho.existe("chapters", "c1"));
         assert!(cenario.aparelho.existe("attachments", "a-concorrente"));
     }
@@ -417,12 +637,32 @@ mod tests {
             base, cenario.exclusao.new_rev,
             "a restauração parte da exclusão"
         );
+        // A raiz é restaurada antes do que depende dela: a posição de c1 não materializa sem c1, e
+        // o receptor seguraria a ação inteira esperando uma dependência que vem dentro dela.
+        let restauracao: Vec<String> = {
+            let connection = cenario.aparelho.conexao();
+            let mut consulta = connection
+                .prepare(
+                    "SELECT aggregate_type FROM sync_events WHERE device_id = ?1
+                      ORDER BY seq DESC LIMIT 2",
+                )
+                .expect("consulta");
+            let mut tipos: Vec<String> = consulta
+                .query_map([cenario.aparelho.eu.device_id()], |row| row.get(0))
+                .expect("linhas")
+                .collect::<Result<_, _>>()
+                .expect("tipos");
+            tipos.reverse();
+            tipos
+        };
+        assert_eq!(restauracao, vec!["chapter", "chapter_position"]);
 
         // A exclusão chegando de novo não reabre nada.
         let relatorio = cenario.entregar(std::slice::from_ref(&cenario.exclusao));
-        // A ordem que o outro aparelho mandou sem c1 deixa de esperar e vira decisão: aqui a ordem
-        // mantida cita c1. Nenhuma divergência nova no capítulo.
-        assert_eq!(relatorio.divergencias, 1);
+        // Nada reabre. Até a B2.2 havia aqui uma ordem inteira do livro, sem c1, que ficava pendente e
+        // virava decisão ao ser retransmitida; com posição por item esse evento não existe, e a ação
+        // já decidida não produz decisão nenhuma. Nenhuma divergência nova no capítulo.
+        assert_eq!(relatorio.divergencias, 0, "{relatorio:?}");
         let em_capitulo: i64 = cenario
             .aparelho
             .conexao()
@@ -434,6 +674,51 @@ mod tests {
             .expect("contar");
         assert_eq!(em_capitulo, 0);
         assert!(cenario.aparelho.existe("chapters", "c1"));
+    }
+
+    /// **O grupo é `(origem, mutation_id)`.** Outra origem com o mesmo `mutation_id` é outro grupo:
+    /// a decisão sobre a ação da primeira não captura os membros da segunda.
+    #[test]
+    fn mesmo_mutation_id_em_duas_origens_sao_dois_grupos() {
+        let cenario = Cenario::bloqueado();
+        let terceira = {
+            let connection = cenario.aparelho.banco.database.write().expect("escrita");
+            origem_remota_confiavel(&connection, &cenario.aparelho.eu)
+        };
+        let mutation_id = cenario.exclusao.grupo.mutation_id.clone();
+        let da_terceira =
+            exclusao_remota_do_capitulo_no_grupo(&terceira, &cenario.rev_conhecida, &mutation_id);
+        let relatorio = cenario.entregar(&da_terceira);
+        assert_eq!(relatorio.divergencias, 0, "{relatorio:?}");
+        let com_o_mesmo_id: i64 = cenario
+            .aparelho
+            .conexao()
+            .query_row(
+                "SELECT COUNT(*) FROM sync_events WHERE mutation_id = ?1",
+                [&mutation_id],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert_eq!(
+            com_o_mesmo_id, 4,
+            "as duas ações estão no log com o mesmo id"
+        );
+
+        canvas_service::delete_attachment(
+            &cenario.aparelho.banco.database,
+            &cenario.aparelho.eu,
+            "a-concorrente",
+        )
+        .expect("excluir o anexo");
+        assert_eq!(
+            cenario
+                .resolver(Escolha::AceitarRemoto)
+                .expect("aceitar aplica só a ação da origem da decisão"),
+            Resolucao::ExclusaoConcluida
+        );
+        assert!(!cenario.aparelho.existe("chapters", "c1"));
+        cenario.aparelho.coerente("chapter", "c1");
+        cenario.aparelho.coerente("chapter_position", "c1");
     }
 
     #[test]
@@ -481,10 +766,10 @@ mod tests {
             "a revisão da exclusão é a remota"
         );
 
-        // A ordem que esperava c1 sair agora pode ser materializada, exatamente como veio.
+        // Nenhum irmão esperava c1 sair: a posição é por item, e o cursor já tinha passado.
         cenario.entregar(&[]);
         assert_eq!(cenario.cursor(), 2);
-        cenario.aparelho.coerente("chapter_order", "b1");
+        cenario.aparelho.coerente("chapter_position", "c1");
     }
 
     #[test]
@@ -557,17 +842,7 @@ mod tests {
             origem_remota_confiavel(&connection, &aparelho.eu)
         };
         let agregado = AggregateRef::new("chapter", "c1");
-        let ordem = ordem_remota(&outra, 2, "", &[]);
-        let mut exclusao = envelope_de_origem(
-            outra.device_id(),
-            1,
-            "u1",
-            &agregado,
-            Operation::Delete,
-            "",
-            &rev,
-        );
-        exclusao.signature = outra.sign(&exclusao);
+        let [posicao, exclusao] = exclusao_remota_do_capitulo(&outra, &rev);
         let mut restauracao = envelope_de_origem(
             outra.device_id(),
             3,
@@ -580,7 +855,7 @@ mod tests {
         restauracao.signature = outra.sign(&restauracao);
 
         let mut connection = aparelho.banco.database.write().expect("escrita");
-        receber_eventos(&mut connection, &[ordem, exclusao]).expect("exclusão");
+        receber_eventos(&mut connection, &[posicao, exclusao]).expect("exclusão");
         drop(connection);
         assert!(!aparelho.existe("chapters", "c1"));
 

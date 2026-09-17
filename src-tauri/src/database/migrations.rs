@@ -1,7 +1,7 @@
 //! NarraHub — Database Migrations
 //! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 22;
+pub const LATEST_SCHEMA_VERSION: i64 = 23;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -27,6 +27,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         20 => Some(MIGRATION_V20),
         21 => Some(MIGRATION_V21),
         22 => Some(MIGRATION_V22),
+        23 => Some(MIGRATION_V23),
         _ => None,
     }
 }
@@ -1530,6 +1531,59 @@ CREATE INDEX idx_sync_divergences_abertas
     WHERE resolved_at = '';
 "#;
 
+pub const MIGRATION_V23: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v23
+-- NH-079 B2.2 - grupos de mutacao atomicos
+-- ============================================
+--
+-- Na origem, uma acao ("apagar este livro") e uma transacao so. Na rede ela
+-- virava uma sequencia de eventos independentes, e o receptor podia aplicar
+-- metade: capitulos apagados, livro bloqueado por um capitulo concorrente.
+--
+-- Cada evento passa a carregar a acao de onde saiu. Todo evento de uma mesma
+-- Mutacao recebe o mesmo mutation_id, com indices contiguos 0..count. O
+-- receptor so altera o dominio quando o grupo inteiro chegou e pode entrar
+-- inteiro; se um membro diverge ou e bloqueado, nenhum entra, e nasce UMA
+-- decisao sobre a acao.
+--
+-- O grupo entra na assinatura do envelope e fica FORA de compute_revision: ele
+-- descreve a acao, nao o estado do agregado.
+--
+-- Evento anterior a esta migration fica com mutation_id vazio: grupo de um, e
+-- a assinatura dele nao muda.
+ALTER TABLE sync_events ADD COLUMN mutation_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE sync_events ADD COLUMN mutation_index INTEGER NOT NULL DEFAULT 0
+    CHECK (mutation_index >= 0);
+ALTER TABLE sync_events ADD COLUMN mutation_count INTEGER NOT NULL DEFAULT 1
+    CHECK (mutation_count >= 1);
+ALTER TABLE sync_events ADD COLUMN mutation_kind TEXT NOT NULL DEFAULT '';
+ALTER TABLE sync_events ADD COLUMN mutation_root_type TEXT NOT NULL DEFAULT '';
+ALTER TABLE sync_events ADD COLUMN mutation_root_id TEXT NOT NULL DEFAULT '';
+
+-- Indice fora do total e grupo sem id com mais de um membro sao formas que
+-- nenhum emissor legitimo produz.
+CREATE TRIGGER trg_sync_events_grupo_coerente
+BEFORE INSERT ON sync_events
+BEGIN
+    SELECT RAISE(ABORT, 'Indice do grupo de mutacao fora do total.')
+     WHERE NEW.mutation_index >= NEW.mutation_count;
+    SELECT RAISE(ABORT, 'Grupo de mutacao com mais de um membro precisa de mutation_id.')
+     WHERE NEW.mutation_id = '' AND NEW.mutation_count > 1;
+END;
+
+-- A identidade de um grupo e (origem, mutation_id): duas origens podem gerar o
+-- mesmo id, e um grupo nunca captura membros de outra.
+CREATE INDEX IF NOT EXISTS idx_sync_events_mutacao
+    ON sync_events(device_id, mutation_id)
+    WHERE mutation_id <> '';
+
+-- A decisao de um grupo bloqueado e UMA, ancorada no primeiro membro que nao
+-- entrou. O mutation_id liga a decisao a acao inteira: a resolucao aplica ou
+-- restaura o grupo todo, nunca um membro solto.
+ALTER TABLE sync_divergences ADD COLUMN mutation_id TEXT NOT NULL DEFAULT '';
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1546,6 +1600,7 @@ mod tests {
     const NATIVE_SCHEMA_V20_FIXTURE: &str = include_str!("../../fixtures/schema20_native.sql");
     const NATIVE_SCHEMA_V21_FIXTURE: &str = include_str!("../../fixtures/schema21_native.sql");
     const NATIVE_SCHEMA_V22_FIXTURE: &str = include_str!("../../fixtures/schema22_native.sql");
+    const NATIVE_SCHEMA_V23_FIXTURE: &str = include_str!("../../fixtures/schema23_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -2570,6 +2625,116 @@ mod tests {
             .collect::<Result<_, _>>()
             .expect("ids");
         assert_eq!(restantes, vec!["viva"]);
+    }
+
+    /// Schema 23: cada evento carrega a acao de onde saiu, e o banco recusa grupo incoerente.
+    #[test]
+    fn schema23_guarda_a_acao_de_cada_evento_e_recusa_grupo_incoerente() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V23_FIXTURE)
+            .expect("carregar a fixture nativa de schema 23");
+
+        // A exclusao do livro: quatro membros, indices contiguos, a mesma raiz.
+        let membros: Vec<(i64, i64, String, String)> = connection
+            .prepare(
+                "SELECT mutation_index, mutation_count, mutation_kind, mutation_root_id
+                   FROM sync_events WHERE mutation_id = 'fx23-m-livro' ORDER BY mutation_index",
+            )
+            .expect("consulta")
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .expect("linhas")
+            .collect::<Result<_, _>>()
+            .expect("membros");
+        assert_eq!(membros.len(), 4);
+        for (esperado, (indice, total, kind, raiz)) in membros.iter().enumerate() {
+            assert_eq!(*indice, esperado as i64);
+            assert_eq!(*total, 4);
+            assert_eq!(kind, "delete_tree");
+            assert_eq!(raiz, "fx23-b1");
+        }
+
+        // O evento anterior a v23 e grupo de um.
+        let (id, total): (String, i64) = connection
+            .query_row(
+                "SELECT mutation_id, mutation_count FROM sync_events WHERE event_id = 'fx23-e-a1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("legado");
+        assert_eq!((id.as_str(), total), ("", 1));
+
+        // A decisao aponta para a acao inteira.
+        let da_decisao: String = connection
+            .query_row(
+                "SELECT mutation_id FROM sync_divergences WHERE id = 'fx23-div-livro'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("decisao");
+        assert_eq!(da_decisao, "fx23-m-livro");
+
+        // Formas que nenhum emissor legitimo produz.
+        for (descricao, sql) in [
+            (
+                "indice fora do total",
+                "INSERT INTO sync_events (event_id, device_id, seq, universe_id, aggregate_type,
+                   aggregate_id, operation, payload, base_rev, new_rev, signature,
+                   mutation_id, mutation_index, mutation_count)
+                 VALUES ('x1', 'fx23-dev-pc', 90, 'u', 'book', 'b', 'delete', '', '', 'r', 's',
+                   'm', 4, 4)",
+            ),
+            (
+                "grupo de varios sem id",
+                "INSERT INTO sync_events (event_id, device_id, seq, universe_id, aggregate_type,
+                   aggregate_id, operation, payload, base_rev, new_rev, signature,
+                   mutation_id, mutation_index, mutation_count)
+                 VALUES ('x2', 'fx23-dev-pc', 91, 'u', 'book', 'b', 'delete', '', '', 'r', 's',
+                   '', 0, 3)",
+            ),
+        ] {
+            assert!(
+                connection.execute(sql, []).is_err(),
+                "o schema aceitou {descricao}"
+            );
+        }
+    }
+
+    /// Um banco que CHEGOU ao 23 por migracao: todo evento antigo vira grupo de um.
+    #[test]
+    fn schema23_faz_de_todo_evento_antigo_um_grupo_de_um() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, 22);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V21_FIXTURE)
+            .expect("fixture antiga");
+        let antes: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sync_events", [], |row| row.get(0))
+            .expect("contar");
+
+        connection
+            .execute_batch(sql_for_version(23).expect("migration 23"))
+            .expect("migrar");
+
+        let de_um: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sync_events
+                  WHERE mutation_id = '' AND mutation_index = 0 AND mutation_count = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert!(antes > 0);
+        assert_eq!(de_um, antes, "algum evento antigo ganhou grupo inventado");
     }
 
     #[test]

@@ -247,6 +247,7 @@ mod tests {
                     aggregate: AggregateRef::new("chapter", id),
                     operation: Operation::Upsert,
                     payload: r#"{"t":"a"}"#,
+                    grupo: Default::default(),
                 },
             )
             .expect("evento local");

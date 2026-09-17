@@ -90,6 +90,96 @@ pub struct EventEnvelope {
     /// append-only, então evento nascido sem assinatura não pode ser assinado
     /// depois. A etapa 7 cuida da **verificação** de origem de terceiros.
     pub signature: String,
+    /// A ação local de onde o evento saiu (B2.2). Ver [`GrupoDeMutacao`].
+    #[serde(default)]
+    pub grupo: GrupoDeMutacao,
+}
+
+/// **A ação que produziu o evento.** Todo evento de uma mesma `Mutacao::executar` recebe o mesmo
+/// `mutation_id`, com índices contíguos `0..count`.
+///
+/// ## O que isto resolve
+///
+/// Na origem, uma ação ("apagar este livro") é uma transação só: domínio, revisões e eventos entram
+/// juntos ou nada entra. Na rede ela virava uma sequência de eventos independentes, e o receptor
+/// podia aplicar metade — capítulos apagados, livro bloqueado por um capítulo concorrente. O grupo
+/// devolve ao receptor a mesma atomicidade: nenhum membro altera o domínio antes de o grupo inteiro
+/// ter chegado e poder ser aplicado inteiro.
+///
+/// ## Por que no envelope e não no payload
+///
+/// O grupo descreve **a ação**, não o estado do agregado. No payload, "apagar o capítulo c1" e
+/// "apagar o livro, o que apaga c1" produziriam revisões diferentes de c1 pelo mesmo efeito. Por isso
+/// ele entra na **assinatura** (ninguém reagrupa eventos no caminho) e fica **fora** de
+/// [`compute_revision`].
+///
+/// `mutation_id` vazio é evento anterior à B2.2: grupo de um, e a assinatura dele não muda.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrupoDeMutacao {
+    pub mutation_id: String,
+    pub index: i64,
+    pub count: i64,
+    /// `delete_tree` quando a ação é uma exclusão composta; vazio nas demais.
+    pub kind: String,
+    /// A raiz da exclusão composta: o que a decisão apresenta ao escritor.
+    pub root_type: String,
+    pub root_id: String,
+}
+
+/// Teto de membros de um grupo. Nenhuma ação legítima chega perto: é a proteção contra um
+/// `mutation_count` que faria o receptor alocar ou iterar sem fim.
+pub const MAXIMO_DE_MEMBROS_DO_GRUPO: i64 = 50_000;
+
+/// Tamanho máximo de um `mutation_id`. Os emitidos são UUIDs.
+pub const TAMANHO_MAXIMO_DO_MUTATION_ID: usize = 128;
+
+impl GrupoDeMutacao {
+    /// Grupo de um membro (inclusive evento anterior à B2.2): aplica sozinho, como sempre aplicou.
+    pub fn e_isolado(&self) -> bool {
+        self.mutation_id.is_empty() || self.count <= 1
+    }
+
+    /// A forma do grupo, antes de ele ser guardado ou iterado. A identidade de um grupo é
+    /// `(origem, mutation_id)`: esta checagem é só da forma, a origem vem do envelope.
+    ///
+    /// ```text
+    /// sem mutation_id   evento anterior à B2.2: um membro, índice 0, sem kind nem raiz
+    /// com mutation_id   1 ≤ count ≤ teto, 0 ≤ index < count, id de tamanho limitado
+    /// ```
+    pub fn validar(&self) -> Result<(), String> {
+        if self.mutation_id.is_empty() {
+            let legado = self.index == 0
+                && (self.count == 0 || self.count == 1)
+                && self.kind.is_empty()
+                && self.root_type.is_empty()
+                && self.root_id.is_empty();
+            return if legado {
+                Ok(())
+            } else {
+                Err("grupo de mutação sem mutation_id com forma de grupo".into())
+            };
+        }
+        if self.mutation_id.len() > TAMANHO_MAXIMO_DO_MUTATION_ID {
+            return Err(format!(
+                "mutation_id com {} bytes, acima do máximo de {TAMANHO_MAXIMO_DO_MUTATION_ID}",
+                self.mutation_id.len()
+            ));
+        }
+        if !(1..=MAXIMO_DE_MEMBROS_DO_GRUPO).contains(&self.count) {
+            return Err(format!(
+                "grupo de mutação com {} membros, fora de 1..={MAXIMO_DE_MEMBROS_DO_GRUPO}",
+                self.count
+            ));
+        }
+        if !(0..self.count).contains(&self.index) {
+            return Err(format!(
+                "membro {} de um grupo de {} membros",
+                self.index, self.count
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Calcula a revisão que uma mudança produz.

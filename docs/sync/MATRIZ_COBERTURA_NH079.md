@@ -38,12 +38,13 @@ revisões / eventos
 | etapa | status | o que cobre |
 | --- | --- | --- |
 | **B1** | integrada | fronteira `Mutacao`; `attachment` create e delete; exclusão remota bloqueada e a resolução dela (4.4.1); fronteira com o blob store (4.4.2); migration 21 (`sync_divergences.kind`) |
-| **B2** | integrada (#59) | `universe` create/update; `story`, `book`, `chapter` create/update/delete; `chapter_order` (create/delete de capítulo e reorder); campos personalizados dentro desses agregados; `tag_assignment` apagado pelos gatilhos do manuscrito; impacto de exclusão `Excluido`/`Reescrito`/`Bloqueado` (4.3); catálogo de efeitos com gate (3); payload canônico definitivo (8); dependência de criação pai → filho na aplicação remota; capa de livro pelo blob store |
-| **B2.1** | integrada (#60) | `story_order(universe)` e `book_order(story)` com o contrato de `chapter_order`; **ponte de ordem** transacional (8.1), que destrava ordens entre três origens sem nunca confirmar revisão corrente não materializada — inclusive o travamento que existia em `chapter_order` desde a B2 |
+| **B2** | integrada (#59) | `universe` create/update; `story`, `book`, `chapter` create/update/delete; `chapter_order` (create/delete de capítulo e reorder — **substituído por `chapter_position` na B2.2**); campos personalizados dentro desses agregados; `tag_assignment` apagado pelos gatilhos do manuscrito; impacto de exclusão `Excluido`/`Reescrito`/`Bloqueado` (4.3); catálogo de efeitos com gate (3); payload canônico definitivo (8); dependência de criação pai → filho na aplicação remota; capa de livro pelo blob store |
+| **B2.1** | integrada (#60), **substituída pela B2.2** | `story_order(universe)` e `book_order(story)` com o contrato de `chapter_order`; **ponte de ordem** transacional, que destrava ordens entre três origens sem nunca confirmar revisão corrente não materializada — inclusive o travamento que existia em `chapter_order` desde a B2 |
 | **B3** | integrada (#61) | `entity` (ficha inteira: `entities` + `entity_attributes` + campos personalizados, uma revisão só), `relation`, `timeline_event` e `canvas_entity_position`; exclusão de entidade com árvore completa de efeitos, inclusive o `SET NULL` da linha do tempo como **reescrita**; `entity_service`, `workspace_service` e a posição do canvas pela `Mutacao` |
-| **B4** | integrada (#62) | `planning_item` (card inteiro: texto, imagem, capítulo, valores escalares e relações — uma revisão), `planning_order(universe)` (coluna e posição) e `planning_field_definition`; o gatilho que reescreve vários cards declarado; os bloqueios temporários de capítulo, história e entidade viraram reescrita do card |
-| **B5** | implementada (branch `sync-b5-conhecimento-canvas`), em revisão | `content_tag` (create/update/delete — **`update_tag` não existia**, e foi criado aqui), `tag_assignment` create/delete pela fronteira, `canvas_node`, `canvas_node_position` e `canvas_edge`; payload **definitivo** do `attachment`; migration 22 (gatilhos que matam a aresta com a ponta + `tag_name_conflict`); `knowledge_service` entra no gate estrutural, onde **nunca esteve**; gate autoral × efêmero |
-| B6 | não iniciada | ver seção 7 |
+| **B4** | integrada (#62) | `planning_item` (card inteiro: texto, imagem, capítulo, valores escalares e relações — uma revisão), `planning_order(universe)` (coluna e posição — **substituído por `planning_item_position` na B2.2**) e `planning_field_definition`; o gatilho que reescreve vários cards declarado; os bloqueios temporários de capítulo, história e entidade viraram reescrita do card |
+| **B5** | integrada (#63) | `content_tag` (create/update/delete — **`update_tag` não existia**, e foi criado aqui), `tag_assignment` create/delete pela fronteira, `canvas_node`, `canvas_node_position` e `canvas_edge`; payload **definitivo** do `attachment`; migration 22 (gatilhos que matam a aresta com a ponta + `tag_name_conflict`); `knowledge_service` entra no gate estrutural, onde **nunca esteve**; gate autoral × efêmero |
+| **B2.2** | implementada (branch `sync-b2.2-posicao-por-item`), em revisão | **posição por item** no lugar das listas inteiras (`story_order`, `book_order`, `chapter_order`, `planning_order` saíram; entram `story_position`, `book_position`, `chapter_position`, `planning_field_position`, `attachment_position`, `planning_item_position`); **grupos de mutação atômicos** no envelope (migration 23): a ação que é uma transação na origem entra inteira no receptor, ou vira UMA decisão; a ponte de ordem da B2.1 saiu, sem consumidores |
+| B6 | pausada até a B2.2 integrar | ver seção 7 |
 
 **Fora da B2, dito às claras:**
 
@@ -78,14 +79,15 @@ e concorrência próprias.
 | `story` | `stories`, `content_custom_fields` (owner story) | `stories.id` | universe | |
 | `book` | `books`, `content_custom_fields` (owner book) | `books.id` | story | |
 | `chapter` | `chapters` (sem `sort_order`), `content_custom_fields` (owner chapter) | `chapters.id` | book | conteúdo, título, status, resumo |
-| `story_order` | `stories.sort_order` de um universo | `universe.id` | universe, stories | **só a ordem** (B2.1) |
-| `book_order` | `books.sort_order` de uma história | `story.id` | story, books | **só a ordem** (B2.1) |
-| `chapter_order` | `chapters.sort_order` de um livro | `book.id` | book, chapters | **só a ordem**; reordenar não conflita com texto |
+| `story_position` | `stories.sort_order` | `stories.id` | story | **só a posição** (B2.2) |
+| `book_position` | `books.sort_order` | `books.id` | book | **só a posição** (B2.2) |
+| `chapter_position` | `chapters.sort_order` | `chapters.id` | chapter | **só a posição**; mover não conflita com texto (B2.2) |
 | `entity` | `entities`, `entity_attributes`, `content_custom_fields` (owner entity) | `entities.id` | universe | atributos são internos (B3) |
 | `relation` | `relations` | `relations.id` | 2 entities | independente da entidade |
 | `timeline_event` | `timeline_events` | `timeline_events.id` | universe; entity (opcional, `SET NULL`) | |
 | `planning_item` | `planning_items` (sem `sort_order`), valores em `custom_field_values`, `planning_field_links` | `planning_items.id` | universe; chapter (opcional) | valores e links são internos |
-| `planning_order` | `planning_items.status` + `sort_order` do universo | `universe.id` | planning_items | ordem e coluna do quadro |
+| `planning_item_position` | `planning_items.status` + `sort_order` | `planning_items.id` | planning_item | etapa e posição do card (B2.2) |
+| `planning_field_position` | `planning_field_definitions.sort_order` | `planning_field_definitions.id` | planning_field_definition | posição da propriedade (B2.2) |
 | `planning_field_definition` | `planning_field_definitions` | `id` | universe; planning_item (se escopo card) | |
 | `content_tag` | `content_tags` | `id` | universe | |
 | `tag_assignment` | `content_tag_assignments` | `(tag_id, owner_type, owner_id)` | tag + dono | aresta com identidade própria |
@@ -93,17 +95,18 @@ e concorrência próprias.
 | `canvas_edge` | `canvas_edges` | `id` | universe; 2 pontas | |
 | `canvas_entity_position` | `canvas_entity_positions` | `entity_id` | entity | posição persistida da entidade no grafo |
 | `attachment` | `attachments` (referência de blob) | `id` | dono (chapter / entity / node) | já sincroniza |
+| `attachment_position` | `attachments.sort_order` | `attachments.id` | attachment | posição na galeria (B2.2) |
 
 **Ordem de dependência** (criação em ordem, exclusão na ordem inversa):
 
 ```text
 universe
- ├─ story ─ book ─ chapter ─ chapter_order(book)
+ ├─ story ─ book ─ chapter          cada item com a sua *_position
  ├─ entity ─ relation, canvas_entity_position
  ├─ timeline_event
  ├─ content_tag ─ tag_assignment(dono)
  ├─ planning_field_definition
- ├─ planning_item ─ planning_order(universe)
+ ├─ planning_item ─ planning_item_position(item)
  ├─ canvas_node ─ canvas_edge
  └─ attachment(dono)
 ```
@@ -188,18 +191,16 @@ estado do próprio agregado de origem, sem identidade própria; **Local** = tabe
 | universe | canvas_node | FK `canvas_nodes.universe_id` CASCADE | Delete | B5 | universe delete recusado |
 | universe | canvas_edge | FK `canvas_edges.universe_id` CASCADE | Delete | B5 | universe delete recusado |
 | story | book | FK `books.story_id` CASCADE | Delete | B2 | — |
-| story | book_order(story) | derivado (a ordem existe enquanto a história existe) | Delete | B2.1 | — |
-| story | story_order(universe) | derivado (a lista perde o id) | **Rewrite** | B2.1 | — |
+| story | story_position(story) | sem linha própria (o número mora na linha da história) | Delete | B2.2 | — |
 | story | planning_item (link interno) | FK `planning_field_links.story_id` CASCADE | **Rewrite** | B4 | **exclusão da história recusada** enquanto houver card com a história num campo |
 | story | tag_assignment | gatilho `trg_story_metadata_delete` | Delete | B2 | — |
 | story | (interno) | gatilho `trg_story_metadata_delete` → `content_custom_fields` | Interno | B2 | — |
 | book | chapter | FK `chapters.book_id` CASCADE | Delete | B2 | — |
-| book | chapter_order(book) | derivado (a ordem existe enquanto o livro existe) | Delete | B2 | — |
-| book | book_order(story) | derivado (a lista perde o id) | **Rewrite** | B2.1 | — |
+| book | book_position(book) | sem linha própria | Delete | B2.2 | — |
 | book | tag_assignment | gatilho `trg_book_metadata_delete` | Delete | B2 | — |
 | book | (interno) | gatilho `trg_book_metadata_delete` → `content_custom_fields` | Interno | B2 | — |
 | chapter | planning_item | FK `planning_items.chapter_id` **SET NULL** | **Rewrite** | B4 | **exclusão do capítulo recusada** enquanto houver card ligado |
-| chapter | chapter_order(book) | derivado (a lista perde o id) | **Rewrite** | B2 | — |
+| chapter | chapter_position(chapter) | sem linha própria | Delete | B2.2 | — |
 | chapter | attachment | gatilho `trg_chapter_attachments_delete` | Delete | B1 | — |
 | chapter | tag_assignment | gatilho `trg_chapter_metadata_delete` | Delete | B2 | — |
 | chapter | (interno) | gatilho `trg_chapter_metadata_delete` → `content_custom_fields` | Interno | B2 | — |
@@ -288,7 +289,7 @@ Regras de implementação:
 **A fronteira não assume que todo agregado afetado some.** O codec devolve os impactos diretos:
 
 ```text
-Excluido(agregado)    some junto (FK CASCADE, gatilho, existência derivada)
+Excluido(agregado)    some junto (FK CASCADE, gatilho, posição sem linha própria)
 Reescrito(agregado)   sobrevive com outro estado (SET NULL, lista que perde um item)
 Bloqueado(motivo)     atinge agregado ainda não coberto → recusa a exclusão inteira
 ```
@@ -304,21 +305,23 @@ serviço executa o DELETE
 fim da transação:
   Reescrito com linha própria → estado canônico relido → upsert, ANTES das exclusões
   Excluido  → precisa ter sumido → evento delete (descendentes antes do pai)
-  Reescrito de existência derivada (ordens) → upsert DEPOIS das exclusões
+  todos os eventos da ação → UM grupo de mutação (mesmo mutation_id, índices 0..n)   (B2.2)
   Excluido(A) domina Reescrito(A): agregado condenado não ganha revisão intermediária
   agregado cujo canônico já é o payload da revisão corrente → nenhum evento
 COMMIT
 ```
 
-Na B2 o `Reescrito` real é `chapter_order(livro)` quando um capítulo é excluído. Os `Reescrito` por
-`SET NULL` (planning, timeline) são `Bloqueado` até a etapa que cobre o agregado.
+Desde a B2.2 excluir um item **não reescreve os irmãos**: a posição é por item e nada é compactado. O
+`Reescrito` que sobra é o de quem sobrevive com linha própria (card que perde ligação, evento com entidade
+em nulo).
 
-**A ordem de emissão depende do tipo de sobrevivente.**
+**Sobrevivente com linha própria sai antes das exclusões.** O estado dele sem o item apagado já é
+materializável, e vir primeiro faz o receptor conhecer a concorrência **antes** do SQL destrutivo: edição
+concorrente abre divergência e a exclusão seguinte é bloqueada. A regra antiga de pôr "ordens" **depois**
+das exclusões morreu com as listas inteiras (B2.2).
 
-| sobrevivente | quando é emitido | por quê |
-| --- | --- | --- |
-| tem linha própria (card do planejamento) | **antes** das exclusões | o estado dele sem o item apagado já é materializável, e vir primeiro faz o receptor conhecer a concorrência **antes** do SQL destrutivo: edição concorrente abre divergência e a exclusão seguinte é bloqueada pelo preflight |
-| existência derivada (`*_order`) | **depois** das exclusões | a lista sem o item só materializa quando o item sai; e como o cursor de uma origem é contíguo, pôr a ordem primeiro travaria a origem inteira (o travamento que a B2.1 encontrou) |
+**A posição do item sai logo antes do item.** Ela é declarada num lugar só (`impactos_da_exclusao`), para
+nenhum codec esquecer.
 
 **`Excluido(A)` domina `Reescrito(A)`.** Se um agregado já vai desaparecer nesta operação, a reescrita que a
 cascata causaria nele é absorvida — sem revisão intermediária. É o card que possui um campo exclusivo com
@@ -333,9 +336,9 @@ a reescrita dele é o evento seguinte da mesma origem. Bloqueia se o sobrevivent
 mutação. Entre os dois eventos, o sobrevivente fica momentaneamente diferente da revisão dele; a asserção
 geral de materialização vale em repouso (8.1).
 
-**Ordem da cascata do livro:** `chapter_order` (excluído, existência derivada) sai primeiro, depois os capítulos. Quando a exclusão de um
-capítulo chega, a ordem já está excluída causalmente (sem revisão corrente) e não conta como sobrevivente
-nem como filho vivo.
+**Uma ação, um grupo (B2.2).** Tudo o que a exclusão emite — posições, filhos, sobreviventes, a raiz —
+sai com o mesmo `mutation_id`, `kind = delete_tree` e a raiz declarada. No receptor, ou o grupo entra
+inteiro, ou nenhum membro entra (4.6).
 
 Depois de `DELETE FROM parent`, a cascata e os gatilhos já apagaram os descendentes — ninguém consegue mais
 lê-los. **Proibido:** descobrir os afetados depois da cascata.
@@ -451,6 +454,97 @@ Política:
 Testes: `mutacao::tests::rollback_depois_do_blob_deixa_so_o_arquivo_orfao_e_repetir_o_reaproveita`,
 `blob_store::tests::limpeza_de_staging_so_leva_part_abandonado`.
 
+### 4.6 Grupos de mutação: a atomicidade atravessa a rede (B2.2)
+
+A `Mutacao` é uma transação na origem. Até a B2.2, na rede ela virava eventos independentes, e o receptor
+podia aplicar metade de uma ação:
+
+```text
+PC apaga o livro (c1, c2)        Android cria o capítulo "novo" offline
+Android aplica: c1 some · c2 some · o livro é bloqueado por "novo"      → livro pela metade
+```
+
+Na B2 isso não acontecia **por acidente**: a lista inteira `chapter_order` entrava em divergência e travava
+cada exclusão de capítulo. A B2.2 tirou a lista e expôs o problema real: a unidade de atomicidade era
+pequena demais.
+
+**O envelope carrega a ação** (migration 23):
+
+```text
+mutation_id      o mesmo para todo evento de uma Mutacao::executar
+mutation_index   0..count, contíguo, na ordem de emissão
+mutation_count   quantos membros a ação tem
+mutation_kind    "delete_tree" quando a ação é uma exclusão composta
+root_type/_id    a raiz da exclusão: o que a decisão apresenta ao escritor
+```
+
+**Entra na assinatura, fica fora da revisão.** O grupo descreve a ação, não o estado do agregado: apagar
+c1 sozinho ou como parte do livro é o mesmo efeito sobre c1 e dá a mesma `new_rev`. Mas reagrupar eventos
+no caminho — tirar um membro, mudar a contagem — invalida a assinatura. Evento sem grupo (anterior à v23)
+mantém os bytes assinados de antes.
+
+**A identidade de um grupo é `(origem, mutation_id)`.** Duas origens podem gerar o mesmo id; o
+receptor lê os membros pela origem e pela seq, a resolução pela origem do evento em que a decisão foi
+ancorada, e o índice é `(device_id, mutation_id)`.
+
+**A forma do grupo é conferida antes de guardar e antes de iterar.** `1 ≤ count ≤ 50 000`,
+`0 ≤ index < count`, `mutation_id` de até 128 bytes, e evento sem id tem a forma de um membro só.
+Fora disso a sessão falha fechada e nada entra no log — mesmo com assinatura válida. A drenagem
+confere de novo (`usize::try_from`, `checked_add` na seq) antes de dimensionar qualquer coisa, e a
+origem recusa emitir uma ação acima do teto.
+
+**No receptor:**
+
+```text
+grupo incompleto                   → guarda, não aplica nenhum membro, o cursor espera
+grupo completo, num SAVEPOINT, membro a membro:
+  todos entram                     → confirma
+  um membro espera dependência     → desfaz tudo, o grupo espera
+  um membro diverge ou é bloqueado → desfaz tudo; UMA decisão da ação, com o mutation_id, ancorada
+                                     na RAIZ quando é uma exclusão composta (senão no membro que
+                                     não entrou); revisões de todos os membros entram na
+                                     história e os eventos ficam aplicados (o cursor anda)
+  erro                             → a sessão inteira falha fechada
+```
+
+**Regra estrita, decidida:** membro concorrente de **qualquer** tipo — inclusive edição contra edição —
+segura o grupo inteiro. Duas reordenações que colidem num capítulo não se misturam: aplicar só a parte
+que não colidiu comporia uma ordem que nenhum dos dois escritores escolheu. Cada lado fica com a sua até
+a decisão.
+
+**A decisão vale para a ação.** `estado_concorrente` considera em decisão todo agregado que é membro de um
+grupo com decisão aberta — não só a âncora. A resolução (4.4.1):
+
+```text
+manter o local   fecha a causalidade de TODO membro (tabela abaixo)
+aceitar          refaz AGORA o preflight de cada membro, na ordem, e aplica todos numa transação;
+                 sobrevivente reescrito pela exclusão e editado aqui depois da base NÃO recebe o
+                 payload da origem: a exclusão roda sobre o estado daqui e ele ganha revisão nova,
+                 descendente da reescrita da origem (a edição local fica, a origem a recebe como
+                 sequencial)
+```
+
+**Manter o local fecha a causalidade de todo membro.** Depois dela, a revisão corrente de cada
+agregado da ação descende da revisão que a origem emitiu. Um membro deixado para trás — mesmo com o
+estado igual — faria o próximo evento de quem partiu da revisão da origem virar decisão fantasma.
+
+```text
+membro   aqui                       efeito
+upsert   existe, payload igual      adota new_rev da origem; sem evento
+upsert   existe, payload diferente  o estado daqui vira revisão nova sobre new_rev da origem
+upsert   não existe (excluído aqui) exclusão nova sobre new_rev da origem
+delete   não existe                 adota new_rev da origem como tombstone; sem evento
+delete   existe                     restauração sobre o tombstone da origem
+```
+
+A reafirmação sai **da raiz para as folhas, depois os sobreviventes** — o contrário da ação da
+origem. O card que cita o campo restaurado não materializa antes do campo; na ordem da origem, o
+receptor seguraria a ação inteira esperando uma dependência que vem dentro dela.
+
+**O lote da troca não corta uma ação ao meio.** O receptor não aplica grupo incompleto e o vetor dele só
+anda pelo aplicado: um lote que terminasse no meio de um grupo maior que ele faria a sessão seguinte pedir o
+mesmo começo para sempre. Ao atingir o limite dentro de um grupo, a resposta completa o grupo.
+
 ### 4.5 Gates
 
 1. **Estrutural:** serviços sincronizáveis não chamam `database.write()` fora da `Mutacao`; repositórios da
@@ -500,8 +594,24 @@ Testes: `mutacao::tests::rollback_depois_do_blob_deixa_so_o_arquivo_orfao_e_repe
     agregado, ou local com motivo).
 13. **Materialização exata (B2):** cada evento aplicado um por vez com o estado conferido
    (`cada_aplicado_materializa_o_proprio_evento`); asserção geral em repouso depois de toda sessão dos testes
-   de dois aparelhos; causalidade cruzada A/B/C (`ordem_que_cita_capitulo_de_outra_origem_espera_o_capitulo_chegar`);
-   ordem com capítulo repetido, de outro livro, inexistente e não citado; pai trocado em `story`/`book`/`chapter`.
+   de dois aparelhos; causalidade cruzada A/B/C (`posicao_que_cita_capitulo_de_outra_origem_espera_o_capitulo_chegar`);
+   posição exata, empatada, de item ausente e de outro pai; pai trocado em `story`/`book`/`chapter`.
+14. **Posição por item (B2.2):** histórias, livros, capítulos, propriedades, anexos e cards criados ao mesmo
+    tempo nos dois aparelhos convergem **sem nenhuma divergência** e mostram a **mesma ordem**; o mesmo
+    capítulo movido nos dois lados diverge só nele; movido num lado e excluído no outro não perde nada;
+    mover o card e editar o conteúdo não conflitam; excluir um capítulo não revisa os irmãos. Os testes
+    rodaram contra listas e posições convivendo antes de remover as listas, e falharam pelo motivo certo.
+15. **Grupos de mutação (B2.2):** livro excluído num lado com capítulo criado no outro fica inteiro;
+    exclusão bloqueada por anexo concorrente não deixa posição órfã, e "manter o local" restaura a ação
+    inteira; ação que chega pela metade não toca o domínio até completar em outra sessão; falha injetada no
+    meio do grupo não deixa membro aplicado; lote menor que a ação entrega a ação inteira; o grupo entra na
+    assinatura, fica fora da revisão, e evento sem grupo mantém a assinatura antiga. Manter o local: com
+    três aparelhos, estado igual com revisão diferente adota a da origem e a edição seguinte de um
+    terceiro entra como sequencial; card excluído aqui vira exclusão sobre a reescrita da origem;
+    exclusão dos dois lados adota o tombstone da origem sem evento; a restauração sai da raiz para as
+    folhas. Grupo de forma absurda é recusado sem entrar no log, e o que já estiver no log não é
+    iterado; o mesmo `mutation_id` em duas origens são dois grupos, tanto na resolução quanto no
+    estado concorrente (teste isolado de `estado_concorrente`).
 
 ## 5. Negociação de compatibilidade (etapa E)
 
@@ -545,20 +655,12 @@ B3:
    payload  = [ { key, defaultValue }, … ]    em ordem canônica (sort_order, key)
    ```
 
-   Determinístico, sem id de linha no payload, e é o conjunto inteiro que vira uma revisão — como
-   `chapter_order` fez com a ordem.
-3. **`attachment_order(owner)` — requisito obrigatório da B6, não "talvez".** A B5 tirou `sortOrder` do payload do anexo: é número físico local
-   (`MAX+1` no `INSERT`) e não existe reordenação de anexo no app — nenhum comando, nenhum gateway. A
-   consequência é que cada aparelho calcula a posição na chegada, e duas galerias podem ficar em ordens
-   diferentes depois de convergir. É a mesma pergunta do item abaixo, com a mesma saída: ou nasce o
-   agregado de ordem no padrão de `chapter_order`, **ou** uma decisão formal, escrita, de que a
-   ordem da galeria é estado local. Uma das duas tem de existir antes da gênese.
-4. **`planning_field_order(universe)` — requisito obrigatório da B6, não "talvez".** A B4 deixou o
-   `sort_order` das definições de campo fora do payload. Isso já diverge sem drag-and-drop: se A cria
-   F1 e B cria F2, cada aparelho calcula o próprio `sort_order` e a ordem visual continua diferente depois de
-   convergir. Antes da C, uma das duas coisas tem de existir: o agregado `planning_field_order(universe)` no
-   padrão de `chapter_order`, **ou** uma decisão formal, escrita, de que a ordem das propriedades é estado
-   local. A preferência registrada é sincronizar.
+   Determinístico, sem id de linha no payload, e é o conjunto inteiro que vira uma revisão. (Diferente
+   de ordem: a B2.2 mostrou que ordem como conjunto inteiro conflita onde não há conflito.)
+3. ~~**`attachment_order(owner)`**~~ e 4. ~~**`planning_field_order(universe)`**~~ — **resolvidos pela
+   B2.2**, e não como agregados de lista. Os testes da B6 mostraram que lista inteira transforma criações
+   concorrentes compatíveis em divergência. A ordem da galeria e a das propriedades convergem agora por
+   `attachment_position` e `planning_field_position`, um agregado por item.
 
 ## 7. Subdivisão da B
 
@@ -568,9 +670,10 @@ Nenhuma PR declara cobertura completa; cada uma atualiza as suas linhas da seç�
 B1  infraestrutura: Mutacao, exclusão com preflight, exclusão remota bloqueada;
     chapter (update, delete) + attachment migrados; gates 1–4        — sem cobertura nova além disso
 B2  manuscrito: universe, story, book, chapter create, chapter_order, custom fields, tag assignments por gatilho
-B2.1 story_order(universe), book_order(story) — antes da C
+B2.1 story_order(universe), book_order(story) — antes da C       (substituída pela B2.2)
+B2.2 posição por item no lugar das listas inteiras; grupos de mutação atômicos  ← implementada
 B3  entidades: entity (+atributos), relation, timeline_event, canvas_entity_position  ← implementada
-B4  planejamento: planning_item, planning_order, planning_field_definition (gatilho que reescreve cards)  ← implementada
+B4  planejamento: planning_item, planning_order, planning_field_definition (gatilho que reescreve cards)
 B5  conhecimento e canvas: content_tag (+update_tag), tag_assignment, canvas_node,
     canvas_node_position, canvas_edge; attachment definitivo; gate autoral × efêmero  ← implementada
 B6  conteúdo final de colaboração aprovada e conversões de legado pela Mutacao;
@@ -590,44 +693,40 @@ Campos personalizados: `[{key, value}]` na ordem `sort_order, key`.
 | tipo | id do agregado | payload | fica de fora |
 | --- | --- | --- | --- |
 | `universe` | `universes.id` | `{id, name, description, coverBlobHash, coverMimeType, customFields}` | `created_at`, `updated_at`, `cover_image` (bytes legados) |
-| `story` | `stories.id` | `{id, universeId, name, description, customFields}` | `sort_order` (posição local; não há reordenação), timestamps |
-| `book` | `books.id` | `{id, storyId, name, description, coverBlobHash, coverMimeType, customFields}` | `sort_order`, timestamps, `cover_image` |
-| `chapter` | `chapters.id` | `{id, bookId, title, content, summary, sceneOrigin, sceneDestination, status, canonStatus, customFields}` | `sort_order` (→ `chapter_order`), `word_count` (derivável), timestamps |
-| `story_order` | `universes.id` | `{universeId, storyIds}` — ids na ordem `sort_order, id` | posições numéricas |
-| `book_order` | `stories.id` | `{storyId, bookIds}` — ids na ordem `sort_order, id` | posições numéricas |
-| `chapter_order` | `books.id` | `{bookId, chapterIds}` — ids na ordem `sort_order, id` | posições numéricas |
+| `story` | `stories.id` | `{id, universeId, name, description, customFields}` | `sort_order` (→ `story_position`), timestamps |
+| `book` | `books.id` | `{id, storyId, name, description, coverBlobHash, coverMimeType, customFields}` | `sort_order` (→ `book_position`), timestamps, `cover_image` |
+| `chapter` | `chapters.id` | `{id, bookId, title, content, summary, sceneOrigin, sceneDestination, status, canonStatus, customFields}` | `sort_order` (→ `chapter_position`), `word_count` (derivável), timestamps |
+| `story_position` | `stories.id` | `{storyId, universeId, sortOrder}` | timestamps |
+| `book_position` | `books.id` | `{bookId, storyId, sortOrder}` | timestamps |
+| `chapter_position` | `chapters.id` | `{chapterId, bookId, sortOrder}` | timestamps |
+| `planning_field_position` | `planning_field_definitions.id` | `{fieldId, universeId, sortOrder}` | timestamps |
+| `attachment_position` | `attachments.id` | `{attachmentId, ownerType, ownerId, sortOrder}` | `created_at` |
+| `planning_item_position` | `planning_items.id` | `{itemId, universeId, status, sortOrder}` | timestamps |
 | `tag_assignment` | `tagId:ownerType:ownerId` | `{tagId, ownerType, ownerId}` | `id` da linha (local), `created_at` |
 | `entity` | `entities.id` | `{id, universeId, type, name, description, summary, canonStatus, imageBlobHash, imageMimeType, attributes:[{key,value}], customFields:[{key,value}]}` | timestamps, `image` legada, ids e `sort_order` das linhas internas |
 | `relation` | `relations.id` | `{id, universeId, sourceId, targetId, type, label, bidirectional, importance}` | `created_at` |
 | `timeline_event` | `timeline_events.id` | `{id, universeId, title, description, eventType, startDate, endDate, entityId, displayDate, sortKey}` | timestamps |
 | `canvas_entity_position` | `entities.id` | `{entityId, universeId, positionX, positionY}` | `updated_at` |
-| `planning_item` | `planning_items.id` | `{id, universeId, chapterId, title, description, targetWords, imageBlobHash, imageMimeType, values:[{fieldId,value}], links:[{fieldId,kind,targetId}]}` | `status` e `sort_order` (→ `planning_order`), timestamps, `image` legada, ids das linhas de ligação |
-| `planning_order` | `universes.id` | `{universeId, items:[{itemId, status}]}` — colunas na ordem do fluxo, posição = a da lista | os números de `sort_order` |
-| `planning_field_definition` | `planning_field_definitions.id` | `{id, universeId, name, fieldType, options, scope, ownerItemId}` | timestamps, `sort_order` (ver 6.1) |
+| `planning_item` | `planning_items.id` | `{id, universeId, chapterId, title, description, targetWords, imageBlobHash, imageMimeType, values:[{fieldId,value}], links:[{fieldId,kind,targetId}]}` | `status` e `sort_order` (→ `planning_item_position`), timestamps, `image` legada, ids das linhas de ligação |
+| `planning_field_definition` | `planning_field_definitions.id` | `{id, universeId, name, fieldType, options, scope, ownerItemId}` | timestamps, `sort_order` (→ `planning_field_position`) |
 
 Decisões que valem conferir na revisão:
 
 - **`word_count` fora.** Quem recebe recalcula em Rust com a mesma regra do editor
   (`sync_codec/palavras.rs`); a paridade é conferida pelos dois lados sobre
   `src-tauri/fixtures/contagem_de_palavras.json` (Rust e `tests/word-count-parity.test.mjs`).
-- **Ordem de história e livro: `story_order` e `book_order` (B2.1).** Mesmo contrato de `chapter_order`,
-  materializados no `sort_order` que já existe — sem tabela nova. Nos bancos legados, a ordem atual de
-  `stories.sort_order`/`books.sort_order` **é** o estado desses agregados; a gênese (C) adota
-  `story_order`, `book_order` e `chapter_order` junto com o resto do manuscrito.
+- **Posição por item (B2.2).** A ordem é um número por item, materializado no `sort_order` que já existe —
+  sem tabela nova. Toda listagem ordena por `sort_order, id`: empate é estado válido (duas criações offline
+  podem receber o mesmo número) e se resolve igual em todo aparelho. Nada é compactado na exclusão.
 
   ```text
-  create universe  → universe + story_order(universe)
-  create story     → story + story_order(universe) + book_order(story)
-  create book      → book + book_order(story) + chapter_order(book)
-  delete story     → book_order(story), livros…, story; story_order(universe) reescrita
-  delete book      → chapter_order(book), capítulos…, book; book_order(story) reescrita
-  reorder (futuro) → só a ordem
+  criar     item + posição(item)            MAX(sort_order) + 1
+  excluir   posição(item) + item            os irmãos não ganham revisão
+  mover     só as posições que mudaram      conflito na unidade certa
   ```
 
 - **Capa legada bloqueia.** Capa ainda em base64 (`hash` vazio) não vira payload: a leitura canônica recusa
   e a mutação falha sem alterar nada, até o backfill converter.
-- **`chapter_order` existe enquanto o livro existe**, inclusive vazia. `create_book` emite a ordem vazia;
-  `create_chapter`/`delete_chapter` a reescrevem na mesma mutação; `reorder_chapters` altera só ela.
 
 **Decisões da B3 que valem conferir:**
 
@@ -663,15 +762,13 @@ Decisões que valem conferir na revisão:
   moveu as relações que a build de desenvolvimento havia escrito no JSON para a tabela normalizada e
   limpou o JSON — não há legado a migrar nem duas fontes de verdade. As duas coisas são estado interno do
   card: mudar um campo é **uma revisão do `planning_item`**, nunca um evento por linha ou por link.
-- **Coluna e ordem são o quadro, não o card.** Arrastar altera só `planning_order`; nenhum card ganha
-  revisão por ter mudado de coluna. Criar e excluir card emitem `planning_item` **e** `planning_order` na
-  mesma mutação. Salvar a ficha também revisa o quadro quando a etapa muda (o próprio `UPDATE` recoloca o
-  card no fim da coluna nova) — e não emite nada se a ordem não mudou de fato.
+- **Etapa e posição são do lugar do card, não do conteúdo.** Arrastar altera só `planning_item_position`
+  do card arrastado; o conteúdo não ganha revisão. Salvar a ficha também revisa a posição quando a etapa
+  muda — e não emite nada se ela não mudou. (Até a B2.2 isto era uma lista do universo, `planning_order`.)
 - **`ownerItemId` é dependência causal explícita.** Um campo de escopo `card` não existe sem o card dono e
   some com ele (FK `owner_item_id ON DELETE CASCADE`), então excluir o card declara a exclusão do campo.
   Escopo `universal` com dono, ou escopo `card` sem dono, é inconsistência.
-- **`sort_order` das definições ficou fora do payload** — não há operação de reordenação hoje, igual ao
-  caso de história/livro na B2. A decisão sobre um `planning_field_order(universe)` está em 6.1.
+- **`sort_order` das definições ficou fora do payload do campo** e vive em `planning_field_position` (B2.2).
 
 ### 8.1 Contrato da aplicação remota (upsert)
 
@@ -687,40 +784,11 @@ conferir_materializacao(evento)              DEPOIS de escrever, na mesma transa
 
 | caso | resultado |
 | --- | --- |
-| pai ainda não existe (`story` sem universo, `book` sem história, `chapter`/`chapter_order` sem livro, `tag_assignment` sem tag ou dono) | `PrecisaReconciliar` |
+| pai ainda não existe (`story` sem universo, `book` sem história, `chapter` sem livro, `tag_assignment` sem tag ou dono) | `PrecisaReconciliar` |
+| posição de item que ainda não existe aqui | `PrecisaReconciliar` |
+| posição com pai diferente do item daqui | erro — o pai é imutável |
 | agregado já existe aqui com **outro pai** (`story.universeId`, `book.storyId`, `chapter.bookId`) | erro — **o pai é imutável**: nenhuma escrita do app move história, livro ou capítulo; um evento que diga outro pai descreve outra árvore |
-| ordem (`story_order`, `book_order`, `chapter_order`) cita filho que não existe aqui | `PrecisaReconciliar` (pode ser de outra origem que ainda não chegou) |
-| ordem cita filho repetido | erro |
-| ordem cita filho de outro pai | erro (pai imutável: nunca fica válido) |
-| existe filho deste pai que a ordem não cita | `PrecisaReconciliar` — nunca "vai para o fim"; **salvo** revisão superada (abaixo) |
-| tudo presente | a ordem materializada é **exatamente** a lista |
-
-**Revisão de ordem superada.** Espera pura travava entre três origens:
-
-```text
-C cria c3                  ordem Rc = [c1, c2, c3]
-A recebe, cria c4          ordem Ra = [c1, c2, c3, c4], base Rc
-B recebe tudo:  c4 aplica · Ra espera (base Rc desconhecida) · c3 aplica · Rc espera (c4 não citado)
-                → nenhuma destrava a outra
-```
-
-`c4` é causalmente posterior a `Rc`, mas eventos de agregados diferentes não carregam essa relação; a
-história da própria ordem carrega. **Ponte de ordem** (`atravessar_ponte`), só para agregado de ordem:
-
-```text
-Rc sequencial, não materializável
-SAVEPOINT ponte_de_ordem
-  Rc → revisão corrente e "aplicada" PROVISÓRIAS (domínio intocado)
-  sucessor alcançável de Rc?
-    mesmo agregado · base_rev == new_rev(Rc) · ainda não aplicado · guardado (já passou pela confiança)
-    alcançável: toda seq da origem dele entre o cursor e ele já aplicada — lacuna → não é caminho
-  sequencial contra a história provisória?
-  dependências do sucessor:
-    presentes              → aplica, confere materialização exata → RELEASE   (Applied::Superado)
-    faltando               → atravessa o sucessor também (até 64 revisões)
-    inconsistência (erro)  → não é caminho
-  não chegou a uma revisão materializada → ROLLBACK TO: nada da tentativa sobrevive; Rc continua pendente
-```
+| posição empatada com a de um irmão | aplica — empate é válido, a listagem desempata pelo `id` |
 
 **Invariante estrutural:** `sync_aggregate_state.current_rev` só é confirmado apontando para uma revisão
 materializada — nunca para conhecimento causal apenas. Por isso nenhuma escrita local parte de uma
@@ -729,11 +797,9 @@ aplicados. No fim de `receber_eventos`, todo agregado tocado na sessão, sem dec
 pendente, é conferido: revisão corrente presente ⇒ `ler_canonico == payload(revisão corrente)`; diferente,
 a sessão inteira não é confirmada.
 
-Ordem concorrente (mesma base que a daqui) continua virando decisão — a ponte não é merge.
-
-Testes: `ponte_de_ordem::ponte_que_nao_fecha_desfaz_tudo_e_fecha_quando_a_dependencia_chega`,
-`sucessor_com_lacuna_na_origem_nao_fecha_a_ponte`, `reorder_local_depois_de_ponte_desfeita_parte_do_estado_real`,
-e os A/B/C de `story_order` e `chapter_order`.
+A **ponte de ordem** da B2.1 saiu na B2.2: ela só existia para destravar listas inteiras que citavam
+filhos de outras origens. Posição por item depende só do próprio item, que é criado antes dela na mesma
+ação.
 
 Se mover capítulo entre livros virar funcionalidade, o contrato muda para "atualiza a FK na mesma
 transação" — e a checagem de materialização continua a mesma.
@@ -792,22 +858,22 @@ divergência do próprio card (concorrente) continua sendo da etapa F.
 | `fieldId` de outro universo, ou exclusivo de outro card | erro |
 | ligação cujo alvo (história, entidade, tag) não existe aqui | `PrecisaReconciliar` |
 | ligação cujo alvo está em outro universo | erro |
-| `planning_order` citando card que não existe aqui | `PrecisaReconciliar` |
-| `planning_order` com card repetido, coluna desconhecida ou card de outro universo | erro |
-| existe card deste universo que o quadro não cita | `PrecisaReconciliar` (com a ponte de ordem de 8.1) |
+| `planning_item_position` de card que não existe aqui | `PrecisaReconciliar` |
+| `planning_item_position` com etapa desconhecida ou card de outro universo | erro |
 | `planning_field_definition` com escopo e dono incoerentes, ou `options` que não é lista | erro |
 
 **Asserção geral de materialização:**
 
 - **Por evento (em produção):** após todo `Applied::Aplicado`, o agregado aplicado é o payload do evento.
-  Existência derivada (`chapter_order`) é exceção só no delete: ela some com o livro, que vem depois.
+  Agregado sem linha própria (a posição) é exceção só no delete: ele some com o item, que vem depois
+  na mesma ação.
 - **Em repouso (nos testes):** depois de cada sessão, todo agregado **coberto** (a lista vem de
   `sync_codec::TIPOS_COBERTOS`, não de uma lista à mão — a primeira versão desta asserção citava só os
   tipos da B2 e por isso não cobria B3 nem B4) com revisão corrente e sem decisão
   aberta nem evento pendente tem `ler_canonico == payload da revisão corrente`. Não vale **entre** dois
   eventos de uma mesma mutação para os OUTROS agregados dela (capítulo já excluído, ordem ainda por chegar):
-  uma mutação vira vários eventos, e o receptor os aplica um de cada vez. Tornar isso atômico exige agrupar
-  eventos por mutação no protocolo — fica registrado para a etapa E.
+  uma mutação vira vários eventos. **Isso foi fechado na B2.2**: os eventos de uma mutação formam um grupo,
+  e o receptor aplica o grupo inteiro num `SAVEPOINT` ou nenhum membro dele (4.6).
 
 **Sessão com dependência entre origens.** (B2) A drenagem repete as origens até nenhuma aplicar nada. Antes,
 cada origem era drenada uma vez em ordem de `device_id`: a ordem de A que cita um capítulo de C ficava

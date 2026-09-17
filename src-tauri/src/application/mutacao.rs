@@ -80,7 +80,7 @@ use rusqlite::{Transaction, TransactionBehavior};
 
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::identity::DeviceIdentity;
-use crate::domain::sync::{AggregateRef, Operation};
+use crate::domain::sync::{AggregateRef, GrupoDeMutacao, Operation};
 use crate::infrastructure::sqlite::sync_codec::{self, EstadoConcorrente, Impacto};
 use crate::infrastructure::sqlite::sync_repository::{append_event_in_transaction, LocalChange};
 use crate::infrastructure::sqlite::SqliteDatabase;
@@ -132,6 +132,9 @@ enum Operacao {
 pub struct Mutacao<'t, 'c> {
     tx: &'t Transaction<'c>,
     operacoes: Vec<Operacao>,
+    /// A raiz da primeira exclusão declarada. Faz do grupo um `delete_tree`, e é o que a decisão
+    /// apresenta ao escritor se o grupo for bloqueado em outro aparelho.
+    raiz_da_exclusao: Option<AggregateRef>,
 }
 
 impl<'t, 'c> Mutacao<'t, 'c> {
@@ -151,6 +154,7 @@ impl<'t, 'c> Mutacao<'t, 'c> {
             let mut mutacao = Mutacao {
                 tx: &tx,
                 operacoes: Vec::new(),
+                raiz_da_exclusao: None,
             };
             let valor = acao(&mut mutacao)?;
             mutacao.finalizar(identidade)?;
@@ -193,6 +197,9 @@ impl<'t, 'c> Mutacao<'t, 'c> {
             return Err(DatabaseCommandError::not_found(format!(
                 "Não há {tipo} {id} para excluir."
             )));
+        }
+        if self.raiz_da_exclusao.is_none() {
+            self.raiz_da_exclusao = Some(raiz.clone());
         }
 
         let coleta = coletar(&raiz, |agregado| {
@@ -274,6 +281,19 @@ impl<'t, 'c> Mutacao<'t, 'c> {
         Ok(())
     }
 
+    /// Declara a exclusão de um agregado que **já não existe** aqui — para torná-la descendente de
+    /// uma revisão que chegou de fora. Só a resolução de uma decisão usa isto: "manter o local"
+    /// quando o local é a ausência e o outro aparelho reescreveu o agregado.
+    ///
+    /// Sem preflight nem cascata: nada é apagado agora. O evento parte da revisão corrente, que o
+    /// chamador ajustou antes.
+    pub fn reafirmou_exclusao(&mut self, agregado: AggregateRef, universe_id: &str) {
+        self.operacoes.push(Operacao::Excluiu {
+            agregado,
+            universe_id: universe_id.to_string(),
+        });
+    }
+
     fn declarar_reescrita(&mut self, agregado: AggregateRef) {
         let ja = self.operacoes.iter().any(
             |operacao| matches!(operacao, Operacao::Reescreveu(existente) if existente == &agregado),
@@ -295,8 +315,18 @@ impl<'t, 'c> Mutacao<'t, 'c> {
             })
             .collect();
 
+        // ── 1. O que vai virar evento, na ordem de emissão ──
+        //
+        // Tudo é decidido ANTES de gravar o primeiro evento: o grupo precisa saber quantos membros
+        // tem, e o total entra na assinatura de cada um (B2.2).
+        struct Pendente {
+            universe_id: String,
+            agregado: AggregateRef,
+            operacao: Operation,
+            payload: String,
+        }
+        let mut pendentes: Vec<Pendente> = Vec::new();
         let mut emitidos: Vec<AggregateRef> = Vec::new();
-        let mut eventos = 0usize;
         for operacao in &self.operacoes {
             match operacao {
                 Operacao::Gravou(agregado) | Operacao::Reescreveu(agregado) => {
@@ -326,16 +356,12 @@ impl<'t, 'c> Mutacao<'t, 'c> {
                     {
                         continue;
                     }
-                    append_event_in_transaction(
-                        self.tx,
-                        identidade,
-                        &LocalChange {
-                            universe_id: &universe_id,
-                            aggregate: agregado.clone(),
-                            operation: Operation::Upsert,
-                            payload: &estado.payload,
-                        },
-                    )?;
+                    pendentes.push(Pendente {
+                        universe_id,
+                        agregado: agregado.clone(),
+                        operacao: Operation::Upsert,
+                        payload: estado.payload,
+                    });
                 }
                 Operacao::Excluiu {
                     agregado,
@@ -349,20 +375,60 @@ impl<'t, 'c> Mutacao<'t, 'c> {
                         )));
                     }
                     emitidos.push(agregado.clone());
-                    append_event_in_transaction(
-                        self.tx,
-                        identidade,
-                        &LocalChange {
-                            universe_id,
-                            aggregate: agregado.clone(),
-                            operation: Operation::Delete,
-                            payload: "",
-                        },
-                    )?;
+                    pendentes.push(Pendente {
+                        universe_id: universe_id.clone(),
+                        agregado: agregado.clone(),
+                        operacao: Operation::Delete,
+                        payload: String::new(),
+                    });
                 }
             }
-            eventos += 1;
-            if eventos == 1 {
+        }
+
+        // ── 2. A ação inteira como um grupo ──
+        //
+        // Um id, índices contíguos, o total. É o que permite ao receptor não aplicar metade de uma
+        // ação: nenhum membro altera o domínio de lá antes de o grupo inteiro chegar e poder entrar.
+        let mutation_id = crate::domain::ids::new_id();
+        let total = i64::try_from(pendentes.len())
+            .ok()
+            .filter(|total| *total <= crate::domain::sync::MAXIMO_DE_MEMBROS_DO_GRUPO)
+            .ok_or_else(|| {
+                DatabaseCommandError::conflict(format!(
+                    "Esta ação altera {} itens de uma vez, acima do máximo de {} que a \
+                     sincronização transporta como uma ação só. Nada foi alterado.",
+                    pendentes.len(),
+                    crate::domain::sync::MAXIMO_DE_MEMBROS_DO_GRUPO
+                ))
+            })?;
+        let (kind, root_type, root_id) = match &self.raiz_da_exclusao {
+            Some(raiz) => (
+                "delete_tree".to_string(),
+                raiz.aggregate_type.clone(),
+                raiz.aggregate_id.clone(),
+            ),
+            None => (String::new(), String::new(), String::new()),
+        };
+        for (indice, pendente) in pendentes.iter().enumerate() {
+            append_event_in_transaction(
+                self.tx,
+                identidade,
+                &LocalChange {
+                    universe_id: &pendente.universe_id,
+                    aggregate: pendente.agregado.clone(),
+                    operation: pendente.operacao,
+                    payload: &pendente.payload,
+                    grupo: GrupoDeMutacao {
+                        mutation_id: mutation_id.clone(),
+                        index: indice as i64,
+                        count: total,
+                        kind: kind.clone(),
+                        root_type: root_type.clone(),
+                        root_id: root_id.clone(),
+                    },
+                },
+            )?;
+            if indice == 0 {
                 falha::verificar(falha::Ponto::DuranteOsEventos)?;
             }
         }
@@ -733,7 +799,8 @@ pub(crate) mod tests {
     /// Reescrito sai da lista quando o mesmo agregado também é excluído; Bloqueado recusa tudo.
     #[test]
     fn coletar_separa_reescrito_de_excluido_e_bloqueio_recusa() {
-        let ordem = AggregateRef::new("chapter_order", "b1");
+        // Um sobrevivente qualquer: aqui só importa a regra de coleta, não o tipo.
+        let ordem = AggregateRef::new("planning_item", "p1");
         let livro = |agregado: &AggregateRef| -> DatabaseCommandResult<Vec<Impacto>> {
             Ok(match agregado.aggregate_type.as_str() {
                 "book" => vec![
@@ -790,29 +857,52 @@ pub(crate) mod tests {
         assert!(erro.message.contains("não existe"), "{}", erro.message);
     }
 
-    /// A reescrita de `chapter_order(b1)` que uma origem emite depois de excluir capítulo (B2).
-    pub(crate) fn ordem_remota(
+    /// **A exclusão de `c1` como uma origem real a emite desde a B2.2:** um grupo de duas partes —
+    /// a posição, depois o capítulo — com o mesmo `mutation_id`, assinado junto. Montar os dois como
+    /// eventos soltos testaria um emissor que não existe mais.
+    pub(crate) fn exclusao_remota_do_capitulo(
         origem: &DeviceIdentity,
-        seq: i64,
-        base: &str,
-        capitulos: &[&str],
-    ) -> crate::domain::sync::EventEnvelope {
-        let payload = sync_codec::para_json(&sync_codec::manuscrito::OrdemDosCapitulos {
-            book_id: "b1".into(),
-            chapter_ids: capitulos.iter().map(|c| c.to_string()).collect(),
-        })
-        .expect("json");
-        let mut envelope = envelope_de_origem(
+        rev_do_capitulo: &str,
+    ) -> [crate::domain::sync::EventEnvelope; 2] {
+        exclusao_remota_do_capitulo_no_grupo(origem, rev_do_capitulo, &crate::domain::ids::new_id())
+    }
+
+    /// A mesma ação, com o `mutation_id` escolhido: para provar que o grupo é da origem.
+    pub(crate) fn exclusao_remota_do_capitulo_no_grupo(
+        origem: &DeviceIdentity,
+        rev_do_capitulo: &str,
+        mutation_id: &str,
+    ) -> [crate::domain::sync::EventEnvelope; 2] {
+        let mut posicao = envelope_de_origem(
             origem.device_id(),
-            seq,
+            1,
             "u1",
-            &AggregateRef::new("chapter_order", "b1"),
-            Operation::Upsert,
-            &payload,
-            base,
+            &AggregateRef::new("chapter_position", "c1"),
+            Operation::Delete,
+            "",
+            "",
         );
-        envelope.signature = origem.sign(&envelope);
-        envelope
+        let mut capitulo = envelope_de_origem(
+            origem.device_id(),
+            2,
+            "u1",
+            &AggregateRef::new("chapter", "c1"),
+            Operation::Delete,
+            "",
+            rev_do_capitulo,
+        );
+        for (indice, envelope) in [&mut posicao, &mut capitulo].into_iter().enumerate() {
+            envelope.grupo = GrupoDeMutacao {
+                mutation_id: mutation_id.to_string(),
+                index: indice as i64,
+                count: 2,
+                kind: "delete_tree".into(),
+                root_type: "chapter".into(),
+                root_id: "c1".into(),
+            };
+            envelope.signature = origem.sign(envelope);
+        }
+        [posicao, capitulo]
     }
 
     #[test]
@@ -902,14 +992,16 @@ pub(crate) mod tests {
 
         let eventos = aparelho.eventos();
         assert_eq!(
-            &eventos[eventos.len() - 4..],
+            &eventos[eventos.len() - 6..],
             &[
+                ("chapter_position".into(), "c1".into(), "delete".into()),
+                ("attachment_position".into(), "a1".into(), "delete".into()),
                 ("attachment".into(), "a1".into(), "delete".into()),
+                ("attachment_position".into(), "a2".into(), "delete".into()),
                 ("attachment".into(), "a2".into(), "delete".into()),
                 ("chapter".into(), "c1".into(), "delete".into()),
-                ("chapter_order".into(), "b1".into(), "upsert".into()),
             ],
-            "filhos antes do pai; o sobrevivente reescrito depois dos excluídos"
+            "cada filho antes do seu pai, a posição antes do item; nenhuma lista reescrita (B2.2)"
         );
         for (tipo, id) in [
             ("chapter", "c1"),
@@ -1032,7 +1124,8 @@ pub(crate) mod tests {
                 .iter()
                 .map(|(_, _, op)| op.as_str())
                 .collect::<Vec<_>>(),
-            vec!["upsert", "delete"]
+            // B2.2: criar declara o anexo e a posição dele; excluir tira a posição e depois o anexo.
+            vec!["upsert", "upsert", "delete", "delete"]
         );
         let _ = std::fs::remove_dir_all(raiz);
     }
@@ -1127,20 +1220,10 @@ pub(crate) mod tests {
             let connection = aparelho.banco.database.write().expect("escrita");
             origem_remota_confiavel(&connection, &aparelho.eu)
         };
-        let ordem = ordem_remota(&outra, 2, "", &[]);
-        let mut exclusao = envelope_de_origem(
-            outra.device_id(),
-            1,
-            "u1",
-            &AggregateRef::new("chapter", "c1"),
-            Operation::Delete,
-            "",
-            &rev_conhecida,
-        );
-        exclusao.signature = outra.sign(&exclusao);
+        let [posicao, exclusao] = exclusao_remota_do_capitulo(&outra, &rev_conhecida);
 
         let mut connection = aparelho.banco.database.write().expect("escrita");
-        let relatorio = receber_eventos(&mut connection, &[ordem, exclusao]).expect("receber");
+        let relatorio = receber_eventos(&mut connection, &[posicao, exclusao]).expect("receber");
         drop(connection);
 
         assert_eq!(relatorio.divergencias, 1);
@@ -1180,20 +1263,10 @@ pub(crate) mod tests {
             let connection = aparelho.banco.database.write().expect("escrita");
             origem_remota_confiavel(&connection, &aparelho.eu)
         };
-        let ordem = ordem_remota(&outra, 2, "", &[]);
-        let mut exclusao = envelope_de_origem(
-            outra.device_id(),
-            1,
-            "u1",
-            &AggregateRef::new("chapter", "c1"),
-            Operation::Delete,
-            "",
-            &rev_conhecida,
-        );
-        exclusao.signature = outra.sign(&exclusao);
+        let [posicao, exclusao] = exclusao_remota_do_capitulo(&outra, &rev_conhecida);
 
         let mut connection = aparelho.banco.database.write().expect("escrita");
-        let relatorio = receber_eventos(&mut connection, &[ordem, exclusao]).expect("receber");
+        let relatorio = receber_eventos(&mut connection, &[posicao, exclusao]).expect("receber");
         drop(connection);
 
         assert_eq!(relatorio.divergencias, 0);

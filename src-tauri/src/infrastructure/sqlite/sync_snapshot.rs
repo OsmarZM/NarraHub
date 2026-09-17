@@ -1371,6 +1371,7 @@ mod tests {
                     aggregate: AggregateRef::new("chapter", id),
                     operation: Operation::Upsert,
                     payload: &payload,
+                    grupo: Default::default(),
                 },
             )
             .expect("evento");
@@ -1806,6 +1807,7 @@ mod tests {
                             aggregate: AggregateRef::new("chapter", &id),
                             operation: Operation::Upsert,
                             payload: &payload,
+                            grupo: Default::default(),
                         },
                     )
                     .expect("evento concorrente");
@@ -2056,6 +2058,7 @@ mod tests {
                     aggregate: AggregateRef::new("chapter", "cap-condenado"),
                     operation: Operation::Delete,
                     payload: "",
+                    grupo: Default::default(),
                 },
             )
             .expect("evento de exclusão");
@@ -2191,6 +2194,7 @@ mod tests {
                     aggregate: AggregateRef::new("chapter", "cap-morto"),
                     operation: Operation::Delete,
                     payload: "",
+                    grupo: Default::default(),
                 },
             )
             .expect("exclusão");
@@ -2308,6 +2312,7 @@ mod tests {
                     aggregate: AggregateRef::new("chapter", "cap-morto"),
                     operation: Operation::Delete,
                     payload: "",
+                    grupo: Default::default(),
                 },
             )
             .expect("exclusão");
@@ -2351,6 +2356,7 @@ mod tests {
                     aggregate: AggregateRef::new("chapter", "cap-morto"),
                     operation: Operation::Delete,
                     payload: "",
+                    grupo: Default::default(),
                 },
             )
             .expect("exclusão");
