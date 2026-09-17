@@ -1,7 +1,7 @@
 //! NarraHub — Database Migrations
 //! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 23;
+pub const LATEST_SCHEMA_VERSION: i64 = 24;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -28,6 +28,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         21 => Some(MIGRATION_V21),
         22 => Some(MIGRATION_V22),
         23 => Some(MIGRATION_V23),
+        24 => Some(MIGRATION_V24),
         _ => None,
     }
 }
@@ -1584,6 +1585,73 @@ CREATE INDEX IF NOT EXISTS idx_sync_events_mutacao
 ALTER TABLE sync_divergences ADD COLUMN mutation_id TEXT NOT NULL DEFAULT '';
 "#;
 
+pub const MIGRATION_V24: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v24
+-- NH-079 B6 - identidade PORTATIL do conflito
+-- ============================================
+--
+-- Ate aqui um conflito so existia como linha local: `sync_divergences.id` vem
+-- de `new_id()`, e os lados sao `local_rev`/`remote_rev`. O mesmo conflito,
+-- visto de dois aparelhos, vira DUAS linhas sem relacao nenhuma, e as colunas
+-- que descrevem os lados trocam de papel conforme quem olha.
+--
+-- Enquanto for assim, uma resolucao nao atravessa o store-and-forward: o
+-- aparelho que recebe "o conflito X foi decidido assim" nao consegue dizer
+-- qual conflito dele e o X.
+--
+-- Esta migration e ADITIVA de proposito. `local_rev` e `remote_rev` NAO saem:
+-- eles tem semantica operacional local que o resolvedor precisa -- o de
+-- `parent_deletion_blocked`, por exemplo, confere se a revisao materializada
+-- aqui ainda e a que estava quando o conflito foi detectado, antes de deixar
+-- a cascata rodar. Renomear conceito nao justifica migration destrutiva.
+--
+--   identidade portatil    conflict_key, participant_a, participant_b
+--   perspectiva local      local_rev, remote_rev
+--
+-- A F deixa de mostrar "local/remote" ao escritor; a infraestrutura mantem os
+-- campos enquanto forem necessarios.
+--
+-- ## Esta identidade e a do CONFLITO, nao a da acao
+--
+-- A v23 deu a cada evento a acao de onde ele saiu, e a identidade daquela
+-- acao e o par (origem, mutation_id) -- o id sozinho e sorteado em cada
+-- aparelho e nao identifica nada. As duas identidades convivem e nao se
+-- substituem: `mutation_id` liga a decisao a acao que a gerou, sempre lido
+-- junto com a origem do evento ancora; `conflict_key` diz QUAL conflito e,
+-- visto de qualquer aparelho.
+--
+-- ## O que estas colunas NAO sao
+--
+-- Elas nao transformam `sync_divergences` em fato causal. A divisao, escrita
+-- na secao 9 da matriz, e:
+--
+--   sync_divergences     indice/estado LOCAL do conflito
+--   conflict_resolution  fato causal replicavel (etapa F), com
+--                        aggregateId = conflictKey
+--
+-- Um `UPDATE resolved_at` nunca sera a fonte de verdade distribuida: ele nao
+-- viaja, nao e assinado e nao diz quem decidiu.
+-- `COLLATE BINARY` e explicito de proposito. A ordem entre os participantes faz parte do
+-- CONTRATO -- `participant_a < participant_b` e o que garante que dois aparelhos gravem a mesma
+-- dupla na mesma ordem. Deixar a colacao implicita deixaria essa garantia dependendo de um
+-- padrao, e uma coluna com NOCASE ordenaria diferente sem nenhum erro aparecer.
+ALTER TABLE sync_divergences ADD COLUMN conflict_key TEXT NOT NULL DEFAULT '' COLLATE BINARY;
+ALTER TABLE sync_divergences ADD COLUMN participant_a TEXT NOT NULL DEFAULT '' COLLATE BINARY;
+ALTER TABLE sync_divergences ADD COLUMN participant_b TEXT NOT NULL DEFAULT '' COLLATE BINARY;
+
+-- ## Identidade vazia NAO e uma identidade
+--
+-- Divergencia que existia antes desta migration fica com a chave vazia, e isso significa
+-- "legado nao portavel" -- nunca "o conflito de chave vazia". O indice e PARCIAL para que essas
+-- linhas simplesmente nao existam como conflito indexado: sem isso, no dia em que alguem
+-- precisar de unicidade por chave, TODAS as divergencias legadas colidiriam entre si como se
+-- fossem o mesmo conflito.
+CREATE INDEX IF NOT EXISTS idx_sync_divergences_chave
+    ON sync_divergences(conflict_key)
+    WHERE conflict_key <> '';
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1601,6 +1669,7 @@ mod tests {
     const NATIVE_SCHEMA_V21_FIXTURE: &str = include_str!("../../fixtures/schema21_native.sql");
     const NATIVE_SCHEMA_V22_FIXTURE: &str = include_str!("../../fixtures/schema22_native.sql");
     const NATIVE_SCHEMA_V23_FIXTURE: &str = include_str!("../../fixtures/schema23_native.sql");
+    const NATIVE_SCHEMA_V24_FIXTURE: &str = include_str!("../../fixtures/schema24_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -2735,6 +2804,194 @@ mod tests {
             .expect("contar");
         assert!(antes > 0);
         assert_eq!(de_um, antes, "algum evento antigo ganhou grupo inventado");
+    }
+
+    /// Schema 24: a divergencia carrega identidade PORTATIL e perspectiva local, lado a lado.
+    ///
+    /// A migration e aditiva de proposito: `local_rev`/`remote_rev` continuam, porque o resolvedor
+    /// precisa deles operacionalmente. O que entra e a identidade que atravessa aparelhos.
+    #[test]
+    fn schema24_guarda_identidade_portatil_e_perspectiva_lado_a_lado() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V24_FIXTURE)
+            .expect("carregar a fixture nativa de schema 24");
+
+        let mut consulta = connection
+            .prepare(
+                "SELECT kind, conflict_key, participant_a, participant_b, local_rev, remote_rev
+                   FROM sync_divergences ORDER BY id",
+            )
+            .expect("consulta");
+        let linhas: Vec<(String, String, String, String, String, String)> = consulta
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .expect("linhas")
+            .collect::<Result<_, _>>()
+            .expect("divergencias");
+
+        assert_eq!(linhas.len(), 3, "as tres formas de conflito");
+        for (kind, chave, a, b, _, _) in &linhas {
+            assert!(!chave.is_empty(), "{kind} nasceu sem identidade portatil");
+            assert!(a < b, "{kind}: os participantes precisam estar ordenados");
+            // DECODIFICA de verdade: a codificacao leva o tamanho de cada campo na frente, e um
+            // tamanho escrito errado a mao produz um participante que nao volta para quatro
+            // campos. Sem isto, a fixture poderia mentir e o gate nao perceberia.
+            for participante in [a, b] {
+                let campos = crate::domain::conflito::partes_da_identidade(participante)
+                    .unwrap_or_else(|| {
+                        panic!("{kind}: participante nao decodifica: {participante}")
+                    });
+                assert_eq!(
+                    campos.len(),
+                    4,
+                    "{kind}: participante precisa ter tipo, id, revisao e operacao: {participante}"
+                );
+                assert!(
+                    matches!(campos[3].as_str(), "upsert" | "delete"),
+                    "{kind}: operacao invalida no participante: {participante}"
+                );
+            }
+        }
+
+        // A perspectiva continua existindo: ela nao foi trocada por conceito nenhum.
+        let (_, _, _, _, local, remoto) = &linhas[0];
+        assert_eq!(local, "fx24-rev-pc");
+        assert_eq!(remoto, "fx24-rev-an");
+
+        // A tag homonima e o caso que importa: DOIS agregados diferentes no mesmo conflito.
+        let tag = linhas
+            .iter()
+            .find(|(kind, ..)| kind == "tag_name_conflict")
+            .expect("o conflito de tag");
+        assert!(tag.2.contains("fx24-tag-an") && tag.3.contains("fx24-tag-pc"));
+
+        // As duas identidades convivem: a do CONFLITO (portatil) e a da ACAO, que so existe com a
+        // origem junto. O `mutation_id` sozinho nao identifica grupo nenhum (B2.2).
+        let (mutation_id, origem): (String, String) = connection
+            .query_row(
+                "SELECT d.mutation_id, e.device_id
+                   FROM sync_divergences d JOIN sync_events e ON e.event_id = d.remote_event_id
+                  WHERE d.id = 'fx24-div-del'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("a acao da decisao");
+        assert_eq!(
+            (mutation_id.as_str(), origem.as_str()),
+            ("fx24-m-entidade", "fx24-dev-android")
+        );
+    }
+
+    /// Um banco que CHEGOU ao 24 por migracao nao inventa identidade para tras.
+    ///
+    /// A chave depende das revisoes reais dos dois lados; preenche-la por adivinhacao criaria uma
+    /// identidade que o outro aparelho nao calcularia igual -- pior que estar vazia.
+    #[test]
+    fn schema24_deixa_vazia_a_identidade_das_divergencias_antigas() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, 23);
+        connection
+            .execute_batch(
+                "INSERT INTO sync_divergences
+                   (id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev,
+                    remote_event_id)
+                 VALUES ('velha', 'chapter', 'c1', 'base', 'aqui', 'la', 'evt');",
+            )
+            .expect("divergencia anterior a migration");
+
+        connection
+            .execute_batch(sql_for_version(24).expect("migration 24"))
+            .expect("migrar");
+
+        let (chave, a, b, local): (String, String, String, String) = connection
+            .query_row(
+                "SELECT conflict_key, participant_a, participant_b, local_rev
+                   FROM sync_divergences WHERE id = 'velha'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("ler");
+        assert_eq!((chave.as_str(), a.as_str(), b.as_str()), ("", "", ""));
+        assert_eq!(
+            local, "aqui",
+            "a perspectiva local continua: a migration e aditiva"
+        );
+    }
+
+    /// Os dois caminhos ate o 24 chegam ao MESMO schema de `sync_divergences`: o banco novo, que
+    /// passa por 0 -> ... -> 23 -> 24, e o banco que ja estava no 23 e so aplica a 24.
+    #[test]
+    fn os_dois_caminhos_ate_o_24_dao_o_mesmo_schema() {
+        let colunas = |connection: &Connection| -> Vec<(String, String)> {
+            let mut consulta = connection
+                .prepare(
+                    "SELECT name, type FROM pragma_table_info('sync_divergences') ORDER BY name",
+                )
+                .expect("consulta");
+            consulta
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("linhas")
+                .collect::<Result<_, _>>()
+                .expect("colunas")
+        };
+
+        let novo = Connection::open_in_memory().expect("banco novo");
+        apply_migrations(&novo, 1, LATEST_SCHEMA_VERSION);
+
+        let existente = Connection::open_in_memory().expect("banco existente");
+        apply_migrations(&existente, 1, 23);
+        existente
+            .execute_batch(NATIVE_SCHEMA_V23_FIXTURE)
+            .expect("um banco em uso, nativo no 23");
+        let divergencias_antes: i64 = existente
+            .query_row("SELECT COUNT(*) FROM sync_divergences", [], |row| {
+                row.get(0)
+            })
+            .expect("contar");
+        existente
+            .execute_batch(sql_for_version(24).expect("migration 24"))
+            .expect("23 -> 24");
+
+        assert_eq!(colunas(&novo), colunas(&existente));
+        assert!(colunas(&novo)
+            .iter()
+            .any(|(nome, _)| nome == "conflict_key"));
+        let depois: i64 = existente
+            .query_row(
+                "SELECT COUNT(*) FROM sync_divergences WHERE conflict_key = ''",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert_eq!(
+            depois, divergencias_antes,
+            "as divergencias que ja existiam continuam, sem identidade inventada"
+        );
+        // O que a v23 guardou continua guardado: uma migration aditiva nao mexe no grupo.
+        let com_grupo: i64 = existente
+            .query_row(
+                "SELECT COUNT(*) FROM sync_events WHERE mutation_id <> ''",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert!(com_grupo > 0, "a v23 sumiu do banco existente");
     }
 
     #[test]

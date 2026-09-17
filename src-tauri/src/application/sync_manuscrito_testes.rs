@@ -3887,3 +3887,99 @@ fn b22_lote_menor_que_a_acao_entrega_a_acao_inteira() {
         pc.convergiu_com(&android, "chapter", capitulo);
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// B6 item 9 — a identidade do conflito atravessa aparelhos
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Aparelho {
+    /// A identidade PORTÁTIL inteira do conflito aberto daquele tipo: chave e os dois
+    /// participantes. Os três têm de bater entre aparelhos — só a chave bater esconderia uma
+    /// canonicalização divergente que só apareceria quando a resolução precisasse dos
+    /// participantes.
+    fn identidade_do_conflito(&self, kind: &str) -> (String, String, String) {
+        self.banco
+            .connection()
+            .query_row(
+                "SELECT conflict_key, participant_a, participant_b FROM sync_divergences
+                  WHERE kind = ?1 AND resolved_at = ''",
+                [kind],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("o conflito")
+    }
+}
+
+/// **Edição contra edição: os dois aparelhos calculam a MESMA chave.**
+///
+/// Cada um vê uma das revisões como "sua". A ordenação dos participantes apaga essa diferença —
+/// sem isso, a resolução detectada num lado não teria como ser reconhecida no outro.
+#[test]
+fn o_mesmo_conflito_concorrente_tem_a_mesma_chave_nos_dois_aparelhos() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let historia = a.historia(&universo, "Saga").id;
+    let livro = a.livro(&historia, "Livro I").id;
+    let capitulo = a.capitulo(&livro, "Um").id;
+    sincronizar(&a, &b);
+
+    a.escrever(&capitulo, "a versão de A");
+    b.escrever(&capitulo, "a versão de B");
+    let (em_b, em_a) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 1, "{em_b:?}");
+    assert_eq!(em_a.divergencias, 1, "{em_a:?}");
+
+    let aqui = a.identidade_do_conflito("concurrent");
+    let la = b.identidade_do_conflito("concurrent");
+    assert_eq!(aqui, la, "o mesmo conflito produziu duas identidades");
+    assert!(!aqui.0.is_empty() && !aqui.1.is_empty() && !aqui.2.is_empty());
+    assert!(
+        aqui.1.as_bytes() < aqui.2.as_bytes(),
+        "participantes fora de ordem"
+    );
+}
+
+/// **Tag homônima: o caso em que os papéis se invertem.**
+///
+/// No PC, `aggregate_id` é a tag que chegou (T2) e `related_aggregate_id` é a daqui (T1). No
+/// Android é o contrário. Uma chave feita de `(aggregate_type, aggregate_id, revisões)` daria duas
+/// chaves para a mesma colisão.
+#[test]
+fn a_tag_homonima_tem_a_mesma_chave_mesmo_com_os_papeis_invertidos() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    sincronizar(&pc, &android);
+
+    let t1 = pc.tag(&universo, "Mar");
+    let t2 = android.tag(&universo, "mar");
+    sincronizar(&pc, &android);
+
+    // Os papéis estão de fato invertidos: é isso que torna o teste honesto.
+    let papeis = |aparelho: &Aparelho| -> (String, String) {
+        aparelho
+            .banco
+            .connection()
+            .query_row(
+                "SELECT aggregate_id, related_aggregate_id FROM sync_divergences
+                  WHERE kind = 'tag_name_conflict' AND resolved_at = ''",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("conflito")
+    };
+    assert_eq!(papeis(&pc), (t2.clone(), t1.clone()));
+    assert_eq!(papeis(&android), (t1, t2));
+
+    let no_pc = pc.identidade_do_conflito("tag_name_conflict");
+    let no_android = android.identidade_do_conflito("tag_name_conflict");
+    assert_eq!(
+        no_pc, no_android,
+        "os papéis invertidos produziram identidades diferentes"
+    );
+    assert!(
+        no_pc.1.as_bytes() < no_pc.2.as_bytes(),
+        "participantes fora de ordem"
+    );
+}

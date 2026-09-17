@@ -38,6 +38,7 @@ pub mod conhecimento;
 pub mod efemero;
 pub mod entidades;
 pub mod manuscrito;
+pub mod modelos;
 pub mod palavras;
 pub mod planejamento;
 pub mod posicao;
@@ -84,6 +85,8 @@ pub const TIPOS_COBERTOS: &[&str] = &[
     "planning_field_position",
     "attachment_position",
     "planning_item_position",
+    // B6 item 1: os atributos padrão de um tipo de ficha, o conjunto inteiro como um agregado.
+    "entity_template_set",
 ];
 
 pub fn coberto(tipo: &str) -> bool {
@@ -135,6 +138,7 @@ pub fn ler_canonico(
         "chapter" => manuscrito::ler_capitulo(connection, id),
         "tag_assignment" => manuscrito::ler_atribuicao(connection, id),
         "entity" => entidades::ler_entidade(connection, id),
+        "entity_template_set" => modelos::ler(connection, id),
         "relation" => entidades::ler_relacao(connection, id),
         "timeline_event" => entidades::ler_evento(connection, id),
         "canvas_entity_position" => entidades::ler_posicao(connection, id),
@@ -187,7 +191,9 @@ fn impactos_do_item(
         "planning_field_definition" => planejamento::impactos_do_campo(connection, id),
         "content_tag" => conhecimento::impactos_da_tag(connection, id),
         "canvas_node" => canvas::impactos_do_no(connection, id),
-        "attachment"
+        // O conjunto de modelos não tem descendente: apagá-lo é apagar as linhas dele.
+        "entity_template_set"
+        | "attachment"
         | "tag_assignment"
         | "relation"
         | "canvas_entity_position"
@@ -225,6 +231,7 @@ pub fn dependencias(
             planejamento::dependencias(connection, envelope)
         }
         "content_tag" => conhecimento::dependencias(connection, envelope),
+        "entity_template_set" => modelos::dependencias(connection, envelope),
         "canvas_node" | "canvas_node_position" | "canvas_edge" => {
             canvas::dependencias(connection, envelope)
         }
@@ -250,6 +257,7 @@ pub fn aplicar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseComman
         "planning_item" | "planning_field_definition" => planejamento::aplicar(tx, envelope),
         "attachment" => anexo::aplicar(tx, envelope),
         "content_tag" => conhecimento::aplicar(tx, envelope),
+        "entity_template_set" => modelos::aplicar(tx, envelope),
         "canvas_node" | "canvas_node_position" | "canvas_edge" => canvas::aplicar(tx, envelope),
         outro => Err(DatabaseCommandError::storage(format!(
             "Agregado '{outro}' ainda não tem aplicação de evento implementada. A sessão para \
@@ -285,6 +293,7 @@ pub fn validar_para_emissao(
         "attachment" => anexo::validar(connection, payload)?,
         "tag_assignment" => manuscrito::validar_atribuicao(connection, payload)?,
         "content_tag" => conhecimento::validar(connection, payload)?,
+        "entity_template_set" => modelos::validar(connection, payload)?,
         "canvas_node" | "canvas_node_position" | "canvas_edge" => {
             canvas::validar(connection, &agregado.aggregate_type, payload)?
         }

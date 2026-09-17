@@ -244,7 +244,10 @@ pub fn list_templates(
             "SELECT attribute_key, default_value, sort_order
                FROM entity_templates
               WHERE universe_id = ?1 AND entity_type = ?2
-              ORDER BY sort_order",
+              -- `attribute_key` desempata: `sort_order` sozinho deixava a ordem por conta do
+              -- SQLite quando havia empate, e essa ordem vira o payload canonico do
+              -- `entity_template_set` (B6). Duas genese do mesmo acervo tem de ler igual.
+              ORDER BY sort_order, attribute_key",
         )
         .map_err(map_sqlite_error)?;
     let rows = statement

@@ -1069,12 +1069,15 @@ pub(crate) mod tests {
     #[test]
     fn agregado_nao_coberto_nao_pode_ser_declarado() {
         let aparelho = Aparelho::novo();
-        // `canvas_node` servia aqui até a B5, quando passou a ser coberto. O tipo desta asserção
-        // precisa ser um que a fronteira REALMENTE não sabe representar ainda.
+        // **O tipo aqui é inventado de propósito.** Este teste é sobre falhar fechado diante de um
+        // agregado desconhecido, não sobre uma etapa pendente. Apontá-lo para um tipo real ainda
+        // não coberto (`canvas_node` na B5, `entity_template_set` na B6) o faz quebrar toda vez que
+        // a cobertura avança — e, pior, o faz parar de testar o que promete no dia em que alguém
+        // reapontar para um tipo que já ganhou codec.
         let erro = Mutacao::executar(&aparelho.banco.database, &aparelho.eu, |m| {
-            m.gravou("entity_template_set", "modelo-1")
+            m.gravou("agregado_que_nunca_vai_existir", "x1")
         })
-        .expect_err("o conjunto de modelos de ficha só é coberto na B6");
+        .expect_err("tipo desconhecido tem de falhar fechado");
         assert!(erro.message.contains("NH-079"), "{}", erro.message);
     }
 

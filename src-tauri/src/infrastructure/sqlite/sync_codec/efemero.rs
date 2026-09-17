@@ -113,9 +113,8 @@ pub const COLUNAS: &[ClassificacaoDeColuna] = &[
     coluna!("attachments"."data_url" => local,
         "coluna legada do ADR 0010; o que viaja é blob_hash, e byte nenhum entra no log"),
     coluna!("attachments"."sort_order" => local,
-        "número FÍSICO local (MAX+1 no INSERT). Não há reordenação de anexo no app. Se a ordem \
-         da galeria tiver de convergir, ela vira attachment_order(owner) — decisão registrada \
-         para a B6, seção 6.1 da matriz"),
+        "número FÍSICO local (MAX+1 no INSERT). O que converge é `attachment_position`, um \
+         agregado por anexo (B2.2) — esta coluna é a materialização dele, não conteúdo do anexo"),
     coluna!("attachments"."created_at" => local, "relógio local"),
 ];
 

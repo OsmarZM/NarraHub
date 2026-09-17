@@ -86,8 +86,8 @@ pub const EFEITOS: &[EfeitoDeExclusao] = &[
     fk!("universes", "content_custom_fields"."universe_id" "CASCADE" => "universe/story/book/chapter/entity", Interno, "B2 (manuscrito), B3 (entity)", UNIVERSO_RECUSADO),
     fk!("universes", "entities"."universe_id" "CASCADE" => "entity", Delete, "B3", UNIVERSO_RECUSADO),
     // `entity_templates` não tem escritor no app: é acervo legado lido por `create` de entidade.
-    // Precisa de codec antes da gênese; entra no gate de cobertura total da B6.
-    fk!("universes", "entity_templates"."universe_id" "CASCADE" => "entity_template", Delete, "B6", UNIVERSO_RECUSADO),
+    // Ganhou codec na B6 (`sync_codec::modelos`) — o conjunto inteiro é um agregado só.
+    fk!("universes", "entity_templates"."universe_id" "CASCADE" => "entity_template_set", Delete, "B6", UNIVERSO_RECUSADO),
     fk!("universes", "relations"."universe_id" "CASCADE" => "relation", Delete, "B3", UNIVERSO_RECUSADO),
     fk!("universes", "timeline_events"."universe_id" "CASCADE" => "timeline_event", Delete, "B3", UNIVERSO_RECUSADO),
     fk!("universes", "canvas_entity_positions"."universe_id" "CASCADE" => "canvas_entity_position", Delete, "B3", UNIVERSO_RECUSADO),
