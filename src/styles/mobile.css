@@ -1,0 +1,151 @@
+/*
+ * Base mobile de página inteira: viewport, zoom, altura dinâmica, safe area, alvos de toque.
+ *
+ * Só vale com `html.nh-mobile` (ViewportState, critério em shell/state/breakpoints.ts). O desktop
+ * lê apenas os tokens de :root, que não mudam nada nele.
+ *
+ * Arquitetura em docs/mobile/README.md.
+ */
+
+:root {
+  /* Safe area. No APK o MainActivity já aplica as barras do sistema, o recorte da câmera e o
+   * teclado como padding NATIVO da WebView (a fonte da verdade são os insets do Android): lá
+   * dentro estes valores são 0 e nada fica atrás das barras. Num navegador móvel comum, `env()`
+   * traz os valores reais. Todo componente mobile usa estas variáveis, nunca `env()` direto. */
+  --nh-safe-top: env(safe-area-inset-top, 0px);
+  --nh-safe-right: env(safe-area-inset-right, 0px);
+  --nh-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --nh-safe-left: env(safe-area-inset-left, 0px);
+
+  /* Alvo mínimo de toque (Material e WCAG 2.5.8 recomendam 44–48). */
+  --nh-touch-target: 44px;
+
+  /* Margem lateral das telas no celular. */
+  --nh-mobile-gutter: 16px;
+}
+
+/*
+ * Altura: uma cadeia de `100%` do <html> até o shell, e não `vh`/`dvh`.
+ *
+ *   - `100vh` no Android inclui as barras do sistema e não encolhe com o teclado;
+ *   - `100dvh` acompanha, mas guardado numa variável (`height: var(--x)` com `--x: 100dvh`) o
+ *     Chromium NÃO recalcula quando a tela muda de altura — medido: o shell ficou com 844px numa
+ *     tela que já tinha 480px, até um recálculo forçado. É exatamente o momento em que o teclado abre.
+ *   - `100%` é refeito a cada resize. No APK o MainActivity encolhe a própria WebView quando o teclado
+ *     abre (padding com o inset do IME), então 100% da página É a área visível acima do teclado.
+ */
+html.nh-mobile,
+html.nh-mobile body,
+html.nh-mobile app-root,
+html.nh-mobile app-root-layout {
+  display: block;
+  height: 100%;
+  overflow: hidden;
+  /* A página não estica nem "puxa para atualizar"; quem rola é o conteúdo de cada tela. */
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/*
+ * Sem zoom na interface, de três lados — nenhum deles sozinho basta:
+ *
+ *   1. meta viewport (index.html): `interactive-widget=resizes-content` faz o teclado encolher a
+ *      área em vez de sobrepor, e `viewport-fit=cover` usa a tela inteira;
+ *   2. WebView (MainActivity.kt): `setSupportZoom(false)` — pinça e duplo toque não escalam;
+ *   3. aqui: `touch-action` do `<html>` só permite rolar. A ação de toque efetiva de um elemento
+ *      é a interseção com a dos ancestrais, então isto vale para a página inteira: pinça e duplo
+ *      toque não fazem zoom, rolar com um dedo continua. Elementos que tratam gesto próprio (a
+ *      alça da navegação, `touch-action: none`) continuam recebendo o toque inteiro.
+ *
+ * Sem `user-scalable=no` como solução global: ele é ignorado por navegadores com acessibilidade
+ * de zoom forçada, e aqui o zoom já está fechado nas camadas que o Android respeita.
+ */
+html.nh-mobile { touch-action: pan-x pan-y; }
+
+/* Toque longo não seleciona botões, cartões e títulos; só onde se escreve. */
+html.nh-mobile body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+html.nh-mobile :is(input, textarea, [contenteditable="true"], .ProseMirror, .ProseMirror *) {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
+/* ── diálogos viram folhas de baixo ──────────────────────────────────────────────
+ * Contrato: todo fundo de diálogo tem `data-nh-dialog` e o painel dentro dele `data-nh-dialog-panel`
+ * (teste em tests/mobile-shell.test.mjs). No desktop os atributos não fazem nada; no celular, esta
+ * regra única transforma qualquer diálogo — de qualquer feature, com qualquer classe — numa folha
+ * que sobe de baixo. A folha fica ancorada embaixo da área do app, que o Android já encolhe quando o
+ * teclado abre: o campo e o botão salvar ficam acima do teclado. */
+html.nh-mobile [data-nh-dialog] {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: stretch;
+  padding: 0;
+  background: rgb(4 3 10 / 58%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html.nh-mobile [data-nh-dialog] > [data-nh-dialog-panel] {
+  width: 100%;
+  max-width: none;
+  max-height: 92%;
+  margin: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 18px var(--nh-mobile-gutter) calc(20px + var(--nh-safe-bottom));
+  border-width: 1px 0 0;
+  border-radius: 24px 24px 0 0;
+  box-shadow: 0 -16px 40px rgb(0 0 0 / 40%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transform: none;
+  animation: nh-dialog-up .22s cubic-bezier(.2, .8, .2, 1);
+}
+
+html.nh-mobile [data-nh-dialog-panel] :is(input, textarea, select) { min-height: var(--nh-touch-target); font-size: 16px; }
+html.nh-mobile [data-nh-dialog-panel] header > button { min-width: var(--nh-touch-target); min-height: var(--nh-touch-target); }
+html.nh-mobile [data-nh-dialog-panel] footer { flex-wrap: wrap; gap: 8px; }
+html.nh-mobile [data-nh-dialog-panel] footer > button { min-height: 48px; flex: 1 1 140px; font-size: 15px; }
+
+@keyframes nh-dialog-up { from { transform: translate3d(0, 32px, 0); opacity: .5; } }
+
+/* ── avisos do shell ────────────────────────────────────────────────────────────── */
+html.nh-mobile .startup-update {
+  right: var(--nh-mobile-gutter);
+  bottom: calc(12px + var(--nh-safe-bottom));
+  left: var(--nh-mobile-gutter);
+  width: auto;
+  grid-template-columns: auto 1fr;
+}
+html.nh-mobile .startup-update-actions { grid-column: 1 / -1; justify-content: flex-end; }
+html.nh-mobile .startup-update-actions button { min-height: var(--nh-touch-target); }
+html.nh-mobile .toast { right: var(--nh-mobile-gutter); bottom: calc(16px + var(--nh-safe-bottom)); left: var(--nh-mobile-gutter); max-width: none; }
+
+/* A entrada das telas anima `transform` com fill `both`, e um ancestral com transform vira a
+ * referência de `position: fixed`: folhas e diálogos se posicionariam dentro da tela, não na janela.
+ * No celular a tela entra sem esse deslocamento. */
+html.nh-mobile .page-enter { animation: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  html.nh-mobile [data-nh-dialog] > [data-nh-dialog-panel] { animation: none; }
+}
+
+/* ── perfil de desempenho do celular ─────────────────────────────────────────────
+ * O desktop usa vidro de verdade (`backdrop-filter: blur(…)`) em dezenas de superfícies. No WebView
+ * de um celular cada uma é uma passada extra de GPU sobre tudo o que está atrás, a cada quadro de
+ * rolagem. No celular a identidade de vidro fica com translucidez, borda e gradiente — sem desfoque.
+ *
+ * `!important` aqui é deliberado e restrito a esta propriedade: 46 regras de 16 arquivos, várias com
+ * seletores de duas classes que venceriam por especificidade. É um perfil de desempenho do shell,
+ * não um ajuste de layout. O shell mobile e a navegação gestual já nascem sem blur. */
+html.nh-mobile .nh-mshell-content *,
+html.nh-mobile [data-nh-dialog],
+html.nh-mobile [data-nh-dialog] * {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}

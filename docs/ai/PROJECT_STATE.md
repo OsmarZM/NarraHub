@@ -9,7 +9,7 @@ Atualizado em: 2026-09-09
 
 | Item | Valor |
 | --- | --- |
-| Versão corrente | **0.10.0-beta.1** |
+| Versão corrente | **0.10.0-beta.2** |
 | Última tag publicada | `app-v0.9.2`, em 2026-09-01 |
 | `origin/main` | 0.9.2 — canônica e **default** do repositório |
 | Manifests, README e CHANGELOG | 0.9.2, sob teste no CI |
@@ -160,6 +160,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
 | Ciclo de atualização empacotado | **Concluído.** Roteiro, checklist de release e três execuções reais |
+| Shell mobile | **ADR 0011 `Accepted`.** DesktopShell e MobileShell compartilham domínio e navegação, não a composição visual. Gates: `tests/mobile-shell.test.mjs` e Playwright (`test:mobile-e2e`, job Mobile na CI). Falta o roteiro físico (`docs/mobile/ROTEIRO_ANDROID.md`) |
 
 ## Versões e schema
 
@@ -172,7 +173,7 @@ migration — não pegar a versão mais recente:
 | 0.8.0 | 14 |
 | 0.9.0 e 0.9.1 | 15 |
 | 0.9.2 (publicada) | 15 |
-| `main` hoje | **20** — referência de blob por SHA-256 nas seis superfícies diretas |
+| `main` hoje | **26** — adoção versionada do acervo, a gênese da etapa C (NH-079) |
 
 Consequência prática, e ela **mudou** com a migration 16: a próxima versão publicada será a
 primeira desde a 0.9.2 a carregar migration de verdade. O par `0.9.2 → próxima` deixa de ser

@@ -28,6 +28,8 @@ import { WorkspaceShareService } from './application/workspace-share.service';
 import { WorkspaceSyncService } from './application/workspace-sync.service';
 import { NativeWindowService } from './core/native/window.service';
 import { ShellState } from './shell/state/shell.state';
+import { ShellAction, ShellActionsState } from './shell/state/shell-actions.state';
+import { ViewportState } from './shell/state/viewport.state';
 import { SidebarNavItem, UniverseSidebarComponent } from './shell/universe-sidebar/universe-sidebar.component';
 
 /**
@@ -91,8 +93,8 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   readonly saveMessage = this.manuscriptStore.saveMessage;
   readonly isSaving = this.manuscriptStore.isSaving;
   readonly inspectorOpen = this.manuscriptStore.inspectorOpen;
-  /** Android: a folha com as ações do universo. No desktop as ações ficam na linha e isto não aparece. */
-  readonly mobileActionsOpen = signal(false);
+  readonly viewport = inject(ViewportState);
+  private readonly shellActions = inject(ShellActionsState);
   readonly isFocusMode = this.shell.focusMode;
   readonly errorMessage = this.shell.errorMessage;
   readonly infoMessage = this.shell.infoMessage;
@@ -139,9 +141,15 @@ export class WorkspaceLayoutComponent implements OnDestroy {
       const route = this.navigation.route();
       void this.restoreRoute(route);
     });
+    effect(() => {
+      const universe = this.appState.activeUniverse();
+      if (!this.viewport.isMobile() || !universe) { this.shellActions.clear(this); return; }
+      this.shellActions.publish(this, universe.name, this.mobileActions(), this.saveMessage() || 'Banco local conectado');
+    });
   }
 
   ngOnDestroy(): void {
+    this.shellActions.clear(this);
     this.session.reset();
   }
   async toggleFullscreen(): Promise<void> { await this.nativeWindow.toggleFullscreen(); }
@@ -232,10 +240,36 @@ export class WorkspaceLayoutComponent implements OnDestroy {
 
   toggleInspector(): void { this.manuscriptStore.toggleInspector(); }
 
-  /** Um toque em qualquer botão da folha de ações executa a ação e fecha a folha. */
-  closeMobileActionsFrom(event: Event): void {
-    if ((event.target as HTMLElement | null)?.closest('button')) this.mobileActionsOpen.set(false);
-  }
+  /**
+   * As ações do cabeçalho do desktop, como dados, para o "•••" do shell mobile.
+   *
+   * Mesma lista e mesmos handlers dos botões de `workspace-header`; muda só onde aparecem. Um
+   * teste (tests/mobile-shell.test.mjs) confere que toda ação do cabeçalho está aqui.
+   */
+  private readonly mobileActions = computed<ShellAction[]>(() => {
+    const universe = this.appState.activeUniverse();
+    if (!universe) return [];
+    const nav = this.activeNav();
+    const actions: ShellAction[] = [];
+    if (nav === 'escrita') {
+      actions.push(
+        { id: 'capitulo', icon: '＋', label: 'Novo capítulo', disabled: !this.activeBook(), run: () => this.beginCreateOnActivePage() },
+        { id: 'resumo', icon: '▤', label: this.inspectorOpen() ? 'Ocultar resumo do capítulo' : 'Resumo do capítulo', active: this.inspectorOpen(), disabled: !this.activeChapter(), run: () => this.toggleInspector() },
+      );
+    } else if (nav === 'entidades' && this.entityFilter()) {
+      actions.push({ id: 'entidade', icon: '＋', label: this.entityCreateLabel(), run: () => this.beginCreateOnActivePage() });
+    } else if (nav === 'timeline') {
+      actions.push({ id: 'evento', icon: '＋', label: 'Novo evento', run: () => this.beginCreateOnActivePage() });
+    } else if (nav === 'planejamento') {
+      actions.push({ id: 'card', icon: '＋', label: 'Novo card', run: () => this.beginCreateOnActivePage() });
+    }
+    actions.push(
+      { id: 'renomear', icon: '✎', label: 'Renomear universo', run: () => this.beginRenameUniverse() },
+      { id: 'tags', icon: '#', label: 'Tags do universo', run: () => void this.openMetadata('universe', universe.id, universe.name) },
+      { id: 'compartilhar', icon: '↗', label: 'Compartilhar', run: () => this.openShareModal() },
+    );
+    return actions;
+  });
 
   /**
    * Mantido porque o template e o caminho de restauração de rota chamam por aqui. A carga em

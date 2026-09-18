@@ -1,0 +1,90 @@
+:host {
+  position: relative;
+  width: 100%;
+  /* 100% da cadeia montada em styles/mobile.css — acompanha o teclado; ver lá por que não dvh. */
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: var(--nh-safe-top, 0px) var(--nh-safe-right, 0px) 0 var(--nh-safe-left, 0px);
+  color: var(--nh-mobile-ink, #ede7d9);
+  background: var(--nh-mobile-bg-color, #0a0f1c);
+}
+
+/* ── o céu ────────────────────────────────────────────────────────────────────
+ * Perfil mobile do fundo cósmico: a arte em retrato, estática, e UMA camada leve de estrelas que
+ * só anima `opacity`. O desktop desenha três camadas de radial-gradient em tela cheia, cada uma
+ * com animação infinita de opacidade e transform — caro demais para o WebView de um celular. */
+.nh-mshell-sky {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  pointer-events: none;
+  background: var(--nh-mobile-bg-img) center / cover no-repeat, var(--nh-mobile-bg-color, #0a0f1c);
+}
+
+.nh-mshell-stars {
+  position: absolute;
+  inset: 0;
+  display: var(--nh-star-display, block);
+  background-image:
+    radial-gradient(1px 1px at 12% 18%, rgb(255 255 255 / 85%), transparent),
+    radial-gradient(1px 1px at 68% 12%, rgb(255 236 200 / 80%), transparent),
+    radial-gradient(1.5px 1.5px at 84% 44%, rgb(255 255 255 / 70%), transparent),
+    radial-gradient(1px 1px at 30% 62%, rgb(220 230 255 / 75%), transparent),
+    radial-gradient(1.5px 1.5px at 56% 82%, rgb(255 240 210 / 70%), transparent),
+    radial-gradient(1px 1px at 8% 90%, rgb(255 255 255 / 65%), transparent);
+  opacity: .7;
+  animation: nh-mshell-twinkle 7s ease-in-out infinite alternate;
+}
+
+@keyframes nh-mshell-twinkle { to { opacity: .35; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .nh-mshell-stars { animation: none; }
+}
+
+/* Sem z-index no conteúdo: uma camada própria prenderia as folhas (position: fixed) das telas
+ * abaixo da barra de cima. A barra tem a sua (z-index 40); as folhas ficam acima dela. */
+
+/* ── o conteúdo ───────────────────────────────────────────────────────────────
+ * Ocupa o resto e não rola: cada tela decide o que rola dentro dela. `min-height: 0` e
+ * `min-width: 0` são o que impede um filho largo (uma barra de ferramentas, um canvas) de alargar
+ * a tela inteira. Nenhuma tela produz rolagem horizontal da página. */
+.nh-mshell-content {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  transform-origin: 0% 50%;
+}
+
+/* ── folha de ações ─────────────────────────────────────────────────────────── */
+.nh-mshell-actions { margin: 0; padding: 4px 0 0; list-style: none; }
+
+.nh-mshell-actions button {
+  width: 100%;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 14px;
+  color: inherit;
+  background: transparent;
+  font-size: 16px;
+  text-align: left;
+}
+.nh-mshell-actions button:active { background: color-mix(in srgb, var(--nh-mobile-ink, #ede7d9) 9%, transparent); }
+.nh-mshell-actions button:disabled { opacity: .4; }
+.nh-mshell-actions button.active { color: var(--nh-mobile-gold, #d8b772); }
+
+.nh-mshell-action-icon {
+  width: 28px;
+  flex: 0 0 28px;
+  color: var(--nh-mobile-gold, #d8b772);
+  font-size: 18px;
+  text-align: center;
+}

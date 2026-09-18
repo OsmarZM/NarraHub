@@ -13,12 +13,18 @@ pub mod atualizacao_android;
 pub mod blob_fields;
 pub mod blob_upgrade;
 pub mod canvas_service;
+pub mod cobertura_total;
 pub mod collaboration_service;
 pub mod entity_service;
+pub mod genese;
 pub mod knowledge_service;
 pub mod manuscript_service;
+pub mod mutacao;
 pub mod planning_service;
+pub mod resolucao_divergencia;
 pub mod sync_bootstrap;
+#[cfg(test)]
+mod sync_manuscrito_testes;
 pub mod sync_panorama;
 pub mod sync_pin_pairing;
 pub mod sync_sessao;

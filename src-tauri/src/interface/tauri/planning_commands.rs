@@ -28,11 +28,14 @@ pub fn planning_create(
     planning_service::create(
         &super::database(&app)?,
         &super::blob_store(&app)?,
-        &universe_id,
-        &title,
-        &description,
-        chapter_id.as_deref(),
-        &image,
+        &super::sync_identity(&app)?,
+        planning_service::NovoCard {
+            universe_id: &universe_id,
+            title: &title,
+            description: &description,
+            chapter_id: chapter_id.as_deref(),
+            image: &image,
+        },
     )
 }
 
@@ -42,7 +45,12 @@ pub fn planning_delete(
     id: String,
     universe_id: String,
 ) -> DatabaseCommandResult<()> {
-    planning_service::delete(&super::database(&app)?, &id, &universe_id)
+    planning_service::delete(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        &id,
+        &universe_id,
+    )
 }
 
 #[tauri::command]
@@ -51,7 +59,12 @@ pub fn planning_save_order(
     universe_id: String,
     placements: Vec<PlanningCardPlacement>,
 ) -> DatabaseCommandResult<()> {
-    planning_service::save_order(&super::database(&app)?, &universe_id, &placements)
+    planning_service::save_order(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        &universe_id,
+        &placements,
+    )
 }
 
 #[tauri::command]
@@ -89,12 +102,15 @@ pub fn planning_field_definition_create(
 ) -> DatabaseCommandResult<PlanningFieldDefinition> {
     planning_service::create_field_definition(
         &super::database(&app)?,
-        &universe_id,
-        &name,
-        &field_type,
-        &options,
-        &scope,
-        card_id.as_deref(),
+        &super::sync_identity(&app)?,
+        planning_service::NovaPropriedade {
+            universe_id: &universe_id,
+            name: &name,
+            field_type: &field_type,
+            options: &options,
+            scope: &scope,
+            card_id: card_id.as_deref(),
+        },
     )
 }
 
@@ -108,6 +124,7 @@ pub fn planning_field_definition_set_scope(
 ) -> DatabaseCommandResult<()> {
     planning_service::set_field_definition_scope(
         &super::database(&app)?,
+        &super::sync_identity(&app)?,
         &id,
         &universe_id,
         &scope,
@@ -122,7 +139,13 @@ pub fn planning_field_definition_rename(
     universe_id: String,
     name: String,
 ) -> DatabaseCommandResult<()> {
-    planning_service::rename_field_definition(&super::database(&app)?, &id, &universe_id, &name)
+    planning_service::rename_field_definition(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        &id,
+        &universe_id,
+        &name,
+    )
 }
 
 #[tauri::command]
@@ -131,7 +154,12 @@ pub fn planning_field_definition_delete(
     id: String,
     universe_id: String,
 ) -> DatabaseCommandResult<()> {
-    planning_service::delete_field_definition(&super::database(&app)?, &id, &universe_id)
+    planning_service::delete_field_definition(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        &id,
+        &universe_id,
+    )
 }
 
 /// Grava a ficha inteira do card.
@@ -143,5 +171,10 @@ pub fn planning_save_card(
     app: AppHandle,
     request: planning_service::PlanningCardSaveRequest,
 ) -> DatabaseCommandResult<()> {
-    planning_service::save_card(&super::database(&app)?, &super::blob_store(&app)?, request)
+    planning_service::save_card(
+        &super::database(&app)?,
+        &super::blob_store(&app)?,
+        &super::sync_identity(&app)?,
+        request,
+    )
 }

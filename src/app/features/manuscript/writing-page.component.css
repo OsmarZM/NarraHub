@@ -228,3 +228,129 @@
 .modal footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
 .modal-guidance,.delete-warning { margin: -5px 0 16px; color: var(--muted); font-size: 9px; line-height: 1.55; }
 .delete-warning { padding: 12px; border: 1px solid color-mix(in srgb,var(--nh-danger) 35%,var(--line)); border-radius: 9px; color: var(--nh-danger); background: color-mix(in srgb,var(--nh-danger) 7%,var(--surface)); }
+
+/* ── celular ─────────────────────────────────────────────────────────────────────
+ * No celular a tela é do texto. A árvore e o resumo são folhas (app-mobile-sheet, no template);
+ * aqui só a apresentação: barra da escrita, alvos de dedo e ações que no desktop dependem de hover.
+ * Critério de celular: ViewportState e shell/state/breakpoints.ts. */
+:host-context(html.nh-mobile) .writing-layout,
+:host-context(html.nh-mobile) .writing-layout:not(.inspector-open) {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+:host-context(html.nh-mobile) .editor-panel { min-width: 0; min-height: 0; flex: 1 1 auto; }
+
+:host-context(html.nh-mobile) .writing-mobile-bar {
+  flex: 0 0 52px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--nh-mobile-ink, #ede7d9) 8%, transparent);
+}
+:host-context(html.nh-mobile) .writing-mobile-bar strong {
+  overflow: hidden;
+  color: var(--nh-mobile-ink, #ede7d9);
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+:host-context(html.nh-mobile) .writing-mobile-bar button {
+  min-height: var(--nh-touch-target, 44px);
+  padding: 0 14px;
+  border: 1px solid color-mix(in srgb, var(--nh-mobile-ink, #ede7d9) 14%, transparent);
+  border-radius: 22px;
+  color: var(--nh-mobile-ink, #ede7d9);
+  background: color-mix(in srgb, var(--nh-mobile-ink, #ede7d9) 5%, transparent);
+  font-size: 14px;
+  font-weight: 600;
+}
+:host-context(html.nh-mobile) .writing-mobile-bar button.active {
+  border-color: var(--nh-mobile-gold, #d8b772);
+  color: var(--nh-mobile-gold, #d8b772);
+}
+:host-context(html.nh-mobile) .writing-mobile-bar button:disabled { opacity: .4; }
+
+:host-context(html.nh-mobile) .editor-status { height: 36px; flex-basis: 36px; padding: 0 var(--nh-mobile-gutter, 16px); font-size: 12px; }
+:host-context(html.nh-mobile) .editor-status span:nth-child(2),
+:host-context(html.nh-mobile) .editor-status span:nth-child(3) { display: none; }
+
+:host-context(html.nh-mobile) .editor-empty { padding: 32px 24px; }
+:host-context(html.nh-mobile) .editor-empty h2 { font-size: 24px; }
+:host-context(html.nh-mobile) .editor-empty p { font-size: 15px; }
+:host-context(html.nh-mobile) .editor-empty .primary-button { min-height: 48px; padding: 0 24px; font-size: 15px; }
+
+/* Árvore na folha: linhas altas, e um "⋯" por item no lugar das ações que no desktop dependem de hover. */
+:host-context(html.nh-mobile) .tree-mobile-new-story {
+  width: 100%;
+  min-height: 48px;
+  margin-bottom: 8px;
+  border: 1px dashed color-mix(in srgb, var(--nh-mobile-gold, #d8b772) 45%, transparent);
+  border-radius: 14px;
+  color: var(--nh-mobile-gold, #d8b772);
+  background: transparent;
+  font-size: 15px;
+  font-weight: 600;
+}
+:host-context(html.nh-mobile) :is(.tree-story-row, .tree-book-row) { grid-template-columns: 40px minmax(0, 1fr) 44px; }
+:host-context(html.nh-mobile) .tree-chapter-row { grid-template-columns: minmax(0, 1fr) 44px; }
+:host-context(html.nh-mobile) .tree-more {
+  width: var(--nh-touch-target, 44px);
+  height: var(--nh-touch-target, 44px);
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: var(--nh-mobile-ink, #ede7d9);
+  background: transparent;
+  font-size: 20px;
+}
+:host-context(html.nh-mobile) .tree-more:active { background: color-mix(in srgb, var(--nh-mobile-ink, #ede7d9) 10%, transparent); }
+:host-context(html.nh-mobile) .tree-item-actions { margin: 0; padding: 4px 0 0; list-style: none; }
+:host-context(html.nh-mobile) .tree-item-actions button {
+  width: 100%;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 14px;
+  color: var(--nh-mobile-ink, #ede7d9);
+  background: transparent;
+  font-size: 16px;
+  text-align: left;
+}
+:host-context(html.nh-mobile) .tree-item-actions button span { width: 28px; color: var(--nh-mobile-gold, #d8b772); font-size: 18px; text-align: center; }
+:host-context(html.nh-mobile) .tree-item-actions button:disabled { opacity: .4; }
+:host-context(html.nh-mobile) .tree-item-actions button.danger,
+:host-context(html.nh-mobile) .tree-item-actions button.danger span { color: var(--nh-danger, #e07a70); }
+:host-context(html.nh-mobile) :is(.tree-story, .tree-book, .tree-chapter) { min-height: 56px; font-size: 15px; }
+:host-context(html.nh-mobile) :is(.tree-story strong, .tree-book-copy strong, .chapter-copy strong) { font-size: 15px; }
+:host-context(html.nh-mobile) :is(.tree-book-copy small, .chapter-copy small) { font-size: 12px; }
+:host-context(html.nh-mobile) .tree-story-row .tree-story small { font-size: 11px; }
+:host-context(html.nh-mobile) .tree-expander { width: 40px; height: 48px; }
+:host-context(html.nh-mobile) .tree-expander span { font-size: 20px; }
+:host-context(html.nh-mobile) .tree-chapter .drag-handle { display: none; }
+:host-context(html.nh-mobile) .add-tree-item { min-height: 48px; font-size: 15px; }
+:host-context(html.nh-mobile) .tree-empty p { font-size: 15px; }
+
+/* Resumo na folha: texto legível e campos de 16px. */
+:host-context(html.nh-mobile) .writing-inspector-sheet { padding-bottom: 8px; }
+:host-context(html.nh-mobile) .writing-inspector-sheet :is(.chapter-summary-label, .scene-route label) { font-size: 13px; }
+:host-context(html.nh-mobile) .writing-inspector-sheet textarea { min-height: 140px; font-size: 16px; }
+:host-context(html.nh-mobile) .writing-inspector-sheet .scene-route { grid-template-columns: 1fr; }
+:host-context(html.nh-mobile) .writing-inspector-sheet .scene-route > span { display: none; }
+:host-context(html.nh-mobile) .writing-inspector-sheet .scene-route input { min-height: 44px; font-size: 16px; }
+:host-context(html.nh-mobile) .writing-inspector-sheet :is(.inspector-places header, .character-presence > header) { font-size: 15px; }
+:host-context(html.nh-mobile) .writing-inspector-sheet :is(.inspector-places p, .character-presence > p, .inspector-note p) { font-size: 14px; }
+:host-context(html.nh-mobile) .writing-inspector-sheet .inspector-places button { min-height: 40px; padding: 0 14px; font-size: 14px; }
+:host-context(html.nh-mobile) .writing-inspector-sheet .character-presence article strong { font-size: 15px; }
+:host-context(html.nh-mobile) .writing-inspector-sheet :is(.character-presence article small, .character-presence blockquote) { font-size: 13px; }
+:host-context(html.nh-mobile) .writing-inspector-sheet :is(.summary-ai-button, .metadata-panel-button) { min-height: 48px; font-size: 15px; }

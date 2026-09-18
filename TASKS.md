@@ -66,6 +66,25 @@ os quatro segredos de assinatura, constrói com a mesma action da CI, exige APK 
 estar nos assets. **A assinatura ainda não existe**: não havia keystore Android, e o workflow de
 release falha de propósito até os segredos serem criados. Ver `docs/RELEASE_ANDROID.md`.
 
+**Reestruturação mobile (PR #56, branch `mobile-shell`).** Pedido do humano: parar de tratar o
+celular como desktop espremido. Decisão registrada no **ADR 0011** — DesktopShell e MobileShell
+compartilham domínio e navegação, não a composição visual. Auditoria em `docs/mobile/AUDITORIA.md`;
+arquitetura, gestos, zoom, safe area e desempenho em `docs/mobile/README.md`.
+
+```text
+etapa 1  sem zoom (meta, WebView, touch-action); critério toque + lado menor <= 760
+etapa 2-3 app-mobile-shell, barra ‹ universo 🔍 •••, ações como dados (ShellActionsState)
+etapa 4  alça de três barras, dica de primeira execução, vibração, faixa do Android sincronizada
+etapa 5  escrita: editor na tela, árvore e resumo como folhas, "⋯" por item
+etapa 6  contrato data-nh-dialog: todo diálogo vira folha; altura por cadeia de 100%
+etapa 7  kanban uma coluna por vez, timeline em pé, grafo com a tela, ações sem hover
+etapa 8  perfil de desempenho: sem blur, sem will-change permanente
+etapa 9  Playwright: 4 celulares + desktop, 38 testes, job Mobile na CI
+```
+
+O `android-shell.css` da correção de emergência foi removido. Falta o roteiro físico
+(`docs/mobile/ROTEIRO_ANDROID.md`) no aparelho.
+
 **Layout só para Android (2026-09-14, depois do teste no S23 / Android 16).** O humano instalou a
 `0.10.0-beta.1` e o app parecia "um navegador quebrado tentando ser app": barra de título do desktop
 por baixo da barra de status, cabeçalho do universo estourando para o lado, o resumo cobrindo o

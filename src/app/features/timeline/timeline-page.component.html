@@ -98,8 +98,8 @@
 </div>
 
 @if (modal()) {
-  <div class="timeline-modal-backdrop" (mousedown)="closeModal()">
-    <form class="timeline-modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="timeline-modal-backdrop" data-nh-dialog (mousedown)="closeModal()">
+    <form class="timeline-modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       @if (modal() === 'create') {
         <header>
           <h2>Novo marco histórico</h2>

@@ -1,7 +1,7 @@
 //! NarraHub — Database Migrations
 //! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 20;
+pub const LATEST_SCHEMA_VERSION: i64 = 26;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -25,6 +25,12 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         18 => Some(MIGRATION_V18),
         19 => Some(MIGRATION_V19),
         20 => Some(MIGRATION_V20),
+        21 => Some(MIGRATION_V21),
+        22 => Some(MIGRATION_V22),
+        23 => Some(MIGRATION_V23),
+        24 => Some(MIGRATION_V24),
+        25 => Some(MIGRATION_V25),
+        26 => Some(MIGRATION_V26),
         _ => None,
     }
 }
@@ -1395,6 +1401,396 @@ CREATE INDEX IF NOT EXISTS idx_blob_migration_issues_abertas
     WHERE resolved_at = '';
 "#;
 
+/// NH-079, etapa B1: a exclusão de um pai que a cascata faria apagar um filho concorrente.
+pub const MIGRATION_V21: &str = r#"
+-- Uma divergencia deixa de ser so "duas revisoes da mesma base". A etapa B1
+-- acrescenta um segundo tipo, com a mesma garantia - nenhuma versao some:
+--
+--   concurrent                  duas revisoes partiram da mesma base (etapa 11)
+--   parent_deletion_blocked     chegou a exclusao de um pai, e a cascata de
+--                               chave estrangeira apagaria um descendente que
+--                               a origem da exclusao nao conhecia. O DELETE
+--                               fisico NAO roda; o pai e o filho continuam, e
+--                               a decisao fica com o escritor.
+--
+-- Coluna com DEFAULT: toda divergencia que ja existe e do primeiro tipo.
+ALTER TABLE sync_divergences ADD COLUMN kind TEXT NOT NULL DEFAULT 'concurrent'
+    CHECK (kind IN ('concurrent', 'parent_deletion_blocked'));
+"#;
+
+pub const MIGRATION_V22: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v22
+-- NH-079 B5 - a aresta do canvas deixa de sobreviver a propria ponta
+-- ============================================
+--
+-- As pontas de `canvas_edges` sao polimorficas ('entity' | 'canvas'), entao nao
+-- ha FK para apaga-las. Ate aqui isso era resolvido de dois jeitos incompletos:
+--
+--   * `delete_node` apagava as arestas do no na mao, dentro da transacao;
+--   * apagar uma ENTIDADE nao apagava nada. A aresta ficava no arquivo para
+--     sempre e sumia da tela pelo filtro da leitura.
+--
+-- Invisivel nao e o mesmo que ausente. A partir da B5 a aresta e um agregado
+-- sincronizavel, e um dado que existe no banco sem existir causalmente e uma
+-- divergencia esperando para acontecer: o aparelho que apagou a entidade
+-- acharia que a aresta morreu junto, e o outro continuaria com ela.
+--
+-- O gatilho resolve nos dois sentidos, e a limpeza de uma vez tira o que o
+-- periodo sem gatilho deixou. A limpeza roda ANTES de os gatilhos existirem,
+-- de proposito: ela nao e uma exclusao autoral, e sim a correcao de um dado
+-- que nunca deveria ter ficado.
+DELETE FROM canvas_edges
+ WHERE NOT (
+         (source_kind = 'entity' AND source_id IN (SELECT id FROM entities))
+      OR (source_kind = 'canvas' AND source_id IN (SELECT id FROM canvas_nodes))
+       )
+    OR NOT (
+         (target_kind = 'entity' AND target_id IN (SELECT id FROM entities))
+      OR (target_kind = 'canvas' AND target_id IN (SELECT id FROM canvas_nodes))
+       );
+
+CREATE TRIGGER trg_entity_canvas_edges_delete
+AFTER DELETE ON entities
+BEGIN
+  DELETE FROM canvas_edges
+   WHERE (source_kind = 'entity' AND source_id = OLD.id)
+      OR (target_kind = 'entity' AND target_id = OLD.id);
+END;
+
+CREATE TRIGGER trg_canvas_node_edges_delete
+AFTER DELETE ON canvas_nodes
+BEGIN
+  DELETE FROM canvas_edges
+   WHERE (source_kind = 'canvas' AND source_id = OLD.id)
+      OR (target_kind = 'canvas' AND target_id = OLD.id);
+END;
+
+-- ── Tag homonima criada nos dois aparelhos ao mesmo tempo ───────────────────
+--
+-- `content_tags` tem UNIQUE(universe_id, name COLLATE NOCASE). A identidade
+-- causal da tag e o `id` da linha, entao "PC cria Mar" e "Android cria Mar"
+-- sao DOIS agregados, e o segundo a chegar bate na constraint. Isso nao e
+-- conflito de conteudo: e o schema recusando materializar um evento valido.
+--
+-- Nao aplicamos nem alteramos nada por conta propria. A colisao vira um tipo
+-- de divergencia, do mesmo jeito que a exclusao de pai bloqueada virou na v21:
+--
+--   concurrent                duas revisoes partiram da mesma base
+--   parent_deletion_blocked   a cascata apagaria um descendente concorrente
+--   tag_name_conflict         a tag que chegou tem o nome de uma tag daqui,
+--                             com identidade diferente. Nada e aplicado; o
+--                             escritor decide se sao a mesma coisa ou renomeia.
+--
+-- Um CHECK so muda reconstruindo a tabela. `sync_divergences` nao e pai de
+-- ninguem -- nenhuma FK aponta para ela --, entao a reconstrucao nao dispara
+-- cascata nenhuma.
+CREATE TABLE sync_divergences_v22 (
+    id TEXT PRIMARY KEY NOT NULL,
+    aggregate_type TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
+    base_rev TEXT NOT NULL,
+    local_rev TEXT NOT NULL,
+    remote_rev TEXT NOT NULL,
+    remote_event_id TEXT NOT NULL,
+    detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at TEXT NOT NULL DEFAULT '',
+    resolution TEXT NOT NULL DEFAULT ''
+        CHECK (resolution IN ('', 'local', 'remote', 'manual')),
+    local_operation TEXT NOT NULL DEFAULT ''
+        CHECK (local_operation IN ('', 'upsert', 'delete')),
+    remote_operation TEXT NOT NULL DEFAULT ''
+        CHECK (remote_operation IN ('', 'upsert', 'delete')),
+    kind TEXT NOT NULL DEFAULT 'concurrent'
+        CHECK (kind IN ('concurrent', 'parent_deletion_blocked', 'tag_name_conflict')),
+    -- O OUTRO agregado envolvido, quando a divergencia e entre DOIS agregados.
+    --
+    -- `concurrent` e `parent_deletion_blocked` sao do mesmo agregado dos dois lados, e aqui fica
+    -- vazio. `tag_name_conflict` nao e: a tag que chegou (T2) colidiu com uma tag DAQUI (T1), e
+    -- sem guardar T1 a decisao perde a identidade com que ela colidiu -- inclusive se T1 for
+    -- renomeada depois.
+    --
+    -- A etapa F precisa disso para distinguir duas decisoes diferentes:
+    --
+    --   renomear uma delas        duas tags continuam existindo, com nomes diferentes
+    --   sao a mesma tag           uma identidade absorve a outra, e as `tag_assignment` das DUAS
+    --                             precisam ser tratadas juntas
+    --
+    -- Sem T1 guardado, a segunda decisao nao tem como saber quais marcacoes juntar.
+    related_aggregate_id TEXT NOT NULL DEFAULT ''
+);
+
+INSERT INTO sync_divergences_v22
+  (id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev, remote_event_id,
+   detected_at, resolved_at, resolution, local_operation, remote_operation, kind)
+SELECT id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev, remote_event_id,
+       detected_at, resolved_at, resolution, local_operation, remote_operation, kind
+  FROM sync_divergences;
+
+DROP TABLE sync_divergences;
+ALTER TABLE sync_divergences_v22 RENAME TO sync_divergences;
+CREATE INDEX idx_sync_divergences_abertas
+    ON sync_divergences(aggregate_type, aggregate_id)
+    WHERE resolved_at = '';
+"#;
+
+pub const MIGRATION_V23: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v23
+-- NH-079 B2.2 - grupos de mutacao atomicos
+-- ============================================
+--
+-- Na origem, uma acao ("apagar este livro") e uma transacao so. Na rede ela
+-- virava uma sequencia de eventos independentes, e o receptor podia aplicar
+-- metade: capitulos apagados, livro bloqueado por um capitulo concorrente.
+--
+-- Cada evento passa a carregar a acao de onde saiu. Todo evento de uma mesma
+-- Mutacao recebe o mesmo mutation_id, com indices contiguos 0..count. O
+-- receptor so altera o dominio quando o grupo inteiro chegou e pode entrar
+-- inteiro; se um membro diverge ou e bloqueado, nenhum entra, e nasce UMA
+-- decisao sobre a acao.
+--
+-- O grupo entra na assinatura do envelope e fica FORA de compute_revision: ele
+-- descreve a acao, nao o estado do agregado.
+--
+-- Evento anterior a esta migration fica com mutation_id vazio: grupo de um, e
+-- a assinatura dele nao muda.
+ALTER TABLE sync_events ADD COLUMN mutation_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE sync_events ADD COLUMN mutation_index INTEGER NOT NULL DEFAULT 0
+    CHECK (mutation_index >= 0);
+ALTER TABLE sync_events ADD COLUMN mutation_count INTEGER NOT NULL DEFAULT 1
+    CHECK (mutation_count >= 1);
+ALTER TABLE sync_events ADD COLUMN mutation_kind TEXT NOT NULL DEFAULT '';
+ALTER TABLE sync_events ADD COLUMN mutation_root_type TEXT NOT NULL DEFAULT '';
+ALTER TABLE sync_events ADD COLUMN mutation_root_id TEXT NOT NULL DEFAULT '';
+
+-- Indice fora do total e grupo sem id com mais de um membro sao formas que
+-- nenhum emissor legitimo produz.
+CREATE TRIGGER trg_sync_events_grupo_coerente
+BEFORE INSERT ON sync_events
+BEGIN
+    SELECT RAISE(ABORT, 'Indice do grupo de mutacao fora do total.')
+     WHERE NEW.mutation_index >= NEW.mutation_count;
+    SELECT RAISE(ABORT, 'Grupo de mutacao com mais de um membro precisa de mutation_id.')
+     WHERE NEW.mutation_id = '' AND NEW.mutation_count > 1;
+END;
+
+-- A identidade de um grupo e (origem, mutation_id): duas origens podem gerar o
+-- mesmo id, e um grupo nunca captura membros de outra.
+CREATE INDEX IF NOT EXISTS idx_sync_events_mutacao
+    ON sync_events(device_id, mutation_id)
+    WHERE mutation_id <> '';
+
+-- A decisao de um grupo bloqueado e UMA, ancorada no primeiro membro que nao
+-- entrou. O mutation_id liga a decisao a acao inteira: a resolucao aplica ou
+-- restaura o grupo todo, nunca um membro solto.
+ALTER TABLE sync_divergences ADD COLUMN mutation_id TEXT NOT NULL DEFAULT '';
+"#;
+
+pub const MIGRATION_V24: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v24
+-- NH-079 B6 - identidade PORTATIL do conflito
+-- ============================================
+--
+-- Ate aqui um conflito so existia como linha local: `sync_divergences.id` vem
+-- de `new_id()`, e os lados sao `local_rev`/`remote_rev`. O mesmo conflito,
+-- visto de dois aparelhos, vira DUAS linhas sem relacao nenhuma, e as colunas
+-- que descrevem os lados trocam de papel conforme quem olha.
+--
+-- Enquanto for assim, uma resolucao nao atravessa o store-and-forward: o
+-- aparelho que recebe "o conflito X foi decidido assim" nao consegue dizer
+-- qual conflito dele e o X.
+--
+-- Esta migration e ADITIVA de proposito. `local_rev` e `remote_rev` NAO saem:
+-- eles tem semantica operacional local que o resolvedor precisa -- o de
+-- `parent_deletion_blocked`, por exemplo, confere se a revisao materializada
+-- aqui ainda e a que estava quando o conflito foi detectado, antes de deixar
+-- a cascata rodar. Renomear conceito nao justifica migration destrutiva.
+--
+--   identidade portatil    conflict_key, participant_a, participant_b
+--   perspectiva local      local_rev, remote_rev
+--
+-- A F deixa de mostrar "local/remote" ao escritor; a infraestrutura mantem os
+-- campos enquanto forem necessarios.
+--
+-- ## Esta identidade e a do CONFLITO, nao a da acao
+--
+-- A v23 deu a cada evento a acao de onde ele saiu, e a identidade daquela
+-- acao e o par (origem, mutation_id) -- o id sozinho e sorteado em cada
+-- aparelho e nao identifica nada. As duas identidades convivem e nao se
+-- substituem: `mutation_id` liga a decisao a acao que a gerou, sempre lido
+-- junto com a origem do evento ancora; `conflict_key` diz QUAL conflito e,
+-- visto de qualquer aparelho.
+--
+-- ## O que estas colunas NAO sao
+--
+-- Elas nao transformam `sync_divergences` em fato causal. A divisao, escrita
+-- na secao 9 da matriz, e:
+--
+--   sync_divergences     indice/estado LOCAL do conflito
+--   conflict_resolution  fato causal replicavel (etapa F), com
+--                        aggregateId = conflictKey
+--
+-- Um `UPDATE resolved_at` nunca sera a fonte de verdade distribuida: ele nao
+-- viaja, nao e assinado e nao diz quem decidiu.
+-- `COLLATE BINARY` e explicito de proposito. A ordem entre os participantes faz parte do
+-- CONTRATO -- `participant_a < participant_b` e o que garante que dois aparelhos gravem a mesma
+-- dupla na mesma ordem. Deixar a colacao implicita deixaria essa garantia dependendo de um
+-- padrao, e uma coluna com NOCASE ordenaria diferente sem nenhum erro aparecer.
+ALTER TABLE sync_divergences ADD COLUMN conflict_key TEXT NOT NULL DEFAULT '' COLLATE BINARY;
+ALTER TABLE sync_divergences ADD COLUMN participant_a TEXT NOT NULL DEFAULT '' COLLATE BINARY;
+ALTER TABLE sync_divergences ADD COLUMN participant_b TEXT NOT NULL DEFAULT '' COLLATE BINARY;
+
+-- ## Identidade vazia NAO e uma identidade
+--
+-- Divergencia que existia antes desta migration fica com a chave vazia, e isso significa
+-- "legado nao portavel" -- nunca "o conflito de chave vazia". O indice e PARCIAL para que essas
+-- linhas simplesmente nao existam como conflito indexado: sem isso, no dia em que alguem
+-- precisar de unicidade por chave, TODAS as divergencias legadas colidiriam entre si como se
+-- fossem o mesmo conflito.
+CREATE INDEX IF NOT EXISTS idx_sync_divergences_chave
+    ON sync_divergences(conflict_key)
+    WHERE conflict_key <> '';
+"#;
+
+pub const MIGRATION_V25: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v25
+-- NH-079 B6 - UNIQUE(entity_id) na posicao da entidade no grafo
+-- ============================================
+--
+-- O agregado `canvas_entity_position` e identificado SO pela entidade: o
+-- payload canonico e (entityId, universeId, positionX, positionY), e a
+-- identidade do evento e o entity_id. A tabela, porem, tem
+-- PRIMARY KEY (universe_id, entity_id) -- ela aceita duas linhas para a mesma
+-- entidade, em universos diferentes.
+--
+-- O codec ja trata duas linhas como INCONSISTENCIA e se recusa a escolher uma
+-- (`universo_da_posicao`). O que faltava era a restricao fisica, e ela nao
+-- podia entrar sem decidir o que fazer com acervos que ja tenham a duplicata.
+-- Esta migration decide, e decide de forma auditavel.
+--
+-- ## A regra do desempate, escrita antes de apagar qualquer coisa
+--
+--   1. fica a linha cujo universo e o universo DA ENTIDADE (entities.universe_id);
+--   2. persistindo empate, fica a mais recente (updated_at);
+--   3. persistindo empate, fica a de menor universe_id (BINARY, estavel).
+--
+-- A entidade pertence a um universo so, entao a linha de outro universo e
+-- resto de importacao ou de bug antigo: ela nunca foi visivel naquele grafo.
+--
+-- ## Nada e apagado em silencio
+--
+-- As linhas perdedoras vao para `canvas_entity_positions_descartadas`, com a
+-- data e o motivo. Uma migration que apaga dado do escritor sem deixar rastro
+-- e indistinguivel de perda de dado; com a quarentena, a auditoria depois do
+-- upgrade ainda consegue dizer o que existia.
+--
+-- Para a sincronizacao isso NAO gera evento: a v25 roda antes da genese (etapa
+-- C), e o baseline levara o estado ja saneado. Depois da genese, toda escritura
+-- deste agregado passa pela Mutacao, como as demais.
+CREATE TABLE IF NOT EXISTS canvas_entity_positions_descartadas (
+    entity_id TEXT NOT NULL,
+    universe_id TEXT NOT NULL,
+    position_x REAL NOT NULL,
+    position_y REAL NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT '',
+    descartada_em TEXT NOT NULL DEFAULT (datetime('now')),
+    motivo TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (entity_id, universe_id)
+);
+
+INSERT OR IGNORE INTO canvas_entity_positions_descartadas
+    (entity_id, universe_id, position_x, position_y, updated_at, motivo)
+SELECT p.entity_id, p.universe_id, p.position_x, p.position_y,
+       COALESCE(p.updated_at, ''),
+       'duplicata de canvas_entity_position resolvida pela migration 25'
+  FROM canvas_entity_positions p
+ WHERE p.rowid NOT IN (
+        SELECT rowid FROM (
+            SELECT q.rowid AS rowid,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY q.entity_id
+                       ORDER BY (q.universe_id = (SELECT e.universe_id FROM entities e
+                                                   WHERE e.id = q.entity_id)) DESC,
+                                COALESCE(q.updated_at, '') DESC,
+                                q.universe_id ASC
+                   ) AS posicao
+              FROM canvas_entity_positions q
+        ) WHERE posicao = 1
+       );
+
+DELETE FROM canvas_entity_positions
+ WHERE rowid NOT IN (
+        SELECT rowid FROM (
+            SELECT q.rowid AS rowid,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY q.entity_id
+                       ORDER BY (q.universe_id = (SELECT e.universe_id FROM entities e
+                                                   WHERE e.id = q.entity_id)) DESC,
+                                COALESCE(q.updated_at, '') DESC,
+                                q.universe_id ASC
+                   ) AS posicao
+              FROM canvas_entity_positions q
+        ) WHERE posicao = 1
+       );
+
+-- A PRIMARY KEY (universe_id, entity_id) continua: ela nao atrapalha, e trocar
+-- a chave primaria exigiria recriar a tabela. O que entra e a restricao que
+-- faltava -- a identidade do agregado vira invariante do banco, e nao so do
+-- codigo que le.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_canvas_entity_positions_entidade
+    ON canvas_entity_positions(entity_id);
+"#;
+
+pub const MIGRATION_V26: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v26
+-- NH-079 C - adocao versionada do acervo (genese)
+-- ============================================
+--
+-- Ate aqui um acervo criado antes do Sync V2 tinha linhas de dominio sem
+-- nenhuma revisao que as explicasse. O log so conhecia o que foi escrito
+-- DEPOIS da fronteira `Mutacao` existir. Isso torna o incremental impossivel
+-- (nao ha de onde partir) e o bundle desonesto (o aparelho novo receberia
+-- conteudo sem passado causal).
+--
+-- A genese resolve isso: cada agregado coberto que existe no dominio e nao
+-- tem revisao corrente ganha a PRIMEIRA revisao dele, com base_rev = raiz.
+-- Ela nao muda dominio nenhum -- escreve so evento e estado causal.
+--
+-- ## Adocao VERSIONADA, nao um marcador "genese para sempre"
+--
+-- A chave e `canonical_format_version`: a adocao e sempre a adocao de um
+-- formato canonico. A etapa C cria e conclui a versao 1. Se um dia o formato
+-- passar a cobrir estado que hoje fica de fora, essa mudanca declara uma
+-- adocao NOVA, com versao nova -- e nao se disfarca de "orfao adotado
+-- automaticamente".
+--
+-- Depois de uma versao concluida, agregado coberto sem revisao corrente e
+-- FALHA FECHADA, nao convite para adotar sozinho: adotar em silencio e o que
+-- transformaria um bug de cobertura numa criacao com autoria deste aparelho.
+--
+-- ## A linha so existe quando a adocao CONCLUIU
+--
+-- Nao ha `started_at`. A adocao inteira e uma transacao: ou ela confirma (e a
+-- linha existe), ou a queda desfaz tudo, inclusive a linha. "Adocao pela
+-- metade" nao e um estado que este banco pode estar. A condicao de
+-- recuperacao e simplesmente: versao nao concluida -> executar de novo.
+CREATE TABLE IF NOT EXISTS sync_adoptions (
+    canonical_format_version INTEGER PRIMARY KEY NOT NULL,
+    -- Quem adotou. A genese e assinada, e a autoria dela e deste aparelho.
+    device_id TEXT NOT NULL,
+    completed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    -- Quantos agregados a adocao trouxe, e a faixa de seq que ela ocupou.
+    aggregates INTEGER NOT NULL DEFAULT 0 CHECK (aggregates >= 0),
+    first_seq INTEGER NOT NULL DEFAULT 0 CHECK (first_seq >= 0),
+    last_seq INTEGER NOT NULL DEFAULT 0 CHECK (last_seq >= 0),
+    CHECK (last_seq >= first_seq)
+);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1409,6 +1805,12 @@ mod tests {
     const NATIVE_SCHEMA_V18_FIXTURE: &str = include_str!("../../fixtures/schema18_native.sql");
     const NATIVE_SCHEMA_V19_FIXTURE: &str = include_str!("../../fixtures/schema19_native.sql");
     const NATIVE_SCHEMA_V20_FIXTURE: &str = include_str!("../../fixtures/schema20_native.sql");
+    const NATIVE_SCHEMA_V21_FIXTURE: &str = include_str!("../../fixtures/schema21_native.sql");
+    const NATIVE_SCHEMA_V22_FIXTURE: &str = include_str!("../../fixtures/schema22_native.sql");
+    const NATIVE_SCHEMA_V23_FIXTURE: &str = include_str!("../../fixtures/schema23_native.sql");
+    const NATIVE_SCHEMA_V24_FIXTURE: &str = include_str!("../../fixtures/schema24_native.sql");
+    const NATIVE_SCHEMA_V25_FIXTURE: &str = include_str!("../../fixtures/schema25_native.sql");
+    const NATIVE_SCHEMA_V26_FIXTURE: &str = include_str!("../../fixtures/schema26_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -2303,6 +2705,628 @@ mod tests {
     ///
     /// Sem isto, a suíte continuaria verde enquanto a cobertura envelhece em silêncio — que é
     /// o modo mais comum de uma rede de segurança apodrecer.
+    /// Schema 21: a exclusão de pai bloqueada é um tipo explícito de divergência, e o banco
+    /// recusa qualquer outro valor. Divergência antiga fica `concurrent`.
+    #[test]
+    fn schema21_distingue_exclusao_de_pai_bloqueada_de_divergencia_concorrente() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V21_FIXTURE)
+            .expect("carregar a fixture nativa de schema 21");
+
+        let mut consulta = connection
+            .prepare("SELECT id, kind FROM sync_divergences ORDER BY id")
+            .expect("consulta");
+        let tipos: Vec<(String, String)> = consulta
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("linhas")
+            .collect::<Result<_, _>>()
+            .expect("tipos");
+        assert_eq!(
+            tipos,
+            vec![
+                ("fx16-div-1".to_string(), "concurrent".to_string()),
+                ("fx18-div-2".to_string(), "concurrent".to_string()),
+                (
+                    "fx21-div-3".to_string(),
+                    "parent_deletion_blocked".to_string()
+                ),
+            ]
+        );
+
+        let invalido = connection.execute(
+            "UPDATE sync_divergences SET kind = 'qualquer' WHERE id = 'fx16-div-1'",
+            [],
+        );
+        assert!(
+            invalido.is_err(),
+            "o schema aceitou um tipo de divergência inventado"
+        );
+    }
+
+    /// Schema 22: a aresta do canvas nao sobrevive a propria ponta, nem pelo lado da entidade.
+    ///
+    /// A fixture nativa carrega as quatro combinacoes de ponta. Apagar a entidade e apagar o no
+    /// tem de levar exatamente as arestas daquela ponta -- e nenhuma outra.
+    #[test]
+    fn schema22_apaga_a_aresta_junto_com_a_ponta_dos_dois_lados() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V22_FIXTURE)
+            .expect("carregar a fixture nativa de schema 22");
+
+        let arestas = |connection: &Connection| -> Vec<String> {
+            let mut consulta = connection
+                .prepare("SELECT id FROM canvas_edges ORDER BY id")
+                .expect("consulta");
+            consulta
+                .query_map([], |row| row.get(0))
+                .expect("linhas")
+                .collect::<Result<_, _>>()
+                .expect("ids")
+        };
+        assert_eq!(
+            arestas(&connection),
+            vec![
+                "fx22-edge-ee",
+                "fx22-edge-en",
+                "fx22-edge-ne",
+                "fx22-edge-nn"
+            ]
+        );
+
+        connection
+            .execute("DELETE FROM entities WHERE id = 'fx22-ent-a'", [])
+            .expect("apagar a entidade");
+        // `ee` (ent-a -> ent-b) e `en` (ent-a -> node-a) tinham ponta nela, nos dois lados da
+        // aresta. `ne` aponta para ent-b e sobrevive: o gatilho nao pode ser amplo demais.
+        assert_eq!(
+            arestas(&connection),
+            vec!["fx22-edge-ne", "fx22-edge-nn"],
+            "apagar a entidade tinha que levar so as arestas com ponta NELA"
+        );
+
+        connection
+            .execute("DELETE FROM canvas_nodes WHERE id = 'fx22-node-a'", [])
+            .expect("apagar o no");
+        assert!(
+            arestas(&connection).is_empty(),
+            "apagar o no tinha que levar as arestas dele"
+        );
+    }
+
+    /// A migration 22 limpa a aresta orfa que o periodo sem gatilho deixou no arquivo.
+    #[test]
+    fn schema22_tira_a_aresta_orfa_que_ja_estava_no_arquivo() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, 21);
+        connection
+            .execute_batch(
+                "INSERT INTO universes (id, name) VALUES ('u1', 'Universo');
+                 INSERT INTO entities (id, universe_id, type, name, created_at, updated_at)
+                   VALUES ('e1', 'u1', 'Personagem', 'Frodo', '2026-01-01 00:00:00', '2026-01-01 00:00:00');
+                 INSERT INTO canvas_nodes (id, universe_id, kind, text) VALUES ('n1', 'u1', 'note', 'nota');
+                 INSERT INTO canvas_edges (id, universe_id, source_kind, source_id, target_kind, target_id)
+                   VALUES ('viva', 'u1', 'canvas', 'n1', 'entity', 'e1'),
+                          ('orfa', 'u1', 'canvas', 'n1', 'entity', 'sumiu-faz-tempo');",
+            )
+            .expect("semear o arquivo de antes");
+
+        connection
+            .execute_batch(sql_for_version(22).expect("migration 22"))
+            .expect("migrar");
+
+        let restantes: Vec<String> = connection
+            .prepare("SELECT id FROM canvas_edges ORDER BY id")
+            .expect("consulta")
+            .query_map([], |row| row.get(0))
+            .expect("linhas")
+            .collect::<Result<_, _>>()
+            .expect("ids");
+        assert_eq!(restantes, vec!["viva"]);
+    }
+
+    /// Schema 23: cada evento carrega a acao de onde saiu, e o banco recusa grupo incoerente.
+    #[test]
+    fn schema23_guarda_a_acao_de_cada_evento_e_recusa_grupo_incoerente() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V23_FIXTURE)
+            .expect("carregar a fixture nativa de schema 23");
+
+        // A exclusao do livro: quatro membros, indices contiguos, a mesma raiz.
+        let membros: Vec<(i64, i64, String, String)> = connection
+            .prepare(
+                "SELECT mutation_index, mutation_count, mutation_kind, mutation_root_id
+                   FROM sync_events WHERE mutation_id = 'fx23-m-livro' ORDER BY mutation_index",
+            )
+            .expect("consulta")
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .expect("linhas")
+            .collect::<Result<_, _>>()
+            .expect("membros");
+        assert_eq!(membros.len(), 4);
+        for (esperado, (indice, total, kind, raiz)) in membros.iter().enumerate() {
+            assert_eq!(*indice, esperado as i64);
+            assert_eq!(*total, 4);
+            assert_eq!(kind, "delete_tree");
+            assert_eq!(raiz, "fx23-b1");
+        }
+
+        // O evento anterior a v23 e grupo de um.
+        let (id, total): (String, i64) = connection
+            .query_row(
+                "SELECT mutation_id, mutation_count FROM sync_events WHERE event_id = 'fx23-e-a1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("legado");
+        assert_eq!((id.as_str(), total), ("", 1));
+
+        // A decisao aponta para a acao inteira.
+        let da_decisao: String = connection
+            .query_row(
+                "SELECT mutation_id FROM sync_divergences WHERE id = 'fx23-div-livro'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("decisao");
+        assert_eq!(da_decisao, "fx23-m-livro");
+
+        // Formas que nenhum emissor legitimo produz.
+        for (descricao, sql) in [
+            (
+                "indice fora do total",
+                "INSERT INTO sync_events (event_id, device_id, seq, universe_id, aggregate_type,
+                   aggregate_id, operation, payload, base_rev, new_rev, signature,
+                   mutation_id, mutation_index, mutation_count)
+                 VALUES ('x1', 'fx23-dev-pc', 90, 'u', 'book', 'b', 'delete', '', '', 'r', 's',
+                   'm', 4, 4)",
+            ),
+            (
+                "grupo de varios sem id",
+                "INSERT INTO sync_events (event_id, device_id, seq, universe_id, aggregate_type,
+                   aggregate_id, operation, payload, base_rev, new_rev, signature,
+                   mutation_id, mutation_index, mutation_count)
+                 VALUES ('x2', 'fx23-dev-pc', 91, 'u', 'book', 'b', 'delete', '', '', 'r', 's',
+                   '', 0, 3)",
+            ),
+        ] {
+            assert!(
+                connection.execute(sql, []).is_err(),
+                "o schema aceitou {descricao}"
+            );
+        }
+    }
+
+    /// Um banco que CHEGOU ao 23 por migracao: todo evento antigo vira grupo de um.
+    #[test]
+    fn schema23_faz_de_todo_evento_antigo_um_grupo_de_um() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, 22);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V21_FIXTURE)
+            .expect("fixture antiga");
+        let antes: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sync_events", [], |row| row.get(0))
+            .expect("contar");
+
+        connection
+            .execute_batch(sql_for_version(23).expect("migration 23"))
+            .expect("migrar");
+
+        let de_um: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sync_events
+                  WHERE mutation_id = '' AND mutation_index = 0 AND mutation_count = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert!(antes > 0);
+        assert_eq!(de_um, antes, "algum evento antigo ganhou grupo inventado");
+    }
+
+    /// Schema 24: a divergencia carrega identidade PORTATIL e perspectiva local, lado a lado.
+    ///
+    /// A migration e aditiva de proposito: `local_rev`/`remote_rev` continuam, porque o resolvedor
+    /// precisa deles operacionalmente. O que entra e a identidade que atravessa aparelhos.
+    #[test]
+    fn schema24_guarda_identidade_portatil_e_perspectiva_lado_a_lado() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V24_FIXTURE)
+            .expect("carregar a fixture nativa de schema 24");
+
+        let mut consulta = connection
+            .prepare(
+                "SELECT kind, conflict_key, participant_a, participant_b, local_rev, remote_rev
+                   FROM sync_divergences ORDER BY id",
+            )
+            .expect("consulta");
+        let linhas: Vec<(String, String, String, String, String, String)> = consulta
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .expect("linhas")
+            .collect::<Result<_, _>>()
+            .expect("divergencias");
+
+        assert_eq!(linhas.len(), 3, "as tres formas de conflito");
+        for (kind, chave, a, b, _, _) in &linhas {
+            assert!(!chave.is_empty(), "{kind} nasceu sem identidade portatil");
+            assert!(a < b, "{kind}: os participantes precisam estar ordenados");
+            // DECODIFICA de verdade: a codificacao leva o tamanho de cada campo na frente, e um
+            // tamanho escrito errado a mao produz um participante que nao volta para quatro
+            // campos. Sem isto, a fixture poderia mentir e o gate nao perceberia.
+            for participante in [a, b] {
+                let campos = crate::domain::conflito::partes_da_identidade(participante)
+                    .unwrap_or_else(|| {
+                        panic!("{kind}: participante nao decodifica: {participante}")
+                    });
+                assert_eq!(
+                    campos.len(),
+                    4,
+                    "{kind}: participante precisa ter tipo, id, revisao e operacao: {participante}"
+                );
+                assert!(
+                    matches!(campos[3].as_str(), "upsert" | "delete"),
+                    "{kind}: operacao invalida no participante: {participante}"
+                );
+            }
+        }
+
+        // A perspectiva continua existindo: ela nao foi trocada por conceito nenhum.
+        let (_, _, _, _, local, remoto) = &linhas[0];
+        assert_eq!(local, "fx24-rev-pc");
+        assert_eq!(remoto, "fx24-rev-an");
+
+        // A tag homonima e o caso que importa: DOIS agregados diferentes no mesmo conflito.
+        let tag = linhas
+            .iter()
+            .find(|(kind, ..)| kind == "tag_name_conflict")
+            .expect("o conflito de tag");
+        assert!(tag.2.contains("fx24-tag-an") && tag.3.contains("fx24-tag-pc"));
+
+        // As duas identidades convivem: a do CONFLITO (portatil) e a da ACAO, que so existe com a
+        // origem junto. O `mutation_id` sozinho nao identifica grupo nenhum (B2.2).
+        let (mutation_id, origem): (String, String) = connection
+            .query_row(
+                "SELECT d.mutation_id, e.device_id
+                   FROM sync_divergences d JOIN sync_events e ON e.event_id = d.remote_event_id
+                  WHERE d.id = 'fx24-div-del'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("a acao da decisao");
+        assert_eq!(
+            (mutation_id.as_str(), origem.as_str()),
+            ("fx24-m-entidade", "fx24-dev-android")
+        );
+    }
+
+    /// Um banco que CHEGOU ao 24 por migracao nao inventa identidade para tras.
+    ///
+    /// A chave depende das revisoes reais dos dois lados; preenche-la por adivinhacao criaria uma
+    /// identidade que o outro aparelho nao calcularia igual -- pior que estar vazia.
+    #[test]
+    fn schema24_deixa_vazia_a_identidade_das_divergencias_antigas() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, 23);
+        connection
+            .execute_batch(
+                "INSERT INTO sync_divergences
+                   (id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev,
+                    remote_event_id)
+                 VALUES ('velha', 'chapter', 'c1', 'base', 'aqui', 'la', 'evt');",
+            )
+            .expect("divergencia anterior a migration");
+
+        connection
+            .execute_batch(sql_for_version(24).expect("migration 24"))
+            .expect("migrar");
+
+        let (chave, a, b, local): (String, String, String, String) = connection
+            .query_row(
+                "SELECT conflict_key, participant_a, participant_b, local_rev
+                   FROM sync_divergences WHERE id = 'velha'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("ler");
+        assert_eq!((chave.as_str(), a.as_str(), b.as_str()), ("", "", ""));
+        assert_eq!(
+            local, "aqui",
+            "a perspectiva local continua: a migration e aditiva"
+        );
+    }
+
+    /// Os dois caminhos ate o 24 chegam ao MESMO schema de `sync_divergences`: o banco novo, que
+    /// passa por 0 -> ... -> 23 -> 24, e o banco que ja estava no 23 e so aplica a 24.
+    #[test]
+    fn os_dois_caminhos_ate_o_24_dao_o_mesmo_schema() {
+        let colunas = |connection: &Connection| -> Vec<(String, String)> {
+            let mut consulta = connection
+                .prepare(
+                    "SELECT name, type FROM pragma_table_info('sync_divergences') ORDER BY name",
+                )
+                .expect("consulta");
+            consulta
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("linhas")
+                .collect::<Result<_, _>>()
+                .expect("colunas")
+        };
+
+        let novo = Connection::open_in_memory().expect("banco novo");
+        apply_migrations(&novo, 1, LATEST_SCHEMA_VERSION);
+
+        let existente = Connection::open_in_memory().expect("banco existente");
+        apply_migrations(&existente, 1, 23);
+        existente
+            .execute_batch(NATIVE_SCHEMA_V23_FIXTURE)
+            .expect("um banco em uso, nativo no 23");
+        let divergencias_antes: i64 = existente
+            .query_row("SELECT COUNT(*) FROM sync_divergences", [], |row| {
+                row.get(0)
+            })
+            .expect("contar");
+        existente
+            .execute_batch(sql_for_version(24).expect("migration 24"))
+            .expect("23 -> 24");
+
+        assert_eq!(colunas(&novo), colunas(&existente));
+        assert!(colunas(&novo)
+            .iter()
+            .any(|(nome, _)| nome == "conflict_key"));
+        let depois: i64 = existente
+            .query_row(
+                "SELECT COUNT(*) FROM sync_divergences WHERE conflict_key = ''",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert_eq!(
+            depois, divergencias_antes,
+            "as divergencias que ja existiam continuam, sem identidade inventada"
+        );
+        // O que a v23 guardou continua guardado: uma migration aditiva nao mexe no grupo.
+        let com_grupo: i64 = existente
+            .query_row(
+                "SELECT COUNT(*) FROM sync_events WHERE mutation_id <> ''",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert!(com_grupo > 0, "a v23 sumiu do banco existente");
+    }
+
+    /// Schema 25: a identidade do agregado vira invariante do BANCO.
+    ///
+    /// Um banco nativo no 25 nunca teve duplicata; o que se prova aqui e que ele nao pode passar a
+    /// ter -- o INSERT de uma segunda linha para a mesma entidade e recusado, mesmo em outro
+    /// universo, que era exatamente a brecha que a PRIMARY KEY (universe_id, entity_id) deixava.
+    #[test]
+    fn schema25_recusa_duas_posicoes_para_a_mesma_entidade() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V25_FIXTURE)
+            .expect("carregar a fixture nativa de schema 25");
+
+        let uma: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM canvas_entity_positions WHERE entity_id = 'fx25-ent-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert_eq!(uma, 1);
+
+        let erro = connection.execute(
+            "INSERT INTO canvas_entity_positions (universe_id, entity_id, position_x, position_y)
+             VALUES ('fx25-uni-b', 'fx25-ent-1', 10.0, 10.0)",
+            [],
+        );
+        assert!(
+            erro.is_err(),
+            "o banco aceitou duas posicoes da mesma entidade"
+        );
+
+        // A quarentena da migration existe e esta vazia num banco nativo: nada foi descartado.
+        let descartadas: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM canvas_entity_positions_descartadas",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert_eq!(descartadas, 0);
+    }
+
+    /// **Banco existente com a duplicata que a v25 veio resolver.**
+    ///
+    /// A regra e a do cabecalho da migration: fica a linha do universo DA ENTIDADE; a outra vai
+    /// para a quarentena, com motivo. Nada e apagado em silencio, e a posicao que o escritor via
+    /// no grafo (a do universo dela) e a que sobra.
+    #[test]
+    fn schema25_desempata_a_duplicata_e_guarda_a_descartada() {
+        let connection = Connection::open_in_memory().expect("banco");
+        apply_migrations(&connection, 1, 24);
+        connection
+            .execute_batch(
+                "INSERT INTO universes (id, name, description, cover_image, created_at, updated_at)
+                 VALUES ('u-certo', 'Certo', '', '', '', ''),
+                        ('u-errado', 'Errado', '', '', '', '');
+                 INSERT INTO entities (id, universe_id, name, type, description, image,
+                                       created_at, updated_at)
+                 VALUES ('e1', 'u-certo', 'Frodo', 'character', '', '', '', '');
+                 INSERT INTO canvas_entity_positions
+                    (universe_id, entity_id, position_x, position_y, updated_at)
+                 VALUES ('u-errado', 'e1', 1.0, 1.0, '2026-09-10 00:00:00'),
+                        ('u-certo',  'e1', 2.0, 2.0, '2026-01-01 00:00:00');",
+            )
+            .expect("semear a duplicata");
+
+        connection
+            .execute_batch(sql_for_version(25).expect("migration 25"))
+            .expect("migrar");
+
+        let (universo, x): (String, f64) = connection
+            .query_row(
+                "SELECT universe_id, position_x FROM canvas_entity_positions WHERE entity_id = 'e1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("a unica linha que sobrou");
+        assert_eq!((universo.as_str(), x), ("u-certo", 2.0));
+
+        let (descartado, motivo): (String, String) = connection
+            .query_row(
+                "SELECT universe_id, motivo FROM canvas_entity_positions_descartadas
+                  WHERE entity_id = 'e1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("a linha descartada ficou guardada");
+        assert_eq!(descartado, "u-errado");
+        assert!(motivo.contains("migration 25"), "{motivo}");
+    }
+
+    /// Sem duplicata, a migration nao mexe em nada -- e um banco que ja migrou pode migrar de novo.
+    #[test]
+    fn schema25_nao_mexe_em_banco_sem_duplicata_e_e_idempotente() {
+        let connection = Connection::open_in_memory().expect("banco");
+        apply_migrations(&connection, 1, 24);
+        connection
+            .execute_batch(
+                "INSERT INTO universes (id, name, description, cover_image, created_at, updated_at)
+                 VALUES ('u1', 'Um', '', '', '', '');
+                 INSERT INTO entities (id, universe_id, name, type, description, image,
+                                       created_at, updated_at)
+                 VALUES ('e1', 'u1', 'Frodo', 'character', '', '', '', ''),
+                        ('e2', 'u1', 'Sam', 'character', '', '', '', '');
+                 INSERT INTO canvas_entity_positions
+                    (universe_id, entity_id, position_x, position_y, updated_at)
+                 VALUES ('u1', 'e1', 1.0, 1.0, ''), ('u1', 'e2', 2.0, 2.0, '');",
+            )
+            .expect("semear");
+
+        for _ in 0..2 {
+            connection
+                .execute_batch(sql_for_version(25).expect("migration 25"))
+                .expect("migrar");
+        }
+
+        let posicoes: i64 = connection
+            .query_row("SELECT COUNT(*) FROM canvas_entity_positions", [], |row| {
+                row.get(0)
+            })
+            .expect("contar");
+        let descartadas: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM canvas_entity_positions_descartadas",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert_eq!((posicoes, descartadas), (2, 0));
+    }
+
+    /// Schema 26: a adocao do acervo e VERSIONADA, e a linha so existe quando concluiu.
+    #[test]
+    fn schema26_guarda_a_adocao_por_versao_do_formato() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V26_FIXTURE)
+            .expect("carregar a fixture nativa de schema 26");
+
+        let (versao, aggregates, primeiro, ultimo): (i64, i64, i64, i64) = connection
+            .query_row(
+                "SELECT canonical_format_version, aggregates, first_seq, last_seq
+                   FROM sync_adoptions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("a adocao concluida");
+        assert_eq!((versao, aggregates), (1, 3));
+        assert!(primeiro <= ultimo);
+
+        // Uma segunda adocao da MESMA versao e recusada pelo banco: a versao e a chave.
+        let erro = connection.execute(
+            "INSERT INTO sync_adoptions
+                (canonical_format_version, device_id, completed_at, aggregates, first_seq, last_seq)
+             VALUES (1, 'outro', '2026-09-18 00:00:00', 9, 90, 99)",
+            [],
+        );
+        assert!(erro.is_err(), "o banco aceitou duas adocoes da versao 1");
+
+        // Faixa de seq incoerente tambem nao entra.
+        let erro = connection.execute(
+            "INSERT INTO sync_adoptions
+                (canonical_format_version, device_id, completed_at, aggregates, first_seq, last_seq)
+             VALUES (2, 'dev', '2026-09-18 00:00:00', 1, 10, 5)",
+            [],
+        );
+        assert!(erro.is_err(), "o banco aceitou last_seq < first_seq");
+    }
+
+    /// Banco que chega ao 26 por migracao nao nasce adotado: adocao e ato, nao coluna.
+    #[test]
+    fn schema26_nao_inventa_adocao_para_banco_migrado() {
+        let connection = Connection::open_in_memory().expect("banco");
+        apply_migrations(&connection, 1, 25);
+        connection
+            .execute_batch(sql_for_version(26).expect("migration 26"))
+            .expect("migrar");
+
+        let adocoes: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sync_adoptions", [], |row| row.get(0))
+            .expect("contar");
+        assert_eq!(adocoes, 0);
+    }
+
     #[test]
     fn existe_fixture_nativa_para_o_schema_mais_recente() {
         let esperado = format!("schema{LATEST_SCHEMA_VERSION}_native.sql");

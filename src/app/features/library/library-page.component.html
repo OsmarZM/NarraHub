@@ -10,8 +10,8 @@
 />
 
 @if (modal()) {
-  <div class="library-modal-backdrop" (mousedown)="closeModal()">
-    <form class="library-modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="library-modal-backdrop" data-nh-dialog (mousedown)="closeModal()">
+    <form class="library-modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       @if (modal() === 'create' || modal() === 'edit') {
         <header>
           <div><span class="library-modal-eyebrow">{{ editingUniverseId ? 'BIBLIOTECA' : 'NOVO MUNDO' }}</span><h2>{{ editingUniverseId ? 'Editar universo' : 'Criar universo' }}</h2></div>

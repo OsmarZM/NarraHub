@@ -163,3 +163,17 @@ app-settings-page .delete-warning { padding: 12px; border: 1px solid color-mix(i
   app-settings-page .backup-row { align-items: flex-start; flex-direction: column; }
   app-settings-page .backup-row-actions { align-self: flex-end; }
 }
+
+/* ── celular ─────────────────────────────────────────────────────────────────────
+ * Configurações no celular: uma coluna, abas que rolam por dentro, campos de 16px e botões de dedo.
+ * Componente com ViewEncapsulation.None: os seletores são prefixados pelo elemento. */
+html.nh-mobile app-settings-page .settings-grid { display: block; }
+html.nh-mobile app-settings-page .settings-grid .surface-card { margin-bottom: 12px; padding: 18px var(--nh-mobile-gutter); }
+html.nh-mobile app-settings-page .field-row { grid-template-columns: 1fr; }
+html.nh-mobile app-settings-page .settings-nav button { min-height: 48px; font-size: 14px; }
+html.nh-mobile app-settings-page :is(.primary-button, .secondary-button, .text-button) { min-height: var(--nh-touch-target); font-size: 15px; }
+html.nh-mobile app-settings-page :is(input, select, textarea) { min-height: var(--nh-touch-target); font-size: 16px; }
+html.nh-mobile app-settings-page .card-head h2,
+html.nh-mobile app-settings-page .card-head h3 { font-size: 18px; }
+html.nh-mobile app-settings-page :is(.security-note, .field-label, .modal-guidance) { font-size: 13px; }
+html.nh-mobile app-settings-page .surface-card p { font-size: 14px; line-height: 1.5; }

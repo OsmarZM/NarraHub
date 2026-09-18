@@ -1,11 +1,14 @@
 use crate::application::blob_fields;
+use crate::application::mutacao::Mutacao;
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::entity::{
     default_attributes_for, Entity, EntityAttribute, EntityUpdate, EntityWithDetails, NewEntity,
 };
+use crate::domain::identity::DeviceIdentity;
 use crate::domain::ids::{new_id, now_timestamp};
 use crate::infrastructure::blob_store::BlobStore;
 use crate::infrastructure::sqlite::{entity_repository, SqliteDatabase};
+use rusqlite::OptionalExtension;
 
 /// Prefixo que a tela usa para um atributo que ainda não foi gravado. Ele
 /// nunca chega ao banco: `save_attribute` reconhece e cria em vez de tentar
@@ -64,6 +67,7 @@ pub fn get_with_details(
 pub fn create(
     database: &SqliteDatabase,
     store: &BlobStore,
+    identidade: &DeviceIdentity,
     input: NewEntity,
 ) -> DatabaseCommandResult<Entity> {
     let name = input.name.trim();
@@ -87,67 +91,66 @@ pub fn create(
         updated_at: timestamp,
     };
 
-    let mut connection = database.write()?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    // Uma revisão só: entidade, atributos e campos personalizados são o mesmo agregado.
+    Mutacao::executar(database, identidade, |m| {
+        let transaction = m.tx();
 
-    entity_repository::insert(&transaction, &entity)?;
-    // Na mesma transação do `INSERT`: os bytes que chegaram na coluna legada
-    // são trocados por referência antes de qualquer commit.
-    blob_fields::gravar_asset_direto(&transaction, store, "entities", &entity.id, &input.image)?;
+        entity_repository::insert(transaction, &entity)?;
+        // Na mesma transação do `INSERT`: os bytes que chegaram na coluna legada
+        // são trocados por referência antes de qualquer commit.
+        blob_fields::gravar_asset_direto(transaction, store, "entities", &entity.id, &input.image)?;
 
-    let defaults = default_attributes_for(&input.entity_type);
-    for (index, key) in defaults.iter().enumerate() {
-        entity_repository::insert_attribute(
-            &transaction,
-            &new_id(),
-            &entity.id,
-            key,
-            "",
-            index as i64,
-        )?;
-    }
-
-    let templates =
-        entity_repository::list_templates(&transaction, &input.universe_id, &input.entity_type)?;
-    for (key, default_value, sort_order) in templates {
-        if defaults.contains(&key.as_str()) {
-            continue;
+        let defaults = default_attributes_for(&input.entity_type);
+        for (index, key) in defaults.iter().enumerate() {
+            entity_repository::insert_attribute(
+                transaction,
+                &new_id(),
+                &entity.id,
+                key,
+                "",
+                index as i64,
+            )?;
         }
-        entity_repository::insert_attribute(
-            &transaction,
-            &new_id(),
-            &entity.id,
-            &key,
-            &default_value,
-            defaults.len() as i64 + sort_order,
-        )?;
-    }
 
-    for attribute in &input.attributes {
-        let key = attribute.key.trim();
-        if key.is_empty() {
-            continue;
+        let templates =
+            entity_repository::list_templates(transaction, &input.universe_id, &input.entity_type)?;
+        for (key, default_value, sort_order) in templates {
+            if defaults.contains(&key.as_str()) {
+                continue;
+            }
+            entity_repository::insert_attribute(
+                transaction,
+                &new_id(),
+                &entity.id,
+                &key,
+                &default_value,
+                defaults.len() as i64 + sort_order,
+            )?;
         }
-        entity_repository::set_attribute_value(
-            &transaction,
-            &new_id(),
-            &entity.id,
-            key,
-            attribute.value.trim(),
-        )?;
-    }
 
-    transaction
-        .commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+        for attribute in &input.attributes {
+            let key = attribute.key.trim();
+            if key.is_empty() {
+                continue;
+            }
+            entity_repository::set_attribute_value(
+                transaction,
+                &new_id(),
+                &entity.id,
+                key,
+                attribute.value.trim(),
+            )?;
+        }
+
+        m.gravou("entity", &entity.id)
+    })?;
     Ok(entity)
 }
 
 pub fn update(
     database: &SqliteDatabase,
     store: &BlobStore,
+    identidade: &DeviceIdentity,
     id: &str,
     patch: EntityUpdate,
 ) -> DatabaseCommandResult<()> {
@@ -163,27 +166,39 @@ pub fn update(
             "A entidade precisa de um nome.",
         ));
     }
-    let mut connection = database.write()?;
-    let tx = connection
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    if !entity_repository::update(&tx, id, &patch, &now_timestamp())? {
-        return Err(DatabaseCommandError::not_found("Entidade não encontrada."));
-    }
-    if let Some(imagem) = patch.image.as_deref() {
-        blob_fields::gravar_asset_direto(&tx, store, "entities", id, imagem)?;
-    }
-    tx.commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        if !entity_repository::update(m.tx(), id, &patch, &now_timestamp())? {
+            return Err(DatabaseCommandError::not_found("Entidade não encontrada."));
+        }
+        if let Some(imagem) = patch.image.as_deref() {
+            blob_fields::gravar_asset_direto(m.tx(), store, "entities", id, imagem)?;
+        }
+        m.gravou("entity", id)
+    })
 }
 
-pub fn delete(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    if !entity_repository::delete(&connection, id)? {
-        return Err(DatabaseCommandError::not_found("Entidade não encontrada."));
-    }
-    Ok(())
+/// Exclui a entidade e tudo o que o schema faz junto: relações das duas pontas, posição no grafo,
+/// anexos e marcações somem; **evento da linha do tempo sobrevive** com a entidade em nulo
+/// (`SET NULL`) e é reescrito na mesma mutação. Card do planejamento ligado à entidade recusa a
+/// exclusão inteira até a B4.
+pub fn delete(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    id: &str,
+) -> DatabaseCommandResult<()> {
+    Mutacao::executar(database, identidade, |m| {
+        m.excluir("entity", id).map_err(|erro| {
+            if erro.kind == crate::database::error::DatabaseErrorKind::NotFound {
+                DatabaseCommandError::not_found("Entidade não encontrada.")
+            } else {
+                erro
+            }
+        })?;
+        if !entity_repository::delete(m.tx(), id)? {
+            return Err(DatabaseCommandError::not_found("Entidade não encontrada."));
+        }
+        Ok(())
+    })
 }
 
 /// Grava um atributo e carimba a entidade dona.
@@ -193,6 +208,7 @@ pub fn delete(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<()> 
 /// sincronização usaria esse carimbo para decidir que nada mudou.
 pub fn save_attribute(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     attribute: EntityAttribute,
 ) -> DatabaseCommandResult<()> {
     let key = attribute.key.trim();
@@ -202,46 +218,61 @@ pub fn save_attribute(
         ));
     }
 
-    let mut connection = database.write()?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    // O atributo é estado interno: o evento é uma revisão da ENTIDADE, não do atributo.
+    Mutacao::executar(database, identidade, |m| {
+        if attribute.id.starts_with(TEMPORARY_ID_PREFIX) {
+            entity_repository::set_attribute_value(
+                m.tx(),
+                &new_id(),
+                &attribute.entity_id,
+                key,
+                &attribute.value,
+            )?;
+        } else {
+            let saved = EntityAttribute {
+                key: key.to_string(),
+                ..attribute.clone()
+            };
+            if !entity_repository::update_attribute(m.tx(), &saved)? {
+                return Err(DatabaseCommandError::not_found(
+                    "O atributo não existe mais nesta ficha.",
+                ));
+            }
+        }
 
-    if attribute.id.starts_with(TEMPORARY_ID_PREFIX) {
-        entity_repository::set_attribute_value(
-            &transaction,
-            &new_id(),
-            &attribute.entity_id,
-            key,
-            &attribute.value,
-        )?;
-    } else {
-        let saved = EntityAttribute {
-            key: key.to_string(),
-            ..attribute.clone()
+        entity_repository::touch(m.tx(), &attribute.entity_id, &now_timestamp())?;
+        m.gravou("entity", &attribute.entity_id)
+    })
+}
+
+pub fn remove_attribute(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    id: &str,
+) -> DatabaseCommandResult<()> {
+    Mutacao::executar(database, identidade, |m| {
+        let dona: Option<String> = m
+            .tx()
+            .query_row(
+                "SELECT entity_id FROM entity_attributes WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+        let Some(dona) = dona else {
+            return Err(DatabaseCommandError::not_found(
+                "O atributo não existe mais nesta ficha.",
+            ));
         };
-        if !entity_repository::update_attribute(&transaction, &saved)? {
+        if !entity_repository::delete_attribute(m.tx(), id)? {
             return Err(DatabaseCommandError::not_found(
                 "O atributo não existe mais nesta ficha.",
             ));
         }
-    }
-
-    entity_repository::touch(&transaction, &attribute.entity_id, &now_timestamp())?;
-    transaction
-        .commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
-}
-
-pub fn remove_attribute(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    if !entity_repository::delete_attribute(&connection, id)? {
-        return Err(DatabaseCommandError::not_found(
-            "O atributo não existe mais nesta ficha.",
-        ));
-    }
-    Ok(())
+        entity_repository::touch(m.tx(), &dona, &now_timestamp())?;
+        m.gravou("entity", &dona)
+    })
 }
 
 #[cfg(test)]
@@ -268,6 +299,26 @@ mod tests {
     use crate::domain::entity::NewEntityAttribute;
     use crate::infrastructure::sqlite::test_support::{seed_universe, TemporaryDatabase};
 
+    /// Diretório de dados de teste com a identidade dentro; some no `Drop`.
+    struct DadosDoApp(std::path::PathBuf);
+
+    impl Drop for DadosDoApp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A sequência de arranque: a fronteira `Mutacao` exige identidade registrada.
+    fn arrancar(
+        fixture: &TemporaryDatabase,
+    ) -> (DadosDoApp, crate::domain::identity::DeviceIdentity) {
+        let caminho = std::env::temp_dir().join(format!("narrahub-b3-ent-{}", new_id()));
+        std::fs::create_dir_all(&caminho).expect("criar diretório");
+        let identidade = crate::application::sync_bootstrap::prepare(&caminho, &fixture.database)
+            .expect("arranque");
+        (DadosDoApp(caminho), identidade)
+    }
+
     fn new_entity(kind: &str, name: &str) -> NewEntity {
         NewEntity {
             universe_id: "u1".into(),
@@ -283,10 +334,12 @@ mod tests {
     fn criacao_monta_a_ficha_inteira_numa_transacao() {
         let fixture = TemporaryDatabase::new();
         seed_universe(&fixture.connection(), "u1");
+        let (_dados, eu) = arrancar(&fixture);
 
         let entity = create(
             &fixture.database,
             &loja_de_teste().1,
+            &eu,
             new_entity("Personagem", "Frodo"),
         )
         .expect("criar entidade");
@@ -309,10 +362,12 @@ mod tests {
         // nenhum atributo sobreviva. Sem transacao, o caminho antigo podia
         // deixar lixo no arquivo do usuario.
         let fixture = TemporaryDatabase::new();
+        let (_dados, eu) = arrancar(&fixture);
 
         let error = create(
             &fixture.database,
             &loja_de_teste().1,
+            &eu,
             new_entity("Personagem", "Orfa"),
         )
         .expect_err("universo inexistente deveria falhar");
@@ -332,6 +387,7 @@ mod tests {
         let fixture = TemporaryDatabase::new();
         let connection = fixture.connection();
         seed_universe(&connection, "u1");
+        let (_dados, eu) = arrancar(&fixture);
         connection
             .execute_batch(
                 "INSERT INTO entity_templates (id, universe_id, entity_type, attribute_key, default_value, sort_order)
@@ -343,6 +399,7 @@ mod tests {
         let entity = create(
             &fixture.database,
             &loja_de_teste().1,
+            &eu,
             new_entity("Lugar", "Condado"),
         )
         .expect("criar");
@@ -376,13 +433,14 @@ mod tests {
     fn atributo_do_formulario_sobrescreve_o_padrao_em_branco() {
         let fixture = TemporaryDatabase::new();
         seed_universe(&fixture.connection(), "u1");
+        let (_dados, eu) = arrancar(&fixture);
 
         let mut input = new_entity("Personagem", "Frodo");
         input.attributes = vec![NewEntityAttribute {
             key: " Idade ".into(),
             value: " 50 ".into(),
         }];
-        let entity = create(&fixture.database, &loja_de_teste().1, input).expect("criar");
+        let entity = create(&fixture.database, &loja_de_teste().1, &eu, input).expect("criar");
 
         let details = get_with_details(&fixture.database, &loja_de_teste().1, &entity.id)
             .expect("buscar")
@@ -408,10 +466,12 @@ mod tests {
     fn nome_em_branco_e_recusado_antes_de_tocar_no_banco() {
         let fixture = TemporaryDatabase::new();
         seed_universe(&fixture.connection(), "u1");
+        let (_dados, eu) = arrancar(&fixture);
 
         let error = create(
             &fixture.database,
             &loja_de_teste().1,
+            &eu,
             new_entity("Personagem", "   "),
         )
         .expect_err("nome vazio deveria falhar");
@@ -424,9 +484,11 @@ mod tests {
         // gravado sem carimbar a ficha some do proximo sync.
         let fixture = TemporaryDatabase::new();
         seed_universe(&fixture.connection(), "u1");
+        let (_dados, eu) = arrancar(&fixture);
         let entity = create(
             &fixture.database,
             &loja_de_teste().1,
+            &eu,
             new_entity("Personagem", "Frodo"),
         )
         .expect("criar");
@@ -449,7 +511,7 @@ mod tests {
             )
             .expect("envelhecer a ficha");
 
-        save_attribute(&fixture.database, attribute).expect("salvar atributo");
+        save_attribute(&fixture.database, &eu, attribute).expect("salvar atributo");
 
         let details = get_with_details(&fixture.database, &loja_de_teste().1, &entity.id)
             .expect("buscar")
@@ -465,9 +527,11 @@ mod tests {
     fn atributo_que_nao_existe_mais_avisa_em_vez_de_gravar_no_vazio() {
         let fixture = TemporaryDatabase::new();
         seed_universe(&fixture.connection(), "u1");
+        let (_dados, eu) = arrancar(&fixture);
         let entity = create(
             &fixture.database,
             &loja_de_teste().1,
+            &eu,
             new_entity("Personagem", "Frodo"),
         )
         .expect("criar");
@@ -479,7 +543,7 @@ mod tests {
             value: "50".into(),
             sort_order: 0,
         };
-        let error = save_attribute(&fixture.database, attribute).expect_err("deveria falhar");
+        let error = save_attribute(&fixture.database, &eu, attribute).expect_err("deveria falhar");
         assert_eq!(error.kind, DatabaseErrorKind::NotFound);
     }
 }

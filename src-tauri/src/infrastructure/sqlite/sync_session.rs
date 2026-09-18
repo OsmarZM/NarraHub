@@ -33,8 +33,10 @@
 //! qual agregado precisa de reconciliação — em vez de fingir progresso.
 
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
-use crate::domain::sync::{EventEnvelope, Operation};
-use crate::infrastructure::sqlite::sync_apply::{apply_remote_event, Applied};
+use crate::domain::sync::EventEnvelope;
+use crate::infrastructure::sqlite::sync_apply::{
+    apply_remote_event, registrar_decisao_do_grupo, Applied,
+};
 use crate::infrastructure::sqlite::sync_trust::{verificar_origem, Recusa};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::collections::BTreeMap;
@@ -132,6 +134,17 @@ pub fn receber_eventos(
                 continue;
             }
         }
+        // A forma do grupo é conferida antes de o evento entrar no log: um `mutation_count`
+        // absurdo nunca vira grupo guardado, nem chega a dimensionar nada. A assinatura é válida
+        // (é a origem confiável que emitiu algo que nenhum emissor legítimo produz), e a sessão
+        // inteira falha fechada, sem guardar nada.
+        if let Err(motivo) = envelope.grupo.validar() {
+            return Err(DatabaseCommandError::storage(format!(
+                "O evento {} da origem {} tem um grupo de mutação inválido: {motivo}. Nada desta \
+                 sessão foi guardado.",
+                envelope.seq, envelope.device_id
+            )));
+        }
         guardar(&tx, envelope)?;
         origens.insert(envelope.device_id.clone(), ());
     }
@@ -142,14 +155,41 @@ pub fn receber_eventos(
         origens.insert(origem, ());
     }
 
-    for origem in origens.keys() {
-        drenar_origem(&tx, origem, &mut relatorio)?;
+    // Até não haver progresso. Uma origem pode depender de outra (a ordem de A cita um capítulo
+    // que é de C): drenar cada uma uma vez, na ordem das chaves, deixaria A pendente se ela viesse
+    // antes de C. Cada volta só termina quando nenhuma origem aplicou nada; como cada evento é
+    // aplicado no máximo uma vez, isto termina.
+    let mut tocados: BTreeMap<(String, String), ()> = BTreeMap::new();
+    loop {
+        let aplicados_antes = contar_aplicados(&tx)?;
+        relatorio.precisam_reconciliar.clear();
+        for origem in origens.keys() {
+            drenar_origem(&tx, origem, &mut relatorio, &mut tocados)?;
+        }
+        if contar_aplicados(&tx)? == aplicados_antes {
+            break;
+        }
     }
     relatorio.pendentes = contar_pendentes(&tx)?;
+
+    // Nenhuma revisão corrente é confirmada sem estar no banco (ver `atravessar_ponte`).
+    for (tipo, id) in tocados.keys() {
+        crate::infrastructure::sqlite::sync_apply::conferir_revisao_corrente(
+            &tx,
+            &crate::domain::sync::AggregateRef::new(tipo, id),
+        )?;
+    }
 
     tx.commit()
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     Ok(relatorio)
+}
+
+fn contar_aplicados(tx: &Transaction<'_>) -> DatabaseCommandResult<i64> {
+    tx.query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
+        row.get(0)
+    })
+    .map_err(|error| DatabaseCommandError::storage(error.to_string()))
 }
 
 /// Aplica, em ordem, tudo o que estiver contíguo a partir do cursor.
@@ -157,6 +197,7 @@ fn drenar_origem(
     tx: &Transaction<'_>,
     origem: &str,
     relatorio: &mut Relatorio,
+    tocados: &mut BTreeMap<(String, String), ()>,
 ) -> DatabaseCommandResult<()> {
     let (baseline, mut cursor) = cursor_de(tx, origem)?;
 
@@ -169,10 +210,36 @@ fn drenar_origem(
             break;
         };
 
-        match apply_remote_event(tx, &envelope)? {
+        // Uma ação de vários eventos entra inteira ou não entra (B2.2).
+        if !envelope.grupo.e_isolado() {
+            match aplicar_grupo(tx, origem, &envelope, relatorio, tocados)? {
+                Grupo::Entrou(total) | Grupo::VirouDecisao(total) => {
+                    cursor = proximo + total - 1;
+                    gravar_cursor(tx, origem, baseline, cursor)?;
+                    continue;
+                }
+                Grupo::Espera => break,
+            }
+        }
+
+        let resultado = apply_remote_event(tx, &envelope)?;
+        if matches!(resultado, Applied::Aplicado) {
+            tocados.insert(
+                (
+                    envelope.aggregate_type.clone(),
+                    envelope.aggregate_id.clone(),
+                ),
+                (),
+            );
+        }
+        match resultado {
             Applied::Aplicado => relatorio.aplicados += 1,
             Applied::JaAplicado => {}
             Applied::Divergente { .. } => relatorio.divergencias += 1,
+            // A exclusão bloqueada é decisão pendente como qualquer divergência: conta junto.
+            Applied::ExclusaoDoPaiBloqueada { .. } => relatorio.divergencias += 1,
+            // Tag homônima: nada foi aplicado, e o escritor decide. Também é decisão pendente.
+            Applied::ConflitoDeNomeDeTag { .. } => relatorio.divergencias += 1,
             // Exclusão contra edição também é divergência — e é a que mais
             // assusta o escritor, porque um dos lados é "isto sumiu".
             Applied::DivergenteComExclusao { .. } => relatorio.divergencias += 1,
@@ -194,6 +261,179 @@ fn drenar_origem(
     Ok(())
 }
 
+/// O que aconteceu com um grupo de mutação.
+enum Grupo {
+    /// Todos os membros entraram. Carrega o total.
+    Entrou(i64),
+    /// Nenhum entrou, e a ação virou uma decisão. O cursor anda: os membros estão no log e na
+    /// história, e a decisão está registrada.
+    VirouDecisao(i64),
+    /// Falta membro, ou um membro depende de algo que não chegou. Nada entrou, e o cursor espera.
+    Espera,
+}
+
+/// **Aplica uma ação inteira, ou nada dela.**
+///
+/// ```text
+/// grupo incompleto                        → não aplica nada, o cursor espera
+/// grupo completo, num SAVEPOINT, membro a membro:
+///   todos aplicados                       → confirma o grupo
+///   um membro espera dependência          → desfaz tudo, o grupo espera
+///   um membro diverge ou é bloqueado      → desfaz tudo, UMA decisão sobre a ação
+///   erro                                  → a sessão inteira falha fechada
+/// ```
+///
+/// Os membros são aplicados em ordem dentro do savepoint porque um depende do anterior: a exclusão
+/// da posição de um capítulo precisa já ter entrado quando a do capítulo confere se sobrou
+/// descendente vivo. Desfazer o savepoint devolve o domínio exatamente ao que era.
+fn aplicar_grupo(
+    tx: &Transaction<'_>,
+    origem: &str,
+    primeiro: &EventEnvelope,
+    relatorio: &mut Relatorio,
+    tocados: &mut BTreeMap<(String, String), ()>,
+) -> DatabaseCommandResult<Grupo> {
+    let grupo = &primeiro.grupo;
+    if grupo.index != 0 {
+        return Err(DatabaseCommandError::storage(format!(
+            "O evento {} da origem {origem} é o membro {} de um grupo de mutação, e o cursor chegou \
+             nele sem passar pelo primeiro. O log está incoerente; nada foi aplicado.",
+            primeiro.seq, grupo.index
+        )));
+    }
+
+    // O log já só guarda grupo válido, mas nada aqui confia nisso: o total é conferido, convertido
+    // sem truncar e somado à seq sem estourar, ANTES de dimensionar ou iterar.
+    let invalido = |motivo: String| {
+        DatabaseCommandError::storage(format!(
+            "O evento {} da origem {origem} tem um grupo de mutação inválido: {motivo}. Nada foi \
+             aplicado.",
+            primeiro.seq
+        ))
+    };
+    grupo.validar().map_err(invalido)?;
+    let total = usize::try_from(grupo.count)
+        .map_err(|_| invalido(format!("total {} não cabe na memória", grupo.count)))?;
+    primeiro
+        .seq
+        .checked_add(grupo.count - 1)
+        .ok_or_else(|| invalido("a última seq do grupo estoura".into()))?;
+
+    let mut membros = Vec::with_capacity(total);
+    for deslocamento in 0..grupo.count {
+        let Some(membro) = evento_de(tx, origem, primeiro.seq + deslocamento)? else {
+            // O resto da ação ainda não chegou. Nenhum membro altera o domínio antes disso — nem
+            // os que já estão aqui.
+            return Ok(Grupo::Espera);
+        };
+        let coerente = membro.grupo.mutation_id == grupo.mutation_id
+            && membro.grupo.index == deslocamento
+            && membro.grupo.count == grupo.count
+            && membro.grupo.kind == grupo.kind
+            && membro.grupo.root_type == grupo.root_type
+            && membro.grupo.root_id == grupo.root_id;
+        if !coerente {
+            return Err(DatabaseCommandError::storage(format!(
+                "O evento {} da origem {origem} deveria ser o membro {deslocamento} do grupo {} e \
+                 não é. O grupo está incoerente; nada foi aplicado.",
+                membro.seq, grupo.mutation_id
+            )));
+        }
+        membros.push(membro);
+    }
+
+    tx.execute_batch("SAVEPOINT grupo_de_mutacao")
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    let mut aplicados = 0usize;
+    let mut recusa: Option<(usize, Applied)> = None;
+    for (indice, membro) in membros.iter().enumerate() {
+        let resultado = apply_remote_event(tx, membro)?;
+        match resultado {
+            Applied::Aplicado => aplicados += 1,
+            Applied::JaAplicado => {}
+            outro => {
+                recusa = Some((indice, outro));
+                break;
+            }
+        }
+        falha_de_grupo::verificar(indice)?;
+    }
+
+    let Some((ancora, resultado)) = recusa else {
+        tx.execute_batch("RELEASE grupo_de_mutacao")
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+        relatorio.aplicados += aplicados;
+        for membro in &membros {
+            tocados.insert(
+                (membro.aggregate_type.clone(), membro.aggregate_id.clone()),
+                (),
+            );
+        }
+        return Ok(Grupo::Entrou(grupo.count));
+    };
+
+    tx.execute_batch("ROLLBACK TO grupo_de_mutacao; RELEASE grupo_de_mutacao")
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    if matches!(resultado, Applied::PrecisaReconciliar) {
+        relatorio
+            .precisam_reconciliar
+            .push(membros[ancora].aggregate_id.clone());
+        return Ok(Grupo::Espera);
+    }
+    // A decisão é da AÇÃO: numa exclusão composta, o escritor decide sobre a raiz, não sobre o
+    // efeito que tropeçou (o card reescrito, a posição do capítulo).
+    let raiz = membros.iter().position(|membro| {
+        grupo.kind == "delete_tree"
+            && membro.operation == crate::domain::sync::Operation::Delete
+            && membro.aggregate_type == grupo.root_type
+            && membro.aggregate_id == grupo.root_id
+    });
+    let (ancora, resultado) = match raiz {
+        Some(raiz) if raiz != ancora => (
+            raiz,
+            Applied::ExclusaoDoPaiBloqueada {
+                id_divergencia: String::new(),
+            },
+        ),
+        _ => (ancora, resultado),
+    };
+    registrar_decisao_do_grupo(tx, &membros, ancora, &resultado)?;
+    relatorio.divergencias += 1;
+    Ok(Grupo::VirouDecisao(grupo.count))
+}
+
+/// Falha injetada no meio de um grupo, só em teste: prova que o savepoint não deixa membro aplicado.
+pub(crate) mod falha_de_grupo {
+    use crate::database::error::DatabaseCommandResult;
+
+    #[cfg(test)]
+    thread_local! {
+        static DEPOIS_DO_MEMBRO: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    }
+
+    #[cfg(test)]
+    pub fn armar(membro: Option<usize>) {
+        DEPOIS_DO_MEMBRO.with(|armada| armada.set(membro));
+    }
+
+    #[cfg(test)]
+    pub fn verificar(membro: usize) -> DatabaseCommandResult<()> {
+        if DEPOIS_DO_MEMBRO.with(|armada| armada.get()) == Some(membro) {
+            armar(None);
+            return Err(crate::database::error::DatabaseCommandError::storage(
+                format!("falha injetada depois do membro {membro} do grupo"),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub fn verificar(_membro: usize) -> DatabaseCommandResult<()> {
+        Ok(())
+    }
+}
+
 fn cursor_de(tx: &Transaction<'_>, origem: &str) -> DatabaseCommandResult<(i64, i64)> {
     let existente: Option<(i64, i64)> = tx
         .query_row(
@@ -212,10 +452,26 @@ fn gravar_cursor(
     baseline: i64,
     cursor: i64,
 ) -> DatabaseCommandResult<()> {
+    // UPDATE primeiro pelo mesmo motivo do `append_event_in_transaction`: o gatilho `BEFORE
+    // INSERT` de contiguidade conta desde o baseline, e pagar isso a cada avanço de cursor é O(n)
+    // por evento aplicado.
+    let atualizadas = tx
+        .execute(
+            "UPDATE sync_cursors SET last_seq_applied = ?2 WHERE origin_device_id = ?1",
+            rusqlite::params![origem, cursor],
+        )
+        .map_err(|error| {
+            DatabaseCommandError::storage(format!(
+                "O banco recusou o avanço do cursor da origem {origem} para {cursor}. O trigger \
+                 de contiguidade da migration 16 é o que cobra isso: {error}"
+            ))
+        })?;
+    if atualizadas > 0 {
+        return Ok(());
+    }
     tx.execute(
         "INSERT INTO sync_cursors (origin_device_id, baseline_seq, last_seq_applied)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT(origin_device_id) DO UPDATE SET last_seq_applied = excluded.last_seq_applied",
+         VALUES (?1, ?2, ?3)",
         rusqlite::params![origem, baseline, cursor],
     )
     .map_err(|error| {
@@ -233,37 +489,12 @@ fn evento_de(
     seq: i64,
 ) -> DatabaseCommandResult<Option<EventEnvelope>> {
     tx.query_row(
-        "SELECT event_id, device_id, seq, universe_id, aggregate_type, aggregate_id,
-                operation, payload, base_rev, new_rev, signature
-           FROM sync_events WHERE device_id = ?1 AND seq = ?2",
+        &format!(
+            "SELECT {} FROM sync_events WHERE device_id = ?1 AND seq = ?2",
+            crate::infrastructure::sqlite::sync_repository::colunas_do_envelope("")
+        ),
         rusqlite::params![origem, seq],
-        |row| {
-            let operacao: String = row.get(6)?;
-            // Falha fechada, como em `outbox_since`. Tratar operação
-            // desconhecida como `upsert` faria um evento corrompido virar
-            // escrita de conteúdo, e um `delete` ilegível viraria
-            // ressurreição silenciosa do agregado.
-            let operation = Operation::parse(&operacao).ok_or_else(|| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    6,
-                    rusqlite::types::Type::Text,
-                    format!("operação de sincronização desconhecida no log: {operacao:?}").into(),
-                )
-            })?;
-            Ok(EventEnvelope {
-                event_id: row.get(0)?,
-                device_id: row.get(1)?,
-                seq: row.get(2)?,
-                universe_id: row.get(3)?,
-                aggregate_type: row.get(4)?,
-                aggregate_id: row.get(5)?,
-                operation,
-                payload: row.get(7)?,
-                base_rev: row.get(8)?,
-                new_rev: row.get(9)?,
-                signature: row.get(10)?,
-            })
-        },
+        crate::infrastructure::sqlite::sync_repository::envelope_da_linha,
     )
     .optional()
     .map_err(|error| DatabaseCommandError::storage(error.to_string()))
@@ -301,27 +532,7 @@ fn contar_pendentes(tx: &Transaction<'_>) -> DatabaseCommandResult<usize> {
 }
 
 fn guardar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {
-    tx.execute(
-        "INSERT OR IGNORE INTO sync_events
-            (event_id, device_id, seq, universe_id, aggregate_type, aggregate_id,
-             operation, payload, base_rev, new_rev, signature)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        rusqlite::params![
-            &envelope.event_id,
-            &envelope.device_id,
-            envelope.seq,
-            &envelope.universe_id,
-            &envelope.aggregate_type,
-            &envelope.aggregate_id,
-            envelope.operation.as_str(),
-            &envelope.payload,
-            &envelope.base_rev,
-            &envelope.new_rev,
-            &envelope.signature,
-        ],
-    )
-    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+    crate::infrastructure::sqlite::sync_repository::gravar_envelope(tx, envelope, true)
 }
 
 #[cfg(test)]
@@ -329,6 +540,7 @@ mod tests {
     use super::*;
     use crate::domain::identity::DeviceIdentity;
     use crate::domain::sync::AggregateRef;
+    use crate::domain::sync::Operation;
     use crate::infrastructure::sqlite::sync_apply::envelope_de_origem;
     use crate::infrastructure::sqlite::test_support::{
         origem_remota_confiavel, seed_universe, self_de_teste, TemporaryDatabase,
@@ -355,7 +567,7 @@ mod tests {
 
     fn capitulo(id: &str, titulo: &str) -> String {
         format!(
-            r#"{{"id":"{id}","book_id":"b1","title":"{titulo}","content":"texto","summary":"","scene_origin":"","scene_destination":"","word_count":1,"status":"rascunho","canon_status":"canon","sort_order":0,"created_at":"2026-01-01 00:00:00","updated_at":"2026-01-02 00:00:00"}}"#
+            r#"{{"id":"{id}","bookId":"b1","title":"{titulo}","content":"texto","summary":"","sceneOrigin":"","sceneDestination":"","status":"rascunho","canonStatus":"canon","customFields":[]}}"#
         )
     }
 
@@ -600,5 +812,95 @@ mod tests {
         let relatorio = receber_eventos(&mut connection, &embaralhado).expect("receber");
         assert_eq!(relatorio.aplicados, 3);
         assert_eq!(cursor(&connection, remota.device_id()), 3);
+    }
+
+    fn grupo(mutation_id: &str, index: i64, count: i64) -> crate::domain::sync::GrupoDeMutacao {
+        crate::domain::sync::GrupoDeMutacao {
+            mutation_id: mutation_id.into(),
+            index,
+            count,
+            kind: String::new(),
+            root_type: String::new(),
+            root_id: String::new(),
+        }
+    }
+
+    fn eventos_no_log(connection: &Connection, origem: &str) -> i64 {
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM sync_events WHERE device_id = ?1",
+                [origem],
+                |row| row.get(0),
+            )
+            .expect("contar")
+    }
+
+    /// **Grupo de forma absurda é recusado na entrada**, assinado ou não: nada entra no log e nada é
+    /// dimensionado pelo `mutation_count` que veio de fora.
+    #[test]
+    fn grupo_de_forma_absurda_e_recusado_sem_entrar_no_log() {
+        use crate::domain::sync::MAXIMO_DE_MEMBROS_DO_GRUPO;
+        let fixture = TemporaryDatabase::new();
+        let (mut connection, _eu, remota) = preparar(&fixture);
+        for (descricao, forma) in [
+            ("total máximo de i64", grupo("m", 0, i64::MAX)),
+            (
+                "um acima do teto",
+                grupo("m", 0, MAXIMO_DE_MEMBROS_DO_GRUPO + 1),
+            ),
+            ("total negativo", grupo("m", 0, -1)),
+            ("total zero com id", grupo("m", 0, 0)),
+            ("índice igual ao total", grupo("m", 2, 2)),
+            ("índice negativo", grupo("m", -1, 2)),
+            ("grupo sem id", grupo("", 0, 3)),
+            ("id gigante", grupo(&"x".repeat(129), 0, 2)),
+        ] {
+            let mut evento = cadeia(&remota, 1).remove(0);
+            evento.grupo = forma;
+            evento.signature = remota.sign(&evento);
+            let erro = receber_eventos(&mut connection, std::slice::from_ref(&evento))
+                .expect_err(descricao);
+            assert!(
+                erro.message.contains("grupo de mutação inválido"),
+                "{descricao}: {}",
+                erro.message
+            );
+            assert_eq!(
+                eventos_no_log(&connection, remota.device_id()),
+                0,
+                "{descricao}: entrou no log"
+            );
+        }
+        // Contraprova: o mesmo evento com grupo coerente entra.
+        let mut evento = cadeia(&remota, 1).remove(0);
+        evento.grupo = grupo("m", 0, 1);
+        evento.signature = remota.sign(&evento);
+        receber_eventos(&mut connection, &[evento]).expect("grupo coerente");
+        assert_eq!(eventos_no_log(&connection, remota.device_id()), 1);
+    }
+
+    /// Um grupo absurdo que já esteja no log (banco adulterado, versão antiga com bug) não é
+    /// iterado nem dimensionado: a drenagem recusa antes.
+    #[test]
+    fn grupo_absurdo_no_log_nao_e_iterado() {
+        let fixture = TemporaryDatabase::new();
+        let (mut connection, _eu, remota) = preparar(&fixture);
+        let mut evento = cadeia(&remota, 1).remove(0);
+        evento.grupo = grupo("m", 0, i64::MAX);
+        evento.signature = remota.sign(&evento);
+        crate::infrastructure::sqlite::sync_repository::gravar_envelope(
+            &connection,
+            &evento,
+            false,
+        )
+        .expect("gravar direto, sem a checagem da entrada");
+
+        let erro = receber_eventos(&mut connection, &[]).expect_err("grupo absurdo no log");
+        assert!(
+            erro.message.contains("grupo de mutação inválido"),
+            "{}",
+            erro.message
+        );
+        assert_eq!(cursor(&connection, remota.device_id()), 0);
     }
 }
