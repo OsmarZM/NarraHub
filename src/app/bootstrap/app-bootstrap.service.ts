@@ -67,32 +67,43 @@ export class AppBootstrapService {
 
       await this.openDatabaseSafely();
 
-      // A FRONTEIRA DE UPGRADE DOS ASSETS (ADR 0010).
+      // O PREPARO DO ACERVO (ADR 0010 + NH-079 etapa C).
       //
       //   db.init()          o plugin-sql aplica as migrations
-      //   prepareAssets()    ◄── aqui: o legado de mídia vira referência
+      //   prepareArchive()   ◄── aqui: mídia convertida, acervo adotado, banco liberado
       //   universes.load()   primeiro consumo do acervo
       //
-      // Tem que ser antes do primeiro consumo, e não em cada operação: o
-      // backfill é idempotente, mas varrer o acervo a cada gravação seria
-      // pagar de novo por um upgrade que já aconteceu.
+      // A ordem dentro dessa chamada é do Rust, não daqui: conversão de mídia,
+      // depois adoção, e só então o banco sai de "preparando". Nenhum comando
+      // de domínio — inclusive os de sincronização — responde antes disso.
       //
-      // Uma falha aqui NÃO impede a abertura. O legado que não pôde ser
-      // convertido continua preservado e vira pendência; quem exige o
-      // contrato completo é o pareamento, e ele já sabe recusar. Travar o
-      // aplicativo por uma imagem antiga ilegível seria transformar um
-      // problema de mídia em perda de acesso ao texto.
-      try {
-        const assets = await this.blobs.prepareAssets();
-        if (assets?.haviaTrabalho) {
-          console.log(
-            `[NarraHub] Assets migrados: ${assets.migrados} publicados, `
-              + `${assets.inlineLimpo} liberados do banco, `
-              + `${assets.pendenciasAbertas} pendência(s).`,
-          );
-        }
-      } catch (error) {
-        console.error('[NarraHub] A migração de mídia não pôde ser concluída.', error);
+      // **Erro aqui interrompe o arranque de propósito.** Até a etapa C a
+      // falha era registrada e seguia adiante, porque só havia mídia em jogo;
+      // agora, uma adoção que falha significa acervo sem passado causal, e
+      // seguir abriria o aplicativo sobre um estado que a sincronização não
+      // sabe descrever. O banco fica preservado, em recuperação, e o erro
+      // aparece na tela.
+      //
+      // Pendência de mídia continua não travando nada: o texto abre, e o que
+      // espera é a sincronização — com o motivo dito.
+      const acervo = await this.blobs.prepareArchive();
+      if (acervo?.assets?.haviaTrabalho) {
+        console.log(
+          `[NarraHub] Assets migrados: ${acervo.assets.migrados} publicados, `
+            + `${acervo.assets.inlineLimpo} liberados do banco, `
+            + `${acervo.assets.pendenciasAbertas} pendência(s).`,
+        );
+      }
+      if (acervo && acervo.adocao.adotados > 0) {
+        console.log(
+          `[NarraHub] Acervo adotado pela sincronização: ${acervo.adocao.adotados} itens.`,
+        );
+      }
+      if (acervo && !acervo.sincronizacaoDisponivel) {
+        console.warn(
+          '[NarraHub] Sincronização indisponível nesta sessão: '
+            + acervo.motivoDaIndisponibilidade,
+        );
       }
 
       await this.universes.load();

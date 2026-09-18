@@ -404,7 +404,7 @@ test('o servico de blob nao devolve caminho de arquivo ao frontend', () => {
   );
 });
 
-test('o arranque chama a fronteira de assets entre as migrations e o primeiro consumo', () => {
+test('o arranque prepara o acervo entre as migrations e o primeiro consumo', () => {
   // ADR 0010. O backfill existia desde a fatia 5 e nao tinha chamador -- a mesma lacuna que a
   // revisao da etapa 2.5 apontou para `load_or_create`: funciona em teste e nunca roda no
   // aplicativo.
@@ -412,8 +412,11 @@ test('o arranque chama a fronteira de assets entre as migrations e o primeiro co
   // A ordem importa e por isso o gate mede posicao, nao so presenca:
   //
   //   db.init()          o plugin-sql aplica as migrations
-  //   prepareAssets()    converte o legado de midia
+  //   prepareArchive()   converte o legado de midia E adota o acervo (etapa C)
   //   universes.load()   primeiro consumo do acervo
+  //
+  // A ordem DENTRO da preparacao (midia antes da adocao) e do Rust, e tem gate la
+  // (`application::arranque`). Aqui o que se mede e a posicao da chamada no arranque.
   //
   // Chamar depois do primeiro consumo deixaria a tela ler um acervo que ainda tem base64
   // dentro, e `update_chapter` recusaria o proximo salvamento.
@@ -422,14 +425,15 @@ test('o arranque chama a fronteira de assets entre as migrations e o primeiro co
   // O pool abre (e o plugin migra) dentro de openDatabaseSafely, com backup antes — ver
   // tests/migration-safety.test.mjs. A posição que importa é a da chamada no arranque.
   const migrations = arranque.indexOf('this.openDatabaseSafely()');
-  const assets = arranque.indexOf('this.blobs.prepareAssets()');
+  const assets = arranque.indexOf('this.blobs.prepareArchive()');
   const consumo = arranque.indexOf('this.universes.load()');
 
   assert.ok(migrations > 0, 'nao achei a abertura do pool; a varredura quebrou');
   assert.ok(
     assets > 0,
-    'o arranque nao chama `prepareAssets`. Sem isso o backfill volta a ser codigo sem '
-      + 'chamador, e um acervo antigo abre com base64 dentro do banco.',
+    'o arranque nao chama `prepareArchive`. Sem isso o backfill e a adocao voltam a ser '
+      + 'codigo sem chamador: um acervo antigo abriria com base64 dentro do banco e sem '
+      + 'passado causal nenhum.',
   );
   assert.ok(consumo > 0, 'nao achei o primeiro consumo do acervo');
 
@@ -437,22 +441,37 @@ test('o arranque chama a fronteira de assets entre as migrations e o primeiro co
     migrations < assets && assets < consumo,
     'a fronteira de assets tem que ficar DEPOIS das migrations e ANTES do primeiro consumo:'
       + `\n  db.init()        em ${migrations}`
-      + `\n  prepareAssets()  em ${assets}`
+      + `\n  prepareArchive() em ${assets}`
       + `\n  universes.load() em ${consumo}`,
   );
 });
 
-test('uma falha na migracao de midia nao impede o aplicativo de abrir', () => {
-  // Pendencia de midia e problema de midia. Quem exige o contrato completo e o pareamento, e
-  // ele ja sabe recusar. Travar a abertura por uma imagem antiga ilegivel transformaria um
-  // problema de midia em perda de acesso ao texto.
+test('uma falha no preparo do acervo interrompe o arranque em vez de ser engolida', () => {
+  // Ate a etapa C, a chamada era so de midia e ficava dentro de um try/catch que registrava e
+  // seguia: pendencia de midia e problema de midia, e travar a abertura por uma imagem antiga
+  // ilegivel transformaria isso em perda de acesso ao texto.
+  //
+  // Com a adocao na mesma chamada, a regra muda. Pendencia de midia continua nao travando nada
+  // (o Rust devolve Ok, com `sincronizacaoDisponivel: false` e o motivo); mas um ERRO significa
+  // acervo sem passado causal, e seguir abriria o aplicativo sobre um estado que a
+  // sincronizacao nao sabe descrever. O banco fica preservado, em recuperacao.
   const arranque = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
-  const inicio = arranque.indexOf('this.blobs.prepareAssets()');
-  const trecho = arranque.slice(Math.max(0, inicio - 400), inicio + 400);
+  const inicio = arranque.indexOf('this.blobs.prepareArchive()');
+  assert.ok(inicio > 0, 'nao achei a chamada de preparo do acervo');
 
+  // Nada de try/catch local em volta da chamada: o erro tem que subir para o catch do arranque,
+  // que mostra a causa na tela.
+  const trecho = arranque.slice(Math.max(0, inicio - 200), inicio + 200);
   assert.ok(
-    /try\s*\{/u.test(trecho) && /catch/u.test(trecho),
-    'a chamada precisa estar protegida: uma falha ali nao pode impedir a abertura.',
+    !/try\s*\{[^]*this\.blobs\.prepareArchive\(\)/u.test(trecho),
+    'a chamada voltou a ser engolida por um try/catch local: uma adocao que falha precisa '
+      + 'interromper o arranque, nao virar linha de log.',
+  );
+
+  // E o resultado sem sincronizacao precisa ser dito, nao ignorado.
+  assert.ok(
+    arranque.includes('sincronizacaoDisponivel'),
+    'o arranque ignora o veredito de sincronizacao do preparo do acervo.',
   );
 });
 

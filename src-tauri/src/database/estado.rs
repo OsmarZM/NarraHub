@@ -10,9 +10,26 @@
 //! ```text
 //! Unprepared         o processo abriu; ninguém conferiu o schema          → comandos recusados
 //! Migrating          backup feito, plugin aplicando migrations            → comandos recusados
-//! Ready              schema na versão desta build, conferido               → liberado
+//! UpgradingBlobs     schema pronto; o legado de mídia ainda vai converter → comandos recusados
+//! Adopting           mídia pronta; o acervo ainda vai ganhar as revisões  → comandos recusados
+//! Ready              schema, mídia e acervo prontos, conferidos            → liberado
 //! RecoveryRequired   schema mais novo, marcador ilegível, rollback falhou  → recusados até recuperar
 //! ```
+//!
+//! ## Por que duas fases novas na etapa C
+//!
+//! Até a C, `Ready` era declarado assim que as migrations terminavam — antes da conversão de mídia
+//! e antes de o acervo ter passado causal. A ordem que a etapa C exige é outra, e ela precisa ser
+//! visível no estado, não só na ordem em que alguém chama as funções:
+//!
+//! ```text
+//! migrations → mídia → adoção → Ready → sync disponível
+//! ```
+//!
+//! Enquanto o acervo não é adotado, as linhas de domínio existem sem nenhuma revisão que as
+//! explique. Liberar comandos ali deixaria o escritor editar um acervo que a sincronização ainda
+//! não sabe descrever — e a primeira edição inventaria uma criação por cima de texto que já
+//! existia.
 //!
 //! Quem transita é só o `upgrade.rs` (e a restauração de backup, que devolve para `Unprepared`).
 //! Quem checa é `interface::tauri::database` — o único caminho dos comandos de domínio ao banco — e
@@ -29,32 +46,56 @@ use super::error::{DatabaseCommandError, DatabaseCommandResult};
 pub enum FaseDoBanco {
     Unprepared,
     Migrating,
+    /// Migrations aplicadas; o legado de mídia (ADR 0010) ainda vai converter.
+    UpgradingBlobs,
+    /// Mídia pronta; o acervo ainda vai ganhar as primeiras revisões (etapa C).
+    Adopting,
     Ready,
     RecoveryRequired,
 }
 
 #[derive(Debug)]
-pub struct EstadoDoBanco(Mutex<FaseDoBanco>);
+pub struct EstadoDoBanco {
+    fase: Mutex<FaseDoBanco>,
+    /// Por onde o arranque passou, em ordem. Existe para que a ORDEM seja verificável: um teste
+    /// que só olha o estado final não distingue "adotou depois da mídia" de "adotou antes".
+    historico: Mutex<Vec<FaseDoBanco>>,
+}
 
 impl Default for EstadoDoBanco {
     fn default() -> Self {
-        Self(Mutex::new(FaseDoBanco::Unprepared))
+        Self {
+            fase: Mutex::new(FaseDoBanco::Unprepared),
+            historico: Mutex::new(Vec::new()),
+        }
     }
 }
 
 impl EstadoDoBanco {
     pub fn fase(&self) -> FaseDoBanco {
         *self
-            .0
+            .fase
             .lock()
             .unwrap_or_else(|envenenado| envenenado.into_inner())
     }
 
     pub fn definir(&self, fase: FaseDoBanco) {
         *self
-            .0
+            .fase
             .lock()
             .unwrap_or_else(|envenenado| envenenado.into_inner()) = fase;
+        self.historico
+            .lock()
+            .unwrap_or_else(|envenenado| envenenado.into_inner())
+            .push(fase);
+    }
+
+    /// As fases por onde este arranque passou, na ordem.
+    pub fn historico(&self) -> Vec<FaseDoBanco> {
+        self.historico
+            .lock()
+            .unwrap_or_else(|envenenado| envenenado.into_inner())
+            .clone()
     }
 
     /// Libera o acesso só com o banco pronto. Mensagem diferente para cada motivo: "ainda
@@ -62,11 +103,12 @@ impl EstadoDoBanco {
     pub fn exigir_pronto(&self) -> DatabaseCommandResult<()> {
         match self.fase() {
             FaseDoBanco::Ready => Ok(()),
-            FaseDoBanco::Unprepared | FaseDoBanco::Migrating => {
-                Err(DatabaseCommandError::unavailable(
-                    "O banco ainda está sendo preparado. Aguarde a abertura terminar.",
-                ))
-            }
+            FaseDoBanco::Unprepared
+            | FaseDoBanco::Migrating
+            | FaseDoBanco::UpgradingBlobs
+            | FaseDoBanco::Adopting => Err(DatabaseCommandError::unavailable(
+                "O banco ainda está sendo preparado. Aguarde a abertura terminar.",
+            )),
             FaseDoBanco::RecoveryRequired => Err(DatabaseCommandError::unavailable(
                 "O banco precisa de recuperação antes de ser usado. Abra a tela de recuperação.",
             )),
@@ -84,6 +126,8 @@ mod tests {
         for fase in [
             FaseDoBanco::Unprepared,
             FaseDoBanco::Migrating,
+            FaseDoBanco::UpgradingBlobs,
+            FaseDoBanco::Adopting,
             FaseDoBanco::RecoveryRequired,
         ] {
             estado.definir(fase);
@@ -132,6 +176,10 @@ mod tests {
             ("sync.rs", 1),                // Sync V1, com a guarda
             ("database/health.rs", 2),     // compatibility e health: só leitura, antes do upgrade
             ("database/mod.rs", 1),        // a própria definição
+            // O comando que PRODUZ o `Ready` (etapa C): ele roda a conversão de mídia e a adoção
+            // antes de a fase existir, então não pode pedir a chave que ele mesmo entrega. A
+            // guarda não desaparece — ela é o que este comando define no fim.
+            ("interface/tauri/arranque_commands.rs", 1),
         ];
         let raiz = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut pilha = vec![raiz.clone()];
