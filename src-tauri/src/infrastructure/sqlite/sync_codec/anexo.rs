@@ -14,11 +14,11 @@
 //!             número junto seria carregar posição de banco como se fosse conteúdo autoral.
 //! ```
 //!
-//! **A consequência, dita às claras:** sem `sortOrder` no payload, cada aparelho calcula a posição
-//! do anexo na hora em que ele chega, e duas galerias podem ficar em ordens diferentes depois de
-//! convergir. É a mesma pergunta de `planning_field_order`, e está registrada do mesmo jeito na
-//! seção 6.1 da matriz: ou nasce `attachment_order(owner)` no padrão de `chapter_order`, ou fica
-//! escrito que a ordem da galeria é estado local. Decidir antes da gênese.
+//! **A posição não está aqui porque ela é outro agregado.** Desde a B2.2 a ordem da galeria
+//! converge por `attachment_position` (um por anexo, com `sortOrder`): a posição não é conteúdo
+//! autoral do anexo, e mover um anexo não pode revisar o conteúdo dele. A pergunta aberta na
+//! seção 6.1 da matriz — lista inteira ou estado local — foi respondida por uma terceira opção,
+//! posição por item.
 //!
 //! O que **nunca** entra é byte: o que viaja é `blobHash`, e o arquivo vai pelo caminho de fora.
 //! O log é assinado e append-only — o que entra nele não sai mais.

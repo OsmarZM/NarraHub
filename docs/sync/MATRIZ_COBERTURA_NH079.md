@@ -43,8 +43,8 @@ revisões / eventos
 | **B3** | integrada (#61) | `entity` (ficha inteira: `entities` + `entity_attributes` + campos personalizados, uma revisão só), `relation`, `timeline_event` e `canvas_entity_position`; exclusão de entidade com árvore completa de efeitos, inclusive o `SET NULL` da linha do tempo como **reescrita**; `entity_service`, `workspace_service` e a posição do canvas pela `Mutacao` |
 | **B4** | integrada (#62) | `planning_item` (card inteiro: texto, imagem, capítulo, valores escalares e relações — uma revisão), `planning_order(universe)` (coluna e posição — **substituído por `planning_item_position` na B2.2**) e `planning_field_definition`; o gatilho que reescreve vários cards declarado; os bloqueios temporários de capítulo, história e entidade viraram reescrita do card |
 | **B5** | integrada (#63) | `content_tag` (create/update/delete — **`update_tag` não existia**, e foi criado aqui), `tag_assignment` create/delete pela fronteira, `canvas_node`, `canvas_node_position` e `canvas_edge`; payload **definitivo** do `attachment`; migration 22 (gatilhos que matam a aresta com a ponta + `tag_name_conflict`); `knowledge_service` entra no gate estrutural, onde **nunca esteve**; gate autoral × efêmero |
-| **B2.2** | implementada (branch `sync-b2.2-posicao-por-item`), em revisão | **posição por item** no lugar das listas inteiras (`story_order`, `book_order`, `chapter_order`, `planning_order` saíram; entram `story_position`, `book_position`, `chapter_position`, `planning_field_position`, `attachment_position`, `planning_item_position`); **grupos de mutação atômicos** no envelope (migration 23): a ação que é uma transação na origem entra inteira no receptor, ou vira UMA decisão; a ponte de ordem da B2.1 saiu, sem consumidores |
-| B6 | pausada até a B2.2 integrar | ver seção 7 |
+| **B2.2** | integrada (#64) | **posição por item** no lugar das listas inteiras (`story_order`, `book_order`, `chapter_order`, `planning_order` saíram; entram `story_position`, `book_position`, `chapter_position`, `planning_field_position`, `attachment_position`, `planning_item_position`); **grupos de mutação atômicos** no envelope (migration 23): a ação que é uma transação na origem entra inteira no receptor, ou vira UMA decisão; a ponte de ordem da B2.1 saiu, sem consumidores |
+| **B6** | implementada (branch `sync-b6-identidade-de-conflito`), em revisão | **identidade portátil de conflito** (migration 24: `conflict_key` + participantes canônicos ordenados, iguais nos dois aparelhos); **`entity_template_set`** (o conjunto de modelos de ficha como um agregado, identidade `(universeId, entityType)`); **`UNIQUE(entity_id)`** na posição da entidade (migration 25, com quarentena do que foi desempatado); **colaboração aprovada pela `Mutacao`**; **helper canônico de ação remota** nos testes; **gate de cobertura total** |
 
 **Fora da B2, dito às claras:**
 
@@ -158,7 +158,7 @@ uma. Foi por isso que `update_tag` precisou existir.
 | --- | --- |
 | `mentions` | derivada do texto; cada aparelho recalcula |
 | `chapter_revisions`, `change_log` | histórico local de edição |
-| `collaboration_sessions`, `collaboration_contributions` | sessão efêmera deste aparelho. **O conteúdo que uma contribuição aprovada grava** em capítulo ou entidade é mutação sincronizável e passa pela `Mutacao` (B6) |
+| `collaboration_sessions`, `collaboration_contributions` | sessão efêmera deste aparelho. **O conteúdo que uma contribuição aprovada grava** em capítulo, entidade ou universo passa pela `Mutacao` desde a B6: aprovar é uma escrita como qualquer outra, com revisão e evento assinado. As duas tabelas continuam locais, declaradas no gate de cobertura total |
 | `devices`, `blob_migration_issues` | locais |
 | `sync_*`; `sync_peers`, `sync_conflicts` (V1) | protocolo |
 
@@ -545,6 +545,34 @@ receptor seguraria a ação inteira esperando uma dependência que vem dentro de
 anda pelo aplicado: um lote que terminasse no meio de um grupo maior que ele faria a sessão seguinte pedir o
 mesmo começo para sempre. Ao atingir o limite dentro de um grupo, a resposta completa o grupo.
 
+### 4.7 Identidade de conflito × identidade de ação (B6)
+
+Duas identidades convivem no Sync V2, e **misturá-las é erro**:
+
+```text
+identidade da AÇÃO      (origem, mutation_id)          quais eventos entram juntos (B2.2)
+identidade do CONFLITO  conflict_key + participantes   qual conflito é este, visto de qualquer
+                                                       aparelho (B6, migration 24)
+```
+
+O `mutation_id` é sorteado em cada aparelho: **sozinho ele não identifica nada**, e toda leitura
+dele passa pela origem do evento âncora. A `conflict_key` é derivada do conteúdo do conflito:
+
+```text
+ConflictParticipant { aggregateType, aggregateId, revision, operation }
+participants = sort(a, b)            byte-wise, sobre a codificação canônica
+conflictKey  = SHA256("narrahub-conflict-v1" + conflictKind + canonical(participants))
+```
+
+Cada campo entra precedido do tamanho: `entityType` é texto do escritor e pode conter qualquer
+caractere, então delimitador seria ambíguo. A ordenação é o que apaga a perspectiva — cada aparelho
+vê um lado como "seu". E os participantes são **estruturalmente iguais**, o que é o que faz a chave
+funcionar para `tag_name_conflict`, onde os dois lados são agregados diferentes.
+
+`sync_divergences` continua sendo índice local: `local_rev`/`remote_rev` ficam, porque o resolvedor
+precisa deles. O fato causal replicável (`conflict_resolution`, com `aggregateId = conflictKey`) é
+da etapa F.
+
 ### 4.5 Gates
 
 1. **Estrutural:** serviços sincronizáveis não chamam `database.write()` fora da `Mutacao`; repositórios da
@@ -612,6 +640,14 @@ mesmo começo para sempre. Ao atingir o limite dentro de um grupo, a resposta co
     folhas. Grupo de forma absurda é recusado sem entrar no log, e o que já estiver no log não é
     iterado; o mesmo `mutation_id` em duas origens são dois grupos, tanto na resolução quanto no
     estado concorrente (teste isolado de `estado_concorrente`).
+16. **Identidade portátil de conflito (B6):** os dois aparelhos calculam a mesma `conflict_key` e os
+    mesmos participantes, em edição×edição e em tag homônima (onde os papéis se invertem); a fixture
+    nativa de schema 24 tem as três formas de conflito, e o gate **decodifica** os participantes em
+    vez de confiar no texto; banco migrado deixa a identidade vazia em vez de inventá-la.
+17. **Cobertura total (B6):** toda escrita pública de serviço passa pela `Mutacao` ou está declarada
+    como estado local, com motivo — e declaração obsoleta derruba o gate; todo efeito de exclusão do
+    catálogo atinge agregado coberto; contribuição aprovada vira revisão e chega ao outro aparelho;
+    uma entidade tem no máximo uma posição, agora por restrição do banco.
 
 ## 5. Negociação de compatibilidade (etapa E)
 
@@ -639,12 +675,15 @@ fixo e conhecido (payload canônico de referência compilado nos dois lados). Re
 Duas coisas precisam estar resolvidas **antes** de a etapa C adotar os bancos, e nenhuma delas entra na
 B3:
 
-1. **`UNIQUE(entity_id)` em `canvas_entity_positions`.** Hoje a PK é `(universe_id, entity_id)` e o
-   agregado é identificado só pela entidade. O código já trata duas linhas como inconsistência (8.1), mas
-   a restrição física só pode ser adicionada depois de **auditar bancos existentes**: se algum acervo real
-   tiver duas linhas para a mesma entidade, a migration precisa decidir qual fica antes de criar o índice.
-   Decisão a tomar na B6, com a auditoria na mão.
-2. **`entity_template_set` em vez de linha por linha.** `entity_templates` (fichas em branco por tipo, por
+1. ~~**`UNIQUE(entity_id)` em `canvas_entity_positions`.**~~ **Resolvido na B6 (migration 25.)** A
+   decisão, escrita antes de qualquer `DELETE`: fica a linha cujo universo é o **da entidade**;
+   empate resolve por `updated_at` e depois por `universe_id` (BINARY). A auditoria não é um
+   relatório que alguém leria uma vez — as linhas perdedoras vão para
+   `canvas_entity_positions_descartadas`, com data e motivo, e essa tabela é `LocalNaoTransferida`
+   no bootstrap: é evidência deste arquivo, não acervo. A `PRIMARY KEY (universe_id, entity_id)`
+   fica; o que entra é o índice único que faltava. A recusa por dentro do codec continua, como
+   rede para um banco que chegue sem o índice.
+2. **`entity_template_set` em vez de linha por linha.** **Implementado na B6.** `entity_templates` (fichas em branco por tipo, por
    universo) não tem escritor no app e é consumido **em conjunto** pela criação de entidade. Sincronizar
    cada linha pelo `id` legado faria dois aparelhos criarem "o mesmo template" com ids diferentes. A
    modelagem a implementar na B6:
@@ -676,8 +715,9 @@ B3  entidades: entity (+atributos), relation, timeline_event, canvas_entity_posi
 B4  planejamento: planning_item, planning_order, planning_field_definition (gatilho que reescreve cards)
 B5  conhecimento e canvas: content_tag (+update_tag), tag_assignment, canvas_node,
     canvas_node_position, canvas_edge; attachment definitivo; gate autoral × efêmero  ← implementada
-B6  conteúdo final de colaboração aprovada e conversões de legado pela Mutacao;
-    entity_template_set; decisão do UNIQUE(entity_id) da posição; gate de cobertura total
+B6  identidade portátil de conflito (item 9); entity_template_set; UNIQUE(entity_id) da posição
+    com backfill auditável; conteúdo aprovado na colaboração pela Mutacao; helper canônico de
+    ação remota nos testes; gate de cobertura total  ← implementada
 ```
 
 ## 8. Payload canônico do manuscrito (B2)

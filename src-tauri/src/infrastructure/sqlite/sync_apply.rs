@@ -31,6 +31,7 @@
 //! criptografia e criptografia sem causalidade.
 
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
+use crate::domain::conflito::ConflictParticipant;
 use crate::domain::sync::{
     classify, compute_revision, AggregateRef, Causality, EventEnvelope, Operation,
 };
@@ -293,7 +294,22 @@ fn bloquear_exclusao(
 ) -> DatabaseCommandResult<String> {
     registrar_revisao(tx, envelope)?;
     marcar_aplicado(tx, &envelope.event_id)?;
-    let id = registrar_divergencia(tx, envelope, &envelope.base_rev, historia)?;
+    let daqui = participante_local(envelope, historia);
+    let de_la = ConflictParticipant::new(
+        &envelope.aggregate_type,
+        &envelope.aggregate_id,
+        &envelope.new_rev,
+        envelope.operation.as_str(),
+    );
+    let id = registrar_divergencia_entre(
+        tx,
+        envelope,
+        &envelope.base_rev,
+        historia,
+        "parent_deletion_blocked",
+        daqui,
+        de_la,
+    )?;
     tx.execute(
         "UPDATE sync_divergences SET kind = 'parent_deletion_blocked' WHERE id = ?1",
         [&id],
@@ -318,7 +334,33 @@ fn conflito_de_nome_de_tag(
 ) -> DatabaseCommandResult<String> {
     registrar_revisao(tx, envelope)?;
     marcar_aplicado(tx, &envelope.event_id)?;
-    let id = registrar_divergencia(tx, envelope, &envelope.base_rev, historia)?;
+
+    // **Aqui os dois participantes são agregados DIFERENTES**, e é por isso que a chave não pode
+    // sair de `(aggregateType, aggregateId, revisões)`: no PC a tag que chegou é T2 e a daqui é
+    // T1; no Android é o contrário. Descrever os dois lados com a mesma estrutura, e ordenar, é o
+    // que faz os dois chegarem à mesma chave.
+    let daqui = ConflictParticipant::new(
+        "content_tag",
+        homonima,
+        sync_codec::revisao_corrente(tx, &AggregateRef::new("content_tag", homonima))?
+            .unwrap_or_default(),
+        "upsert",
+    );
+    let de_la = ConflictParticipant::new(
+        "content_tag",
+        &envelope.aggregate_id,
+        &envelope.new_rev,
+        envelope.operation.as_str(),
+    );
+    let id = registrar_divergencia_entre(
+        tx,
+        envelope,
+        &envelope.base_rev,
+        historia,
+        "tag_name_conflict",
+        daqui,
+        de_la,
+    )?;
     tx.execute(
         "UPDATE sync_divergences
             SET kind = 'tag_name_conflict', related_aggregate_id = ?2
@@ -573,17 +615,70 @@ fn registrar_divergencia(
     base_rev: &str,
     historia: &crate::domain::sync::AggregateHistory,
 ) -> DatabaseCommandResult<String> {
+    // O outro participante é o próprio agregado, do lado de cá. Conflito entre agregados
+    // DIFERENTES (tag homônima) informa o participante explicitamente — ver `com_participantes`.
+    let daqui = participante_local(envelope, historia);
+    let de_la = ConflictParticipant::new(
+        &envelope.aggregate_type,
+        &envelope.aggregate_id,
+        &envelope.new_rev,
+        envelope.operation.as_str(),
+    );
+    registrar_divergencia_entre(tx, envelope, base_rev, historia, "concurrent", daqui, de_la)
+}
+
+/// O lado de cá, descrito sem perspectiva: qual revisão está materializada aqui e o que foi feito.
+fn participante_local(
+    envelope: &EventEnvelope,
+    historia: &crate::domain::sync::AggregateHistory,
+) -> ConflictParticipant {
+    let (rev, operacao) = match (&historia.current_rev, &historia.deleted_rev) {
+        (Some(rev), _) => (rev.as_str(), "upsert"),
+        (None, Some(rev)) => (rev.as_str(), "delete"),
+        (None, None) => ("", ""),
+    };
+    ConflictParticipant::new(
+        &envelope.aggregate_type,
+        &envelope.aggregate_id,
+        rev,
+        operacao,
+    )
+}
+
+/// Grava a divergência com as **duas** identidades: a portátil e a perspectiva local.
+///
+/// ```text
+/// conflict_key, participant_a, participant_b   iguais nos dois aparelhos
+/// local_rev, remote_rev                        perspectiva de quem detectou
+/// ```
+///
+/// A perspectiva continua porque o resolvedor precisa dela operacionalmente: o de
+/// `parent_deletion_blocked` confere se a revisão materializada aqui ainda é a que estava quando o
+/// conflito foi detectado, antes de deixar a cascata rodar. O que a etapa F para de fazer é
+/// **mostrar** "local/remote" ao escritor — não é deixar de saber quem é quem aqui dentro.
+fn registrar_divergencia_entre(
+    tx: &Transaction<'_>,
+    envelope: &EventEnvelope,
+    base_rev: &str,
+    historia: &crate::domain::sync::AggregateHistory,
+    tipo_de_conflito: &str,
+    daqui: ConflictParticipant,
+    de_la: ConflictParticipant,
+) -> DatabaseCommandResult<String> {
     let id = crate::domain::ids::new_id();
     let (local_rev, local_operation) = match (&historia.current_rev, &historia.deleted_rev) {
         (Some(rev), _) => (rev.as_str(), "upsert"),
         (None, Some(rev)) => (rev.as_str(), "delete"),
         (None, None) => ("", ""),
     };
+    let (primeiro, segundo) = crate::domain::conflito::ordenar(&daqui, &de_la);
+    let chave = crate::domain::conflito::chave_do_conflito(tipo_de_conflito, &daqui, &de_la);
     tx.execute(
         "INSERT INTO sync_divergences
             (id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev,
-             local_operation, remote_operation, remote_event_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             local_operation, remote_operation, remote_event_id,
+             conflict_key, participant_a, participant_b)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         rusqlite::params![
             &id,
             &envelope.aggregate_type,
@@ -594,6 +689,9 @@ fn registrar_divergencia(
             local_operation,
             envelope.operation.as_str(),
             &envelope.event_id,
+            &chave,
+            &primeiro,
+            &segundo,
         ],
     )
     .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
@@ -1087,10 +1185,11 @@ mod tests {
             ORIGEM,
             1,
             "u1",
-            // `canvas_node` servia aqui até a B5, quando ganhou codec.
-            &AggregateRef::new("entity_template_set", "modelo-1"),
+            // Tipo inventado de propósito: o teste é sobre parar diante do desconhecido, não sobre
+            // uma etapa pendente. Apontar para um tipo real o faz quebrar a cada etapa nova.
+            &AggregateRef::new("agregado_que_nunca_vai_existir", "x1"),
             Operation::Upsert,
-            r#"{"id":"modelo-1"}"#,
+            r#"{"id":"x1"}"#,
             "",
         );
 

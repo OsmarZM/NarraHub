@@ -244,7 +244,10 @@ pub fn list_templates(
             "SELECT attribute_key, default_value, sort_order
                FROM entity_templates
               WHERE universe_id = ?1 AND entity_type = ?2
-              ORDER BY sort_order",
+              -- `attribute_key` desempata: `sort_order` sozinho deixava a ordem por conta do
+              -- SQLite quando havia empate, e essa ordem vira o payload canonico do
+              -- `entity_template_set` (B6). Duas genese do mesmo acervo tem de ler igual.
+              ORDER BY sort_order, attribute_key",
         )
         .map_err(map_sqlite_error)?;
     let rows = statement
@@ -511,5 +514,42 @@ mod tests {
         assert_eq!(mentions.len(), 1);
         assert_eq!(mentions[0].chapter_title, "Cap 1");
         assert_eq!(mentions[0].book_name, "Livro");
+    }
+
+    /// **A leitura do modelo de ficha é determinística mesmo com empate de posição.**
+    ///
+    /// O acervo antigo tem `sort_order` repetido (o caminho que criava atributo lia
+    /// `MAX(sort_order)` numa consulta à parte). Com empate, `ORDER BY sort_order` sozinho deixa a
+    /// ordem por conta do SQLite — e desde a B6 essa ordem vira o payload canônico do
+    /// `entity_template_set`. Duas gêneses do mesmo acervo têm de ler igual, e dois aparelhos
+    /// também.
+    #[test]
+    fn modelo_de_ficha_com_posicao_empatada_le_na_mesma_ordem_nos_dois_bancos() {
+        let ordens = ["origem", "idade", "arma"].map(|primeiro| {
+            let connection = migrated_memory_database();
+            seed_universe(&connection, "u1");
+            // A ordem de inserção muda em cada banco; o empate de `sort_order` é o mesmo.
+            let mut chaves = vec!["idade", "arma", "origem"];
+            chaves.sort_by_key(|chave| *chave != primeiro);
+            for chave in chaves {
+                connection
+                    .execute(
+                        "INSERT INTO entity_templates
+                            (id, universe_id, entity_type, attribute_key, default_value, sort_order)
+                         VALUES (?1, 'u1', 'character', ?2, '', 0)",
+                        rusqlite::params![format!("t-{chave}-{primeiro}"), chave],
+                    )
+                    .expect("semear modelo");
+            }
+            list_templates(&connection, "u1", "character")
+                .expect("ler modelos")
+                .into_iter()
+                .map(|(chave, _, _)| chave)
+                .collect::<Vec<_>>()
+        });
+
+        assert_eq!(ordens[0], vec!["arma", "idade", "origem"]);
+        assert_eq!(ordens[0], ordens[1]);
+        assert_eq!(ordens[1], ordens[2]);
     }
 }

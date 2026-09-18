@@ -1614,17 +1614,17 @@ fn posicao_da_entidade_e_unica() {
         "SELECT COALESCE(MAX(seq), 0) FROM sync_events
           WHERE device_id IN (SELECT device_id FROM sync_devices WHERE is_self = 1)",
     ) + 1;
-    let mut envelope = envelope_de_origem(
-        pc.eu.device_id(),
-        seq,
-        &u2,
-        &AggregateRef::new("canvas_entity_position", &entidade),
-        Operation::Upsert,
-        &payload,
-        &base,
-    );
-    envelope.signature = pc.eu.sign(&envelope);
-    let erro = receber_eventos(&mut android.banco.connection(), &[envelope])
+    // Montado pelo helper canônico de ação remota (B6, item 8).
+    let acao = crate::infrastructure::sqlite::test_support::AcaoRemota::da(&pc.eu)
+        .a_partir_do_seq(seq)
+        .no_universo(&u2)
+        .upsert(
+            AggregateRef::new("canvas_entity_position", &entidade),
+            &payload,
+            &base,
+        )
+        .assinada();
+    let erro = receber_eventos(&mut android.banco.connection(), &acao)
         .expect_err("segunda posição para a mesma entidade");
     assert!(
         erro.message.contains("uma entidade tem uma posição"),
@@ -1637,8 +1637,11 @@ fn posicao_da_entidade_e_unica() {
         "a segunda linha não pode ter sido criada"
     );
 
-    // E se um banco JÁ tiver duas linhas (legado, fora do app), não há estado canônico: erro.
-    android
+    // Desde a B6 (migration 25) a unicidade é do BANCO, e não só do código que lê: nem uma linha
+    // escrita por fora do app consegue criar a segunda posição da mesma entidade. A leitura
+    // canônica mantém a recusa por dentro — ela é a rede embaixo, para um banco que chegue aqui
+    // sem o índice (restaurado de versão antiga, por exemplo).
+    let erro = android
         .banco
         .connection()
         .execute(
@@ -1647,14 +1650,15 @@ fn posicao_da_entidade_e_unica() {
              VALUES (?1, ?2, 1.0, 1.0, '2026-01-01')",
             [&u2, &entidade],
         )
-        .expect("linha legada");
-    let connection = android.banco.connection();
-    let erro = sync_codec::ler_canonico(
-        &connection,
-        &AggregateRef::new("canvas_entity_position", &entidade),
-    )
-    .expect_err("duas posições não têm estado canônico");
-    assert!(erro.message.contains("2 posições"), "{}", erro.message);
+        .expect_err("o banco tem de recusar a segunda linha");
+    assert!(
+        erro.to_string().contains("UNIQUE"),
+        "a recusa não veio do índice: {erro}"
+    );
+    assert_eq!(
+        android.contar("SELECT COUNT(*) FROM canvas_entity_positions"),
+        1
+    );
 }
 
 /// A entidade de um evento se destaca (`SET NULL`) e **não** se reancora.
@@ -3886,4 +3890,206 @@ fn b22_lote_menor_que_a_acao_entrega_a_acao_inteira() {
     for capitulo in [&c1, &c2, &c3] {
         pc.convergiu_com(&android, "chapter", capitulo);
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// B6 item 9 — a identidade do conflito atravessa aparelhos
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl Aparelho {
+    /// A identidade PORTÁTIL inteira do conflito aberto daquele tipo: chave e os dois
+    /// participantes. Os três têm de bater entre aparelhos — só a chave bater esconderia uma
+    /// canonicalização divergente que só apareceria quando a resolução precisasse dos
+    /// participantes.
+    fn identidade_do_conflito(&self, kind: &str) -> (String, String, String) {
+        self.banco
+            .connection()
+            .query_row(
+                "SELECT conflict_key, participant_a, participant_b FROM sync_divergences
+                  WHERE kind = ?1 AND resolved_at = ''",
+                [kind],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("o conflito")
+    }
+}
+
+/// **Edição contra edição: os dois aparelhos calculam a MESMA chave.**
+///
+/// Cada um vê uma das revisões como "sua". A ordenação dos participantes apaga essa diferença —
+/// sem isso, a resolução detectada num lado não teria como ser reconhecida no outro.
+#[test]
+fn o_mesmo_conflito_concorrente_tem_a_mesma_chave_nos_dois_aparelhos() {
+    let a = Aparelho::novo("a");
+    let b = Aparelho::novo("b");
+    let universo = a.universo("Terra");
+    let historia = a.historia(&universo, "Saga").id;
+    let livro = a.livro(&historia, "Livro I").id;
+    let capitulo = a.capitulo(&livro, "Um").id;
+    sincronizar(&a, &b);
+
+    a.escrever(&capitulo, "a versão de A");
+    b.escrever(&capitulo, "a versão de B");
+    let (em_b, em_a) = sincronizar(&a, &b);
+    assert_eq!(em_b.divergencias, 1, "{em_b:?}");
+    assert_eq!(em_a.divergencias, 1, "{em_a:?}");
+
+    let aqui = a.identidade_do_conflito("concurrent");
+    let la = b.identidade_do_conflito("concurrent");
+    assert_eq!(aqui, la, "o mesmo conflito produziu duas identidades");
+    assert!(!aqui.0.is_empty() && !aqui.1.is_empty() && !aqui.2.is_empty());
+    assert!(
+        aqui.1.as_bytes() < aqui.2.as_bytes(),
+        "participantes fora de ordem"
+    );
+}
+
+/// **Tag homônima: o caso em que os papéis se invertem.**
+///
+/// No PC, `aggregate_id` é a tag que chegou (T2) e `related_aggregate_id` é a daqui (T1). No
+/// Android é o contrário. Uma chave feita de `(aggregate_type, aggregate_id, revisões)` daria duas
+/// chaves para a mesma colisão.
+#[test]
+fn a_tag_homonima_tem_a_mesma_chave_mesmo_com_os_papeis_invertidos() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    sincronizar(&pc, &android);
+
+    let t1 = pc.tag(&universo, "Mar");
+    let t2 = android.tag(&universo, "mar");
+    sincronizar(&pc, &android);
+
+    // Os papéis estão de fato invertidos: é isso que torna o teste honesto.
+    let papeis = |aparelho: &Aparelho| -> (String, String) {
+        aparelho
+            .banco
+            .connection()
+            .query_row(
+                "SELECT aggregate_id, related_aggregate_id FROM sync_divergences
+                  WHERE kind = 'tag_name_conflict' AND resolved_at = ''",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("conflito")
+    };
+    assert_eq!(papeis(&pc), (t2.clone(), t1.clone()));
+    assert_eq!(papeis(&android), (t1, t2));
+
+    let no_pc = pc.identidade_do_conflito("tag_name_conflict");
+    let no_android = android.identidade_do_conflito("tag_name_conflict");
+    assert_eq!(
+        no_pc, no_android,
+        "os papéis invertidos produziram identidades diferentes"
+    );
+    assert!(
+        no_pc.1.as_bytes() < no_pc.2.as_bytes(),
+        "participantes fora de ordem"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// B6 item 6 — o conteúdo aprovado na colaboração é uma escrita como as outras
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// **Aprovar uma proposta vira revisão assinada e atravessa a sincronização.**
+///
+/// Antes da B6 a aprovação escrevia direto no domínio: o universo mudava no aparelho do anfitrião e
+/// nenhum evento nascia. O outro aparelho do próprio escritor nunca via o que ele tinha aprovado —
+/// e, pior, um `baseline` posterior levaria o texto novo sem nenhuma revisão que o explicasse.
+#[test]
+fn contribuicao_aprovada_vira_revisao_e_chega_no_outro_aparelho() {
+    use crate::application::collaboration_service;
+    use crate::domain::collaboration::{IncomingContribution, NewCollaborationSession};
+
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    let (recebido, _) = sincronizar(&pc, &android);
+    assert_eq!(recebido.divergencias, 0, "{recebido:?}");
+
+    collaboration_service::save_session(
+        &pc.banco.database,
+        NewCollaborationSession {
+            id: "sess".into(),
+            title: "Leitura".into(),
+            permission: "edit".into(),
+            universe_ids: vec![universo.clone()],
+            encryption_key: "chave".into(),
+            revoke_token: "token".into(),
+            expires_at: "2026-12-31 00:00:00".into(),
+        },
+    )
+    .expect("sessão de colaboração");
+    collaboration_service::store_contribution(
+        &pc.banco.database,
+        &pc.store,
+        "sess",
+        1,
+        IncomingContribution {
+            id: "c1".into(),
+            contributor: "Convidado".into(),
+            kind: "edit".into(),
+            universe_id: universo.clone(),
+            target_type: "universe".into(),
+            target_id: universo.clone(),
+            target_label: "Terra".into(),
+            field: "name".into(),
+            original_value: "Terra".into(),
+            proposed_value: "Terra Nova".into(),
+            message: String::new(),
+            created_at: String::new(),
+        },
+    )
+    .expect("proposta do convidado");
+
+    let eventos_antes = pc.eventos().len();
+    collaboration_service::review(&pc.banco.database, &pc.eu, "c1", "approved").expect("aprovar");
+    assert_eq!(
+        pc.eventos().len(),
+        eventos_antes + 1,
+        "a aprovação tem de virar UMA revisão do universo"
+    );
+    pc.invariante_de_materializacao();
+
+    let (em_android, _) = sincronizar(&pc, &android);
+    assert_eq!(em_android.divergencias, 0, "{em_android:?}");
+    assert!(
+        android
+            .canonico("universe", &universo)
+            .expect("universo")
+            .contains("Terra Nova"),
+        "o texto aprovado não chegou ao outro aparelho"
+    );
+    pc.convergiu_com(&android, "universe", &universo);
+
+    // Recusar não emite nada: o domínio não muda, e não há o que sincronizar.
+    collaboration_service::store_contribution(
+        &pc.banco.database,
+        &pc.store,
+        "sess",
+        2,
+        IncomingContribution {
+            id: "c2".into(),
+            contributor: "Convidado".into(),
+            kind: "edit".into(),
+            universe_id: universo.clone(),
+            target_type: "universe".into(),
+            target_id: universo.clone(),
+            target_label: "Terra Nova".into(),
+            field: "name".into(),
+            original_value: "Terra Nova".into(),
+            proposed_value: "Terra Velha".into(),
+            message: String::new(),
+            created_at: String::new(),
+        },
+    )
+    .expect("segunda proposta");
+    let antes_da_recusa = pc.eventos().len();
+    collaboration_service::review(&pc.banco.database, &pc.eu, "c2", "rejected").expect("recusar");
+    assert_eq!(pc.eventos().len(), antes_da_recusa);
+    assert!(pc
+        .canonico("universe", &universo)
+        .expect("universo")
+        .contains("Terra Nova"));
 }

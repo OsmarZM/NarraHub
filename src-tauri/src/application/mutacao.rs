@@ -588,7 +588,6 @@ pub(crate) mod tests {
     use crate::application::{canvas_service, manuscript_service};
     use crate::domain::canvas::Attachment;
     use crate::domain::manuscript::ChapterUpdate;
-    use crate::infrastructure::sqlite::sync_apply::envelope_de_origem;
     use crate::infrastructure::sqlite::sync_session::receber_eventos;
     use crate::infrastructure::sqlite::test_support::{
         origem_remota_confiavel, seed_universe, self_de_teste, TemporaryDatabase,
@@ -873,35 +872,17 @@ pub(crate) mod tests {
         rev_do_capitulo: &str,
         mutation_id: &str,
     ) -> [crate::domain::sync::EventEnvelope; 2] {
-        let mut posicao = envelope_de_origem(
-            origem.device_id(),
-            1,
-            "u1",
-            &AggregateRef::new("chapter_position", "c1"),
-            Operation::Delete,
-            "",
-            "",
-        );
-        let mut capitulo = envelope_de_origem(
-            origem.device_id(),
-            2,
-            "u1",
-            &AggregateRef::new("chapter", "c1"),
-            Operation::Delete,
-            "",
-            rev_do_capitulo,
-        );
-        for (indice, envelope) in [&mut posicao, &mut capitulo].into_iter().enumerate() {
-            envelope.grupo = GrupoDeMutacao {
-                mutation_id: mutation_id.to_string(),
-                index: indice as i64,
-                count: 2,
-                kind: "delete_tree".into(),
-                root_type: "chapter".into(),
-                root_id: "c1".into(),
-            };
-            envelope.signature = origem.sign(envelope);
-        }
+        // Montada pelo helper canônico (B6, item 8): seq contíguo, grupo coerente e assinatura de
+        // cada membro saem dele, não de repetição à mão em cada teste.
+        let eventos = crate::infrastructure::sqlite::test_support::AcaoRemota::da(origem)
+            .com_mutation_id(mutation_id)
+            .delete(AggregateRef::new("chapter_position", "c1"), "")
+            .delete(AggregateRef::new("chapter", "c1"), rev_do_capitulo)
+            .exclusao_de(AggregateRef::new("chapter", "c1"))
+            .assinada();
+        let [posicao, capitulo]: [crate::domain::sync::EventEnvelope; 2] = eventos
+            .try_into()
+            .expect("a ação da exclusão do capítulo tem dois membros");
         [posicao, capitulo]
     }
 
@@ -1069,12 +1050,15 @@ pub(crate) mod tests {
     #[test]
     fn agregado_nao_coberto_nao_pode_ser_declarado() {
         let aparelho = Aparelho::novo();
-        // `canvas_node` servia aqui até a B5, quando passou a ser coberto. O tipo desta asserção
-        // precisa ser um que a fronteira REALMENTE não sabe representar ainda.
+        // **O tipo aqui é inventado de propósito.** Este teste é sobre falhar fechado diante de um
+        // agregado desconhecido, não sobre uma etapa pendente. Apontá-lo para um tipo real ainda
+        // não coberto (`canvas_node` na B5, `entity_template_set` na B6) o faz quebrar toda vez que
+        // a cobertura avança — e, pior, o faz parar de testar o que promete no dia em que alguém
+        // reapontar para um tipo que já ganhou codec.
         let erro = Mutacao::executar(&aparelho.banco.database, &aparelho.eu, |m| {
-            m.gravou("entity_template_set", "modelo-1")
+            m.gravou("agregado_que_nunca_vai_existir", "x1")
         })
-        .expect_err("o conjunto de modelos de ficha só é coberto na B6");
+        .expect_err("tipo desconhecido tem de falhar fechado");
         assert!(erro.message.contains("NH-079"), "{}", erro.message);
     }
 
