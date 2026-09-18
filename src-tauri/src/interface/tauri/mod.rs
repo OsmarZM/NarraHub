@@ -5,6 +5,7 @@
 //! entende. Regra que aparecer neste arquivo está no lugar errado.
 
 pub mod android_update_commands;
+pub mod arranque_commands;
 pub mod blob_commands;
 pub mod canvas_commands;
 pub mod collaboration_commands;

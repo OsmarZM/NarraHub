@@ -45,7 +45,7 @@ revisões / eventos
 | **B5** | integrada (#63) | `content_tag` (create/update/delete — **`update_tag` não existia**, e foi criado aqui), `tag_assignment` create/delete pela fronteira, `canvas_node`, `canvas_node_position` e `canvas_edge`; payload **definitivo** do `attachment`; migration 22 (gatilhos que matam a aresta com a ponta + `tag_name_conflict`); `knowledge_service` entra no gate estrutural, onde **nunca esteve**; gate autoral × efêmero |
 | **B2.2** | integrada (#64) | **posição por item** no lugar das listas inteiras (`story_order`, `book_order`, `chapter_order`, `planning_order` saíram; entram `story_position`, `book_position`, `chapter_position`, `planning_field_position`, `attachment_position`, `planning_item_position`); **grupos de mutação atômicos** no envelope (migration 23): a ação que é uma transação na origem entra inteira no receptor, ou vira UMA decisão; a ponte de ordem da B2.1 saiu, sem consumidores |
 | **B6** | integrada (#65) | **identidade portátil de conflito** (migration 24: `conflict_key` + participantes canônicos ordenados, iguais nos dois aparelhos); **`entity_template_set`** (o conjunto de modelos de ficha como um agregado, identidade `(universeId, entityType)`); **`UNIQUE(entity_id)`** na posição da entidade (migration 25, com quarentena do que foi desempatado); **colaboração aprovada pela `Mutacao`**; **helper canônico de ação remota** nos testes; **gate de cobertura total** |
-| **C** | **motor da adoção implementado** (branch `sync-c-genese`), em revisão — **wiring no arranque pendente** | gênese: adoção versionada do acervo legado (migration 26), enumerador canônico por tipo, ordem topológica com o ciclo do card desfeito em três eventos, transação única; ordem cobrada na captura e na sessão. A segunda fatia liga isso ao arranque: `blob_upgrade` → `genese::adotar` → `exigir_acervo_adotado` → liberar aplicação/sync |
+| **C** | **fechada** (motor #66 + wiring no arranque) | gênese: adoção versionada do acervo legado (migration 26), enumerador canônico por tipo, ordem topológica com o ciclo do card desfeito em três eventos, transação única; ordem cobrada na captura e na sessão. A segunda fatia liga isso ao arranque: `blob_upgrade` → `genese::adotar` → `exigir_acervo_adotado` → liberar aplicação/sync |
 
 **Fora da B2, dito às claras:**
 
@@ -649,11 +649,17 @@ da etapa F.
     evento, estado causal nem linha de adoção; banco novo não emite nada; órfão depois de adotado é
     falha fechada; o card que cita campo próprio é adotado em duas revisões. Todo tipo coberto tem
     enumerador e precedência declarados.
-17. **Identidade portátil de conflito (B6):** os dois aparelhos calculam a mesma `conflict_key` e os
+17. **Arranque (C):** banco legado abre, converte a mídia, adota sozinho e libera; banco novo adota
+    zero e registra a versão; falha de adoção não libera e cai em `RecoveryRequired` com a causa
+    real; reinício depois de adotado é no-op (nenhum evento, cursor parado); órfão em acervo
+    adotado derruba o arranque sem adotar nada; a mídia é convertida **antes** de a gênese
+    registrar o estado (provado pelo payload da revisão de gênese, não pela ordem das chamadas);
+    a migration, sozinha, não declara `Ready`.
+18. **Identidade portátil de conflito (B6):** os dois aparelhos calculam a mesma `conflict_key` e os
     mesmos participantes, em edição×edição e em tag homônima (onde os papéis se invertem); a fixture
     nativa de schema 24 tem as três formas de conflito, e o gate **decodifica** os participantes em
     vez de confiar no texto; banco migrado deixa a identidade vazia em vez de inventá-la.
-18. **Cobertura total (B6):** toda escrita pública de serviço passa pela `Mutacao` ou está declarada
+19. **Cobertura total (B6):** toda escrita pública de serviço passa pela `Mutacao` ou está declarada
     como estado local, com motivo — e declaração obsoleta derruba o gate; todo efeito de exclusão do
     catálogo atinge agregado coberto; contribuição aprovada vira revisão e chega ao outro aparelho;
     uma entidade tem no máximo uma posição, agora por restrição do banco.
@@ -740,6 +746,24 @@ produzir bundle com agregado sem revisão (`FalhaDeCaptura::AcervoNaoAdotado`), 
 (`parear_por_pin`, `sincronizar_com`, `atender_conexao`) recusa antes de abrir a rede. A captura é
 a rede embaixo: ela impede qualquer chamador, inclusive um novo, de produzir bundle desonesto.
 
+**O arranque tem a ordem no código, e fases próprias no estado do banco:**
+
+```text
+migrations (database::upgrade)  → UpgradingBlobs
+  → conversão de mídia          → Adopting
+  → adoção do acervo            → Ready   → aplicação e sync liberados
+```
+
+`FaseDoBanco` ganhou `UpgradingBlobs` e `Adopting`, e as duas recusam comando de domínio como
+`Migrating` já recusava — a guarda de `interface::tauri::database` é a mesma. `Ready` deixou de ser
+declarado pela migration: quem declara é `application::arranque::preparar_acervo`, depois das duas
+etapas. Erro na mídia, na adoção ou órfão ⇒ `RecoveryRequired`, o caminho do ADR 0007: banco
+preservado, comandos recusados, causa legível.
+
+**A exceção declarada:** pendência de mídia (imagem legada ilegível) **não** trava o aplicativo —
+o texto abre, o acervo fica sem adotar e a **sincronização** fica indisponível, com motivo. É a
+régua que o ADR 0010 já tinha: problema de mídia não pode virar perda de acesso ao texto.
+
 **Captura de bundle exige acervo adotado** (`FalhaDeCaptura::AcervoNaoAdotado`). O bundle carrega
 estado; sem gênese, o receptor nasceria com conteúdo que nenhum evento sustenta. O vetor causal
 continua sendo o vetor **por origem** — o baseline do receptor é derivado dele, e não um número
@@ -793,9 +817,8 @@ B5  conhecimento e canvas: content_tag (+update_tag), tag_assignment, canvas_nod
 B6  identidade portátil de conflito (item 9); entity_template_set; UNIQUE(entity_id) da posição
     com backfill auditável; conteúdo aprovado na colaboração pela Mutacao; helper canônico de
     ação remota nos testes; gate de cobertura total
-C   gênese: MOTOR da adoção implementado (adoção versionada, enumerador canônico, ordem
-    topológica, migration 26) — o WIRING NO ARRANQUE está pendente, e é a segunda fatia:
-    blob_upgrade → genese::adotar → exigir_acervo_adotado → liberar aplicação/sync
+C   gênese: adoção versionada (migration 26), enumerador canônico, ordem topológica, e o
+    arranque que a executa: migrations → mídia → adoção → Ready → sync  ← CLOSED
 ```
 
 ## 8. Payload canônico do manuscrito (B2)
