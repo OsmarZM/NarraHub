@@ -389,14 +389,28 @@ pub fn append_event_in_transaction(
 
     // O cursor da própria origem acompanha o log local. Como cada `seq` local
     // nasce contíguo, o trigger de densidade da v16 aceita o avanço de 1.
-    tx.execute(
-        "INSERT INTO sync_cursors (origin_device_id, baseline_seq, last_seq_applied)
-         VALUES (?1, 0, ?2)
-         ON CONFLICT(origin_device_id)
-         DO UPDATE SET last_seq_applied = excluded.last_seq_applied",
-        rusqlite::params![&envelope.device_id, envelope.seq],
-    )
-    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    // **UPDATE primeiro, INSERT só se a linha não existir.**
+    //
+    // O `ON CONFLICT DO UPDATE` parece equivalente e não é: o SQLite dispara o gatilho
+    // `BEFORE INSERT` ANTES de descobrir o conflito, e o gatilho de contiguidade do INSERT conta
+    // os eventos desde o baseline. Com o upsert, cada evento pagava uma contagem sobre o log
+    // inteiro — O(n) por escrita, O(n²) numa sequência delas. A adoção de 20 mil agregados levava
+    // 450 s por causa disto; o caminho de UPDATE dispara só o gatilho de UPDATE, que olha apenas o
+    // intervalo entre o cursor antigo e o novo.
+    let atualizadas = tx
+        .execute(
+            "UPDATE sync_cursors SET last_seq_applied = ?2 WHERE origin_device_id = ?1",
+            rusqlite::params![&envelope.device_id, envelope.seq],
+        )
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    if atualizadas == 0 {
+        tx.execute(
+            "INSERT INTO sync_cursors (origin_device_id, baseline_seq, last_seq_applied)
+             VALUES (?1, 0, ?2)",
+            rusqlite::params![&envelope.device_id, envelope.seq],
+        )
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    }
 
     Ok(envelope)
 }
@@ -1265,5 +1279,31 @@ mod tests {
             outbox_since(&connection, identidade.device_id(), 1).expect("ler outbox parcial");
         assert_eq!(depois.len(), 1);
         assert_eq!(depois[0].seq, 2);
+    }
+
+    /// **O avanço de cursor não pode voltar a ser um upsert.**
+    ///
+    /// O SQLite dispara o gatilho `BEFORE INSERT` antes de resolver o conflito de um
+    /// `ON CONFLICT DO UPDATE`, e o gatilho de contiguidade do INSERT conta os eventos desde o
+    /// baseline. Com upsert, cada escrita local pagava O(n) no tamanho do próprio log: a adoção de
+    /// 20 mil agregados levava 450 s, contra 7 s com UPDATE primeiro. Medido, não suposto.
+    ///
+    /// O gate é textual de propósito: o efeito é de desempenho, e teste de tempo em CI é frágil.
+    /// O que não pode voltar é a FORMA.
+    #[test]
+    fn o_avanco_de_cursor_nao_usa_upsert() {
+        let raiz = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for arquivo in [
+            "src/infrastructure/sqlite/sync_repository.rs",
+            "src/infrastructure/sqlite/sync_session.rs",
+        ] {
+            let fonte = std::fs::read_to_string(raiz.join(arquivo)).expect("ler fonte");
+            let producao = fonte.split("#[cfg(test)]").next().unwrap_or("");
+            assert!(
+                !producao.contains("ON CONFLICT(origin_device_id)"),
+                "{arquivo} voltou a avançar o cursor por upsert: o gatilho BEFORE INSERT da \
+                 contiguidade conta desde o baseline, e isso é O(n) por evento."
+            );
+        }
     }
 }

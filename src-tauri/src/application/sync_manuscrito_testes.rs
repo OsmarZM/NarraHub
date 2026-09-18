@@ -4093,3 +4093,712 @@ fn contribuicao_aprovada_vira_revisao_e_chega_no_outro_aparelho() {
         .expect("universo")
         .contains("Terra Nova"));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Etapa C — gênese: a adoção de um acervo que existia antes do Sync V2
+// ═══════════════════════════════════════════════════════════════════════════
+
+use crate::application::genese;
+
+impl Aparelho {
+    fn adotar(&self) -> genese::ResumoDaAdocao {
+        genese::adotar(&self.banco.database, &self.eu).expect("adotar o acervo")
+    }
+
+    fn agregados_sem_revisao(&self) -> Option<String> {
+        let connection = self.banco.connection();
+        genese::primeiro_orfao(&connection)
+            .expect("procurar órfão")
+            .map(|agregado| format!("{} {}", agregado.aggregate_type, agregado.aggregate_id))
+    }
+}
+
+/// Um acervo com **um item de cada tipo coberto**, incluindo o card que cita um campo exclusivo
+/// dele — o ciclo que a adoção precisa desfazer.
+fn acervo_completo(aparelho: &Aparelho) -> Vec<(String, String)> {
+    use crate::application::knowledge_service;
+
+    let universo = aparelho.universo("Terra");
+    let historia = aparelho.historia(&universo, "Saga").id;
+    let livro = aparelho.livro(&historia, "Livro I").id;
+    let capitulo = aparelho.capitulo(&livro, "Um").id;
+    aparelho.escrever(&capitulo, "<p>Era uma vez</p>");
+    let entidade = aparelho.entidade(&universo, "Frodo");
+    let outra = aparelho.entidade(&universo, "Sam");
+    aparelho.posicao(&universo, &entidade, 3.0, 4.0);
+    let tag = aparelho.tag(&universo, "Mar");
+    knowledge_service::set_tag(
+        &aparelho.banco.database,
+        &aparelho.eu,
+        "chapter",
+        &capitulo,
+        &tag,
+        true,
+    )
+    .expect("marcar o capítulo");
+    aparelho.anexar_em(
+        &universo,
+        "chapter",
+        &capitulo,
+        "data:image/png;base64,YQ==",
+    );
+
+    let campo = aparelho.campo(&universo, "Tom", "text", None);
+    let card = aparelho.card(&universo, "Cena do porto", Some(&capitulo));
+    let exclusivo = aparelho.campo(&universo, "Só deste card", "text", Some(&card));
+    aparelho.salvar_card(
+        &universo,
+        &card,
+        "Cena do porto",
+        Some(&capitulo),
+        serde_json::json!({
+            campo.clone(): "tenso",
+            exclusivo.clone(): "valor do campo exclusivo",
+        }),
+    );
+
+    vec![
+        ("universe".to_string(), universo),
+        ("story".to_string(), historia),
+        ("book".to_string(), livro),
+        ("chapter".to_string(), capitulo),
+        ("entity".to_string(), entidade),
+        ("entity".to_string(), outra),
+        ("content_tag".to_string(), tag),
+        ("planning_field_definition".to_string(), campo),
+        ("planning_field_definition".to_string(), exclusivo),
+        ("planning_item".to_string(), card),
+    ]
+}
+
+/// **Um acervo legado de verdade.**
+///
+/// O domínio é construído pelos serviços numa fábrica (é o único jeito honesto de ter um estado
+/// coerente) e copiado para um aparelho que nunca teve Sync V2. Apagar o log de um aparelho usado
+/// não serviria: `sync_events` é append-only por gatilho — e é bom que seja.
+fn acervo_legado(destino: &Aparelho) -> Vec<(String, String)> {
+    let fabrica = Aparelho::novo("fabrica");
+    let itens = acervo_completo(&fabrica);
+    copiar_dominio(&fabrica, destino);
+    assert_eq!(destino.eventos().len(), 0, "o destino não estava virgem");
+    itens
+}
+
+/// **Gate 1 — a ordem obrigatória: backfill antes da gênese.**
+///
+/// A gênese registra o estado como ele é. Adotar antes da conversão de mídia gravaria uma revisão
+/// que descreve um acervo que o backfill ainda vai mudar.
+#[test]
+fn a_genese_recusa_acontecer_antes_do_backfill_de_midia() {
+    let pc = Aparelho::novo("pc");
+    let itens = acervo_legado(&pc);
+    let universo = itens[0].1.clone();
+    pc.banco
+        .connection()
+        .execute(
+            "INSERT INTO blob_migration_issues
+               (id, surface, table_name, row_id, side, reason, detail)
+             VALUES ('p1', 1, 'universes', ?1, 'cover_image', 'legacy_unrecognized', '')",
+            [&universo],
+        )
+        .expect("semear pendência de mídia");
+
+    let erro = genese::adotar(&pc.banco.database, &pc.eu).expect_err("pendência tem de impedir");
+    assert!(erro.message.contains("pendência"), "{}", erro.message);
+    assert_eq!(pc.eventos().len(), 0, "a gênese emitiu evento mesmo assim");
+
+    // Resolvida a pendência, a adoção acontece.
+    pc.banco
+        .connection()
+        .execute("DELETE FROM blob_migration_issues", [])
+        .expect("resolver");
+    let resumo = pc.adotar();
+    assert!(resumo.adotados > 0, "{resumo:?}");
+}
+
+/// **Gate 2 e 3 — cobertura da adoção e materialização.**
+///
+/// Depois da adoção, nenhum agregado coberto fica sem revisão, e a revisão de cada um é o estado
+/// do banco.
+#[test]
+fn a_genese_adota_o_acervo_inteiro_e_a_revisao_e_o_estado() {
+    let pc = Aparelho::novo("pc");
+    let itens = acervo_legado(&pc);
+    assert!(
+        pc.agregados_sem_revisao().is_some(),
+        "o cenário exige acervo legado"
+    );
+
+    let resumo = pc.adotar();
+    assert!(resumo.adotados >= itens.len(), "{resumo:?}");
+    assert_eq!(pc.agregados_sem_revisao(), None);
+    for (tipo, id) in &itens {
+        assert!(
+            pc.payload_corrente(tipo, id).is_some(),
+            "{tipo} {id} ficou sem revisão"
+        );
+    }
+    // A invariante geral: revisão corrente ⇒ o payload dela é o estado do banco.
+    pc.invariante_de_materializacao();
+}
+
+/// **Gate 4 — nenhuma dependência aponta para um `seq` posterior.**
+///
+/// Este é o gate que a ordenação topológica existe para satisfazer, e ele não confia em inspeção
+/// estática: entrega os eventos da gênese, em ordem, a um aparelho novo. Se algum evento dependesse
+/// de outro com `seq` maior, o cursor pararia nele para sempre — e o teste veria pendência.
+#[test]
+fn a_genese_aplica_inteira_num_aparelho_novo_sem_esperar_nada() {
+    let pc = Aparelho::novo("pc");
+    let itens = acervo_legado(&pc);
+    pc.adotar();
+
+    let android = Aparelho::novo("android");
+    let relatorio = entregar(&pc, &android);
+    assert_eq!(relatorio.pendentes, 0, "{relatorio:?}");
+    assert!(
+        relatorio.precisam_reconciliar.is_empty(),
+        "{:?}",
+        relatorio.precisam_reconciliar
+    );
+    assert_eq!(relatorio.divergencias, 0, "{relatorio:?}");
+    assert_eq!(
+        relatorio.aplicados,
+        pc.eventos().len(),
+        "o aparelho novo não aplicou a gênese inteira"
+    );
+    for (tipo, id) in &itens {
+        pc.convergiu_com(&android, tipo, id);
+    }
+    android.invariante_de_materializacao();
+}
+
+/// **Gate 5 — o determinismo é dos três campos, e não de "estado igual".**
+///
+/// Mesma identidade + mesmo payload canônico + base raiz ⇒ mesma revisão. Dois aparelhos que adotem
+/// o mesmo acervo chegam às mesmas revisões, com eventos próprios, e o pareamento não vira decisão.
+#[test]
+fn dois_aparelhos_que_adotam_o_mesmo_acervo_chegam_as_mesmas_revisoes() {
+    let pc = Aparelho::novo("pc");
+    let itens = acervo_legado(&pc);
+
+    // O "mesmo acervo" em outro aparelho: mesmo domínio, identidade própria.
+    let android = Aparelho::novo("android");
+    copiar_dominio(&pc, &android);
+
+    pc.adotar();
+    android.adotar();
+
+    for (tipo, id) in &itens {
+        assert_eq!(
+            pc.payload_corrente(tipo, id),
+            android.payload_corrente(tipo, id),
+            "{tipo} {id}: payload diferente"
+        );
+        assert_eq!(
+            revisao(&pc, tipo, id),
+            revisao(&android, tipo, id),
+            "{tipo} {id}: revisão diferente apesar de payload igual"
+        );
+    }
+
+    let (em_android, em_pc) = sincronizar(&pc, &android);
+    assert_eq!(em_android.divergencias, 0, "{em_android:?}");
+    assert_eq!(em_pc.divergencias, 0, "{em_pc:?}");
+}
+
+/// **Gate 6 — unicidade.** A segunda adoção é no-op, e o banco recusa duas linhas da mesma versão.
+#[test]
+fn a_segunda_adocao_nao_faz_nada() {
+    let pc = Aparelho::novo("pc");
+    acervo_legado(&pc);
+    let primeira = pc.adotar();
+    let eventos = pc.eventos().len();
+
+    let segunda = pc.adotar();
+    assert!(segunda.ja_estava_adotado, "{segunda:?}");
+    assert_eq!(segunda.adotados, 0);
+    assert_eq!(
+        pc.eventos().len(),
+        eventos,
+        "a segunda adoção emitiu evento"
+    );
+    assert!(primeira.adotados > 0);
+}
+
+/// **Gate 7 — atomicidade.** Falha no meio não deixa evento, revisão nem linha de adoção.
+#[test]
+fn falha_no_meio_da_adocao_nao_deixa_meia_genese() {
+    let pc = Aparelho::novo("pc");
+    acervo_legado(&pc);
+
+    genese::falha_no_meio::armar(Some(3));
+    let erro = genese::adotar(&pc.banco.database, &pc.eu).expect_err("a falha injetada derruba");
+    genese::falha_no_meio::armar(None);
+    assert!(erro.message.contains("falha injetada"), "{}", erro.message);
+
+    assert_eq!(pc.eventos().len(), 0, "sobrou evento da adoção derrubada");
+    assert_eq!(
+        pc.contar("SELECT COUNT(*) FROM sync_aggregate_state"),
+        0,
+        "sobrou estado causal"
+    );
+    assert_eq!(pc.contar("SELECT COUNT(*) FROM sync_adoptions"), 0);
+
+    // E a adoção seguinte acontece inteira: a recuperação é simplesmente executar de novo.
+    let resumo = pc.adotar();
+    assert!(resumo.adotados > 0, "{resumo:?}");
+    assert_eq!(pc.agregados_sem_revisao(), None);
+}
+
+/// **Gate 8 — banco novo.** Um acervo que sempre passou pela `Mutacao` não tem o que adotar.
+#[test]
+fn banco_novo_adota_sem_emitir_nada() {
+    let pc = Aparelho::novo("pc");
+    acervo_completo(&pc);
+    let eventos = pc.eventos().len();
+
+    let resumo = pc.adotar();
+    assert_eq!(resumo.adotados, 0, "{resumo:?}");
+    assert_eq!(resumo.eventos, 0, "{resumo:?}");
+    assert_eq!(pc.eventos().len(), eventos, "a adoção emitiu evento à toa");
+    assert!(pc.contar("SELECT COUNT(*) FROM sync_adoptions") == 1);
+}
+
+/// **Gate 9 — depois de adotado, órfão é falha fechada.**
+///
+/// Não existe "adotar o que apareceu depois": cobertura nova exige adoção versionada nova.
+#[test]
+fn agregado_sem_revisao_depois_da_adocao_falha_fechado() {
+    let pc = Aparelho::novo("pc");
+    let itens = acervo_legado(&pc);
+    pc.adotar();
+    {
+        let connection = pc.banco.connection();
+        genese::exigir_acervo_adotado(&connection).expect("acervo adotado");
+    }
+
+    // Um agregado perde a revisão (cobertura nova, escrita fora da fronteira, banco adulterado).
+    let (tipo, id) = itens
+        .iter()
+        .find(|(tipo, _)| tipo == "chapter")
+        .expect("capítulo");
+    pc.banco
+        .connection()
+        .execute(
+            "DELETE FROM sync_aggregate_state WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+            [tipo, id],
+        )
+        .expect("apagar a revisão corrente");
+
+    let connection = pc.banco.connection();
+    let erro = genese::exigir_acervo_adotado(&connection).expect_err("órfão tem de falhar");
+    assert!(erro.message.contains("não tem revisão"), "{}", erro.message);
+    assert!(erro.message.contains(id), "{}", erro.message);
+}
+
+/// **Gate 10 — o ciclo do card com campo exclusivo.**
+///
+/// O card nasce sem o valor do campo que ele possui, o campo nasce em seguida, e o card recebe a
+/// revisão que o completa. Três eventos, nenhum apontando para frente — e o estado final é o
+/// payload inteiro.
+#[test]
+fn card_que_cita_campo_proprio_e_adotado_em_duas_revisoes() {
+    let pc = Aparelho::novo("pc");
+    let itens = acervo_legado(&pc);
+    let card = itens
+        .iter()
+        .find(|(tipo, _)| tipo == "planning_item")
+        .map(|(_, id)| id.clone())
+        .expect("card");
+    pc.adotar();
+
+    let revisoes_do_card: Vec<(String, String)> = {
+        let connection = pc.banco.connection();
+        let mut consulta = connection
+            .prepare(
+                "SELECT base_rev, payload FROM sync_events
+                  WHERE aggregate_type = 'planning_item' AND aggregate_id = ?1 ORDER BY seq",
+            )
+            .expect("consulta");
+        consulta
+            .query_map([&card], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("linhas")
+            .collect::<Result<_, _>>()
+            .expect("revisões")
+    };
+    assert_eq!(revisoes_do_card.len(), 2, "{revisoes_do_card:?}");
+    assert_eq!(revisoes_do_card[0].0, "", "a criação parte da raiz");
+    assert!(
+        !revisoes_do_card[0].1.contains("valor do campo exclusivo"),
+        "a criação citou o campo que ainda não existia"
+    );
+    assert!(
+        revisoes_do_card[1].1.contains("valor do campo exclusivo"),
+        "o card não foi completado"
+    );
+    assert_eq!(
+        pc.payload_corrente("planning_item", &card).as_deref(),
+        Some(revisoes_do_card[1].1.as_str())
+    );
+}
+
+/// **Gate 12 — adotar de novo num acervo incoerente é erro, não no-op.**
+///
+/// "Versão já adotada" responde uma pergunta só: esta adoção já rodou. Se ficou agregado sem
+/// revisão, o acervo está incoerente, e devolver `ja_estava_adotado` esconderia isso justamente no
+/// arranque, que é onde alguém poderia ver.
+#[test]
+fn adotar_de_novo_com_orfao_falha_em_vez_de_virar_no_op() {
+    let pc = Aparelho::novo("pc");
+    let itens = acervo_legado(&pc);
+    pc.adotar();
+
+    // Segunda chamada num acervo coerente: no-op, como antes.
+    assert!(pc.adotar().ja_estava_adotado);
+
+    // Agora um agregado perde a revisão (cobertura nova, escrita fora da fronteira, adulteração).
+    let (tipo, id) = itens
+        .iter()
+        .find(|(tipo, _)| tipo == "chapter")
+        .expect("capítulo");
+    pc.banco
+        .connection()
+        .execute(
+            "DELETE FROM sync_aggregate_state WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+            [tipo, id],
+        )
+        .expect("apagar a revisão corrente");
+
+    let erro = genese::adotar(&pc.banco.database, &pc.eu).expect_err("órfão tem de falhar");
+    assert!(erro.message.contains("não tem revisão"), "{}", erro.message);
+    assert!(erro.message.contains(id), "{}", erro.message);
+    // E não adotou o órfão de contrabando: nenhum evento novo.
+    assert!(
+        pc.payload_corrente(tipo, id).is_none(),
+        "a segunda adoção criou revisão para o órfão"
+    );
+}
+
+/// **Gate 13 — a pendência de mídia que nasce DEPOIS da checagem de fora ainda impede.**
+///
+/// A leitura anterior à transação é caminho rápido; a decisão é dentro do `BEGIN IMMEDIATE`.
+#[test]
+fn pendencia_aberta_dentro_da_transacao_ainda_impede_a_adocao() {
+    let pc = Aparelho::novo("pc");
+    acervo_legado(&pc);
+
+    // A pendência nasce DEPOIS do caminho rápido: quem a vê é a checagem de dentro da transação.
+    genese::entre_o_fast_path_e_a_transacao::abrir_pendencia_de_midia(true);
+
+    let erro = genese::adotar(&pc.banco.database, &pc.eu).expect_err("pendência impede");
+    assert!(erro.message.contains("pendência"), "{}", erro.message);
+    assert_eq!(pc.eventos().len(), 0);
+    assert_eq!(pc.contar("SELECT COUNT(*) FROM sync_adoptions"), 0);
+}
+
+/// **Gate 14 — a captura pública recusa acervo não adotado.**
+///
+/// O pareamento também cobra, e as duas checagens não são redundância: esta é a que impede
+/// QUALQUER caminho — inclusive um chamador novo — de produzir um bundle com conteúdo que nenhum
+/// evento explica.
+#[test]
+fn capturar_recusa_acervo_com_agregado_sem_revisao() {
+    use crate::infrastructure::sqlite::sync_snapshot::{capturar, FalhaDeCaptura};
+
+    let pc = Aparelho::novo("pc");
+    let itens = acervo_legado(&pc);
+
+    let falha = {
+        let mut connection = pc.banco.connection();
+        capturar(&mut connection)
+            .expect("consultar")
+            .expect_err("acervo legado não pode virar bundle")
+    };
+    match &falha {
+        FalhaDeCaptura::AcervoNaoAdotado { agregado } => {
+            assert!(!agregado.is_empty(), "a recusa precisa dizer qual item");
+        }
+        outra => panic!("recusou pelo motivo errado: {outra:?}"),
+    }
+
+    pc.adotar();
+    let bundle = {
+        let mut connection = pc.banco.connection();
+        capturar(&mut connection)
+            .expect("consultar")
+            .expect("depois da adoção o bundle sai")
+    };
+    assert!(
+        bundle.vetor.values().any(|seq| *seq > 0),
+        "o bundle saiu sem vetor"
+    );
+    assert!(!itens.is_empty());
+}
+
+/// **Gate 11 — a ordem chega até o pareamento: acervo legado não pareia.**
+///
+/// A checagem é por órfão, e não pela linha de adoção: um aparelho recém-instalado não tem o que
+/// adotar e pareia normalmente, que é o caso do receptor num bootstrap.
+#[test]
+fn acervo_nao_adotado_nao_pareia() {
+    use crate::infrastructure::sqlite::sync_codec;
+
+    let pc = Aparelho::novo("pc");
+    acervo_legado(&pc);
+    {
+        let connection = pc.banco.connection();
+        let erro = genese::exigir_acervo_sem_orfaos(&connection)
+            .expect_err("acervo legado não pode parear");
+        assert!(erro.message.contains("não foi adotado"), "{}", erro.message);
+    }
+
+    pc.adotar();
+    {
+        let connection = pc.banco.connection();
+        genese::exigir_acervo_sem_orfaos(&connection).expect("depois da adoção, pareia");
+    }
+
+    // Aparelho recém-instalado: nada a adotar, nada a impedir.
+    let novo = Aparelho::novo("novo");
+    let connection = novo.banco.connection();
+    genese::exigir_acervo_sem_orfaos(&connection).expect("aparelho novo pareia");
+    assert!(sync_codec::TIPOS_COBERTOS.contains(&"universe"));
+}
+
+/// Copia o domínio inteiro de um aparelho para outro, sem nada do passado causal: é o "mesmo
+/// acervo" restaurado noutro aparelho.
+fn copiar_dominio(de: &Aparelho, para: &Aparelho) {
+    use crate::infrastructure::sqlite::sync_snapshot::{tabelas_de, Categoria};
+
+    let origem = de.banco.connection();
+    let destino = para.banco.connection();
+    destino
+        .execute_batch("PRAGMA foreign_keys = OFF;")
+        .expect("desligar FK durante a cópia");
+    for tabela in tabelas_de(Categoria::TransferidaNoBundle) {
+        if tabela.starts_with("sync_") {
+            continue;
+        }
+        let colunas: Vec<String> = {
+            let mut consulta = origem
+                .prepare(&format!("SELECT name FROM pragma_table_info('{tabela}')"))
+                .expect("colunas");
+            consulta
+                .query_map([], |row| row.get::<_, String>(0))
+                .expect("linhas")
+                .collect::<Result<_, _>>()
+                .expect("nomes")
+        };
+        if colunas.is_empty() {
+            continue;
+        }
+        let lista = colunas.join(", ");
+        let mut consulta = origem
+            .prepare(&format!("SELECT {lista} FROM {tabela}"))
+            .expect("ler tabela");
+        let mut linhas = consulta.query([]).expect("linhas");
+        while let Some(linha) = linhas.next().expect("linha") {
+            let valores: Vec<rusqlite::types::Value> = (0..colunas.len())
+                .map(|indice| {
+                    linha
+                        .get::<_, rusqlite::types::Value>(indice)
+                        .expect("valor")
+                })
+                .collect();
+            let marcadores = vec!["?"; colunas.len()].join(", ");
+            destino
+                .execute(
+                    &format!("INSERT OR REPLACE INTO {tabela} ({lista}) VALUES ({marcadores})"),
+                    rusqlite::params_from_iter(valores.iter()),
+                )
+                .expect("copiar linha");
+        }
+    }
+    destino
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("religar FK");
+}
+
+/// **Benchmark da adoção: 10k, 50k e 100k agregados numa transação só.**
+///
+/// Ignorado por padrão — é medição, não gate. Rodar com:
+///
+/// ```text
+/// cargo test --lib --release -- benchmark_da_adocao --ignored --nocapture
+/// ```
+///
+/// A pergunta que ele responde é uma só: a transação única se sustenta num acervo real? Se não se
+/// sustentar, o plano B é adoção por universo — e aí sync, captura e mutação sincronizável ficam
+/// bloqueados até a adoção global concluir.
+#[test]
+#[ignore]
+fn benchmark_da_adocao() {
+    for capitulos in [10_000usize, 50_000, 100_000] {
+        let pc = Aparelho::novo("pc");
+        let universo = pc.universo("Terra");
+        let historia = pc.historia(&universo, "Saga").id;
+        let livro = pc.livro(&historia, "Livro I").id;
+
+        // O domínio entra por SQL direto: é um acervo LEGADO, e escrever 100 mil capítulos pelos
+        // serviços mediria a Mutacao, não a adoção.
+        let semeadura = std::time::Instant::now();
+        {
+            let mut connection = pc.banco.database.write().expect("escrita");
+            let tx = connection.transaction().expect("transação");
+            {
+                let mut insercao = tx
+                    .prepare(
+                        "INSERT INTO chapters
+                            (id, book_id, title, content, summary, scene_origin, scene_destination,
+                             status, canon_status, sort_order, word_count, created_at, updated_at)
+                         VALUES (?1, ?2, ?3, '<p>texto</p>', '', '', '', 'rascunho', 'canon', ?4, 2,
+                                 '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+                    )
+                    .expect("preparar");
+                for indice in 0..capitulos {
+                    insercao
+                        .execute(rusqlite::params![
+                            format!("cap-{indice:07}"),
+                            &livro,
+                            format!("Capítulo {indice}"),
+                            indice as i64
+                        ])
+                        .expect("inserir capítulo");
+                }
+            }
+            tx.commit().expect("commit");
+        }
+        let semeado = semeadura.elapsed();
+
+        // O acervo do teste já tem revisão para o que foi criado pelos serviços; os capítulos
+        // inseridos por SQL são o legado a adotar.
+        let relogio = std::time::Instant::now();
+        let resumo = genese::adotar(&pc.banco.database, &pc.eu).expect("adotar");
+        let duracao = relogio.elapsed();
+
+        let eventos = pc.contar("SELECT COUNT(*) FROM sync_events");
+        println!(
+            "adoção de {capitulos} capítulos: {adotados} agregados, {eventos} eventos, \
+             {duracao:?} (semeadura do legado: {semeado:?})",
+            adotados = resumo.adotados
+        );
+        assert!(resumo.adotados >= capitulos * 2, "{resumo:?}");
+    }
+}
+
+/// Onde o tempo da adoção vai. Ignorado: é instrumento de medição, não gate.
+#[test]
+#[ignore]
+fn perfil_da_adocao() {
+    use crate::infrastructure::sqlite::sync_codec;
+
+    let pc = Aparelho::novo("pc");
+    let universo = pc.universo("Terra");
+    let historia = pc.historia(&universo, "Saga").id;
+    let livro = pc.livro(&historia, "Livro I").id;
+    let quantos: usize = std::env::var("PERFIL_N")
+        .ok()
+        .and_then(|valor| valor.parse().ok())
+        .unwrap_or(2_000);
+    {
+        let mut connection = pc.banco.database.write().expect("escrita");
+        let tx = connection.transaction().expect("transação");
+        {
+            let mut insercao = tx
+                .prepare(
+                    "INSERT INTO chapters
+                        (id, book_id, title, content, summary, scene_origin, scene_destination,
+                         status, canon_status, sort_order, word_count, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, '<p>texto</p>', '', '', '', 'rascunho', 'canon', ?4, 2,
+                             '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+                )
+                .expect("preparar");
+            for indice in 0..quantos {
+                insercao
+                    .execute(rusqlite::params![
+                        format!("cap-{indice:07}"),
+                        &livro,
+                        format!("Capítulo {indice}"),
+                        indice as i64
+                    ])
+                    .expect("inserir");
+            }
+        }
+        tx.commit().expect("commit");
+    }
+
+    let connection = pc.banco.connection();
+    let ids: Vec<String> = {
+        let mut consulta = connection
+            .prepare("SELECT id FROM chapters ORDER BY id")
+            .expect("consulta");
+        consulta
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("linhas")
+            .collect::<Result<_, _>>()
+            .expect("ids")
+    };
+
+    let relogio = std::time::Instant::now();
+    let mut payloads = Vec::with_capacity(ids.len());
+    for id in &ids {
+        let agregado = crate::domain::sync::AggregateRef::new("chapter", id);
+        payloads.push(
+            sync_codec::ler_canonico(&connection, &agregado)
+                .expect("ler")
+                .expect("existe"),
+        );
+    }
+    println!(
+        "ler_canonico de {} capítulos: {:?}",
+        ids.len(),
+        relogio.elapsed()
+    );
+
+    let relogio = std::time::Instant::now();
+    for (id, estado) in ids.iter().zip(payloads.iter()) {
+        let agregado = crate::domain::sync::AggregateRef::new("chapter", id);
+        sync_codec::validar_para_emissao(&connection, &agregado, &estado.payload).expect("validar");
+    }
+    println!("validar_para_emissao: {:?}", relogio.elapsed());
+
+    let relogio = std::time::Instant::now();
+    for id in &ids {
+        let agregado = crate::domain::sync::AggregateRef::new("chapter", id);
+        sync_codec::revisao_corrente(&connection, &agregado).expect("revisão");
+    }
+    println!("revisao_corrente: {:?}", relogio.elapsed());
+    drop(connection);
+
+    let relogio = std::time::Instant::now();
+    {
+        let mut connection = pc.banco.database.write().expect("escrita");
+        let tx = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .expect("transação");
+        for (id, estado) in ids.iter().zip(payloads.iter()) {
+            crate::infrastructure::sqlite::sync_repository::append_event_in_transaction(
+                &tx,
+                &pc.eu,
+                &crate::infrastructure::sqlite::sync_repository::LocalChange {
+                    universe_id: &estado.universe_id,
+                    aggregate: crate::domain::sync::AggregateRef::new("chapter", id),
+                    operation: Operation::Upsert,
+                    payload: &estado.payload,
+                    grupo: crate::domain::sync::GrupoDeMutacao {
+                        mutation_id: crate::domain::ids::new_id(),
+                        index: 0,
+                        count: 1,
+                        kind: "genesis".into(),
+                        root_type: String::new(),
+                        root_id: String::new(),
+                    },
+                },
+            )
+            .expect("evento");
+        }
+        tx.commit().expect("commit");
+    }
+    println!("append_event_in_transaction: {:?}", relogio.elapsed());
+}

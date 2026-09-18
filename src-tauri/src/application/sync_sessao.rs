@@ -216,11 +216,27 @@ fn inesperada(esperada: &str, veio: &Mensagem) -> DatabaseCommandError {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Atende uma conexão já aceita, em qualquer um dos dois modos.
+/// **A ordem da etapa C, cobrada onde o fluxo do produto começa.**
+///
+/// ```text
+/// estado legado → backfills → gênese → baseline / pareamento
+/// ```
+///
+/// Um acervo com item sem revisão não foi adotado: parear agora mandaria para o outro aparelho
+/// conteúdo que nenhum evento explica, e o incremental não teria de onde partir. A checagem é por
+/// ÓRFÃO, e não pela linha de `sync_adoptions`: um aparelho recém-instalado não tem o que adotar e
+/// passa direto, como deve.
+fn exigir_acervo_adotado(ctx: &Contexto<'_>) -> DatabaseCommandResult<()> {
+    let connection = ctx.database.read()?;
+    crate::application::genese::exigir_acervo_sem_orfaos(&connection)
+}
+
 pub fn atender_conexao(
     fluxo: &mut TcpStream,
     codigos: &mut Codigos,
     ctx: &Contexto<'_>,
 ) -> DatabaseCommandResult<ResultadoDaSessao> {
+    exigir_acervo_adotado(ctx)?;
     crate::infrastructure::sync_wire::ajustar_esperas(fluxo, ctx.espera).map_err(falha)?;
     let modo = ler_quadro(fluxo).map_err(falha)?;
     if modo == MODO_PIN {
@@ -242,6 +258,7 @@ pub fn parear_por_pin(
     pin: &str,
     ctx: &Contexto<'_>,
 ) -> DatabaseCommandResult<ResultadoDaSessao> {
+    exigir_acervo_adotado(ctx)?;
     let mut fluxo = conectar(endereco)?;
     escrever_quadro(&mut fluxo, MODO_PIN).map_err(falha)?;
     let pareada = visitante_autentica(&mut fluxo, pin, ctx.identidade, ctx.nome_local, ctx.espera)?;
@@ -253,6 +270,7 @@ pub fn sincronizar_com(
     endereco: &str,
     ctx: &Contexto<'_>,
 ) -> DatabaseCommandResult<ResultadoDaSessao> {
+    exigir_acervo_adotado(ctx)?;
     let mut fluxo = conectar(endereco)?;
     escrever_quadro(&mut fluxo, MODO_PAREADO).map_err(falha)?;
     let pareada =
@@ -1036,6 +1054,36 @@ mod tests {
         assert!(
             a.roster().is_empty(),
             "o estranho não pode ter entrado no roster"
+        );
+    }
+    /// **Acervo não adotado não entra em sessão nenhuma** — nem como quem liga, nem como quem
+    /// atende. A recusa vem antes de qualquer byte na rede: o endereço abaixo não existe, e o erro
+    /// ainda assim é o da adoção.
+    #[test]
+    fn sessao_recusa_acervo_nao_adotado() {
+        let aparelho = Aparelho::novo("legado");
+        {
+            // Um acervo anterior ao Sync V2: linha de domínio sem revisão que a explique.
+            let connection = aparelho.banco.database.write().expect("escrita");
+            crate::infrastructure::sqlite::test_support::seed_universe(&connection, "u-legado");
+        }
+
+        let erro = sincronizar_com("127.0.0.1:1", &aparelho.ctx())
+            .expect_err("acervo não adotado não sincroniza");
+        assert!(erro.message.contains("não foi adotado"), "{}", erro.message);
+
+        let erro = parear_por_pin("127.0.0.1:1", "000000", &aparelho.ctx())
+            .expect_err("acervo não adotado não pareia");
+        assert!(erro.message.contains("não foi adotado"), "{}", erro.message);
+
+        // Depois da adoção, a recusa some (e o erro passa a ser o da conexão que não existe).
+        crate::application::genese::adotar(&aparelho.banco.database, &aparelho.identidade)
+            .expect("adotar");
+        let erro = sincronizar_com("127.0.0.1:1", &aparelho.ctx()).expect_err("sem servidor");
+        assert!(
+            !erro.message.contains("não foi adotado"),
+            "{}",
+            erro.message
         );
     }
 }

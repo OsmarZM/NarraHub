@@ -116,6 +116,10 @@ pub const CATALOGO: &[(&str, Categoria)] = &[
     // Copiá-la no bundle faria o doador declarar, por terceiros, confirmações
     // que o receptor nunca ouviu — e essas confirmações autorizam poda.
     ("sync_peer_vectors", ProtocoloNaoTransferido),
+    // A adoção do acervo (etapa C) é um fato deste arquivo: ela registra que ESTE aparelho deu a
+    // primeira revisão a cada item daqui. O receptor semeado não adota nada — ele nasce com as
+    // revisões prontas no bundle, e o baseline substitui o log que as produziu.
+    ("sync_adoptions", ProtocoloNaoTransferido),
     // ── decisão pendente ou trabalho local: bloqueiam ──────────────────────
     ("sync_divergences", BloqueiaBootstrap),
     ("sync_conflicts", BloqueiaBootstrap),
@@ -297,6 +301,13 @@ fn tabelas_copiadas() -> Vec<&'static str> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum FalhaDeCaptura {
+    /// **O acervo tem item sem revisão: ele não foi adotado** (etapa C).
+    ///
+    /// O bundle carrega ESTADO, e o log não viaja. Um agregado coberto sem revisão viajaria como
+    /// conteúdo que nenhum evento explica: o receptor nasceria com ele e com o cursor já no
+    /// baseline, então nada jamais pediria a história que falta. A adoção acontece no arranque,
+    /// depois da conversão de mídia.
+    AcervoNaoAdotado { agregado: String },
     /// O acervo tem decisão pendente do escritor, no V2.
     DivergenciaAberta { quantas: i64 },
     /// O acervo tem decisão pendente do escritor, no **V1**.
@@ -322,6 +333,13 @@ pub enum FalhaDeCaptura {
 impl std::fmt::Display for FalhaDeCaptura {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            FalhaDeCaptura::AcervoNaoAdotado { agregado } => write!(
+                f,
+                "Este acervo ainda não foi adotado pela sincronização ({agregado} não tem \
+                 versão). A adoção acontece no arranque, depois da conversão de mídia, e é ela \
+                 que dá a cada item a primeira versão. Abra o aplicativo uma vez com este acervo \
+                 e pareie de novo."
+            ),
             FalhaDeCaptura::AssetNaoConvertido { quantas } => write!(
                 f,
                 "Este acervo tem {quantas} imagem(ns) que o aplicativo não conseguiu converter \
@@ -775,6 +793,15 @@ pub fn capturar(
     // bastava o escritor ter resolvido uma divergência **uma vez na vida** para
     // o bootstrap ficar impossível para sempre naquele acervo. Divergência
     // resolvida é decisão tomada, e decisão tomada já está no conteúdo.
+    // **A ordem da etapa C, cobrada na própria captura.** O pareamento também cobra, e as duas
+    // checagens não são redundância: esta é a que impede QUALQUER caminho de produzir um bundle
+    // com conteúdo sem passado causal — inclusive um chamador novo, amanhã.
+    if let Some(orfao) = crate::application::genese::primeiro_orfao(&tx)? {
+        return Ok(Err(FalhaDeCaptura::AcervoNaoAdotado {
+            agregado: format!("{} {}", orfao.aggregate_type, orfao.aggregate_id),
+        }));
+    }
+
     let divergencias: i64 = tx
         .query_row(
             "SELECT COUNT(*) FROM sync_divergences WHERE resolved_at = ''",
@@ -1342,6 +1369,11 @@ mod tests {
             for i in 1..=capitulos {
                 aparelho.escrever(&format!("cap-{i}"), &format!("Capítulo {i}"));
             }
+            // O universo, a história e o livro entraram por SQL, como num acervo anterior ao Sync
+            // V2 — e a captura recusa acervo com item sem versão (etapa C). A adoção é o que os
+            // torna explicáveis, e é o que o arranque do aplicativo faz.
+            crate::application::genese::adotar(&aparelho.banco.database, &aparelho.identidade)
+                .expect("adotar o acervo do doador");
             aparelho
         }
 
@@ -1379,6 +1411,22 @@ mod tests {
                 },
             )
             .expect("evento");
+            // A posição é agregado próprio desde a B2.2, e o serviço real emite os dois na mesma
+            // ação. Sem ela, o capítulo nasceria com a posição órfã — e a captura recusaria o
+            // acervo, com razão (etapa C).
+            let posicao = format!(r#"{{"chapterId":"{id}","bookId":"b1","sortOrder":0}}"#);
+            append_event_in_transaction(
+                &tx,
+                &self.identidade,
+                &LocalChange {
+                    universe_id: "u1",
+                    aggregate: AggregateRef::new("chapter_position", id),
+                    operation: Operation::Upsert,
+                    payload: &posicao,
+                    grupo: Default::default(),
+                },
+            )
+            .expect("evento da posição");
             tx.commit().expect("commit");
             envelope
         }
@@ -1406,7 +1454,31 @@ mod tests {
         }
     }
 
+    /// O último `seq` da origem do doador — o ponto de partida que o receptor herda.
+    ///
+    /// Derivado, e não escrito à mão: a fixture emite mais de um evento por capítulo (o capítulo e
+    /// a posição dele, como o serviço real) e a adoção do acervo legado emite os dela. Um literal
+    /// aqui testaria a aritmética da fixture, não o contrato do baseline.
+    fn ultimo_seq(aparelho: &Aparelho) -> i64 {
+        let connection = aparelho.banco.database.write().expect("escrita");
+        connection
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) FROM sync_events WHERE device_id = ?1",
+                [aparelho.identidade.device_id()],
+                |row| row.get(0),
+            )
+            .expect("último seq")
+    }
+
     fn capturar_de(doador: &Aparelho) -> BootstrapBundle {
+        // As fixtures daqui inserem domínio por SQL, que é como um acervo legado nasce. No produto,
+        // quem torna isso explicável é a adoção do arranque, antes de qualquer pareamento; aqui ela
+        // acontece neste helper, no mesmo ponto do fluxo.
+        crate::application::genese::adotar_orfaos_de_teste(
+            &doador.banco.database,
+            &doador.identidade,
+        )
+        .expect("adotar o que a fixture criou");
         let mut connection = doador.banco.database.write().expect("escrita");
         capturar(&mut connection)
             .expect("capturar")
@@ -1460,9 +1532,10 @@ mod tests {
 
         semear_sem_blobs(&receptor, &bundle).expect("o receptor está vazio");
 
+        let baseline = ultimo_seq(&doador);
         assert_eq!(
             receptor.cursor(doador.identidade.device_id()),
-            Some((40, 40)),
+            Some((baseline, baseline)),
             "o baseline do doador precisa ser o ponto de partida do incremental"
         );
         assert_eq!(
@@ -1477,7 +1550,9 @@ mod tests {
         let connection = receptor.banco.database.write().expect("escrita");
         let vetor =
             crate::infrastructure::sqlite::sync_exchange::vetor_local(&connection).expect("vetor");
-        assert_eq!(vetor.get(receptor.identidade.device_id()).copied(), Some(1));
+        // A escrita emite o capítulo e a posição dele: o vetor do receptor vale 2. O que este
+        // gate diz é que ele começou do zero, e não em cima do passado do doador.
+        assert_eq!(vetor.get(receptor.identidade.device_id()).copied(), Some(2));
     }
 
     /// Zero no vetor é ausência, não passado.
@@ -1623,9 +1698,10 @@ mod tests {
         assert_eq!(doador_la, 0, "o doador assumiu a identidade do receptor");
 
         drop(connection);
+        let baseline = ultimo_seq(&doador);
         assert_eq!(
             receptor.cursor(doador.identidade.device_id()),
-            Some((40, 40))
+            Some((baseline, baseline))
         );
         assert_eq!(receptor.cursor(receptor.identidade.device_id()), None);
     }
@@ -1815,6 +1891,23 @@ mod tests {
                         },
                     )
                     .expect("evento concorrente");
+                    // O serviço real emite o capítulo e a posição dele na mesma ação; o escritor
+                    // concorrente faz o mesmo, senão criaria posição órfã e a captura recusaria o
+                    // acervo no meio da corrida (etapa C).
+                    let posicao_concorrente =
+                        format!(r#"{{"chapterId":"{id}","bookId":"b1","sortOrder":0}}"#);
+                    append_event_in_transaction(
+                        &tx,
+                        &identidade,
+                        &LocalChange {
+                            universe_id: "u1",
+                            aggregate: AggregateRef::new("chapter_position", &id),
+                            operation: Operation::Upsert,
+                            payload: &posicao_concorrente,
+                            grupo: Default::default(),
+                        },
+                    )
+                    .expect("posição concorrente");
                     tx.commit().expect("commit concorrente");
                     i += 1;
                 }
@@ -1830,17 +1923,28 @@ mod tests {
                 .find(|t| t.nome == "chapters")
                 .map(|t| t.linhas.len() as i64)
                 .expect("chapters no bundle");
+            let revisoes = bundle
+                .tabelas
+                .iter()
+                .find(|t| t.nome == "sync_aggregate_state")
+                .map(|t| t.linhas.len() as i64)
+                .expect("estado no bundle");
             let anunciado = bundle
                 .vetor
                 .get(doador.identidade.device_id())
                 .copied()
                 .unwrap_or(0);
 
+            // Cada evento desta fixture cria exatamente um agregado, então vetor e revisões
+            // correntes têm de casar. Comparar com o número de capítulos deixaria de valer no dia
+            // em que a fixture emitisse mais de um evento por capítulo — e é o que ela faz desde a
+            // B2.2, com a posição, e desde a C, com a adoção.
             assert_eq!(
-                anunciado, capitulos,
-                "captura {tentativa}: o vetor anuncia {anunciado} e o bundle traz {capitulos} \
-                 capítulos. Conteúdo de um instante com vetor de outro — o receptor nasceria \
-                 com um cursor à frente do que recebeu, e o que faltou nunca seria pedido."
+                anunciado, revisoes,
+                "captura {tentativa}: o vetor anuncia {anunciado} e o bundle traz {revisoes} \
+                 revisões ({capitulos} capítulos). Conteúdo de um instante com vetor de outro — o \
+                 receptor nasceria com um cursor à frente do que recebeu, e o que faltou nunca \
+                 seria pedido."
             );
 
             // E o estado causal veio do mesmo instante que o conteúdo.
@@ -1850,9 +1954,12 @@ mod tests {
                 .find(|t| t.nome == "sync_aggregate_state")
                 .map(|t| t.linhas.len() as i64)
                 .expect("estado no bundle");
-            assert_eq!(
-                estados, capitulos,
-                "captura {tentativa}: {capitulos} capítulos e {estados} revisões correntes. \
+            // Cada capítulo são dois agregados (ele e a posição dele, desde a B2.2), mais os do
+            // acervo. O que este gate cobra é que nenhum deles fique sem revisão corrente:
+            // agregado sem revisão cai em `Unknown` no primeiro incremental.
+            assert!(
+                estados >= capitulos * 2,
+                "captura {tentativa}: {capitulos} capítulos e só {estados} revisões correntes. \
                  Um agregado sem revisão corrente cai em Unknown no primeiro incremental."
             );
         }
@@ -2008,12 +2115,16 @@ mod tests {
         let receptor = Aparelho::novo();
         let bundle = capturar_de(&doador);
         semear_sem_blobs(&receptor, &bundle).expect("semear");
+        let baseline = ultimo_seq(&doador);
         assert_eq!(
             receptor.cursor(doador.identidade.device_id()),
-            Some((40, 40))
+            Some((baseline, baseline))
         );
 
         let quarenta_e_um = doador.escrever("cap-41", "Depois da semente");
+        // O `seq` do capítulo 41; a posição dele vem logo depois, e é ela que fica sendo o "42"
+        // que nunca é entregue neste teste.
+        let quarenta_e_um_seq = quarenta_e_um.seq;
         let _quarenta_e_dois = doador.escrever("cap-42", "Nunca entregue");
         let quarenta_e_tres = doador.escrever("cap-43", "Fora de ordem");
 
@@ -2023,7 +2134,7 @@ mod tests {
         }
         assert_eq!(
             receptor.cursor(doador.identidade.device_id()),
-            Some((40, 41)),
+            Some((baseline, quarenta_e_um_seq)),
             "o primeiro incremental acima do baseline precisa aplicar e avançar"
         );
 
@@ -2033,7 +2144,7 @@ mod tests {
         }
         assert_eq!(
             receptor.cursor(doador.identidade.device_id()),
-            Some((40, 41)),
+            Some((baseline, quarenta_e_um_seq)),
             "o cursor passou por cima de uma lacuna: o 42 nunca mais seria pedido"
         );
     }
