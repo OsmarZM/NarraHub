@@ -482,6 +482,65 @@ fn universo_do_capitulo(
 }
 
 /// A definição existe, é deste universo e pode ser usada por este card?
+/// **Os cards que citam um campo que eles mesmos possuem** (etapa C).
+///
+/// É o único ciclo real do grafo de dependências: o card precisa do campo para ser aplicado, e o
+/// campo exclusivo precisa do card. A adoção desfaz o ciclo emitindo o card em duas revisões, e
+/// esta consulta diz quais cards precisam disso — os demais nascem completos.
+pub fn cards_com_campo_proprio_citado(
+    connection: &Connection,
+) -> DatabaseCommandResult<Vec<String>> {
+    let mut consulta = connection
+        .prepare(
+            "SELECT DISTINCT f.owner_item_id
+               FROM planning_field_definitions f
+               JOIN planning_items p ON p.id = f.owner_item_id
+              WHERE f.owner_item_id IS NOT NULL AND f.owner_item_id <> ''
+                AND (json_type(p.custom_field_values, '$.\"' || f.id || '\"') IS NOT NULL
+                     OR EXISTS (SELECT 1 FROM planning_field_links l
+                                 WHERE l.planning_item_id = p.id
+                                   AND l.field_definition_id = f.id))
+              ORDER BY f.owner_item_id",
+        )
+        .map_err(erro)?;
+    let linhas = consulta
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(erro)?;
+    linhas.collect::<Result<_, _>>().map_err(erro)
+}
+
+/// O payload do card **sem** os valores e ligações dos campos exclusivos dele.
+///
+/// É o estado que o card teria logo antes de o campo exclusivo existir — exatamente o que o
+/// caminho incremental produz quando o escritor cria o campo depois do card. Para card que não
+/// cita campo próprio, devolve o payload como veio.
+pub fn payload_sem_os_campos_do_proprio_card(
+    connection: &Connection,
+    card_id: &str,
+    payload: &str,
+) -> DatabaseCommandResult<String> {
+    let proprios: Vec<String> = {
+        let mut consulta = connection
+            .prepare(
+                "SELECT id FROM planning_field_definitions WHERE owner_item_id = ?1 ORDER BY id",
+            )
+            .map_err(erro)?;
+        let linhas = consulta
+            .query_map([card_id], |row| row.get::<_, String>(0))
+            .map_err(erro)?;
+        linhas.collect::<Result<_, _>>().map_err(erro)?
+    };
+    if proprios.is_empty() {
+        return Ok(payload.to_string());
+    }
+    let mut card: CardCanonico = serde_json::from_str(payload).map_err(de_erro)?;
+    card.values
+        .retain(|valor| !proprios.contains(&valor.field_id));
+    card.links
+        .retain(|ligacao| !proprios.contains(&ligacao.field_id));
+    para_json(&card)
+}
+
 fn campo_utilizavel(
     connection: &Connection,
     field_id: &str,

@@ -452,10 +452,26 @@ fn gravar_cursor(
     baseline: i64,
     cursor: i64,
 ) -> DatabaseCommandResult<()> {
+    // UPDATE primeiro pelo mesmo motivo do `append_event_in_transaction`: o gatilho `BEFORE
+    // INSERT` de contiguidade conta desde o baseline, e pagar isso a cada avanço de cursor é O(n)
+    // por evento aplicado.
+    let atualizadas = tx
+        .execute(
+            "UPDATE sync_cursors SET last_seq_applied = ?2 WHERE origin_device_id = ?1",
+            rusqlite::params![origem, cursor],
+        )
+        .map_err(|error| {
+            DatabaseCommandError::storage(format!(
+                "O banco recusou o avanço do cursor da origem {origem} para {cursor}. O trigger \
+                 de contiguidade da migration 16 é o que cobra isso: {error}"
+            ))
+        })?;
+    if atualizadas > 0 {
+        return Ok(());
+    }
     tx.execute(
         "INSERT INTO sync_cursors (origin_device_id, baseline_seq, last_seq_applied)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT(origin_device_id) DO UPDATE SET last_seq_applied = excluded.last_seq_applied",
+         VALUES (?1, ?2, ?3)",
         rusqlite::params![origem, baseline, cursor],
     )
     .map_err(|error| {

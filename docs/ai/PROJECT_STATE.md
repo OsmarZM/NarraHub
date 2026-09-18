@@ -173,7 +173,7 @@ migration — não pegar a versão mais recente:
 | 0.8.0 | 14 |
 | 0.9.0 e 0.9.1 | 15 |
 | 0.9.2 (publicada) | 15 |
-| `main` hoje | **25** — identidade portátil de conflito, conjunto de modelos de ficha e posição única da entidade (NH-079 B6) |
+| `main` hoje | **26** — adoção versionada do acervo, a gênese da etapa C (NH-079) |
 
 Consequência prática, e ela **mudou** com a migration 16: a próxima versão publicada será a
 primeira desde a 0.9.2 a carregar migration de verdade. O par `0.9.2 → próxima` deixa de ser

@@ -116,6 +116,10 @@ pub const CATALOGO: &[(&str, Categoria)] = &[
     // Copiá-la no bundle faria o doador declarar, por terceiros, confirmações
     // que o receptor nunca ouviu — e essas confirmações autorizam poda.
     ("sync_peer_vectors", ProtocoloNaoTransferido),
+    // A adoção do acervo (etapa C) é um fato deste arquivo: ela registra que ESTE aparelho deu a
+    // primeira revisão a cada item daqui. O receptor semeado não adota nada — ele nasce com as
+    // revisões prontas no bundle, e o baseline substitui o log que as produziu.
+    ("sync_adoptions", ProtocoloNaoTransferido),
     // ── decisão pendente ou trabalho local: bloqueiam ──────────────────────
     ("sync_divergences", BloqueiaBootstrap),
     ("sync_conflicts", BloqueiaBootstrap),

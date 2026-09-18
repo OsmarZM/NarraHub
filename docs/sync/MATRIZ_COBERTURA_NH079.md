@@ -44,7 +44,7 @@ revisões / eventos
 | **B4** | integrada (#62) | `planning_item` (card inteiro: texto, imagem, capítulo, valores escalares e relações — uma revisão), `planning_order(universe)` (coluna e posição — **substituído por `planning_item_position` na B2.2**) e `planning_field_definition`; o gatilho que reescreve vários cards declarado; os bloqueios temporários de capítulo, história e entidade viraram reescrita do card |
 | **B5** | integrada (#63) | `content_tag` (create/update/delete — **`update_tag` não existia**, e foi criado aqui), `tag_assignment` create/delete pela fronteira, `canvas_node`, `canvas_node_position` e `canvas_edge`; payload **definitivo** do `attachment`; migration 22 (gatilhos que matam a aresta com a ponta + `tag_name_conflict`); `knowledge_service` entra no gate estrutural, onde **nunca esteve**; gate autoral × efêmero |
 | **B2.2** | integrada (#64) | **posição por item** no lugar das listas inteiras (`story_order`, `book_order`, `chapter_order`, `planning_order` saíram; entram `story_position`, `book_position`, `chapter_position`, `planning_field_position`, `attachment_position`, `planning_item_position`); **grupos de mutação atômicos** no envelope (migration 23): a ação que é uma transação na origem entra inteira no receptor, ou vira UMA decisão; a ponte de ordem da B2.1 saiu, sem consumidores |
-| **B6** | implementada (branch `sync-b6-identidade-de-conflito`), em revisão | **identidade portátil de conflito** (migration 24: `conflict_key` + participantes canônicos ordenados, iguais nos dois aparelhos); **`entity_template_set`** (o conjunto de modelos de ficha como um agregado, identidade `(universeId, entityType)`); **`UNIQUE(entity_id)`** na posição da entidade (migration 25, com quarentena do que foi desempatado); **colaboração aprovada pela `Mutacao`**; **helper canônico de ação remota** nos testes; **gate de cobertura total** |
+| **B6** | integrada (#65) | **identidade portátil de conflito** (migration 24: `conflict_key` + participantes canônicos ordenados, iguais nos dois aparelhos); **`entity_template_set`** (o conjunto de modelos de ficha como um agregado, identidade `(universeId, entityType)`); **`UNIQUE(entity_id)`** na posição da entidade (migration 25, com quarentena do que foi desempatado); **colaboração aprovada pela `Mutacao`**; **helper canônico de ação remota** nos testes; **gate de cobertura total** |
 
 **Fora da B2, dito às claras:**
 
@@ -640,11 +640,19 @@ da etapa F.
     folhas. Grupo de forma absurda é recusado sem entrar no log, e o que já estiver no log não é
     iterado; o mesmo `mutation_id` em duas origens são dois grupos, tanto na resolução quanto no
     estado concorrente (teste isolado de `estado_concorrente`).
-16. **Identidade portátil de conflito (B6):** os dois aparelhos calculam a mesma `conflict_key` e os
+16. **Gênese (C):** a adoção recusa acontecer antes do backfill de mídia; adota o acervo inteiro
+    (nenhum agregado coberto fica sem revisão) e a revisão de cada um é o estado do banco; a gênese
+    **aplica inteira** num aparelho novo, sem pendência nem reconciliação — o gate que prova que
+    nenhuma dependência aponta para `seq` posterior; dois aparelhos que adotam o mesmo acervo chegam
+    às mesmas revisões e não divergem ao parear; a segunda adoção é no-op; falha no meio não deixa
+    evento, estado causal nem linha de adoção; banco novo não emite nada; órfão depois de adotado é
+    falha fechada; o card que cita campo próprio é adotado em duas revisões. Todo tipo coberto tem
+    enumerador e precedência declarados.
+17. **Identidade portátil de conflito (B6):** os dois aparelhos calculam a mesma `conflict_key` e os
     mesmos participantes, em edição×edição e em tag homônima (onde os papéis se invertem); a fixture
     nativa de schema 24 tem as três formas de conflito, e o gate **decodifica** os participantes em
     vez de confiar no texto; banco migrado deixa a identidade vazia em vez de inventá-la.
-17. **Cobertura total (B6):** toda escrita pública de serviço passa pela `Mutacao` ou está declarada
+18. **Cobertura total (B6):** toda escrita pública de serviço passa pela `Mutacao` ou está declarada
     como estado local, com motivo — e declaração obsoleta derruba o gate; todo efeito de exclusão do
     catálogo atinge agregado coberto; contribuição aprovada vira revisão e chega ao outro aparelho;
     uma entidade tem no máximo uma posição, agora por restrição do banco.
@@ -666,9 +674,70 @@ fixo e conhecido (payload canônico de referência compilado nos dois lados). Re
 
 ## 6. Legado e conversões
 
-- `blob_backfill` (imagens antigas) roda **antes** da gênese (etapa C).
+- `blob_backfill` (imagens antigas) roda **antes** da gênese (etapa C). Desde a C isso é cobrado no
+  código: a adoção recusa acontecer com pendência de mídia aberta.
 - Depois que o banco entra no V2, toda mutação sincronizável causada por conversão ou migração de dados passa
   pela `Mutacao` — ou por mecanismo que produza exatamente o mesmo resultado causal, documentado e testado.
+
+## 6.0 A etapa C: adoção do acervo (gênese)
+
+A ordem é obrigatória, e cada seta é uma pré-condição verificada:
+
+```text
+estado legado → backfills obrigatórios → GÊNESE → baseline / snapshot / bootstrap
+```
+
+**O que a gênese é.** Para cada agregado coberto que existe no domínio e não tem revisão corrente,
+emite a **primeira** revisão dele, com `base_rev` = raiz. Não muda domínio: escreve evento, estado
+causal e `sync_applied_events`. Não inventa história anterior nem atribui autoria a quem escreveu
+antes.
+
+**Determinismo, dito com precisão:**
+
+```text
+mesma identidade de agregado + mesmo payload canônico + base_rev = raiz  →  mesma revisão de gênese
+```
+
+É o que `compute_revision` calcula, e nada além. Dois aparelhos que adotem cópias do mesmo acervo
+produzem eventos próprios com as **mesmas** revisões, e o pareamento reconhece em vez de divergir.
+
+**Forma do evento.** Criação normal, num grupo de um membro:
+
+```text
+operation = upsert · base_rev = raiz
+mutation_id = novo · index = 0 · count = 1 · kind = "genesis" · root vazio
+```
+
+O `kind` é assinado (B2.2) e serve de registro; ele **não** muda nenhuma decisão de aplicação. Um
+grupo único com o acervo inteiro estouraria o teto de membros e transformaria a adoção numa unidade
+de decisão só.
+
+**Ordem de emissão: topológica pelas dependências reais dos codecs.** Não basta o receptor saber
+esperar: o cursor de uma origem é contíguo, então um evento que dependa de outro com `seq` posterior
+trava a origem para sempre. O único ciclo real do grafo é o card que cita um campo exclusivo dele —
+desfeito em três eventos (card sem o valor, campo, card completo), que é a mesma sequência que o
+caminho incremental produziria.
+
+**Adoção versionada.** A chave é `canonical_format_version` (`sync_adoptions`), e a etapa C conclui
+a versão 1. A linha só existe quando a adoção **conclui** — não há estado "em andamento", porque a
+adoção inteira é uma transação e a queda desfaz tudo, inclusive a linha. Recuperação: versão não
+concluída ⇒ executar de novo.
+
+**Depois de adotado, órfão é falha fechada.** Agregado coberto sem revisão num banco adotado não é
+adotado em silêncio: uma cobertura nova exige declarar uma adoção versionada nova.
+
+**Custo medido, e um defeito achado no caminho.** A adoção de 100 mil capítulos (200 mil
+agregados) leva 2min18 numa transação só — linear, então o plano B por universo não foi
+necessário. A primeira medição dava 827 s para 10 mil capítulos, e a causa era anterior à etapa C:
+o avanço de cursor usava `ON CONFLICT DO UPDATE`, e o SQLite dispara o gatilho `BEFORE INSERT`
+antes de resolver o conflito — o gatilho de contiguidade conta os eventos desde o baseline, então
+**toda escrita local** pagava O(n) no tamanho do próprio log. Trocado por UPDATE-primeiro, com gate
+textual para não voltar.
+
+**Captura de bundle exige acervo adotado** (`FalhaDeCaptura::AcervoNaoAdotado`). O bundle carrega
+estado; sem gênese, o receptor nasceria com conteúdo que nenhum evento sustenta. O vetor causal
+continua sendo o vetor **por origem** — o baseline do receptor é derivado dele, e não um número
+global único.
 
 ## 6.1 Decisões registradas para a B6, antes da gênese
 
@@ -717,7 +786,9 @@ B5  conhecimento e canvas: content_tag (+update_tag), tag_assignment, canvas_nod
     canvas_node_position, canvas_edge; attachment definitivo; gate autoral × efêmero  ← implementada
 B6  identidade portátil de conflito (item 9); entity_template_set; UNIQUE(entity_id) da posição
     com backfill auditável; conteúdo aprovado na colaboração pela Mutacao; helper canônico de
-    ação remota nos testes; gate de cobertura total  ← implementada
+    ação remota nos testes; gate de cobertura total
+C   gênese: adoção versionada do acervo legado, enumerador canônico, ordem topológica,
+    migration 26  ← implementada
 ```
 
 ## 8. Payload canônico do manuscrito (B2)

@@ -1,7 +1,7 @@
 //! NarraHub — Database Migrations
 //! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 25;
+pub const LATEST_SCHEMA_VERSION: i64 = 26;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -30,6 +30,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         23 => Some(MIGRATION_V23),
         24 => Some(MIGRATION_V24),
         25 => Some(MIGRATION_V25),
+        26 => Some(MIGRATION_V26),
         _ => None,
     }
 }
@@ -1743,6 +1744,53 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_canvas_entity_positions_entidade
     ON canvas_entity_positions(entity_id);
 "#;
 
+pub const MIGRATION_V26: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v26
+-- NH-079 C - adocao versionada do acervo (genese)
+-- ============================================
+--
+-- Ate aqui um acervo criado antes do Sync V2 tinha linhas de dominio sem
+-- nenhuma revisao que as explicasse. O log so conhecia o que foi escrito
+-- DEPOIS da fronteira `Mutacao` existir. Isso torna o incremental impossivel
+-- (nao ha de onde partir) e o bundle desonesto (o aparelho novo receberia
+-- conteudo sem passado causal).
+--
+-- A genese resolve isso: cada agregado coberto que existe no dominio e nao
+-- tem revisao corrente ganha a PRIMEIRA revisao dele, com base_rev = raiz.
+-- Ela nao muda dominio nenhum -- escreve so evento e estado causal.
+--
+-- ## Adocao VERSIONADA, nao um marcador "genese para sempre"
+--
+-- A chave e `canonical_format_version`: a adocao e sempre a adocao de um
+-- formato canonico. A etapa C cria e conclui a versao 1. Se um dia o formato
+-- passar a cobrir estado que hoje fica de fora, essa mudanca declara uma
+-- adocao NOVA, com versao nova -- e nao se disfarca de "orfao adotado
+-- automaticamente".
+--
+-- Depois de uma versao concluida, agregado coberto sem revisao corrente e
+-- FALHA FECHADA, nao convite para adotar sozinho: adotar em silencio e o que
+-- transformaria um bug de cobertura numa criacao com autoria deste aparelho.
+--
+-- ## A linha so existe quando a adocao CONCLUIU
+--
+-- Nao ha `started_at`. A adocao inteira e uma transacao: ou ela confirma (e a
+-- linha existe), ou a queda desfaz tudo, inclusive a linha. "Adocao pela
+-- metade" nao e um estado que este banco pode estar. A condicao de
+-- recuperacao e simplesmente: versao nao concluida -> executar de novo.
+CREATE TABLE IF NOT EXISTS sync_adoptions (
+    canonical_format_version INTEGER PRIMARY KEY NOT NULL,
+    -- Quem adotou. A genese e assinada, e a autoria dela e deste aparelho.
+    device_id TEXT NOT NULL,
+    completed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    -- Quantos agregados a adocao trouxe, e a faixa de seq que ela ocupou.
+    aggregates INTEGER NOT NULL DEFAULT 0 CHECK (aggregates >= 0),
+    first_seq INTEGER NOT NULL DEFAULT 0 CHECK (first_seq >= 0),
+    last_seq INTEGER NOT NULL DEFAULT 0 CHECK (last_seq >= 0),
+    CHECK (last_seq >= first_seq)
+);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1762,6 +1810,7 @@ mod tests {
     const NATIVE_SCHEMA_V23_FIXTURE: &str = include_str!("../../fixtures/schema23_native.sql");
     const NATIVE_SCHEMA_V24_FIXTURE: &str = include_str!("../../fixtures/schema24_native.sql");
     const NATIVE_SCHEMA_V25_FIXTURE: &str = include_str!("../../fixtures/schema25_native.sql");
+    const NATIVE_SCHEMA_V26_FIXTURE: &str = include_str!("../../fixtures/schema26_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -3219,6 +3268,63 @@ mod tests {
             )
             .expect("contar");
         assert_eq!((posicoes, descartadas), (2, 0));
+    }
+
+    /// Schema 26: a adocao do acervo e VERSIONADA, e a linha so existe quando concluiu.
+    #[test]
+    fn schema26_guarda_a_adocao_por_versao_do_formato() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("foreign keys");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V26_FIXTURE)
+            .expect("carregar a fixture nativa de schema 26");
+
+        let (versao, aggregates, primeiro, ultimo): (i64, i64, i64, i64) = connection
+            .query_row(
+                "SELECT canonical_format_version, aggregates, first_seq, last_seq
+                   FROM sync_adoptions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("a adocao concluida");
+        assert_eq!((versao, aggregates), (1, 3));
+        assert!(primeiro <= ultimo);
+
+        // Uma segunda adocao da MESMA versao e recusada pelo banco: a versao e a chave.
+        let erro = connection.execute(
+            "INSERT INTO sync_adoptions
+                (canonical_format_version, device_id, completed_at, aggregates, first_seq, last_seq)
+             VALUES (1, 'outro', '2026-09-18 00:00:00', 9, 90, 99)",
+            [],
+        );
+        assert!(erro.is_err(), "o banco aceitou duas adocoes da versao 1");
+
+        // Faixa de seq incoerente tambem nao entra.
+        let erro = connection.execute(
+            "INSERT INTO sync_adoptions
+                (canonical_format_version, device_id, completed_at, aggregates, first_seq, last_seq)
+             VALUES (2, 'dev', '2026-09-18 00:00:00', 1, 10, 5)",
+            [],
+        );
+        assert!(erro.is_err(), "o banco aceitou last_seq < first_seq");
+    }
+
+    /// Banco que chega ao 26 por migracao nao nasce adotado: adocao e ato, nao coluna.
+    #[test]
+    fn schema26_nao_inventa_adocao_para_banco_migrado() {
+        let connection = Connection::open_in_memory().expect("banco");
+        apply_migrations(&connection, 1, 25);
+        connection
+            .execute_batch(sql_for_version(26).expect("migration 26"))
+            .expect("migrar");
+
+        let adocoes: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sync_adoptions", [], |row| row.get(0))
+            .expect("contar");
+        assert_eq!(adocoes, 0);
     }
 
     #[test]

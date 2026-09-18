@@ -31,6 +31,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::sync::{AggregateRef, EventEnvelope, Operation};
 
+pub mod adocao;
 mod anexo;
 pub mod canvas;
 pub mod catalogo;
