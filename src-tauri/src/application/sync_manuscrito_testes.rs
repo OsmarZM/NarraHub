@@ -4443,6 +4443,99 @@ fn card_que_cita_campo_proprio_e_adotado_em_duas_revisoes() {
     );
 }
 
+/// **Gate 12 — adotar de novo num acervo incoerente é erro, não no-op.**
+///
+/// "Versão já adotada" responde uma pergunta só: esta adoção já rodou. Se ficou agregado sem
+/// revisão, o acervo está incoerente, e devolver `ja_estava_adotado` esconderia isso justamente no
+/// arranque, que é onde alguém poderia ver.
+#[test]
+fn adotar_de_novo_com_orfao_falha_em_vez_de_virar_no_op() {
+    let pc = Aparelho::novo("pc");
+    let itens = acervo_legado(&pc);
+    pc.adotar();
+
+    // Segunda chamada num acervo coerente: no-op, como antes.
+    assert!(pc.adotar().ja_estava_adotado);
+
+    // Agora um agregado perde a revisão (cobertura nova, escrita fora da fronteira, adulteração).
+    let (tipo, id) = itens
+        .iter()
+        .find(|(tipo, _)| tipo == "chapter")
+        .expect("capítulo");
+    pc.banco
+        .connection()
+        .execute(
+            "DELETE FROM sync_aggregate_state WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+            [tipo, id],
+        )
+        .expect("apagar a revisão corrente");
+
+    let erro = genese::adotar(&pc.banco.database, &pc.eu).expect_err("órfão tem de falhar");
+    assert!(erro.message.contains("não tem revisão"), "{}", erro.message);
+    assert!(erro.message.contains(id), "{}", erro.message);
+    // E não adotou o órfão de contrabando: nenhum evento novo.
+    assert!(
+        pc.payload_corrente(tipo, id).is_none(),
+        "a segunda adoção criou revisão para o órfão"
+    );
+}
+
+/// **Gate 13 — a pendência de mídia que nasce DEPOIS da checagem de fora ainda impede.**
+///
+/// A leitura anterior à transação é caminho rápido; a decisão é dentro do `BEGIN IMMEDIATE`.
+#[test]
+fn pendencia_aberta_dentro_da_transacao_ainda_impede_a_adocao() {
+    let pc = Aparelho::novo("pc");
+    acervo_legado(&pc);
+
+    // A pendência nasce DEPOIS do caminho rápido: quem a vê é a checagem de dentro da transação.
+    genese::entre_o_fast_path_e_a_transacao::abrir_pendencia_de_midia(true);
+
+    let erro = genese::adotar(&pc.banco.database, &pc.eu).expect_err("pendência impede");
+    assert!(erro.message.contains("pendência"), "{}", erro.message);
+    assert_eq!(pc.eventos().len(), 0);
+    assert_eq!(pc.contar("SELECT COUNT(*) FROM sync_adoptions"), 0);
+}
+
+/// **Gate 14 — a captura pública recusa acervo não adotado.**
+///
+/// O pareamento também cobra, e as duas checagens não são redundância: esta é a que impede
+/// QUALQUER caminho — inclusive um chamador novo — de produzir um bundle com conteúdo que nenhum
+/// evento explica.
+#[test]
+fn capturar_recusa_acervo_com_agregado_sem_revisao() {
+    use crate::infrastructure::sqlite::sync_snapshot::{capturar, FalhaDeCaptura};
+
+    let pc = Aparelho::novo("pc");
+    let itens = acervo_legado(&pc);
+
+    let falha = {
+        let mut connection = pc.banco.connection();
+        capturar(&mut connection)
+            .expect("consultar")
+            .expect_err("acervo legado não pode virar bundle")
+    };
+    match &falha {
+        FalhaDeCaptura::AcervoNaoAdotado { agregado } => {
+            assert!(!agregado.is_empty(), "a recusa precisa dizer qual item");
+        }
+        outra => panic!("recusou pelo motivo errado: {outra:?}"),
+    }
+
+    pc.adotar();
+    let bundle = {
+        let mut connection = pc.banco.connection();
+        capturar(&mut connection)
+            .expect("consultar")
+            .expect("depois da adoção o bundle sai")
+    };
+    assert!(
+        bundle.vetor.values().any(|seq| *seq > 0),
+        "o bundle saiu sem vetor"
+    );
+    assert!(!itens.is_empty());
+}
+
 /// **Gate 11 — a ordem chega até o pareamento: acervo legado não pareia.**
 ///
 /// A checagem é por órfão, e não pela linha de adoção: um aparelho recém-instalado não tem o que

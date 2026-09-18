@@ -45,6 +45,7 @@ revisões / eventos
 | **B5** | integrada (#63) | `content_tag` (create/update/delete — **`update_tag` não existia**, e foi criado aqui), `tag_assignment` create/delete pela fronteira, `canvas_node`, `canvas_node_position` e `canvas_edge`; payload **definitivo** do `attachment`; migration 22 (gatilhos que matam a aresta com a ponta + `tag_name_conflict`); `knowledge_service` entra no gate estrutural, onde **nunca esteve**; gate autoral × efêmero |
 | **B2.2** | integrada (#64) | **posição por item** no lugar das listas inteiras (`story_order`, `book_order`, `chapter_order`, `planning_order` saíram; entram `story_position`, `book_position`, `chapter_position`, `planning_field_position`, `attachment_position`, `planning_item_position`); **grupos de mutação atômicos** no envelope (migration 23): a ação que é uma transação na origem entra inteira no receptor, ou vira UMA decisão; a ponte de ordem da B2.1 saiu, sem consumidores |
 | **B6** | integrada (#65) | **identidade portátil de conflito** (migration 24: `conflict_key` + participantes canônicos ordenados, iguais nos dois aparelhos); **`entity_template_set`** (o conjunto de modelos de ficha como um agregado, identidade `(universeId, entityType)`); **`UNIQUE(entity_id)`** na posição da entidade (migration 25, com quarentena do que foi desempatado); **colaboração aprovada pela `Mutacao`**; **helper canônico de ação remota** nos testes; **gate de cobertura total** |
+| **C** | **motor da adoção implementado** (branch `sync-c-genese`), em revisão — **wiring no arranque pendente** | gênese: adoção versionada do acervo legado (migration 26), enumerador canônico por tipo, ordem topológica com o ciclo do card desfeito em três eventos, transação única; ordem cobrada na captura e na sessão. A segunda fatia liga isso ao arranque: `blob_upgrade` → `genese::adotar` → `exigir_acervo_adotado` → liberar aplicação/sync |
 
 **Fora da B2, dito às claras:**
 
@@ -640,7 +641,7 @@ da etapa F.
     folhas. Grupo de forma absurda é recusado sem entrar no log, e o que já estiver no log não é
     iterado; o mesmo `mutation_id` em duas origens são dois grupos, tanto na resolução quanto no
     estado concorrente (teste isolado de `estado_concorrente`).
-16. **Gênese (C):** a adoção recusa acontecer antes do backfill de mídia; adota o acervo inteiro
+16. **Gênese (C, motor):** a adoção recusa acontecer antes do backfill de mídia; adota o acervo inteiro
     (nenhum agregado coberto fica sem revisão) e a revisão de cada um é o estado do banco; a gênese
     **aplica inteira** num aparelho novo, sem pendência nem reconciliação — o gate que prova que
     nenhuma dependência aponta para `seq` posterior; dois aparelhos que adotam o mesmo acervo chegam
@@ -734,6 +735,11 @@ antes de resolver o conflito — o gatilho de contiguidade conta os eventos desd
 **toda escrita local** pagava O(n) no tamanho do próprio log. Trocado por UPDATE-primeiro, com gate
 textual para não voltar.
 
+**A adoção é cobrada em dois lugares, e não é redundância.** `sync_snapshot::capturar` recusa
+produzir bundle com agregado sem revisão (`FalhaDeCaptura::AcervoNaoAdotado`), e a sessão
+(`parear_por_pin`, `sincronizar_com`, `atender_conexao`) recusa antes de abrir a rede. A captura é
+a rede embaixo: ela impede qualquer chamador, inclusive um novo, de produzir bundle desonesto.
+
 **Captura de bundle exige acervo adotado** (`FalhaDeCaptura::AcervoNaoAdotado`). O bundle carrega
 estado; sem gênese, o receptor nasceria com conteúdo que nenhum evento sustenta. O vetor causal
 continua sendo o vetor **por origem** — o baseline do receptor é derivado dele, e não um número
@@ -787,14 +793,16 @@ B5  conhecimento e canvas: content_tag (+update_tag), tag_assignment, canvas_nod
 B6  identidade portátil de conflito (item 9); entity_template_set; UNIQUE(entity_id) da posição
     com backfill auditável; conteúdo aprovado na colaboração pela Mutacao; helper canônico de
     ação remota nos testes; gate de cobertura total
-C   gênese: adoção versionada do acervo legado, enumerador canônico, ordem topológica,
-    migration 26  ← implementada
+C   gênese: MOTOR da adoção implementado (adoção versionada, enumerador canônico, ordem
+    topológica, migration 26) — o WIRING NO ARRANQUE está pendente, e é a segunda fatia:
+    blob_upgrade → genese::adotar → exigir_acervo_adotado → liberar aplicação/sync
 ```
 
 ## 8. Payload canônico do manuscrito (B2)
 
 Um formato, uma função por tipo: `sync_codec::ler_canonico` é usada pela `Mutacao` e será usada pela
-gênese (etapa C). **Mesmo estado ⇒ mesmo payload ⇒ mesma revisão.** O formato está fixado por vetor em
+gênese (etapa C). **Mesmo estado semântico ⇒ mesmo payload canônico**; a revisão, por sua vez, é
+função dos inputs causais — o payload **e** o `base_rev`. O formato está fixado por vetor em
 `manuscrito::tests::formato_canonico_fixado_por_vetor`; mudá-lo exige `canonicalFormatVersion` novo (seção 5).
 
 Regras comuns: JSON compacto de `serde_json`, campos na ordem abaixo, nomes em camelCase, strings como

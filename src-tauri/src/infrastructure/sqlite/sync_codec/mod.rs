@@ -10,7 +10,20 @@
 //! aplicar                escreve no domínio o que o evento diz (o estado causal é de sync_apply)
 //! ```
 //!
-//! **Mesmo estado = mesmo payload = mesma revisão.** O payload canônico não carrega relógio local
+//! **O contrato é em duas partes, e elas não são a mesma frase:**
+//!
+//! ```text
+//! mesmo estado semântico  →  mesmo payload canônico
+//! mesma revisão           →  mesmos inputs causais, base_rev inclusive
+//! ```
+//!
+//! Dois aparelhos com o mesmo conteúdo produzem o mesmo payload. Isso **não** basta para a revisão
+//! ser igual: a revisão é função do payload E da base de onde ele partiu. Duas histórias diferentes
+//! que chegam ao mesmo texto têm revisões diferentes — e é isso que separa "convergiram" de "é a
+//! mesma escrita". A gênese usa a outra ponta da regra: base raiz nos dois lados, payload igual,
+//! revisão igual.
+//!
+//! O payload canônico não carrega relógio local
 //! (`created_at`, `updated_at`), cache, contagem derivável nem posição que pertence a outro agregado.
 //! Os formatos estão em `docs/sync/MATRIZ_COBERTURA_NH079.md`, seção 8.
 //!

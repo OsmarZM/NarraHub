@@ -128,9 +128,15 @@ pub fn adotar(
     database: &SqliteDatabase,
     identidade: &DeviceIdentity,
 ) -> DatabaseCommandResult<ResumoDaAdocao> {
+    // **Caminho rápido, e só isso.** A leitura fora da transação evita abrir escrita à toa no
+    // arranque de todo dia; ela não é a decisão. Tudo o que importa é conferido de novo dentro do
+    // `BEGIN IMMEDIATE`, onde o estado não pode mudar debaixo da checagem.
     {
         let connection = database.read()?;
         if adotado(&connection)? {
+            // Já adotada **não** é sinônimo de coerente: se ficou agregado sem revisão, isto é
+            // inconsistência, e a resposta é erro — nunca um no-op silencioso que a esconde.
+            exigir_acervo_adotado(&connection)?;
             return Ok(ResumoDaAdocao {
                 ja_estava_adotado: true,
                 ..ResumoDaAdocao::default()
@@ -141,6 +147,8 @@ pub fn adotar(
         }
     }
 
+    entre_o_fast_path_e_a_transacao::executar(database)?;
+
     let mut connection = database.write()?;
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -148,72 +156,26 @@ pub fn adotar(
 
     // Outra adoção pode ter confirmado entre a leitura e o `BEGIN IMMEDIATE`.
     if adotado(&tx)? {
+        exigir_acervo_adotado(&tx)?;
         return Ok(ResumoDaAdocao {
             ja_estava_adotado: true,
             ..ResumoDaAdocao::default()
         });
     }
 
-    let mut adotados = 0usize;
-    let mut eventos = 0usize;
-    let mut primeiro_seq = 0i64;
-    let mut ultimo_seq = 0i64;
-
-    for fase in adocao::FASES {
-        for id in (fase.enumerar)(&tx)? {
-            let agregado = AggregateRef::new(fase.tipo, &id);
-            let ja_tem_revisao = sync_codec::revisao_corrente(&tx, &agregado)?.is_some();
-            match fase.modo {
-                // Criar é só para quem ainda não tem passado causal: um acervo que já usava o
-                // Sync V2 parcialmente não é reescrito.
-                adocao::Modo::Criar if ja_tem_revisao => continue,
-                // Completar só existe para o que esta adoção acabou de criar.
-                adocao::Modo::Completar if !ja_tem_revisao => continue,
-                _ => {}
-            }
-            let Some(estado) = adocao::payload_da_fase(&tx, fase, &id)? else {
-                continue;
-            };
-            if fase.modo == adocao::Modo::Completar
-                && sync_codec::payload_da_revisao_corrente(&tx, &agregado)?.as_deref()
-                    == Some(estado.payload.as_str())
-            {
-                // O card nasceu completo: não havia ciclo para desfazer.
-                continue;
-            }
-
-            // A mesma validação que o apply remoto cobra. Falhar aqui é falhar a adoção inteira.
-            sync_codec::validar_para_emissao(&tx, &agregado, &estado.payload)?;
-
-            let envelope = append_event_in_transaction(
-                &tx,
-                identidade,
-                &LocalChange {
-                    universe_id: &estado.universe_id,
-                    aggregate: agregado.clone(),
-                    operation: Operation::Upsert,
-                    payload: &estado.payload,
-                    grupo: GrupoDeMutacao {
-                        mutation_id: new_id(),
-                        index: 0,
-                        count: 1,
-                        kind: "genesis".into(),
-                        root_type: String::new(),
-                        root_id: String::new(),
-                    },
-                },
-            )?;
-            eventos += 1;
-            if fase.modo == adocao::Modo::Criar {
-                adotados += 1;
-            }
-            if primeiro_seq == 0 {
-                primeiro_seq = envelope.seq;
-            }
-            ultimo_seq = envelope.seq;
-            falha_no_meio::verificar(eventos)?;
-        }
+    // E o backfill é conferido de novo AQUI, com a escrita já tomada: entre a leitura de fora e
+    // este ponto, uma passada de conversão de mídia pode ter aberto pendência. Emitir a gênese
+    // depois disso registraria um estado que a conversão ainda vai mudar.
+    if let Some(falha) = impedimento(&tx)? {
+        return Err(DatabaseCommandError::conflict(falha.to_string()));
     }
+
+    let Emitido {
+        adotados,
+        eventos,
+        primeiro_seq,
+        ultimo_seq,
+    } = emitir(&tx, identidade)?;
 
     // O acervo inteiro, e não "o que deu": depois da adoção, agregado coberto sem revisão corrente
     // é falha, aqui dentro, com a transação ainda podendo ser desfeita.
@@ -247,6 +209,112 @@ pub fn adotar(
         primeiro_seq,
         ultimo_seq,
     })
+}
+
+/// Quanto a emissão fez.
+struct Emitido {
+    adotados: usize,
+    eventos: usize,
+    primeiro_seq: i64,
+    ultimo_seq: i64,
+}
+
+/// **O laço da gênese**: percorre as fases na ordem topológica e emite a primeira revisão de cada
+/// agregado que ainda não tem passado causal.
+///
+/// Separado de [`adotar`] porque o teste precisa dele sem a contabilidade da versão: uma fixture
+/// que insere domínio por SQL depois da adoção precisa poder torná-lo explicável, e a regra de
+/// produção — órfão depois da adoção é falha fechada — existe justamente para isso não acontecer
+/// em produção.
+fn emitir(
+    tx: &rusqlite::Transaction<'_>,
+    identidade: &DeviceIdentity,
+) -> DatabaseCommandResult<Emitido> {
+    let mut adotados = 0usize;
+    let mut eventos = 0usize;
+    let mut primeiro_seq = 0i64;
+    let mut ultimo_seq = 0i64;
+
+    for fase in adocao::FASES {
+        for id in (fase.enumerar)(tx)? {
+            let agregado = AggregateRef::new(fase.tipo, &id);
+            let ja_tem_revisao = sync_codec::revisao_corrente(tx, &agregado)?.is_some();
+            match fase.modo {
+                // Criar é só para quem ainda não tem passado causal: um acervo que já usava o
+                // Sync V2 parcialmente não é reescrito.
+                adocao::Modo::Criar if ja_tem_revisao => continue,
+                // Completar só existe para o que esta adoção acabou de criar.
+                adocao::Modo::Completar if !ja_tem_revisao => continue,
+                _ => {}
+            }
+            let Some(estado) = adocao::payload_da_fase(tx, fase, &id)? else {
+                continue;
+            };
+            if fase.modo == adocao::Modo::Completar
+                && sync_codec::payload_da_revisao_corrente(tx, &agregado)?.as_deref()
+                    == Some(estado.payload.as_str())
+            {
+                // O card nasceu completo: não havia ciclo para desfazer.
+                continue;
+            }
+
+            // A mesma validação que o apply remoto cobra. Falhar aqui é falhar a adoção inteira.
+            sync_codec::validar_para_emissao(tx, &agregado, &estado.payload)?;
+
+            let envelope = append_event_in_transaction(
+                tx,
+                identidade,
+                &LocalChange {
+                    universe_id: &estado.universe_id,
+                    aggregate: agregado.clone(),
+                    operation: Operation::Upsert,
+                    payload: &estado.payload,
+                    grupo: GrupoDeMutacao {
+                        mutation_id: new_id(),
+                        index: 0,
+                        count: 1,
+                        kind: "genesis".into(),
+                        root_type: String::new(),
+                        root_id: String::new(),
+                    },
+                },
+            )?;
+            eventos += 1;
+            if fase.modo == adocao::Modo::Criar {
+                adotados += 1;
+            }
+            if primeiro_seq == 0 {
+                primeiro_seq = envelope.seq;
+            }
+            ultimo_seq = envelope.seq;
+            falha_no_meio::verificar(eventos)?;
+        }
+    }
+
+    Ok(Emitido {
+        adotados,
+        eventos,
+        primeiro_seq,
+        ultimo_seq,
+    })
+}
+
+/// **Adoção sem contabilidade de versão, só para fixtures de teste.**
+///
+/// Dá passado causal ao que uma fixture inseriu por SQL. Produção nunca passa por aqui: lá, órfão
+/// depois da adoção é falha fechada, e é isso que [`exigir_acervo_adotado`] cobra.
+#[cfg(test)]
+pub(crate) fn adotar_orfaos_de_teste(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+) -> DatabaseCommandResult<usize> {
+    let mut connection = database.write()?;
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(erro)?;
+    let emitido = emitir(&tx, identidade)?;
+    tx.commit().map_err(erro)?;
+    Ok(emitido.adotados)
 }
 
 /// O que impede a adoção agora, se algo impedir.
@@ -320,6 +388,54 @@ pub fn primeiro_orfao(connection: &Connection) -> DatabaseCommandResult<Option<A
 
 fn erro(error: rusqlite::Error) -> DatabaseCommandError {
     DatabaseCommandError::storage(error.to_string())
+}
+
+/// O que acontece **entre** o caminho rápido e o `BEGIN IMMEDIATE`, só em teste.
+///
+/// É a janela que o fast path não cobre: entre a leitura de fora e a tomada da escrita, o estado
+/// pode mudar. Sem um gancho aqui, a repetição das checagens dentro da transação seria código que
+/// nenhum teste distingue de código morto.
+pub(crate) mod entre_o_fast_path_e_a_transacao {
+    use crate::database::error::DatabaseCommandResult;
+    use crate::infrastructure::sqlite::SqliteDatabase;
+
+    #[cfg(test)]
+    thread_local! {
+        static ABRIR_PENDENCIA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Faz a próxima adoção encontrar uma pendência de mídia que não existia no caminho rápido.
+    #[cfg(test)]
+    pub fn abrir_pendencia_de_midia(armar: bool) {
+        ABRIR_PENDENCIA.with(|marca| marca.set(armar));
+    }
+
+    #[cfg(test)]
+    pub fn executar(database: &SqliteDatabase) -> DatabaseCommandResult<()> {
+        if !ABRIR_PENDENCIA.with(|marca| marca.get()) {
+            return Ok(());
+        }
+        abrir_pendencia_de_midia(false);
+        let connection = database.write()?;
+        connection
+            .execute(
+                "INSERT INTO blob_migration_issues
+                   (id, surface, table_name, row_id, side, reason, detail)
+                 VALUES ('pendencia-tardia', 1, 'universes', 'u', 'cover_image',
+                         'legacy_unrecognized', '')",
+                [],
+            )
+            .map_err(|error| {
+                crate::database::error::DatabaseCommandError::storage(error.to_string())
+            })?;
+        Ok(())
+    }
+
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub fn executar(_database: &SqliteDatabase) -> DatabaseCommandResult<()> {
+        Ok(())
+    }
 }
 
 /// Falha injetada no meio da adoção, só em teste: prova que a transação não deixa meia gênese.
