@@ -649,7 +649,10 @@ da etapa F.
     evento, estado causal nem linha de adoção; banco novo não emite nada; órfão depois de adotado é
     falha fechada; o card que cita campo próprio é adotado em duas revisões. Todo tipo coberto tem
     enumerador e precedência declarados.
-17. **Arranque (C):** banco legado abre, converte a mídia, adota sozinho e libera; banco novo adota
+17. **Arranque (C):** com pendência de mídia, o texto é lido e a escrita é recusada — comando de
+    domínio falha, nenhum evento nasce, e o sync recusa; resolvida a pendência, o arranque seguinte
+    converte, adota, libera a escrita e a revisão corrente do agregado afetado descreve o estado.
+    Banco legado abre, converte a mídia, adota sozinho e libera; banco novo adota
     zero e registra a versão; falha de adoção não libera e cai em `RecoveryRequired` com a causa
     real; reinício depois de adotado é no-op (nenhum evento, cursor parado); órfão em acervo
     adotado derruba o arranque sem adotar nada; a mídia é convertida **antes** de a gênese
@@ -751,7 +754,8 @@ a rede embaixo: ela impede qualquer chamador, inclusive um novo, de produzir bun
 ```text
 migrations (database::upgrade)  → UpgradingBlobs
   → conversão de mídia          → Adopting
-  → adoção do acervo            → Ready   → aplicação e sync liberados
+  → adoção do acervo            → Ready           → leitura e escrita liberadas, sync liberado
+                                → ReadyReadOnly   → só leitura, quando ficou pendência de mídia
 ```
 
 `FaseDoBanco` ganhou `UpgradingBlobs` e `Adopting`, e as duas recusam comando de domínio como
@@ -760,9 +764,23 @@ declarado pela migration: quem declara é `application::arranque::preparar_acerv
 etapas. Erro na mídia, na adoção ou órfão ⇒ `RecoveryRequired`, o caminho do ADR 0007: banco
 preservado, comandos recusados, causa legível.
 
-**A exceção declarada:** pendência de mídia (imagem legada ilegível) **não** trava o aplicativo —
-o texto abre, o acervo fica sem adotar e a **sincronização** fica indisponível, com motivo. É a
-régua que o ADR 0010 já tinha: problema de mídia não pode virar perda de acesso ao texto.
+**Pendência de mídia: `ReadyReadOnly`, a fase degradada.** Imagem legada que o aplicativo não
+consegue converter não trava o acervo — o ADR 0010 diz que ela não pode tirar o escritor do texto
+dele. Mas ela também **não autoriza escrever**:
+
+```text
+leitura do acervo   permitida
+escrita de domínio  recusada (o handle nasce somente-leitura; a Mutacao pede escrita e para ali)
+sync / bundle       recusados (acervo sem adoção)
+```
+
+O motivo é causal, não cautelar. Escrever antes da conversão faria a `Mutacao` criar a revisão do
+agregado; a conversão mudaria o `coverBlobHash` logo depois; e a gênese **pularia** esse agregado,
+por ele já ter revisão corrente. O resultado seria uma revisão corrente que não descreve mais o
+banco — o estado que toda a etapa B existe para impedir.
+
+`ReadyReadOnly` não é `RecoveryRequired`: não há erro nem inconsistência, há trabalho pendente. A
+saída é resolver a mídia e abrir de novo.
 
 **Captura de bundle exige acervo adotado** (`FalhaDeCaptura::AcervoNaoAdotado`). O bundle carrega
 estado; sem gênese, o receptor nasceria com conteúdo que nenhum evento sustenta. O vetor causal

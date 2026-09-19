@@ -12,6 +12,7 @@
 //! Migrating          backup feito, plugin aplicando migrations            → comandos recusados
 //! UpgradingBlobs     schema pronto; o legado de mídia ainda vai converter → comandos recusados
 //! Adopting           mídia pronta; o acervo ainda vai ganhar as revisões  → comandos recusados
+//! ReadyReadOnly      mídia pendente: o acervo NÃO foi adotado             → leitura sim, escrita não
 //! Ready              schema, mídia e acervo prontos, conferidos            → liberado
 //! RecoveryRequired   schema mais novo, marcador ilegível, rollback falhou  → recusados até recuperar
 //! ```
@@ -50,6 +51,25 @@ pub enum FaseDoBanco {
     UpgradingBlobs,
     /// Mídia pronta; o acervo ainda vai ganhar as primeiras revisões (etapa C).
     Adopting,
+    /// **Degradado: há mídia legada que não pôde ser convertida, e o acervo não foi adotado.**
+    ///
+    /// O ADR 0010 diz que uma imagem inválida não pode tirar o escritor do texto dele — e não diz
+    /// que ela autoriza escrever. Escrever aqui seria pior do que travar: a `Mutacao` criaria a
+    /// revisão do agregado **antes** da conversão, a conversão mudaria o estado logo depois, e a
+    /// gênese pularia esse agregado por já ter revisão corrente. O resultado é uma revisão
+    /// corrente que não descreve mais o banco — exatamente o estado que toda a etapa B existe para
+    /// impedir.
+    ///
+    /// ```text
+    /// leitura do acervo   permitida
+    /// escrita de domínio  recusada
+    /// Mutacao             recusada (ela pede conexão de escrita)
+    /// sync / bundle       recusados (acervo sem adoção já era recusado desde a C)
+    /// ```
+    ///
+    /// Não é `RecoveryRequired`: não há inconsistência nem erro. Há trabalho pendente, e ele se
+    /// resolve resolvendo a pendência de mídia e abrindo o aplicativo de novo.
+    ReadyReadOnly,
     Ready,
     RecoveryRequired,
 }
@@ -98,11 +118,36 @@ impl EstadoDoBanco {
             .clone()
     }
 
+    /// A fase autoriza escrever no domínio?
+    pub fn permite_escrita(&self) -> bool {
+        self.fase() == FaseDoBanco::Ready
+    }
+
+    /// Libera **leitura**: `Ready` e o degradado `ReadyReadOnly`.
+    ///
+    /// Quem chama isto ainda precisa respeitar a escrita: o handle devolvido por
+    /// `interface::tauri::database` já nasce somente-leitura quando a fase não autoriza escrever.
+    pub fn exigir_leitura(&self) -> DatabaseCommandResult<()> {
+        match self.fase() {
+            FaseDoBanco::ReadyReadOnly => Ok(()),
+            outra => {
+                let _ = outra;
+                self.exigir_pronto()
+            }
+        }
+    }
+
     /// Libera o acesso só com o banco pronto. Mensagem diferente para cada motivo: "ainda
     /// preparando" pede espera; "precisa de recuperação" pede ação.
     pub fn exigir_pronto(&self) -> DatabaseCommandResult<()> {
         match self.fase() {
             FaseDoBanco::Ready => Ok(()),
+            FaseDoBanco::ReadyReadOnly => Err(DatabaseCommandError::unavailable(
+                "Este acervo tem imagens antigas que ainda não puderam ser convertidas. Até isso \
+                 ser resolvido o texto pode ser lido, mas não alterado — uma edição agora ficaria \
+                 registrada de um jeito que a sincronização não saberia descrever. Veja a lista \
+                 de pendências de mídia.",
+            )),
             FaseDoBanco::Unprepared
             | FaseDoBanco::Migrating
             | FaseDoBanco::UpgradingBlobs
@@ -128,6 +173,7 @@ mod tests {
             FaseDoBanco::Migrating,
             FaseDoBanco::UpgradingBlobs,
             FaseDoBanco::Adopting,
+            FaseDoBanco::ReadyReadOnly,
             FaseDoBanco::RecoveryRequired,
         ] {
             estado.definir(fase);
@@ -154,9 +200,18 @@ mod tests {
                 .find("\n}\n")
                 .map(|f| inicio + f)
                 .expect("fim")];
+        // Duas coisas, e as duas importam desde a C2: a leitura exige o banco preparado, e o
+        // handle nasce **conforme a fase** — é ele que recusa escrita no degradado
+        // `ReadyReadOnly`. Checar só a primeira deixaria passar um handle que escreve com mídia
+        // pendente, que é o caminho para uma revisão corrente que não descreve o banco.
         assert!(
-            corpo.contains("exigir_pronto()"),
+            corpo.contains("exigir_leitura()"),
             "interface::tauri::database não checa o estado do banco"
+        );
+        assert!(
+            corpo.contains("conforme_a_fase("),
+            "interface::tauri::database devolve um handle que ignora a fase: no degradado \
+             ReadyReadOnly ele escreveria."
         );
 
         let v1 = include_str!("../sync.rs").replace("\r\n", "\n");

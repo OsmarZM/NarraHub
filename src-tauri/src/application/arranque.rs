@@ -85,8 +85,10 @@ pub fn preparar_acervo(
         Ok(adocao) => adocao,
         Err(erro) if assets.pendencias_abertas > 0 => {
             // A adoção recusou porque a mídia ainda não converteu inteira. O texto continua
-            // acessível; o que fica indisponível é a sincronização, e com motivo.
-            estado.definir(FaseDoBanco::Ready);
+            // legível — e **só** legível: escrever agora criaria a revisão do agregado antes da
+            // conversão, a conversão mudaria o estado logo depois, e a gênese pularia o agregado
+            // por ele já ter revisão corrente. A revisão deixaria de descrever o banco.
+            estado.definir(FaseDoBanco::ReadyReadOnly);
             return Ok(ResumoDoAcervo {
                 assets,
                 adocao: genese::ResumoDaAdocao::default(),
@@ -176,6 +178,61 @@ mod tests {
                 &self.identidade,
                 &self.estado,
             )
+        }
+
+        /// Mídia legada que o aplicativo **não** consegue converter: vira pendência, não erro.
+        fn com_midia_impossivel(self) -> Self {
+            self.banco
+                .connection()
+                .execute(
+                    "UPDATE universes SET cover_image = 'https://exemplo.invalido/capa.png'
+                      WHERE id = 'u-legado'",
+                    [],
+                )
+                .expect("mídia que não converte");
+            self
+        }
+
+        /// O banco como os comandos o recebem: o handle nasce da fase, e é ele que recusa escrita.
+        fn banco_conforme_a_fase(&self) -> SqliteDatabase {
+            SqliteDatabase::conforme_a_fase(self.estado.fase(), self.banco.database.path())
+        }
+
+        fn nome_do_universo(&self) -> String {
+            self.banco
+                .connection()
+                .query_row(
+                    "SELECT name FROM universes WHERE id = 'u-legado'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("nome")
+        }
+
+        /// A revisão corrente de cada agregado coberto descreve o estado do banco.
+        fn invariante_de_materializacao(&self) {
+            use crate::infrastructure::sqlite::sync_codec;
+            let connection = self.banco.connection();
+            let mut consulta = connection
+                .prepare("SELECT aggregate_type, aggregate_id FROM sync_aggregate_state")
+                .expect("consulta");
+            let agregados: Vec<(String, String)> = consulta
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("linhas")
+                .collect::<Result<_, _>>()
+                .expect("agregados");
+            for (tipo, id) in agregados {
+                let agregado = crate::domain::sync::AggregateRef::new(&tipo, &id);
+                let registrado = sync_codec::payload_da_revisao_corrente(&connection, &agregado)
+                    .expect("payload da revisão");
+                let materializado = sync_codec::ler_canonico(&connection, &agregado)
+                    .expect("estado")
+                    .map(|estado| estado.payload);
+                assert_eq!(
+                    registrado, materializado,
+                    "{tipo} {id}: a revisão corrente não é o estado do banco"
+                );
+            }
         }
 
         fn eventos(&self) -> i64 {
@@ -404,19 +461,20 @@ mod tests {
         );
     }
 
-    /// **A exceção declarada:** pendência de mídia não tira o escritor do texto, e tira o sync.
+    /// **Pendência de mídia: o texto abre, e mais nada.**
+    ///
+    /// O ADR 0010 diz que uma imagem inválida não pode tirar o escritor do texto dele. Não diz que
+    /// ela autoriza escrever — e escrever aqui seria pior do que travar:
+    ///
+    /// ```text
+    /// escrita antes da conversão  →  Mutacao cria a revisão de U
+    ///   → blob_upgrade muda o coverBlobHash de U
+    ///   → a gênese PULA U, que já tem revisão corrente
+    ///   → a revisão corrente deixa de descrever o banco
+    /// ```
     #[test]
-    fn pendencia_de_midia_libera_o_texto_e_segura_a_sincronizacao() {
-        let aparelho = Aparelho::novo().com_acervo_legado();
-        aparelho
-            .banco
-            .connection()
-            .execute(
-                "UPDATE universes SET cover_image = 'https://exemplo.invalido/capa.png'
-                  WHERE id = 'u-legado'",
-                [],
-            )
-            .expect("mídia que não converte");
+    fn pendencia_de_midia_deixa_ler_o_texto_e_recusa_escrever() {
+        let aparelho = Aparelho::novo().com_acervo_legado().com_midia_impossivel();
 
         let resumo = aparelho
             .preparar()
@@ -429,11 +487,108 @@ mod tests {
             "{}",
             resumo.motivo_da_indisponibilidade
         );
-        assert_eq!(aparelho.estado.fase(), FaseDoBanco::Ready);
-        assert!(
-            aparelho.estado.exigir_pronto().is_ok(),
-            "o texto ficou inacessível"
+        assert_eq!(aparelho.estado.fase(), FaseDoBanco::ReadyReadOnly);
+
+        // 1. o texto pode ser lido — e pela guarda dos comandos, que é quem decide
+        aparelho
+            .estado
+            .exigir_leitura()
+            .expect("a leitura precisa continuar liberada no degradado");
+        let banco = aparelho.banco_conforme_a_fase();
+        let nome: String = banco
+            .read()
+            .expect("leitura tem de continuar liberada")
+            .query_row(
+                "SELECT name FROM universes WHERE id = 'u-legado'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("ler o universo");
+        assert_eq!(nome, "u-legado", "o seed usa o id como nome");
+
+        // 2. a escrita é recusada — e é o mesmo caminho que a Mutacao usa
+        let erro = banco.write().expect_err("escrita não pode ser liberada");
+        assert!(erro.message.contains("imagens antigas"), "{}", erro.message);
+
+        // 3. um comando de domínio de verdade recusa, e não deixa evento nenhum
+        let antes = aparelho.eventos();
+        let erro = crate::application::universe_service::update(
+            &banco,
+            &aparelho.store,
+            &aparelho.identidade,
+            "u-legado",
+            crate::domain::universe::UniverseUpdate {
+                name: Some("Nome novo".into()),
+                description: None,
+                cover_image: None,
+            },
+        )
+        .expect_err("o escritor não pode alterar o universo antes da conversão");
+        assert!(erro.message.contains("imagens antigas"), "{}", erro.message);
+        assert_eq!(
+            aparelho.eventos(),
+            antes,
+            "a escrita recusada deixou evento"
         );
-        assert_eq!(aparelho.eventos(), 0, "adotou com a mídia por converter");
+        assert_eq!(
+            aparelho.nome_do_universo(),
+            "u-legado",
+            "o nome mudou apesar da recusa"
+        );
+
+        // 4. e a sincronização recusa, pelo motivo dela: acervo sem adoção
+        let connection = aparelho.banco.connection();
+        let erro = genese::exigir_acervo_sem_orfaos(&connection)
+            .expect_err("sync não pode rodar sobre acervo não adotado");
+        assert!(erro.message.contains("não foi adotado"), "{}", erro.message);
+    }
+
+    /// **5 e 6 — resolvida a pendência, o fluxo completo libera a escrita, e a revisão bate.**
+    #[test]
+    fn resolvida_a_pendencia_o_novo_arranque_adota_e_libera_a_escrita() {
+        let aparelho = Aparelho::novo().com_acervo_legado().com_midia_impossivel();
+        aparelho.preparar().expect("primeiro arranque");
+        assert_eq!(aparelho.estado.fase(), FaseDoBanco::ReadyReadOnly);
+        assert_eq!(aparelho.eventos(), 0, "adotou com mídia pendente");
+
+        // O escritor resolve a pendência: troca a imagem impossível por uma convertível.
+        aparelho
+            .banco
+            .connection()
+            .execute(
+                "UPDATE universes SET cover_image = 'data:image/png;base64,YQ=='
+                  WHERE id = 'u-legado'",
+                [],
+            )
+            .expect("substituir a mídia");
+        aparelho
+            .banco
+            .connection()
+            .execute("DELETE FROM blob_migration_issues", [])
+            .expect("a pendência sai quando a mídia é resolvida");
+
+        let resumo = aparelho.preparar().expect("segundo arranque");
+
+        assert!(resumo.sincronizacao_disponivel, "{resumo:?}");
+        assert!(resumo.adocao.adotados > 0, "{resumo:?}");
+        assert_eq!(aparelho.estado.fase(), FaseDoBanco::Ready);
+
+        // A escrita volta a ser aceita.
+        let banco = aparelho.banco_conforme_a_fase();
+        crate::application::universe_service::update(
+            &banco,
+            &aparelho.store,
+            &aparelho.identidade,
+            "u-legado",
+            crate::domain::universe::UniverseUpdate {
+                name: Some("Nome novo".into()),
+                description: None,
+                cover_image: None,
+            },
+        )
+        .expect("com o acervo adotado, o escritor escreve");
+
+        // 6. a revisão corrente do agregado afetado pela mídia descreve o estado canônico.
+        aparelho.invariante_de_materializacao();
     }
 }
