@@ -18,11 +18,36 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(8);
 #[derive(Debug, Clone)]
 pub struct SqliteDatabase {
     path: PathBuf,
+    /// A fase do banco autoriza escrever? Quando não, `write()` recusa — e com isso recusa toda a
+    /// `Mutacao`, que é quem pede a conexão de escrita (etapa C2).
+    somente_leitura: bool,
 }
 
 impl SqliteDatabase {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            somente_leitura: false,
+        }
+    }
+
+    /// O banco conforme a fase: `Ready` escreve, o degradado `ReadyReadOnly` só lê.
+    ///
+    /// **Um lugar só.** Espalhar essa decisão pelos comandos deixaria um comando novo escrevendo
+    /// num acervo que a sincronização ainda não sabe descrever — e nenhum teste de comportamento
+    /// perceberia sem o Tauri rodando.
+    pub fn conforme_a_fase(
+        fase: crate::database::estado::FaseDoBanco,
+        path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            somente_leitura: fase != crate::database::estado::FaseDoBanco::Ready,
+        }
+    }
+
+    pub fn e_somente_leitura(&self) -> bool {
+        self.somente_leitura
     }
 
     pub fn path(&self) -> &Path {
@@ -36,6 +61,13 @@ impl SqliteDatabase {
     }
 
     pub fn write(&self) -> DatabaseCommandResult<Connection> {
+        if self.somente_leitura {
+            return Err(DatabaseCommandError::unavailable(
+                "Este acervo tem imagens antigas que ainda não puderam ser convertidas. Até isso \
+                 ser resolvido o texto pode ser lido, mas não alterado — uma edição agora ficaria \
+                 registrada de um jeito que a sincronização não saberia descrever.",
+            ));
+        }
         self.open(OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
     }
 

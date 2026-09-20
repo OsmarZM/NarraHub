@@ -5,6 +5,7 @@
 //! entende. Regra que aparecer neste arquivo está no lugar errado.
 
 pub mod android_update_commands;
+pub mod arranque_commands;
 pub mod blob_commands;
 pub mod canvas_commands;
 pub mod collaboration_commands;
@@ -31,10 +32,12 @@ use ::tauri::AppHandle;
 /// o frontend chamou as coisas.
 pub fn database(app: &AppHandle) -> DatabaseCommandResult<SqliteDatabase> {
     use ::tauri::Manager;
-    app.state::<crate::database::estado::EstadoDoBanco>()
-        .exigir_pronto()?;
+    // Leitura exige o banco preparado; **escrita** exige mais do que isso, e quem cobra é o
+    // próprio handle: em `ReadyReadOnly` ele nasce somente-leitura, e a `Mutacao` para ali.
+    let estado = app.state::<crate::database::estado::EstadoDoBanco>();
+    estado.exigir_leitura()?;
     let path = crate::database::app_database_path(app).map_err(DatabaseCommandError::storage)?;
-    Ok(SqliteDatabase::new(path))
+    Ok(SqliteDatabase::conforme_a_fase(estado.fase(), path))
 }
 
 /// O blob store deste aparelho.

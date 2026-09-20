@@ -100,11 +100,7 @@ pub async fn database_migration_prepare(
     })
     .await
     .map_err(|error| DatabaseCommandError::unavailable(error.to_string()))?;
-    estado.definir(match &resultado {
-        Ok(preparo) if preparo.needed => FaseDoBanco::Migrating,
-        Ok(_) => FaseDoBanco::Ready,
-        Err(_) => FaseDoBanco::RecoveryRequired,
-    });
+    estado.definir(fase_apos_preparo(&resultado));
     resultado
 }
 
@@ -115,9 +111,8 @@ pub fn database_migration_finish(
 ) -> DatabaseCommandResult<i64> {
     let app_data = super::app_data_path(&app).map_err(DatabaseCommandError::unavailable)?;
     let resultado = finish_at(&app_data);
-    // Só a confirmação libera. Uma falha aqui deixa em `Migrating`: o arranque chama o rollback.
-    if resultado.is_ok() {
-        estado.definir(FaseDoBanco::Ready);
+    if let Some(fase) = fase_apos_confirmacao(resultado.is_ok()) {
+        estado.definir(fase);
     }
     resultado
 }
@@ -142,6 +137,27 @@ pub async fn database_migration_rollback(
 // ═══════════════════════════════════════════════════════════════════════════
 // Regras, testáveis sem Tauri
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// A fase depois do preparo da migration.
+///
+/// **Sem migration a aplicar NÃO é o mesmo que pronto** (etapa C): falta a conversão de mídia e a
+/// adoção do acervo. Quem declara `Ready` é `application::arranque::preparar_acervo`, e só depois
+/// das duas. Declarar aqui liberaria comandos de domínio sobre um acervo sem passado causal.
+pub fn fase_apos_preparo(resultado: &DatabaseCommandResult<MigrationPreparation>) -> FaseDoBanco {
+    match resultado {
+        Ok(preparo) if preparo.needed => FaseDoBanco::Migrating,
+        Ok(_) => FaseDoBanco::UpgradingBlobs,
+        Err(_) => FaseDoBanco::RecoveryRequired,
+    }
+}
+
+/// A fase depois da confirmação da migration, ou `None` para não mexer.
+///
+/// A confirmação encerra a migration — e só ela. Uma falha aqui deixa em `Migrating`: o arranque
+/// chama o rollback.
+pub fn fase_apos_confirmacao(confirmou: bool) -> Option<FaseDoBanco> {
+    confirmou.then_some(FaseDoBanco::UpgradingBlobs)
+}
 
 fn database_path(app_data: &Path) -> PathBuf {
     app_data.join(DATABASE_FILE_NAME)
@@ -703,5 +719,55 @@ mod tests {
         remove_marker(&dados.0).expect("remover");
         let restos: Vec<_> = fs::read_dir(&dados.0).expect("ler").collect();
         assert!(restos.is_empty(), "sobrou arquivo do marcador");
+    }
+
+    /// **A migration não declara o banco pronto** (etapa C).
+    ///
+    /// Antes da C, "não havia migration a aplicar" liberava os comandos na hora. Agora falta a
+    /// conversão de mídia e a adoção do acervo, e quem libera é o arranque — depois das duas.
+    #[test]
+    fn terminar_a_migration_nao_e_declarar_o_banco_pronto() {
+        let sem_migration = Ok(MigrationPreparation {
+            needed: false,
+            from_version: 26,
+            to_version: 26,
+            backup: None,
+            recovered_interrupted: false,
+        });
+        assert_eq!(
+            super::fase_apos_preparo(&sem_migration),
+            FaseDoBanco::UpgradingBlobs,
+            "o preparo declarou Ready antes da mídia e da adoção"
+        );
+
+        let com_migration = Ok(MigrationPreparation {
+            needed: true,
+            from_version: 25,
+            to_version: 26,
+            backup: None,
+            recovered_interrupted: false,
+        });
+        assert_eq!(
+            super::fase_apos_preparo(&com_migration),
+            FaseDoBanco::Migrating
+        );
+
+        let falhou: DatabaseCommandResult<MigrationPreparation> =
+            Err(DatabaseCommandError::storage("qualquer"));
+        assert_eq!(
+            super::fase_apos_preparo(&falhou),
+            FaseDoBanco::RecoveryRequired
+        );
+
+        assert_eq!(
+            super::fase_apos_confirmacao(true),
+            Some(FaseDoBanco::UpgradingBlobs),
+            "a confirmação da migration declarou Ready sozinha"
+        );
+        assert_eq!(
+            super::fase_apos_confirmacao(false),
+            None,
+            "falha na confirmação tem de deixar a fase como está, para o rollback"
+        );
     }
 }

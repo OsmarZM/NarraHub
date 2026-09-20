@@ -277,7 +277,7 @@ pub fn run() {
             interface::tauri::blob_commands::blob_put,
             interface::tauri::blob_commands::blob_read,
             interface::tauri::blob_commands::blob_has,
-            interface::tauri::blob_commands::storage_prepare_assets,
+            interface::tauri::arranque_commands::storage_prepare_archive,
             interface::tauri::sync_v2_commands::sync_v2_panorama,
             interface::tauri::sync_v2_commands::sync_v2_estado,
             interface::tauri::sync_v2_commands::sync_v2_escuta_iniciar,

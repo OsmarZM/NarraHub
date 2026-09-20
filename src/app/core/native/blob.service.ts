@@ -11,6 +11,23 @@ export interface StorageUpgradeSummary {
   pendenciasAbertas: number;
 }
 
+/** O que a adoção do acervo fez (NH-079 etapa C). */
+export interface ArchiveAdoptionSummary {
+  jaEstavaAdotado: boolean;
+  adotados: number;
+  eventos: number;
+  primeiroSeq: number;
+  ultimoSeq: number;
+}
+
+/** O resultado do preparo do acervo no arranque: mídia, adoção e o veredito do sync. */
+export interface ArchivePreparation {
+  assets: StorageUpgradeSummary;
+  adocao: ArchiveAdoptionSummary;
+  sincronizacaoDisponivel: boolean;
+  motivoDaIndisponibilidade: string;
+}
+
 /**
  * A fronteira do blob store (ADR 0010).
  *
@@ -85,22 +102,26 @@ export class BlobService {
   }
 
   /**
-   * A fronteira de upgrade dos assets (ADR 0010).
+   * O preparo do acervo no arranque (ADR 0010 + NH-079 etapa C).
    *
-   * Chamada uma vez no arranque, entre o `Database.load` — que é onde as
-   * migrations rodam — e o primeiro consumo do acervo. Converte o legado de
-   * mídia: publica os blobs, grava as referências, limpa o inline, e registra
-   * como pendência o que não soube converter.
+   * Uma chamada só, porque a ordem é obrigatória e o Rust é quem a garante:
    *
-   * **Não bloqueia a abertura.** Pendência de mídia é problema de mídia; quem
-   * exige o contrato completo é o bootstrap de pareamento, e ele já recusa.
+   *     conversão de mídia  →  adoção do acervo  →  Ready  →  sync disponível
+   *
+   * Chamada entre o `Database.load` — onde as migrations rodam — e o primeiro
+   * consumo do acervo.
+   *
+   * **Pendência de mídia não bloqueia a abertura**: o texto continua
+   * acessível e o que fica indisponível é a sincronização, com motivo em
+   * `motivoDaIndisponibilidade`. **Erro, sim, bloqueia**: o banco fica em
+   * recuperação, e este método propaga a causa em vez de engoli-la.
    */
-  async prepareAssets(): Promise<StorageUpgradeSummary | null> {
+  async prepareArchive(): Promise<ArchivePreparation | null> {
     if (!isTauri()) return null;
     try {
-      return await invoke<StorageUpgradeSummary>('storage_prepare_assets');
+      return await invoke<ArchivePreparation>('storage_prepare_archive');
     } catch (error) {
-      throw normalizeNativeCommandError(error, 'A conversão das imagens antigas não pôde ser concluída.');
+      throw normalizeNativeCommandError(error, 'O acervo não pôde ser preparado para abrir.');
     }
   }
 
