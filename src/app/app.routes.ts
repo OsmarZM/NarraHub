@@ -79,6 +79,12 @@ export const routes: Routes = [
         data: navigationData('configuracoes', 'Configurações', '⚙', false, 70),
       },
       {
+        // Etapa F: os conflitos do Sync V2. Fica sob Configurações (mesmo item ativo) e fora do menu.
+        path: 'settings/conflitos',
+        loadComponent: () => import('./features/conflicts/conflicts-page.component').then((module) => module.ConflictsPageComponent),
+        data: { ...navigationData('configuracoes', 'Conflitos de sincronização', '⚠', false, 71), hiddenFromMenu: true },
+      },
+      {
         path: 'workspace/:universeId',
         loadComponent: () => import('./workspace-layout.component').then((module) => module.WorkspaceLayoutComponent),
         data: { navigationId: 'workspace', label: 'Workspace' },

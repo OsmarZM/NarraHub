@@ -572,7 +572,7 @@ funcionar para `tag_name_conflict`, onde os dois lados são agregados diferentes
 
 `sync_divergences` continua sendo índice local: `local_rev`/`remote_rev` ficam, porque o resolvedor
 precisa deles. O fato causal replicável (`conflict_resolution`, com `aggregateId = conflictKey`) é
-da etapa F.
+da etapa F — §5.1.
 
 ### 4.5 Gates
 
@@ -704,6 +704,78 @@ fio): a atualização **gira a época causal** — identidade nova, passado pré
 parte do protocolo 1) e o **vetor de prova** — a revisão de um agregado de referência compilado nos
 dois lados, que pegaria canonicalização divergente mesmo com o mesmo `formato_canonico` declarado.
 Ficam como backlog.
+
+## 5.1 Resolução de conflito como fato causal (etapa F)
+
+Resolver um conflito é uma **`Mutacao` normal** que viaja como **um grupo atômico** de kind
+`resolution`, com raiz `conflict_resolution/<conflictKey>`:
+
+```text
+membro 0     conflict_resolution/<conflictKey>   upsert, base ROOT — o certificado
+membros 1..N os efeitos                          upsert/delete sobre os agregados do conflito
+```
+
+O certificado (payload canônico, sem timestamp, aparelho nem nada local):
+
+```text
+{ conflictKey, kind, participantA, participantB, choice,
+  results: sort([{ aggregateType, aggregateId, operation, baseRev, otherRev, resultRev }]) }
+```
+
+A mesma decisão sobre o mesmo conflito produz a mesma revisão em qualquer aparelho — é por isso que
+duas decisões iguais convergem sem conflito, e duas diferentes viram `concurrent` sobre
+`conflict_resolution/K` (resolvido pelo mesmo mecanismo, recursivamente; não existe kind
+`resolution_conflict`).
+
+**Regra de dois pais — só depois de validar o certificado inteiro** (`sync_codec::resolucao::validar_grupo`,
+antes do SAVEPOINT; qualquer falha recusa o grupo com zero materialização):
+
+- a chave recalculada de `kind` + participantes é a `conflictKey`, que é o `aggregateId` do membro 0 e
+  a raiz do grupo;
+- os participantes estão na ordem canônica e o `kind` é conhecido;
+- `results[]` tem exatamente os membros 1..N — mesma contagem, sem agregado repetido, cada um com a
+  mesma operação, `baseRev` e `resultRev`, e `resultRev = compute_revision(baseRev, agregado, op, payload)`;
+- o efeito sobre o agregado do conflito parte de uma revisão participante e, quando declara
+  `otherRev`, o par é exatamente o par de participantes;
+- a escolha casa com o efeito: `a`/`b`/`auto` ⇒ a base é a revisão escolhida e a operação é a dela;
+  `(kind, choice)` está na tabela de escolhas permitidas.
+
+Só então cada efeito aplica como **sequencial com dois pais** (`sync_apply::apply_efeito_de_resolucao`):
+R1 — `otherRev` presente, as duas revisões conhecidas e a cabeça local ∈ par; R2 — o agregado nunca
+materializou aqui e a base é conhecida (ou um pendente é superado). Fora disso o efeito cai no
+`apply_remote_event` comum: se a cabeça andou (F21: A1×B1, B1→B2, e só então chega a decisão), **B2
+não é sobrescrito** e nasce uma concorrência nova.
+
+| conflito | ações | observação |
+| --- | --- | --- |
+| upsert × upsert | `ficarComA` / `ficarComB` | payloads idênticos resolvem sozinhos, com `cr/K` e uma revisão final nova |
+| upsert × delete | `restaurar` / `manterExclusao` | `manterExclusao` refaz o preflight de exclusão |
+| delete × delete | automática | junção causal, base = participante A, uma revisão final; `classify` não mudou |
+| grupo × grupo | decisão da ação inteira | todos os efeitos no mesmo grupo |
+| `parent_deletion_blocked` | `manterLocal` / `aceitarExclusao` | o mecanismo da §4.4.1, agora sob o certificado |
+| `tag_name_conflict` | `renomear` / `mesclar` | mesclar move todas as marcações para a tag do participante A e exclui a outra, numa `Mutacao` |
+
+**Migration 28**: `conflict_resolutions(conflict_key PK, universe_id, kind, certificate)` — estado,
+bootstrap (entra no bundle depois de `attachments`), cobertura do codec e fixture nativa
+`fixtures/schema28_native.sql`; `sync_divergences.resolution_rev` guarda a revisão que fechou o
+conflito. **`FORMATO_CANONICO_ATUAL = VERSAO_DA_ADOCAO = 2`**; o protocolo continua 1. Um par no
+formato 1 é recusado no `Hello`; o histórico não é reemitido.
+
+**Fronteira da tela**: o frontend chama `sync_conflitos_listar` (filtro por universo, tipo de
+agregado, kind, estado), `sync_conflito_inspecionar`, `sync_conflito_resolver` e
+`sync_v2_aviso_de_epoca`, e recebe DTOs prontos (título legível, as duas versões com payload
+estruturado, diff de texto e campo a campo, ações permitidas). Ele nunca vê `sync_events`,
+`sync_divergences`, `conflict_resolutions` nem envelope — gate F15 em
+`tests/frontend-boundaries.test.mjs`. O panorama conta `sync_divergences` abertas, não o V1.
+
+**Gates**: F1–F21 em `application/resolucao_testes.rs`. Mutações que precisam derrubar ≥ 1 gate:
+sem conferir a chave, sem cabeça ∈ par, sem conferir `results[]`, sem atomicidade do grupo, sem
+delete × delete automático.
+
+**Limitações conhecidas**: a regra de par para efeitos irmãos/meta é de conhecimento genérico, não
+amarrada à chave; R2 poderia ressuscitar um agregado cujo tombstone o GC já podou; a superação de
+pergunta obsoleta só cobre sucessão remota; "manter local" num conflito de grupo exclui as criações
+que só existem no outro lado; mesclar tags exige que os donos das marcações existam localmente.
 
 ## 6. Legado e conversões
 

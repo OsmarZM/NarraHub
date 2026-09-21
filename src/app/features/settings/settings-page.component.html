@@ -151,6 +151,23 @@
       <article class="surface-card sync-host-card" [hidden]="section() !== 'sync'" data-testid="sync-v2-card">
         <div class="card-head"><div><div class="card-icon">⇄</div><h2>Sincronização nova (teste de campo)</h2></div><span class="status-badge" [class.online]="store.syncV2State().escutando">{{ store.syncV2State().escutando ? 'Escutando' : 'Desligada' }}</span></div>
         <p>Pareamento por código de oito dígitos, conexão cifrada e imagens conferidas. Não use junto com a sincronização antiga.</p>
+        @if (conflicts.epochNotice()?.pareamentosInvalidados && !epochNoticeDismissed()) {
+          <div class="sync-epoch-notice" role="status" data-testid="aviso-epoca">
+            <strong>A sincronização foi atualizada.</strong>
+            <span>Por segurança, pareie seus aparelhos novamente.</span>
+            @if (conflicts.epochNotice()!.divergenciasArquivadas > 0) {
+              <small>{{ conflicts.epochNotice()!.divergenciasArquivadas }} {{ conflicts.epochNotice()!.divergenciasArquivadas === 1 ? 'conflito da versão anterior foi guardado' : 'conflitos da versão anterior foram guardados' }} como histórico. Eles não voltam como pendência.</small>
+            }
+            <button type="button" class="secondary-button" (click)="dismissEpochNotice()">Entendi</button>
+          </div>
+        }
+        <a class="sync-conflicts-link" routerLink="/settings/conflitos" data-testid="link-conflitos"
+           [class.attention]="conflicts.openCount() > 0">
+          @if (conflicts.openCount() === 1) { 1 conflito precisa de atenção }
+          @else if (conflicts.openCount() > 1) { {{ conflicts.openCount() }} conflitos precisam de atenção }
+          @else { Conflitos de sincronização: nenhum pendente }
+          <span aria-hidden="true">→</span>
+        </a>
         @if (store.syncV2State().escutando) {
           <div class="pairing-panel">
             <small>Endereço para digitar no outro aparelho</small>

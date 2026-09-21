@@ -866,6 +866,19 @@ fn f16_certificado_adulterado_e_recusado() {
         reassinar_certificado(&a, &mut grupo, mudar);
         recusa_sem_materializar(&b, &grupo, &capitulo, caso);
     }
+    // Chave coerente com o agregado e com o grupo, mas que NÃO é o hash do tipo e dos
+    // participantes: só a recomputação da chave recusa.
+    let mut inventada = original.clone();
+    let chave_falsa = "f".repeat(64);
+    for membro in inventada.iter_mut() {
+        membro.grupo.root_id = chave_falsa.clone();
+    }
+    inventada[0].aggregate_id = chave_falsa.clone();
+    reassinar_certificado(&a, &mut inventada, |c| c.conflict_key = chave_falsa.clone());
+    for membro in inventada.iter_mut().skip(1) {
+        membro.signature = a.eu.sign(membro);
+    }
+    recusa_sem_materializar(&b, &inventada, &capitulo, "chave que não é recomputável");
     // O original entra.
     receber(&b, &original).expect("o certificado íntegro entra");
     assert!(b.abertas().is_empty());
