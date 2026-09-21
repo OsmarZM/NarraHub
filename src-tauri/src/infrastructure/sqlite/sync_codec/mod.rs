@@ -57,6 +57,7 @@ pub mod modelos;
 pub mod palavras;
 pub mod planejamento;
 pub mod posicao;
+pub mod resolucao;
 
 /// **A versão do formato canônico dos payloads** — e do conjunto de tipos cobertos.
 ///
@@ -67,7 +68,11 @@ pub mod posicao;
 /// Sobe quando muda qualquer vetor de canonicalização, o conjunto `TIPOS_COBERTOS`, ou o que um
 /// payload significa. E a adoção sobe junto: `genese::VERSAO_DA_ADOCAO` é este número, por
 /// definição, e não um segundo número que alguém lembra de manter igual.
-pub const FORMATO_CANONICO_ATUAL: i64 = 1;
+///
+/// **2** (etapa F): o agregado `conflict_resolution` entrou em `TIPOS_COBERTOS`. Um aparelho no
+/// formato 1 não saberia aplicar a decisão de um conflito — e aplicaria os efeitos dela como
+/// escritas comuns, sem conferir o certificado.
+pub const FORMATO_CANONICO_ATUAL: i64 = 2;
 
 /// O estado de um agregado como o evento o carrega.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +118,8 @@ pub const TIPOS_COBERTOS: &[&str] = &[
     "planning_item_position",
     // B6 item 1: os atributos padrão de um tipo de ficha, o conjunto inteiro como um agregado.
     "entity_template_set",
+    // Etapa F: a decisão sobre um conflito, com `aggregateId = conflictKey`.
+    "conflict_resolution",
 ];
 
 pub fn coberto(tipo: &str) -> bool {
@@ -173,6 +180,7 @@ pub fn ler_canonico(
         "attachment" => anexo::ler(connection, id),
         "content_tag" => conhecimento::ler(connection, id),
         "canvas_node" => canvas::ler_no(connection, id),
+        "conflict_resolution" => resolucao::ler(connection, id),
         "canvas_node_position" => canvas::ler_posicao(connection, id),
         "canvas_edge" => canvas::ler_aresta(connection, id),
         outro => Err(nao_coberto(outro)),
@@ -224,7 +232,8 @@ fn impactos_do_item(
         | "relation"
         | "canvas_entity_position"
         | "canvas_node_position"
-        | "canvas_edge" => Ok(Vec::new()),
+        | "canvas_edge"
+        | "conflict_resolution" => Ok(Vec::new()),
         outro => Err(nao_coberto(outro)),
     }
 }
@@ -285,6 +294,7 @@ pub fn aplicar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseComman
         "content_tag" => conhecimento::aplicar(tx, envelope),
         "entity_template_set" => modelos::aplicar(tx, envelope),
         "canvas_node" | "canvas_node_position" | "canvas_edge" => canvas::aplicar(tx, envelope),
+        "conflict_resolution" => resolucao::aplicar(tx, envelope),
         outro => Err(DatabaseCommandError::storage(format!(
             "Agregado '{outro}' ainda não tem aplicação de evento implementada. A sessão para \
              aqui de propósito: avançar marcaria o evento como aplicado sem que o dado tivesse \
@@ -323,6 +333,7 @@ pub fn validar_para_emissao(
         "canvas_node" | "canvas_node_position" | "canvas_edge" => {
             canvas::validar(connection, &agregado.aggregate_type, payload)?
         }
+        "conflict_resolution" => resolucao::validar(payload)?,
         _ => None,
     };
     match falta {

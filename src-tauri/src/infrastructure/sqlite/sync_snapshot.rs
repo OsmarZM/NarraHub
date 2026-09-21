@@ -158,6 +158,10 @@ pub const CATALOGO: &[(&str, Categoria)] = &[
     // Agora ela guarda `blob_hash`, e o arquivo viaja fora — a fatia 8 deriva
     // o manifesto de hashes daqui. A linha ficou pequena, então viaja.
     ("attachments", TransferidaNoBundle),
+    // A decisão sobre um conflito é acervo causal (etapa F): o receptor precisa nascer sabendo que
+    // o conflito foi decidido, e como — senão uma decisão concorrente que chegasse depois não teria
+    // com o que ser comparada.
+    ("conflict_resolutions", TransferidaNoBundle),
 ];
 
 /// A ordem em que as tabelas do bundle são inseridas.
@@ -202,6 +206,7 @@ pub const ORDEM_DE_SEMEADURA: &[&str] = &[
     // Reclassificada pela etapa 13: guarda `blob_hash`, e o arquivo viaja
     // fora. FK para `universes`, que vem primeiro.
     "attachments",
+    "conflict_resolutions",
     "sync_devices",
     "sync_aggregate_state",
     "sync_revision_history",

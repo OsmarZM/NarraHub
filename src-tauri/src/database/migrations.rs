@@ -1,7 +1,7 @@
 //! NarraHub — Database Migrations
 //! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 27;
+pub const LATEST_SCHEMA_VERSION: i64 = 28;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -32,6 +32,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         25 => Some(MIGRATION_V25),
         26 => Some(MIGRATION_V26),
         27 => Some(MIGRATION_V27),
+        28 => Some(MIGRATION_V28),
         _ => None,
     }
 }
@@ -1874,6 +1875,40 @@ BEGIN
 END;
 "#;
 
+pub const MIGRATION_V28: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v28
+-- Sync V2 etapa F - a resolucao de conflito como fato causal
+-- ============================================
+--
+-- Ate aqui um conflito se fechava com um UPDATE local em sync_divergences:
+-- nao viajava, nao era assinado, e nao dizia o que foi escolhido. A etapa F
+-- transforma a decisao num AGREGADO: conflict_resolution/<conflictKey>.
+--
+-- A linha desta tabela e o estado materializado desse agregado: o certificado
+-- canonico da decisao (participantes, escolha, e a lista exata dos efeitos com
+-- a revisao que cada um produziu). O evento que a cria viaja no mesmo grupo de
+-- mutacao que os efeitos; quem recebe confere o certificado inteiro antes de
+-- materializar qualquer membro.
+--
+-- Duas decisoes diferentes sobre o mesmo conflito sao dois upserts do mesmo
+-- agregado a partir da raiz: viram `concurrent` sobre conflict_resolution, pelo
+-- mecanismo de sempre. NAO existe kind novo.
+--
+-- Sem FK para universes, de proposito: exclusao de universo nao se propaga, e
+-- uma FK aqui entraria no catalogo de efeitos de exclusao sem nenhum ganho.
+CREATE TABLE IF NOT EXISTS conflict_resolutions (
+    conflict_key TEXT PRIMARY KEY NOT NULL COLLATE BINARY,
+    universe_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    certificate TEXT NOT NULL
+);
+
+-- O indice LOCAL passa a apontar para o fato causal que o fechou. Vazio = aberto,
+-- ou fechado antes da etapa F.
+ALTER TABLE sync_divergences ADD COLUMN resolution_rev TEXT NOT NULL DEFAULT '';
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1895,6 +1930,7 @@ mod tests {
     const NATIVE_SCHEMA_V25_FIXTURE: &str = include_str!("../../fixtures/schema25_native.sql");
     const NATIVE_SCHEMA_V26_FIXTURE: &str = include_str!("../../fixtures/schema26_native.sql");
     const NATIVE_SCHEMA_V27_FIXTURE: &str = include_str!("../../fixtures/schema27_native.sql");
+    const NATIVE_SCHEMA_V28_FIXTURE: &str = include_str!("../../fixtures/schema28_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -3176,8 +3212,10 @@ mod tests {
                 .expect("colunas")
         };
 
+        // Os dois caminhos ATÉ O 24: a v28 (etapa F) acrescenta `resolution_rev`, e comparar com o
+        // schema mais recente mediria a v28, não a v24.
         let novo = Connection::open_in_memory().expect("banco novo");
-        apply_migrations(&novo, 1, LATEST_SCHEMA_VERSION);
+        apply_migrations(&novo, 1, 24);
 
         let existente = Connection::open_in_memory().expect("banco existente");
         apply_migrations(&existente, 1, 23);
@@ -3483,6 +3521,64 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sync_epoca", [], |row| row.get(0))
             .expect("contar");
         assert_eq!(epocas, 0);
+    }
+
+    /// **Schema 28 — a decisão sobre um conflito como fato causal.** Uma decisão por conflito, e o
+    /// índice local aponta para a revisão dela.
+    #[test]
+    fn schema28_guarda_uma_decisao_por_conflito() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("fk");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V28_FIXTURE)
+            .expect("carregar a fixture nativa de schema 28");
+
+        let apontada: String = connection
+            .query_row(
+                "SELECT resolution_rev FROM sync_divergences WHERE id = 'fx28-div'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("divergência fechada pela decisão");
+        assert_eq!(apontada, "fx28-rev-da-decisao");
+        let antiga: String = connection
+            .query_row(
+                "SELECT resolution_rev FROM sync_divergences WHERE id = 'fx28-antiga'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("divergência fechada antes da F");
+        assert_eq!(antiga, "");
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO conflict_resolutions (conflict_key, universe_id, kind, certificate)
+                     VALUES ('fx28-chave', 'u', 'concurrent', '{}')",
+                    [],
+                )
+                .is_err(),
+            "o banco aceitou duas decisões para o mesmo conflito"
+        );
+    }
+
+    /// Um banco que chega ao 28 por migração não tem decisão nenhuma, e as divergências antigas
+    /// ficam sem apontar para decisão.
+    #[test]
+    fn migration28_nao_inventa_decisao() {
+        let connection = Connection::open_in_memory().expect("banco");
+        apply_migrations(&connection, 1, 27);
+        connection
+            .execute_batch(sql_for_version(28).expect("migration 28"))
+            .expect("migrar");
+        let decisoes: i64 = connection
+            .query_row("SELECT COUNT(*) FROM conflict_resolutions", [], |row| {
+                row.get(0)
+            })
+            .expect("contar");
+        assert_eq!(decisoes, 0);
     }
 
     #[test]

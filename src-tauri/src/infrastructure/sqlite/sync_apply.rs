@@ -112,44 +112,7 @@ pub fn apply_remote_event(
             marcar_aplicado(tx, &envelope.event_id)?;
             Ok(Applied::JaAplicado)
         }
-        Causality::Sequential => {
-            match envelope.operation {
-                // Preflight causal da exclusão remota, ANTES de qualquer SQL destrutivo.
-                //
-                // A origem que apagou este agregado emitiu, antes, a exclusão de cada descendente
-                // que ela conhecia. Se ainda existe descendente aqui, ou se um sobrevivente tem
-                // decisão ou alteração pendente, é trabalho concorrente — e a FK ou o gatilho o
-                // destruiriam em silêncio. Depois da cascata não há como corrigir.
-                Operation::Delete => {
-                    if let Some(motivo) = motivo_para_bloquear_exclusao_remota(tx, envelope)? {
-                        let id = bloquear_exclusao(tx, envelope, &historia, &motivo)?;
-                        return Ok(Applied::ExclusaoDoPaiBloqueada { id_divergencia: id });
-                    }
-                }
-                // Dependências: pai ou capítulo citado que ainda não chegou é história incompleta.
-                // Não aplica, não marca; o cursor espera. Pai divergente é erro (pai imutável).
-                Operation::Upsert => {
-                    if sync_codec::dependencias(tx, envelope)?.is_some() {
-                        return Ok(Applied::PrecisaReconciliar);
-                    }
-                    // Esperar não resolve nome de tag ocupado, e aplicar é impossível: o
-                    // `UNIQUE` do schema recusaria o `INSERT`. Vira decisão.
-                    if envelope.aggregate_type == "content_tag" {
-                        if let Some(homonima) =
-                            sync_codec::conhecimento::tag_homonima(tx, envelope)?
-                        {
-                            let id = conflito_de_nome_de_tag(tx, envelope, &historia, &homonima)?;
-                            return Ok(Applied::ConflitoDeNomeDeTag { id_divergencia: id });
-                        }
-                    }
-                }
-            }
-            aplicar_com_estado_causal(tx, envelope)?;
-            conferir_materializacao(tx, envelope)?;
-            registrar_revisao(tx, envelope)?;
-            marcar_aplicado(tx, &envelope.event_id)?;
-            Ok(Applied::Aplicado)
-        }
+        Causality::Sequential => aplicar_como_sequencial(tx, envelope, &historia),
         Causality::Concurrent { base_rev } => {
             // Nada é sobrescrito. As duas revisões existem, e quem decide é o
             // humano (ADR 0009 §16). O evento fica no log e a revisão remota
@@ -175,6 +138,169 @@ pub fn apply_remote_event(
             Ok(Applied::PrecisaReconciliar)
         }
     }
+}
+
+/// O caminho de um evento sequencial: preflight, domínio, estado causal, história, marcação.
+///
+/// É o mesmo para o evento comum e para o efeito de uma resolução que a regra de dois pais
+/// autorizou — a regra decide SE o efeito é sequencial, não COMO ele se aplica.
+fn aplicar_como_sequencial(
+    tx: &Transaction<'_>,
+    envelope: &EventEnvelope,
+    historia: &crate::domain::sync::AggregateHistory,
+) -> DatabaseCommandResult<Applied> {
+    {
+        {
+            match envelope.operation {
+                // Preflight causal da exclusão remota, ANTES de qualquer SQL destrutivo.
+                //
+                // A origem que apagou este agregado emitiu, antes, a exclusão de cada descendente
+                // que ela conhecia. Se ainda existe descendente aqui, ou se um sobrevivente tem
+                // decisão ou alteração pendente, é trabalho concorrente — e a FK ou o gatilho o
+                // destruiriam em silêncio. Depois da cascata não há como corrigir.
+                Operation::Delete => {
+                    if let Some(motivo) = motivo_para_bloquear_exclusao_remota(tx, envelope)? {
+                        let id = bloquear_exclusao(tx, envelope, &historia, &motivo)?;
+                        return Ok(Applied::ExclusaoDoPaiBloqueada { id_divergencia: id });
+                    }
+                }
+                // Dependências: pai ou capítulo citado que ainda não chegou é história incompleta.
+                // Não aplica, não marca; o cursor espera. Pai divergente é erro (pai imutável).
+                Operation::Upsert => {
+                    if sync_codec::dependencias(tx, envelope)?.is_some() {
+                        return Ok(Applied::PrecisaReconciliar);
+                    }
+                    // Esperar não resolve nome de tag ocupado, e aplicar é impossível: o
+                    // `UNIQUE` do schema recusaria o `INSERT`. Vira decisão.
+                    if envelope.aggregate_type == "content_tag" {
+                        if let Some(homonima) =
+                            sync_codec::conhecimento::tag_homonima(tx, envelope)?
+                        {
+                            let id = conflito_de_nome_de_tag(tx, envelope, historia, &homonima)?;
+                            return Ok(Applied::ConflitoDeNomeDeTag { id_divergencia: id });
+                        }
+                    }
+                }
+            }
+            aplicar_com_estado_causal(tx, envelope)?;
+            conferir_materializacao(tx, envelope)?;
+            registrar_revisao(tx, envelope)?;
+            marcar_aplicado(tx, &envelope.event_id)?;
+            Ok(Applied::Aplicado)
+        }
+    }
+}
+
+/// **Um efeito de uma resolução, depois de o certificado inteiro ter passado** (etapa F).
+///
+/// O efeito é classificado como qualquer evento. As duas únicas exceções, e só aqui:
+///
+/// ```text
+/// R1  dois pais    otherRev declarado, as DUAS cabeças conhecidas, e a cabeça daqui é uma delas
+///                  → sequencial: a resolução descende dos dois lados
+/// R2  nunca aqui   este aparelho nunca materializou o agregado (sem revisão corrente, sem
+///                  tombstone) e conhece a base — ou tem pendente o evento que a produziu, que
+///                  passa a ser conhecido, superado pela decisão
+///                  → sequencial: não há trabalho local para sobrescrever
+/// ```
+///
+/// Cabeça local fora do par (o aparelho editou depois do conflito) cai no caminho comum: é
+/// concorrência de verdade, e vira decisão nova. Base desconhecida: espera.
+pub fn apply_efeito_de_resolucao(
+    tx: &Transaction<'_>,
+    envelope: &EventEnvelope,
+    par: &sync_codec::resolucao::ParDoEfeito,
+) -> DatabaseCommandResult<Applied> {
+    let ja_aplicado: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_applied_events WHERE event_id = ?1)",
+            [&envelope.event_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    if ja_aplicado {
+        return Ok(Applied::JaAplicado);
+    }
+    guardar_envelope(tx, envelope)?;
+    let agregado = AggregateRef::new(&envelope.aggregate_type, &envelope.aggregate_id);
+    let mut historia = aggregate_history(tx, &agregado)?;
+    if matches!(
+        classify(&historia, &envelope.base_rev, &envelope.new_rev),
+        Causality::AlreadyPresent | Causality::Sequential
+    ) {
+        return apply_remote_event(tx, envelope);
+    }
+
+    let cabeca = historia
+        .current_rev
+        .clone()
+        .or_else(|| historia.deleted_rev.clone());
+    let dois_pais = !par.outra.is_empty()
+        && historia.knows(&envelope.base_rev)
+        && historia.knows(&par.outra)
+        && cabeca
+            .as_deref()
+            .is_some_and(|cabeca| cabeca == envelope.base_rev || cabeca == par.outra);
+    let nunca_aqui = cabeca.is_none() && {
+        if !historia.knows(&envelope.base_rev) {
+            superar_pendente(tx, &agregado, &envelope.base_rev)?;
+            historia = aggregate_history(tx, &agregado)?;
+        }
+        historia.knows(&envelope.base_rev)
+    };
+    if dois_pais || nunca_aqui {
+        // A cabeça passa a ser a base do efeito: é dela que ele descende, e o caminho sequencial
+        // confere o resto (preflight da exclusão, dependências, materialização).
+        tx.execute(
+            "INSERT INTO sync_aggregate_state (aggregate_type, aggregate_id, current_rev)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(aggregate_type, aggregate_id) DO UPDATE SET current_rev = excluded.current_rev",
+            rusqlite::params![&agregado.aggregate_type, &agregado.aggregate_id, &envelope.base_rev],
+        )
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+        historia = aggregate_history(tx, &agregado)?;
+        return aplicar_como_sequencial(tx, envelope, &historia);
+    }
+    apply_remote_event(tx, envelope)
+}
+
+/// O evento pendente (guardado, não aplicado) deste agregado que produziu `rev` passa a ser
+/// conhecido e aplicado — **sem materializar**: a resolução que parte dele o substitui no mesmo
+/// grupo atômico. É o que impede, por exemplo, as marcações de uma tag absorvida numa mescla de
+/// esperarem para sempre por uma tag que não vai mais existir.
+/// Um evento pendente conhecido pelo resolvedor passa a ser conhecido e aplicado, sem materializar:
+/// a resolução que o substitui está sendo emitida na mesma transação (a mescla de tags).
+pub(crate) fn superar_evento_pendente(
+    tx: &Transaction<'_>,
+    envelope: &EventEnvelope,
+) -> DatabaseCommandResult<()> {
+    registrar_revisao(tx, envelope)?;
+    marcar_aplicado(tx, &envelope.event_id)
+}
+
+fn superar_pendente(
+    tx: &Transaction<'_>,
+    agregado: &AggregateRef,
+    rev: &str,
+) -> DatabaseCommandResult<()> {
+    let pendente = tx
+        .query_row(
+            &format!(
+                "SELECT {} FROM sync_events e
+                  WHERE e.aggregate_type = ?1 AND e.aggregate_id = ?2 AND e.new_rev = ?3
+                    AND NOT EXISTS (SELECT 1 FROM sync_applied_events a WHERE a.event_id = e.event_id)",
+                sync_repository::colunas_do_envelope("e.")
+            ),
+            rusqlite::params![&agregado.aggregate_type, &agregado.aggregate_id, rev],
+            sync_repository::envelope_da_linha,
+        )
+        .optional()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    if let Some(pendente) = pendente {
+        registrar_revisao(tx, &pendente)?;
+        marcar_aplicado(tx, &pendente.event_id)?;
+    }
+    Ok(())
 }
 
 /// Por que a exclusão remota não pode rodar agora, ou `None`.

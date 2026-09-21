@@ -471,12 +471,39 @@ fn aplicar_grupo(
         return Ok(Grupo::Espera);
     }
 
+    // **Resolução de conflito (etapa F): o certificado inteiro, antes de qualquer membro.** O kind
+    // do grupo não autoriza nada sozinho; um certificado que não fecha é incoerência de uma origem
+    // confiável, e a sessão falha fechada, sem guardar nada — como um grupo de forma inválida.
+    let pares = if grupo.kind == crate::infrastructure::sqlite::sync_codec::resolucao::KIND_DO_GRUPO
+    {
+        Some(
+            crate::infrastructure::sqlite::sync_codec::resolucao::validar_grupo(&membros)
+                .map_err(|motivo| {
+                    DatabaseCommandError::storage(format!(
+                        "O evento {} da origem {origem} traz uma resolução de conflito que não se sustenta: {motivo}. Nada foi aplicado.",
+                        primeiro.seq
+                    ))
+                })?,
+        )
+    } else {
+        None
+    };
+
     tx.execute_batch("SAVEPOINT grupo_de_mutacao")
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     let mut aplicados = 0usize;
     let mut recusa: Option<(usize, Applied)> = None;
     for (indice, membro) in membros.iter().enumerate() {
-        let resultado = apply_remote_event(tx, membro)?;
+        let resultado = match (&pares, indice) {
+            (Some(pares), indice) if indice > 0 => {
+                crate::infrastructure::sqlite::sync_apply::apply_efeito_de_resolucao(
+                    tx,
+                    membro,
+                    &pares[indice - 1],
+                )?
+            }
+            _ => apply_remote_event(tx, membro)?,
+        };
         match resultado {
             Applied::Aplicado => aplicados += 1,
             Applied::JaAplicado => {}
@@ -489,6 +516,9 @@ fn aplicar_grupo(
     }
 
     let Some((ancora, resultado)) = recusa else {
+        if pares.is_some() {
+            fechar_conflito_resolvido(tx, &membros)?;
+        }
         tx.execute_batch("RELEASE grupo_de_mutacao")
             .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
         relatorio.aplicados += aplicados;
@@ -527,8 +557,85 @@ fn aplicar_grupo(
         _ => (ancora, resultado),
     };
     registrar_decisao_do_grupo(tx, &membros, ancora, &resultado)?;
+    if pares.is_some() && ancora > 0 {
+        // A resolução chegou tarde para este aparelho: um efeito dela encontrou aqui uma cabeça que
+        // não é nenhum dos lados do conflito (houve edição depois). A pergunta antiga ("este lado ou
+        // aquele?") foi superada pela nova divergência, que já tem a decisão do outro aparelho como
+        // um dos lados — nada é sobrescrito, e o escritor decide uma vez só.
+        superar_conflito_antigo(tx, &membros)?;
+    }
     relatorio.divergencias += 1;
     Ok(Grupo::VirouDecisao(grupo.count))
+}
+
+/// O índice local do conflito que um grupo `resolution` fechou. Local = o lado daqui foi o escolhido.
+fn fechar_conflito_resolvido(
+    tx: &Transaction<'_>,
+    membros: &[EventEnvelope],
+) -> DatabaseCommandResult<()> {
+    let certificado =
+        crate::infrastructure::sqlite::sync_codec::resolucao::Certificado::ler(&membros[0].payload)
+            .map_err(DatabaseCommandError::storage)?;
+    let bases: Vec<&str> = certificado
+        .results
+        .iter()
+        .map(|efeito| efeito.base_rev.as_str())
+        .collect();
+    let abertas: Vec<(String, String)> = {
+        let mut consulta = tx
+            .prepare(
+                "SELECT id, local_rev FROM sync_divergences
+                  WHERE conflict_key = ?1 AND resolution_rev = ''",
+            )
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+        let linhas = consulta
+            .query_map([&certificado.conflict_key], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+        linhas
+            .collect::<Result<_, _>>()
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?
+    };
+    for (id, local_rev) in abertas {
+        let lado = if bases.contains(&local_rev.as_str()) {
+            "local"
+        } else {
+            "remote"
+        };
+        tx.execute(
+            "UPDATE sync_divergences
+                SET resolved_at = CASE WHEN resolved_at = '' THEN ?1 ELSE resolved_at END,
+                    resolution = CASE WHEN resolution = '' THEN ?2 ELSE resolution END,
+                    resolution_rev = ?3
+              WHERE id = ?4",
+            rusqlite::params![
+                crate::domain::ids::now_timestamp(),
+                lado,
+                &membros[0].new_rev,
+                id
+            ],
+        )
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    }
+    Ok(())
+}
+
+/// O conflito que a resolução tentava fechar, superado pela divergência nova que ela abriu aqui.
+fn superar_conflito_antigo(
+    tx: &Transaction<'_>,
+    membros: &[EventEnvelope],
+) -> DatabaseCommandResult<()> {
+    tx.execute(
+        "UPDATE sync_divergences SET resolved_at = ?1, resolution = 'manual'
+          WHERE conflict_key = ?2 AND resolved_at = ''",
+        rusqlite::params![
+            crate::domain::ids::now_timestamp(),
+            &membros[0].aggregate_id
+        ],
+    )
+    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Ok(())
 }
 
 /// Falha injetada no meio de um grupo, só em teste: prova que o savepoint não deixa membro aplicado.

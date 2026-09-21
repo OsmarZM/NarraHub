@@ -16,6 +16,7 @@ pub mod blob_upgrade;
 pub mod canvas_service;
 pub mod cobertura_total;
 pub mod collaboration_service;
+pub mod conflitos;
 pub mod entity_service;
 pub mod epoca;
 #[cfg(test)]
@@ -26,6 +27,8 @@ pub mod manuscript_service;
 pub mod mutacao;
 pub mod planning_service;
 pub mod resolucao_divergencia;
+#[cfg(test)]
+mod resolucao_testes;
 pub mod sync_bootstrap;
 #[cfg(test)]
 mod sync_manuscrito_testes;

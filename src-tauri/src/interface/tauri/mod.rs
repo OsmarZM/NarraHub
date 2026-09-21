@@ -9,6 +9,7 @@ pub mod arranque_commands;
 pub mod blob_commands;
 pub mod canvas_commands;
 pub mod collaboration_commands;
+pub mod conflitos_commands;
 pub mod entity_commands;
 pub mod knowledge_commands;
 pub mod manuscript_commands;
