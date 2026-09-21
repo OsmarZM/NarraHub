@@ -159,7 +159,7 @@ pub fn resolver_conflito(
         let divergencia = ler_aberta(m.tx(), conflict_key)?;
         let permitidas = acoes_permitidas(m.tx(), &divergencia)?;
         let nome_da_acao = nome(acao);
-        if !permitidas.iter().any(|a| *a == nome_da_acao) {
+        if !permitidas.contains(&nome_da_acao) {
             return Err(DatabaseCommandError::validation(format!(
                 "A ação '{nome_da_acao}' não se aplica a este conflito. Nada foi alterado."
             )));

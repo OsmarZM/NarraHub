@@ -160,7 +160,7 @@ fn aplicar_como_sequencial(
                 // destruiriam em silêncio. Depois da cascata não há como corrigir.
                 Operation::Delete => {
                     if let Some(motivo) = motivo_para_bloquear_exclusao_remota(tx, envelope)? {
-                        let id = bloquear_exclusao(tx, envelope, &historia, &motivo)?;
+                        let id = bloquear_exclusao(tx, envelope, historia, &motivo)?;
                         return Ok(Applied::ExclusaoDoPaiBloqueada { id_divergencia: id });
                     }
                 }

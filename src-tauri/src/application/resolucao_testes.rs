@@ -829,7 +829,8 @@ fn f16_certificado_adulterado_e_recusado() {
     a.resolver(&chave, acao).expect("resolver");
     let original = grupo_da_decisao(&a, &b);
 
-    let casos: Vec<(&str, Box<dyn Fn(&mut Certificado)>)> = vec![
+    type Adulteracao = Box<dyn Fn(&mut Certificado)>;
+    let casos: Vec<(&str, Adulteracao)> = vec![
         (
             "escolha trocada",
             Box::new(|c| {
