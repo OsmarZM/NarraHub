@@ -142,6 +142,13 @@ pub const CATALOGO: &[(&str, Categoria)] = &[
     // ── V1, sem escritor vivo ──────────────────────────────────────────────
     ("devices", LocalNaoTransferida),
     ("sync_peers", LocalNaoTransferida),
+    // ── a época do protocolo 1 (etapa E, E0-beta) ──────────────────────────
+    // Os três são deste arquivo e de mais ninguém, e nenhum tira a virgindade de um aparelho: todo
+    // aparelho novo nasce com o marcador de época, e o passado arquivado não é estado vivo nem
+    // acervo. Classificá-los como protocolo bloquearia o bootstrap para sempre — a D0 de novo.
+    ("sync_epoca", LocalNaoTransferida),
+    ("sync_legado", LocalNaoTransferida),
+    ("sync_rotacao_em_curso", LocalNaoTransferida),
     // ── reclassificada pela etapa 13 ───────────────────────────────────────
     //
     // Era `EtapaPosterior` porque a tabela guardava a imagem inteira em
@@ -297,6 +304,43 @@ fn tabelas_copiadas() -> Vec<&'static str> {
         .copied()
         .filter(|t| *t != "sync_devices" && *t != "sync_cursors")
         .collect()
+}
+
+/// A forma de `BundleNoFio` além das tabelas: roster, vetor e manifesto de blobs.
+///
+/// Sobe quando o formato de fio do bundle muda sem mudar coluna nenhuma.
+const FORMA_DO_BUNDLE_NO_FIO: &str = "narrahub.sync.bundle.1";
+
+/// **A impressão digital do bundle que este aparelho produz e aceita** (etapa E).
+///
+/// É exatamente o que [`validar_estrutura`] cobra do outro lado: a lista de tabelas copiadas, na
+/// ordem de semeadura, e as colunas de cada uma **como o `PRAGMA table_info` deste banco as
+/// devolve**, na ordem física. Dois aparelhos com a mesma impressão têm bundles que um semeia no
+/// outro; com impressões diferentes, o `semear` recusaria tudo — mas só depois de capturar,
+/// transferir e baixar blobs.
+///
+/// Derivada do banco aberto, e não de um número mantido à mão: uma migration que acrescenta coluna
+/// a uma tabela transferida muda a impressão sozinha; uma que só mexe em tabela local não muda.
+/// Não é a versão do schema, e não pode ser — schema diferente não impede incremental.
+pub fn formato_do_bundle(connection: &Connection) -> DatabaseCommandResult<String> {
+    let mut descricao = String::from(FORMA_DO_BUNDLE_NO_FIO);
+    for tabela in tabelas_copiadas() {
+        let mut statement = connection
+            .prepare(&format!("PRAGMA table_info({tabela})"))
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+        let colunas: Vec<String> = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+        descricao.push('\n');
+        descricao.push_str(tabela);
+        descricao.push(':');
+        descricao.push_str(&colunas.join(","));
+    }
+    Ok(crate::infrastructure::blob_store::hash_dos_bytes(
+        descricao.as_bytes(),
+    ))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -3402,5 +3446,48 @@ mod tests {
         )
         .expect("a transferência não estoura");
         assert_eq!(resumo.falharam, std::collections::BTreeSet::from([hash]));
+    }
+
+    /// **E4 — a impressão do bundle segue as colunas transferidas, e só elas.**
+    ///
+    /// Coluna nova numa tabela que viaja no bundle muda a impressão (o `semear` do outro lado
+    /// recusaria). Tabela local nova, ou coluna nova numa tabela que não viaja, não muda: schema
+    /// diferente não é, por si, protocolo diferente.
+    #[test]
+    fn formato_do_bundle_muda_com_coluna_transferida_e_nao_com_tabela_local() {
+        let fixture = TemporaryDatabase::new();
+        let connection = fixture.database.write().expect("escrita");
+        let original = formato_do_bundle(&connection).expect("impressão");
+        assert_eq!(
+            original,
+            formato_do_bundle(&connection).expect("de novo"),
+            "não é estável"
+        );
+
+        connection
+            .execute_batch(
+                "CREATE TABLE preferencia_local (chave TEXT, valor TEXT);
+                 ALTER TABLE sync_adoptions ADD COLUMN observacao TEXT NOT NULL DEFAULT '';",
+            )
+            .expect("mudança só local");
+        assert!(
+            tabelas_de(Categoria::ProtocoloNaoTransferido).contains(&"sync_adoptions"),
+            "o cenário exige que sync_adoptions não viaje"
+        );
+        assert_eq!(
+            formato_do_bundle(&connection).expect("impressão"),
+            original,
+            "uma mudança que não toca o bundle mudou a impressão"
+        );
+
+        assert!(tabelas_copiadas().contains(&"universes"));
+        connection
+            .execute_batch("ALTER TABLE universes ADD COLUMN subtitulo TEXT NOT NULL DEFAULT '';")
+            .expect("coluna transferida");
+        assert_ne!(
+            formato_do_bundle(&connection).expect("impressão"),
+            original,
+            "coluna nova numa tabela transferida não mudou a impressão"
+        );
     }
 }

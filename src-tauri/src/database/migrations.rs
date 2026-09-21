@@ -1,7 +1,7 @@
 //! NarraHub — Database Migrations
 //! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 26;
+pub const LATEST_SCHEMA_VERSION: i64 = 27;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -31,6 +31,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         24 => Some(MIGRATION_V24),
         25 => Some(MIGRATION_V25),
         26 => Some(MIGRATION_V26),
+        27 => Some(MIGRATION_V27),
         _ => None,
     }
 }
@@ -1791,6 +1792,88 @@ CREATE TABLE IF NOT EXISTS sync_adoptions (
 );
 "#;
 
+pub const MIGRATION_V27: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v27
+-- Sync V2 etapa E - epoca causal do protocolo 1 (E0-beta)
+-- ============================================
+--
+-- O Sync V2 anterior ao Hello (0.10.0-beta.1/beta.2) deixou no banco uma
+-- causalidade que o protocolo 1 nao fala: envelopes com payload em outro
+-- formato, revisoes correntes que nao descrevem o dominio, capitulos apagados
+-- sem tombstone. Assinatura valida, conteudo incompativel -- e o relay os
+-- mandaria adiante.
+--
+-- A saida decidida e uma EPOCA NOVA: o aparelho gira a identidade, o passado
+-- sai do estado vivo e vai para um arquivo, e a genese do protocolo 1 comeca
+-- do zero -- preservando como delete-genesis as exclusoes que tinham prova.
+-- Esta migration so prepara o schema. Quem gira e o arranque
+-- (`application::epoca`), porque a identidade mora em arquivo e o banco nao
+-- sabe escrever arquivo.
+
+-- O marcador. A linha existe = este banco fala o protocolo 1.
+-- `origem`: 'instalacao' (nasceu sem passado) ou 'rotacao' (tinha passado
+-- pre-Hello e girou). Uma linha por protocolo: a proxima epoca, se um dia
+-- existir, e outra linha.
+CREATE TABLE IF NOT EXISTS sync_epoca (
+    protocolo INTEGER PRIMARY KEY NOT NULL CHECK (protocolo >= 1),
+    device_id TEXT NOT NULL,
+    origem TEXT NOT NULL CHECK (origem IN ('instalacao', 'rotacao')),
+    identidade_anterior TEXT NOT NULL DEFAULT '',
+    linhas_arquivadas INTEGER NOT NULL DEFAULT 0 CHECK (linhas_arquivadas >= 0),
+    exclusoes_preservadas INTEGER NOT NULL DEFAULT 0 CHECK (exclusoes_preservadas >= 0),
+    iniciada_em TEXT NOT NULL
+);
+
+-- O passado pre-Hello, fora do estado vivo e fora do bundle. Cada linha de
+-- cada tabela arquivada vira um JSON com as colunas dela: o formato das
+-- tabelas antigas mudou de versao em versao, e um arquivo por tabela
+-- congelaria um schema que ja nao existe.
+CREATE TABLE IF NOT EXISTS sync_legado (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    protocolo INTEGER NOT NULL,
+    tabela TEXT NOT NULL,
+    linha TEXT NOT NULL,
+    arquivada_em TEXT NOT NULL
+);
+
+-- Evidencia nao se edita nem se apaga.
+CREATE TRIGGER IF NOT EXISTS trg_sync_legado_sem_update
+BEFORE UPDATE ON sync_legado
+BEGIN
+    SELECT RAISE(ABORT, 'sync_legado e evidencia: nao se edita.');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_sync_legado_sem_delete
+BEFORE DELETE ON sync_legado
+BEGIN
+    SELECT RAISE(ABORT, 'sync_legado e evidencia: nao se apaga.');
+END;
+
+-- A UNICA porta pela qual o log e os cursores se apagam: a rotacao de epoca,
+-- dentro da propria transacao. A linha entra e sai na mesma transacao; fora
+-- dela, a tabela esta sempre vazia e os gatilhos abaixo valem como sempre.
+CREATE TABLE IF NOT EXISTS sync_rotacao_em_curso (
+    unica INTEGER PRIMARY KEY NOT NULL CHECK (unica = 1)
+);
+
+DROP TRIGGER IF EXISTS trg_sync_events_sem_delete;
+CREATE TRIGGER trg_sync_events_sem_delete
+BEFORE DELETE ON sync_events
+WHEN NOT EXISTS (SELECT 1 FROM sync_rotacao_em_curso)
+BEGIN
+    SELECT RAISE(ABORT, 'sync_events e append-only: evento nao se apaga.');
+END;
+
+DROP TRIGGER IF EXISTS trg_sync_cursor_nao_se_apaga;
+CREATE TRIGGER trg_sync_cursor_nao_se_apaga
+BEFORE DELETE ON sync_cursors
+WHEN NOT EXISTS (SELECT 1 FROM sync_rotacao_em_curso)
+BEGIN
+    SELECT RAISE(ABORT, 'Cursor nao se apaga: apagar e reinserir re-semeia o baseline, e o intervalo pulado nunca mais e pedido.');
+END;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1811,6 +1894,7 @@ mod tests {
     const NATIVE_SCHEMA_V24_FIXTURE: &str = include_str!("../../fixtures/schema24_native.sql");
     const NATIVE_SCHEMA_V25_FIXTURE: &str = include_str!("../../fixtures/schema25_native.sql");
     const NATIVE_SCHEMA_V26_FIXTURE: &str = include_str!("../../fixtures/schema26_native.sql");
+    const NATIVE_SCHEMA_V27_FIXTURE: &str = include_str!("../../fixtures/schema27_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -3325,6 +3409,80 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sync_adoptions", [], |row| row.get(0))
             .expect("contar");
         assert_eq!(adocoes, 0);
+    }
+
+    /// **Schema 27 — a época causal do protocolo 1.** A época é uma por protocolo, a origem é uma de
+    /// duas, o passado arquivado não se edita nem se apaga, e o log só se apaga dentro da rotação.
+    #[test]
+    fn schema27_guarda_a_epoca_e_o_passado_arquivado() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("fk");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V27_FIXTURE)
+            .expect("carregar a fixture nativa de schema 27");
+
+        let (origem, anterior, arquivadas): (String, String, i64) = connection
+            .query_row(
+                "SELECT origem, identidade_anterior, linhas_arquivadas FROM sync_epoca",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("a época marcada");
+        assert_eq!(
+            (origem.as_str(), anterior.as_str(), arquivadas),
+            ("rotacao", "fx27-dev-beta", 3)
+        );
+
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO sync_epoca (protocolo, device_id, origem, iniciada_em)
+                     VALUES (1, 'outro', 'instalacao', 'x')",
+                    [],
+                )
+                .is_err(),
+            "o banco aceitou duas épocas do mesmo protocolo"
+        );
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO sync_epoca (protocolo, device_id, origem, iniciada_em)
+                     VALUES (2, 'outro', 'palpite', 'x')",
+                    [],
+                )
+                .is_err(),
+            "o banco aceitou uma origem de época desconhecida"
+        );
+        assert!(connection
+            .execute("UPDATE sync_legado SET linha = '{}'", [])
+            .is_err());
+        assert!(connection.execute("DELETE FROM sync_legado", []).is_err());
+        let trava: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sync_rotacao_em_curso", [], |row| {
+                row.get(0)
+            })
+            .expect("trava");
+        assert_eq!(
+            trava, 0,
+            "a trava da rotação ficou fechada num banco em repouso"
+        );
+    }
+
+    /// Um banco que chega ao 27 por migração não tem época marcada: marcar é um ato do arranque.
+    #[test]
+    fn migration27_nao_marca_a_epoca_sozinha() {
+        let connection = Connection::open_in_memory().expect("banco");
+        apply_migrations(&connection, 1, 26);
+        connection
+            .execute_batch(sql_for_version(27).expect("migration 27"))
+            .expect("migrar");
+        let epocas: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sync_epoca", [], |row| row.get(0))
+            .expect("contar");
+        assert_eq!(epocas, 0);
     }
 
     #[test]

@@ -58,6 +58,17 @@ pub mod palavras;
 pub mod planejamento;
 pub mod posicao;
 
+/// **A versão do formato canônico dos payloads** — e do conjunto de tipos cobertos.
+///
+/// Dois aparelhos só trocam eventos se concordarem nisto: um payload é aplicado pelo `aplicar` do
+/// codec com `deny_unknown_fields`, e um formato diferente derruba a sessão inteira no meio, com a
+/// causa errada. O `Hello` da etapa E compara este número antes de qualquer escrita.
+///
+/// Sobe quando muda qualquer vetor de canonicalização, o conjunto `TIPOS_COBERTOS`, ou o que um
+/// payload significa. E a adoção sobe junto: `genese::VERSAO_DA_ADOCAO` é este número, por
+/// definição, e não um segundo número que alguém lembra de manter igual.
+pub const FORMATO_CANONICO_ATUAL: i64 = 1;
+
 /// O estado de um agregado como o evento o carrega.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EstadoDoAgregado {

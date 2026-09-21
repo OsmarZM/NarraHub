@@ -131,6 +131,93 @@ fn gravar(caminho: &Path, identidade: &DeviceIdentity) -> DatabaseCommandResult<
     Ok(())
 }
 
+// ── a identidade da próxima época (etapa E, E0-beta) ───────────────────────
+//
+// A rotação de época gira a identidade. O arquivo e o banco não participam da mesma transação,
+// então a ordem é o que torna a troca recuperável:
+//
+// ```text
+// 1  a próxima identidade vai para `sync-identity.next.json`, durável (fsync)
+// 2  a transação do banco comita: novo self, gênese assinada com a próxima
+// 3  rename next → atual
+// ```
+//
+// Queda antes de 2: o banco não mudou; a próxima identidade nunca assinou nada que tenha ficado, e
+// a rotação seguinte a reaproveita. Queda entre 2 e 3: o banco já fala com a próxima, e o arranque
+// seguinte conclui o rename ANTES de qualquer reconciliação — senão `reconcile_self` trataria a
+// identidade antiga como "arquivo certo" e rebaixaria a nova.
+
+/// Onde a identidade da próxima época espera o banco comitar.
+pub const NEXT_IDENTITY_FILE_NAME: &str = "sync-identity.next.json";
+
+pub fn next_identity_path(app_data: &Path) -> PathBuf {
+    app_data.join(NEXT_IDENTITY_FILE_NAME)
+}
+
+/// A identidade da próxima época, se já foi preparada.
+pub fn proxima(app_data: &Path) -> DatabaseCommandResult<Option<DeviceIdentity>> {
+    let caminho = next_identity_path(app_data);
+    if !caminho.is_file() {
+        return Ok(None);
+    }
+    carregar(&caminho).map(Some)
+}
+
+/// A identidade da próxima época: a já preparada, ou uma nova, gravada **duravelmente** antes de
+/// devolver. Nada é assinado com ela antes de estar no disco.
+pub fn proxima_ou_preparar(app_data: &Path) -> DatabaseCommandResult<DeviceIdentity> {
+    if let Some(identidade) = proxima(app_data)? {
+        return Ok(identidade);
+    }
+    let identidade = DeviceIdentity::generate();
+    let destino = next_identity_path(app_data);
+    let temporario = app_data.join(format!("{NEXT_IDENTITY_FILE_NAME}.tmp"));
+    gravar(&temporario, &identidade)?;
+    duravel(&temporario)?;
+    std::fs::rename(&temporario, &destino).map_err(|error| {
+        DatabaseCommandError::storage(format!(
+            "Não foi possível preparar a nova identidade de sincronização: {error}"
+        ))
+    })?;
+    Ok(identidade)
+}
+
+/// Promove a próxima identidade a atual. O `rename` substitui o arquivo antigo de uma vez.
+pub fn promover_proxima(app_data: &Path) -> DatabaseCommandResult<()> {
+    let origem = next_identity_path(app_data);
+    let destino = identity_path(app_data);
+    std::fs::rename(&origem, &destino).map_err(|error| {
+        DatabaseCommandError::storage(format!(
+            "Não foi possível concluir a troca da identidade de sincronização: {error}"
+        ))
+    })?;
+    duravel(&destino)
+}
+
+/// Descarta a próxima identidade que ficou de uma rotação que outra passada já concluiu.
+pub fn descartar_proxima(app_data: &Path) -> DatabaseCommandResult<()> {
+    match std::fs::remove_file(next_identity_path(app_data)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(DatabaseCommandError::storage(error.to_string())),
+    }
+}
+
+fn duravel(caminho: &Path) -> DatabaseCommandResult<()> {
+    // Com escrita, e sem truncar: no Windows `sync_all` é `FlushFileBuffers`, que recusa um
+    // arquivo aberto só para leitura — `File::open` falharia ali com "acesso negado".
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(caminho)
+        .and_then(|arquivo| arquivo.sync_all())
+        .map_err(|error| {
+            DatabaseCommandError::storage(format!(
+                "A identidade de sincronização não pôde ser confirmada no disco: {error}"
+            ))
+        })
+}
+
 #[cfg(unix)]
 fn restringir_permissoes(caminho: &Path) {
     use std::os::unix::fs::PermissionsExt;
