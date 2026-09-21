@@ -60,6 +60,9 @@ pub struct ResumoDoAcervo {
     pub sincronizacao_disponivel: bool,
     /// Vazio quando ela está disponível; o motivo legível quando não está.
     pub motivo_da_indisponibilidade: String,
+    /// A atualização girou a época causal (passado da beta antiga): os pareamentos anteriores
+    /// deixaram de valer e os aparelhos precisam parear de novo.
+    pub pareamentos_invalidados: bool,
 }
 
 /// **Prepara o acervo e libera o aplicativo — nesta ordem, ou não libera.**
@@ -81,6 +84,31 @@ pub fn preparar_acervo(
     };
 
     estado.definir(FaseDoBanco::Adopting);
+
+    // **A época do protocolo 1** (etapa E): passado pré-Hello gira a identidade, arquiva e refaz a
+    // gênese numa transação só. Depois da mídia, pelo mesmo motivo da adoção.
+    let mut identidade_da_epoca: Option<DeviceIdentity> = None;
+    match crate::application::epoca::rotacionar(database, store.app_data(), identidade) {
+        Ok(Some((nova, _resultado))) => identidade_da_epoca = Some(nova),
+        Ok(None) => {}
+        Err(erro) if assets.pendencias_abertas > 0 => {
+            estado.definir(FaseDoBanco::ReadyReadOnly);
+            return Ok(ResumoDoAcervo {
+                assets,
+                adocao: genese::ResumoDaAdocao::default(),
+                sincronizacao_disponivel: false,
+                motivo_da_indisponibilidade: erro.message,
+                pareamentos_invalidados: false,
+            });
+        }
+        Err(erro) => {
+            estado.definir(FaseDoBanco::RecoveryRequired);
+            return Err(erro);
+        }
+    }
+    let pareamentos_invalidados = identidade_da_epoca.is_some();
+    let identidade = identidade_da_epoca.as_ref().unwrap_or(identidade);
+
     let adocao = match genese::adotar(database, identidade) {
         Ok(adocao) => adocao,
         Err(erro) if assets.pendencias_abertas > 0 => {
@@ -94,6 +122,7 @@ pub fn preparar_acervo(
                 adocao: genese::ResumoDaAdocao::default(),
                 sincronizacao_disponivel: false,
                 motivo_da_indisponibilidade: erro.message,
+                pareamentos_invalidados,
             });
         }
         Err(erro) => {
@@ -114,6 +143,7 @@ pub fn preparar_acervo(
         adocao,
         sincronizacao_disponivel: true,
         motivo_da_indisponibilidade: String::new(),
+        pareamentos_invalidados,
     })
 }
 

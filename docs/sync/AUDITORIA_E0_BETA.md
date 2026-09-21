@@ -1,6 +1,7 @@
 # E0-beta — o estado causal que a 0.10.0-beta.1/beta.2 deixa depois do upgrade
 
-Etapa E, item 6. **Auditoria, não decisão.** Nenhuma migration, reset ou filtro foi implementado.
+Etapa E, item 6. A auditoria veio primeiro e sem decisão; a decisão tomada depois dela, e a
+implementação, estão em [Decisão e implementação](#decisão-e-implementação) no fim.
 
 ## Como foi medido
 
@@ -20,8 +21,9 @@ B  (virgem) pareia com A por PIN       → bootstrap
 B  edita C2; A edita C1; sincronizam   → cada lado recebe um evento remoto
 ```
 
-O harness está fora do repositório (`D:\DevTools\NarraHubTmp\auditoria_beta.rs` e
-`beta2-wt/…/gerador_beta.rs`). Ele vira gate quando a correção for decidida.
+Os dois bancos agora são fixtures permanentes em `src-tauri/fixtures/beta2/` (dump SQL do banco
+real, identidade e blobs de cada aparelho, e `ids.txt` com o cenário). O gerador rodou uma vez, no
+código da beta, e não faz parte do repositório: a fixture **é** a evidência.
 
 ## O que a beta escrevia no log
 
@@ -128,3 +130,54 @@ As formas possíveis, com o que cada uma custa — para a decisão, não como re
 Nas três, o gate de saída é o mesmo que falha hoje: A upgradado + aparelho novo em papel Par =
 nenhum envelope beta enviado, nenhuma lacuna, nenhuma base desconhecida, e nenhum agregado
 apagado na beta ressuscitado.
+
+## Decisão e implementação
+
+**Nova época causal por rotação de `DeviceIdentity`.** Sem piso de `seq` e sem reemitir sob a
+identidade antiga. O passado pré-Hello inteiro é incompatível, inclusive o relay de outras origens.
+
+```text
+evidências de exclusão         tombstone, ou estado de agregado que sumiu do domínio
+nova identidade                sync-identity.next.json, durável ANTES do commit
+── uma transação ───────────────────────────────────────────────────────────────
+passado → sync_legado          cada linha de cada tabela do passado, como JSON
+estado vivo esvaziado          log, história, estado, tombstones, cursores, divergências,
+                               adoção, vetores de peer e roster
+self novo                      os pareamentos da beta deixam de existir: pareia-se de novo
+gênese canônica completa       assinada pela identidade nova
+delete-genesis                 uma por exclusão COM PROVA; base raiz, determinística
+sync_epoca = 1 ('rotacao')
+── fim da transação ────────────────────────────────────────────────────────────
+rename next → atual
+```
+
+| peça | onde |
+| --- | --- |
+| schema: marcador, arquivo, trava dos gatilhos append-only | migration 27 |
+| rotação, evidências, arquivamento, guarda da sessão | `application::epoca` |
+| identidade da próxima época, promoção | `identity_store::{proxima_ou_preparar, promover_proxima}` |
+| conclusão de troca pendente, marcador de instalação nova | `sync_bootstrap::prepare` |
+| quando gira | `arranque::preparar_acervo`, depois da mídia e antes da adoção |
+
+**Recuperável dos dois lados.** Queda com a próxima identidade no disco e o banco intocado: nada
+mudou, e a passada seguinte reaproveita a mesma identidade. Queda depois do commit: o `prepare`
+seguinte promove o arquivo **antes** de `reconcile_self`, que de outro modo rebaixaria a identidade
+nova. Arranque repetido: nenhum byte muda.
+
+**Ausência sem prova continua não sendo exclusão.** Das exclusões da fixture, viram delete-genesis
+exatamente X2 (tombstone) e C3 (estado sem domínio). Um aparelho do protocolo 1 que ainda tenha C3
+recebe a exclusão como decisão; o aparelho que apagou recebe a gênese de C3 como decisão. Nenhum
+dos dois ganha nem perde o capítulo em silêncio.
+
+**Um achado de plataforma**, pego pelo gate e não pela leitura: no Windows, `sync_all` recusa
+arquivo aberto só para leitura. A primeira versão da gravação durável da identidade falharia em
+todo Windows com "acesso negado".
+
+Gates (`application::epoca_testes`, sobre as fixtures reais): rotação e arquivamento completos;
+integridade e FK limpas, domínio intacto; idempotência byte a byte; regra de saída (nenhum envelope
+pré-Hello sai, e um aparelho novo em papel Par aplica tudo, sem lacuna, pendência nem decisão); A e B
+da beta atualizados, o pareamento antigo recusado, pareados de novo por PIN, convergem sem decisão;
+C3 não ressuscita; queda antes e depois do commit; sessão recusada sem época; aparelho novo nasce
+na época e continua elegível a bootstrap; a trava dos gatilhos só abre dentro da rotação; toda
+tabela `sync_*` com destino declarado. Mutação medida: sem evidências, evidência só por tombstone,
+sem promover a identidade pendente, sessão sem exigir a época — cada uma reprova ao menos um gate.

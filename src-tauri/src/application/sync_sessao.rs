@@ -404,6 +404,9 @@ fn inesperada(esperada: &str, veio: &Mensagem) -> DatabaseCommandError {
 /// passa direto, como deve.
 fn exigir_acervo_adotado(ctx: &Contexto<'_>) -> DatabaseCommandResult<()> {
     let connection = ctx.database.read()?;
+    // A época do protocolo 1 primeiro (etapa E): um banco que ainda carrega o passado pré-Hello
+    // tem no log envelopes que o relay mandaria adiante como se fossem do protocolo 1.
+    crate::application::epoca::exigir_epoca(&connection)?;
     crate::application::genese::exigir_acervo_sem_orfaos(&connection)
 }
 

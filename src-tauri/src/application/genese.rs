@@ -158,20 +158,31 @@ pub fn adotar(
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(erro)?;
+    let resumo = adotar_na_transacao(&tx, identidade)?;
+    tx.commit().map_err(erro)?;
+    Ok(resumo)
+}
 
+/// **O corpo da adoção, numa transação que já existe.**
+///
+/// [`adotar`] abre a sua; a rotação de época (etapa E) chama esta dentro da transação dela, para que
+/// arquivar o passado, emitir a gênese e marcar a época sejam um ato só.
+pub(crate) fn adotar_na_transacao(
+    tx: &rusqlite::Transaction<'_>,
+    identidade: &DeviceIdentity,
+) -> DatabaseCommandResult<ResumoDaAdocao> {
     // Outra adoção pode ter confirmado entre a leitura e o `BEGIN IMMEDIATE`.
-    if adotado(&tx)? {
-        exigir_acervo_adotado(&tx)?;
+    if adotado(tx)? {
+        exigir_acervo_adotado(tx)?;
         return Ok(ResumoDaAdocao {
             ja_estava_adotado: true,
             ..ResumoDaAdocao::default()
         });
     }
-
     // E o backfill é conferido de novo AQUI, com a escrita já tomada: entre a leitura de fora e
     // este ponto, uma passada de conversão de mídia pode ter aberto pendência. Emitir a gênese
     // depois disso registraria um estado que a conversão ainda vai mudar.
-    if let Some(falha) = impedimento(&tx)? {
+    if let Some(falha) = impedimento(tx)? {
         return Err(DatabaseCommandError::conflict(falha.to_string()));
     }
 
@@ -180,11 +191,11 @@ pub fn adotar(
         eventos,
         primeiro_seq,
         ultimo_seq,
-    } = emitir(&tx, identidade)?;
+    } = emitir(tx, identidade)?;
 
     // O acervo inteiro, e não "o que deu": depois da adoção, agregado coberto sem revisão corrente
     // é falha, aqui dentro, com a transação ainda podendo ser desfeita.
-    if let Some(orfao) = primeiro_orfao(&tx)? {
+    if let Some(orfao) = primeiro_orfao(tx)? {
         return Err(DatabaseCommandError::storage(format!(
             "A adoção terminou e {} {} continua sem revisão. Nada foi confirmado.",
             orfao.aggregate_type, orfao.aggregate_id
@@ -206,7 +217,6 @@ pub fn adotar(
     )
     .map_err(erro)?;
 
-    tx.commit().map_err(erro)?;
     Ok(ResumoDaAdocao {
         ja_estava_adotado: false,
         adotados,

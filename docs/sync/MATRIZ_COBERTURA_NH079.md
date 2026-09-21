@@ -696,7 +696,9 @@ downgrade. Ele abre com `Estado`/`Autorizacao` onde se espera `Hello` e é class
 da autenticação não devolve a validade do código.
 
 O estado causal que uma instalação beta carrega depois do upgrade é outro assunto (migração local, não
-fio). Está em `AUDITORIA_E0_BETA.md` e é gate da etapa E.
+fio): a atualização **gira a época causal** — identidade nova, passado pré-Hello arquivado em
+`sync_legado`, gênese canônica completa e delete-genesis das exclusões com prova. A sessão exige a
+época marcada (`epoca::exigir_epoca`). Detalhes e gates em `AUDITORIA_E0_BETA.md`.
 
 **Previsto antes e não implementado nesta etapa:** `hashAlgorithm` (hoje só existe `sha256`, que é
 parte do protocolo 1) e o **vetor de prova** — a revisão de um agregado de referência compilado nos

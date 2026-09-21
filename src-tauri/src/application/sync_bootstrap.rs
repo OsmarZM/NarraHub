@@ -46,9 +46,17 @@ pub fn prepare(
     app_data: &Path,
     database: &SqliteDatabase,
 ) -> DatabaseCommandResult<DeviceIdentity> {
+    // Uma troca de época que ficou no meio termina ANTES da reconciliação: com o banco já falando a
+    // identidade nova e o arquivo ainda na antiga, `reconcile_self` rebaixaria a nova (etapa E).
+    crate::application::epoca::concluir_rotacao_pendente(app_data, database)?;
     let identidade = identity_store::load_or_create(app_data)?;
-    let mut connection = database.write()?;
-    identity_store::reconcile_self(&mut connection, &identidade)?;
+    {
+        let mut connection = database.write()?;
+        identity_store::reconcile_self(&mut connection, &identidade)?;
+    }
+    // Banco sem passado nasce na época do protocolo 1. Com passado pré-Hello, quem gira é o
+    // arranque (`arranque::preparar_acervo`), depois da conversão de mídia.
+    crate::application::epoca::marcar_instalacao_nova(database, &identidade)?;
     Ok(identidade)
 }
 

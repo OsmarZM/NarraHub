@@ -142,6 +142,13 @@ pub const CATALOGO: &[(&str, Categoria)] = &[
     // ── V1, sem escritor vivo ──────────────────────────────────────────────
     ("devices", LocalNaoTransferida),
     ("sync_peers", LocalNaoTransferida),
+    // ── a época do protocolo 1 (etapa E, E0-beta) ──────────────────────────
+    // Os três são deste arquivo e de mais ninguém, e nenhum tira a virgindade de um aparelho: todo
+    // aparelho novo nasce com o marcador de época, e o passado arquivado não é estado vivo nem
+    // acervo. Classificá-los como protocolo bloquearia o bootstrap para sempre — a D0 de novo.
+    ("sync_epoca", LocalNaoTransferida),
+    ("sync_legado", LocalNaoTransferida),
+    ("sync_rotacao_em_curso", LocalNaoTransferida),
     // ── reclassificada pela etapa 13 ───────────────────────────────────────
     //
     // Era `EtapaPosterior` porque a tabela guardava a imagem inteira em

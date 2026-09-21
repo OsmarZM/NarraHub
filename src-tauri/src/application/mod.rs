@@ -17,6 +17,9 @@ pub mod canvas_service;
 pub mod cobertura_total;
 pub mod collaboration_service;
 pub mod entity_service;
+pub mod epoca;
+#[cfg(test)]
+mod epoca_testes;
 pub mod genese;
 pub mod knowledge_service;
 pub mod manuscript_service;
