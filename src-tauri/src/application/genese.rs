@@ -65,7 +65,12 @@ use crate::infrastructure::sqlite::SqliteDatabase;
 /// A adoção é sempre a adoção de uma **versão**. Se um dia o formato passar a cobrir estado que
 /// hoje fica de fora, isso declara uma adoção nova, com versão nova — e não se disfarça de "órfão
 /// adotado automaticamente".
-pub const VERSAO_DA_ADOCAO: i64 = 1;
+///
+/// **É o mesmo número do fio, por construção** (etapa E). A adoção versiona o formato canônico, e
+/// o `Hello` compara esse formato entre dois aparelhos: se fossem dois números, alguém poderia subir
+/// a adoção por um motivo operacional e quebrar a compatibilidade sem perceber — ou mudar o formato
+/// e esquecer a adoção. Mudar isto é mudar `FORMATO_CANONICO_ATUAL`, e isso É mudança de protocolo.
+pub const VERSAO_DA_ADOCAO: i64 = crate::infrastructure::sqlite::sync_codec::FORMATO_CANONICO_ATUAL;
 
 /// O que a adoção fez.
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
