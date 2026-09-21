@@ -669,18 +669,39 @@ da etapa F.
 
 ## 5. Negociação de compatibilidade (etapa E)
 
-Um número de versão genérico não detecta dois aparelhos que canonicalizam diferente. O hello troca:
+O `Hello` é a primeira mensagem de aplicação dos dois modos: vem **depois** da `SessaoAutenticada`
+(identidade provada, canal cifrado) e **antes** de `Estado`/`Autorizacao` e de qualquer
+persistência. É a única mensagem de formato permanente.
 
-| campo | recusa quando |
-| --- | --- |
-| `syncProtocolVersion` | diferente |
-| `canonicalFormatVersion` | diferente — mudou o que entra no payload canônico |
-| `hashAlgorithm` | diferente (`sha256` hoje, em `compute_revision`) |
-| `schemaVersion` | incompatível pelo contrato de schema |
+```text
+Hello { protocolo, formato_canonico, formato_do_bundle, modo, app }
+```
 
-E, para não depender só de declaração, o hello inclui um **vetor de prova**: a revisão de um agregado
-fixo e conhecido (payload canônico de referência compilado nos dois lados). Revisões diferentes ⇒
-`INCOMPATIBLE_CANONICALIZATION`, antes de qualquer reconciliação.
+| campo | fonte | decide |
+| --- | --- | --- |
+| `protocolo` | `sync_sessao::PROTOCOLO_DO_SYNC` = 1 | diferente ⇒ aborta no Hello |
+| `formato_canonico` | `sync_codec::FORMATO_CANONICO_ATUAL` (= `genese::VERSAO_DA_ADOCAO`, por construção) | diferente ⇒ aborta no Hello |
+| `modo` | o quadro em claro, repetido dentro do canal cifrado | diferente ⇒ aborta no Hello |
+| `formato_do_bundle` | hash das colunas (`PRAGMA`) das tabelas transferidas, na ordem de semeadura | só depois do `Estado`: Doador/Receptor ⇒ precisa bater, senão aborta **antes** de capturar; Par ⇒ irrelevante |
+| `app` | versão do pacote | nunca decide; só entra na mensagem |
+
+Igualdade exata: não há faixa enquanto só uma versão é suportada. **A versão do schema não entra:**
+o incremental não depende dela, e o bootstrap depende só das colunas das tabelas transferidas, que é o
+que `formato_do_bundle` mede. Incompatibilidade é tipada (`FalhaDaSessao::Incompativel`) e chega à
+tela como `conflict`.
+
+**Sync V2 anterior ao Hello (0.10.0-beta.1/beta.2) não interopera.** Sem decodificador antigo nem
+downgrade. Ele abre com `Estado`/`Autorizacao` onde se espera `Hello` e é classificado como
+`PeerLegado`, com zero escrita. O PIN já foi consumido quando o Hello chega: incompatibilidade depois
+da autenticação não devolve a validade do código.
+
+O estado causal que uma instalação beta carrega depois do upgrade é outro assunto (migração local, não
+fio). Está em `AUDITORIA_E0_BETA.md` e é gate da etapa E.
+
+**Previsto antes e não implementado nesta etapa:** `hashAlgorithm` (hoje só existe `sha256`, que é
+parte do protocolo 1) e o **vetor de prova** — a revisão de um agregado de referência compilado nos
+dois lados, que pegaria canonicalização divergente mesmo com o mesmo `formato_canonico` declarado.
+Ficam como backlog.
 
 ## 6. Legado e conversões
 
