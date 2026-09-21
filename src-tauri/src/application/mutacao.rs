@@ -588,7 +588,7 @@ pub(crate) mod tests {
     use crate::application::{canvas_service, manuscript_service};
     use crate::domain::canvas::Attachment;
     use crate::domain::manuscript::ChapterUpdate;
-    use crate::infrastructure::sqlite::sync_session::receber_eventos;
+    use crate::infrastructure::sqlite::sync_session::receber_eventos_sem_conferir_blobs as receber_eventos;
     use crate::infrastructure::sqlite::test_support::{
         origem_remota_confiavel, seed_universe, self_de_teste, TemporaryDatabase,
     };

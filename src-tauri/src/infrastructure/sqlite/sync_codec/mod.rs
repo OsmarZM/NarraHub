@@ -52,6 +52,7 @@ pub mod conhecimento;
 pub mod efemero;
 pub mod entidades;
 pub mod manuscrito;
+pub mod midia;
 pub mod modelos;
 pub mod palavras;
 pub mod planejamento;

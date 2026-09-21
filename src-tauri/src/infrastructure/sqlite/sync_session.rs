@@ -31,15 +31,108 @@
 //! `base_rev` dele for desconhecido, aplicá-lo escreveria em cima de uma
 //! história que não temos. Nesse caso o cursor **para**, e o relatório diz
 //! qual agregado precisa de reconciliação — em vez de fingir progresso.
+//!
+//! ## E o blob que o evento cita (etapa D, item 12)
+//!
+//! O blob é dependência de materialização, como o pai de um capítulo. Um evento
+//! que referencia uma imagem que este aparelho não tem **verificada** entra no
+//! log e espera:
+//!
+//! ```text
+//! domínio                 não muda
+//! revisão corrente        não muda
+//! sync_applied_events     não marca
+//! cursor                  não anda
+//! grupo de mutação        nenhum membro materializa
+//! ```
+//!
+//! Esperar, e não divergir: faltar o arquivo não é decisão de ninguém. A
+//! checagem mora **aqui**, na drenagem, e não na rede — é a drenagem que também
+//! reavalia os pendentes de sessões antigas, e um pendente que esperava blob
+//! continua esperando até o blob estar no disco. A rede só pré-busca.
 
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::sync::EventEnvelope;
+use crate::infrastructure::blob_store::BlobStore;
 use crate::infrastructure::sqlite::sync_apply::{
     apply_remote_event, registrar_decisao_do_grupo, Applied,
 };
+use crate::infrastructure::sqlite::sync_codec::midia::blobs_do_evento;
 use crate::infrastructure::sqlite::sync_trust::{verificar_origem, Recusa};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// De onde a drenagem sabe se um blob está neste aparelho, **verificado**.
+///
+/// Presença não basta: um arquivo corrompido tem o nome certo e o conteúdo errado, e materializar
+/// sobre ele seria entregar ao escritor uma imagem quebrada que nenhuma sessão vai buscar de novo.
+pub trait BlobsLocais {
+    fn verificado(&self, hash: &str) -> DatabaseCommandResult<bool>;
+}
+
+impl BlobsLocais for BlobStore {
+    fn verificado(&self, hash: &str) -> DatabaseCommandResult<bool> {
+        self.verify(hash)
+    }
+}
+
+/// A conferência de blob de uma drenagem, com o que já foi verificado nela.
+///
+/// Verificar é ler e recalcular o SHA do arquivo inteiro; a drenagem repete voltas até não haver
+/// progresso, e um blob presente não precisa ser relido a cada volta.
+struct Midia<'a> {
+    blobs: &'a dyn BlobsLocais,
+    presentes: BTreeSet<String>,
+}
+
+impl Midia<'_> {
+    /// Os blobs que faltam para ESTE evento virar estado. Vazio = pode seguir.
+    ///
+    /// Um evento que não vai materializar nada não espera por blob: o que já foi aplicado, e a
+    /// revisão que já chegou por outro caminho.
+    fn faltam(
+        &mut self,
+        tx: &Transaction<'_>,
+        envelope: &EventEnvelope,
+    ) -> DatabaseCommandResult<BTreeSet<String>> {
+        let referencias = blobs_do_evento(envelope);
+        let mut faltam = BTreeSet::new();
+        if referencias.is_empty() {
+            return Ok(faltam);
+        }
+        let ja_aplicado: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_applied_events WHERE event_id = ?1)",
+                [&envelope.event_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+        if ja_aplicado {
+            return Ok(faltam);
+        }
+        let historia = crate::infrastructure::sqlite::sync_repository::aggregate_history(
+            tx,
+            &crate::domain::sync::AggregateRef::new(
+                &envelope.aggregate_type,
+                &envelope.aggregate_id,
+            ),
+        )?;
+        if historia.knows(&envelope.new_rev) {
+            return Ok(faltam);
+        }
+        for hash in referencias {
+            if self.presentes.contains(&hash) {
+                continue;
+            }
+            if self.blobs.verificado(&hash)? {
+                self.presentes.insert(hash);
+            } else {
+                faltam.insert(hash);
+            }
+        }
+        Ok(faltam)
+    }
+}
 
 /// O que a sessão fez com o que recebeu.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -53,6 +146,9 @@ pub struct Relatorio {
     pub divergencias: usize,
     /// Agregados cuja história não conhecemos. Não é conflito: falta o meio.
     pub precisam_reconciliar: Vec<String>,
+    /// Blobs que seguram eventos na fila: citados por um evento que seria o próximo a aplicar, e
+    /// ausentes ou corrompidos aqui. Não é conflito: falta o arquivo.
+    pub esperando_blob: BTreeSet<String>,
     /// Envelopes barrados na cadeia de confiança da etapa 7. **Nenhum deles
     /// entrou no log**: um evento que não passou pela verificação não pode ser
     /// retransmitido nem aplicado, e guardá-lo daria a ele a aparência de
@@ -100,10 +196,19 @@ impl Relatorio {
 ///
 /// Tudo numa transação: os quatro efeitos da seção 12 do ADR precisam
 /// acontecer juntos, e o cursor é o quarto.
+///
+/// `blobs` é obrigatório: nenhum evento que cite imagem vira estado sem que ela
+/// esteja aqui, verificada. Com lote vazio, a função só drena os pendentes —
+/// é assim que a sessão tenta de novo depois de buscar os blobs que faltavam.
 pub fn receber_eventos(
     connection: &mut Connection,
     envelopes: &[EventEnvelope],
+    blobs: &dyn BlobsLocais,
 ) -> DatabaseCommandResult<Relatorio> {
+    let mut midia = Midia {
+        blobs,
+        presentes: BTreeSet::new(),
+    };
     let tx = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
@@ -163,8 +268,9 @@ pub fn receber_eventos(
     loop {
         let aplicados_antes = contar_aplicados(&tx)?;
         relatorio.precisam_reconciliar.clear();
+        relatorio.esperando_blob.clear();
         for origem in origens.keys() {
-            drenar_origem(&tx, origem, &mut relatorio, &mut tocados)?;
+            drenar_origem(&tx, origem, &mut relatorio, &mut tocados, &mut midia)?;
         }
         if contar_aplicados(&tx)? == aplicados_antes {
             break;
@@ -198,6 +304,7 @@ fn drenar_origem(
     origem: &str,
     relatorio: &mut Relatorio,
     tocados: &mut BTreeMap<(String, String), ()>,
+    midia: &mut Midia<'_>,
 ) -> DatabaseCommandResult<()> {
     let (baseline, mut cursor) = cursor_de(tx, origem)?;
 
@@ -212,7 +319,7 @@ fn drenar_origem(
 
         // Uma ação de vários eventos entra inteira ou não entra (B2.2).
         if !envelope.grupo.e_isolado() {
-            match aplicar_grupo(tx, origem, &envelope, relatorio, tocados)? {
+            match aplicar_grupo(tx, origem, &envelope, relatorio, tocados, midia)? {
                 Grupo::Entrou(total) | Grupo::VirouDecisao(total) => {
                     cursor = proximo + total - 1;
                     gravar_cursor(tx, origem, baseline, cursor)?;
@@ -220,6 +327,14 @@ fn drenar_origem(
                 }
                 Grupo::Espera => break,
             }
+        }
+
+        // O blob antes de tudo o que materializa. Faltando, o evento espera como espera um pai
+        // que não chegou: nada muda, nada marca, o cursor fica.
+        let faltam = midia.faltam(tx, &envelope)?;
+        if !faltam.is_empty() {
+            relatorio.esperando_blob.extend(faltam);
+            break;
         }
 
         let resultado = apply_remote_event(tx, &envelope)?;
@@ -276,6 +391,7 @@ enum Grupo {
 ///
 /// ```text
 /// grupo incompleto                        → não aplica nada, o cursor espera
+/// um membro cita blob que não está aqui    → não aplica nada, o cursor espera
 /// grupo completo, num SAVEPOINT, membro a membro:
 ///   todos aplicados                       → confirma o grupo
 ///   um membro espera dependência          → desfaz tudo, o grupo espera
@@ -292,6 +408,7 @@ fn aplicar_grupo(
     primeiro: &EventEnvelope,
     relatorio: &mut Relatorio,
     tocados: &mut BTreeMap<(String, String), ()>,
+    midia: &mut Midia<'_>,
 ) -> DatabaseCommandResult<Grupo> {
     let grupo = &primeiro.grupo;
     if grupo.index != 0 {
@@ -340,6 +457,18 @@ fn aplicar_grupo(
             )));
         }
         membros.push(membro);
+    }
+
+    // Os blobs de TODOS os membros, antes do savepoint: a ação entra inteira, e um membro que cita
+    // imagem ausente segura os outros. Juntar todos os que faltam, e não parar no primeiro, é o que
+    // deixa a sessão buscar tudo de uma vez.
+    let mut faltam = BTreeSet::new();
+    for membro in &membros {
+        faltam.extend(midia.faltam(tx, membro)?);
+    }
+    if !faltam.is_empty() {
+        relatorio.esperando_blob.extend(faltam);
+        return Ok(Grupo::Espera);
     }
 
     tx.execute_batch("SAVEPOINT grupo_de_mutacao")
@@ -535,9 +664,60 @@ fn guardar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandRes
     crate::infrastructure::sqlite::sync_repository::gravar_envelope(tx, envelope, true)
 }
 
+/// Os blobs citados pelos eventos que ainda não foram aplicados — inclusive os de sessões antigas.
+///
+/// É a lista que a sessão pede ao outro aparelho. Pedir por todo pendente, e não só pelo que parou
+/// a fila agora, é barato (quem já tem não retransmite) e evita uma volta por lacuna.
+pub fn blobs_dos_pendentes(connection: &Connection) -> DatabaseCommandResult<BTreeSet<String>> {
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT {}
+               FROM sync_events e
+          LEFT JOIN sync_applied_events a ON a.event_id = e.event_id
+              WHERE a.event_id IS NULL",
+            crate::infrastructure::sqlite::sync_repository::colunas_do_envelope("e.")
+        ))
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    let pendentes = statement
+        .query_map(
+            [],
+            crate::infrastructure::sqlite::sync_repository::envelope_da_linha,
+        )
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?
+        .collect::<Result<Vec<EventEnvelope>, _>>()
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    let mut hashes = BTreeSet::new();
+    for envelope in &pendentes {
+        hashes.extend(blobs_do_evento(envelope));
+    }
+    Ok(hashes)
+}
+
+/// **Só para teste:** a drenagem sem a conferência de blob.
+///
+/// Os gates que não são sobre mídia — ordem, lacuna, confiança, grupo, poda — montam payloads à
+/// mão e não mantêm blob store. Eles declaram isso importando esta função pelo nome (em geral como
+/// `receber_eventos_sem_conferir_blobs as receber_eventos`), e o código de produção não tem como
+/// chamá-la: ela não existe fora de `cfg(test)`.
+#[cfg(test)]
+pub fn receber_eventos_sem_conferir_blobs(
+    connection: &mut Connection,
+    envelopes: &[EventEnvelope],
+) -> DatabaseCommandResult<Relatorio> {
+    struct TodosPresentes;
+    impl BlobsLocais for TodosPresentes {
+        fn verificado(&self, _hash: &str) -> DatabaseCommandResult<bool> {
+            Ok(true)
+        }
+    }
+    receber_eventos(connection, envelopes, &TodosPresentes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Os gates deste módulo são de ordem, lacuna e grupo; os de mídia chamam `super::receber_eventos`.
+    use super::receber_eventos_sem_conferir_blobs as receber_eventos;
     use crate::domain::identity::DeviceIdentity;
     use crate::domain::sync::AggregateRef;
     use crate::domain::sync::Operation;
@@ -902,5 +1082,288 @@ mod tests {
             erro.message
         );
         assert_eq!(cursor(&connection, remota.device_id()), 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Etapa D, item 12 — o blob é dependência de materialização
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Um blob store de verdade, num diretório próprio.
+    struct Disco {
+        raiz: std::path::PathBuf,
+        store: BlobStore,
+    }
+
+    impl Disco {
+        fn novo() -> Self {
+            let raiz = std::env::temp_dir().join(format!("narrahub-d12-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&raiz).expect("diretório");
+            Self {
+                store: BlobStore::new(raiz.clone()),
+                raiz,
+            }
+        }
+    }
+
+    impl Drop for Disco {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.raiz);
+        }
+    }
+
+    fn bytes_da_imagem(semente: u32) -> Vec<u8> {
+        (0..700_u32).map(|i| ((i * semente) % 251) as u8).collect()
+    }
+
+    /// Um capítulo cujo texto cita a imagem, assinado pela origem.
+    fn capitulo_com_imagem(
+        origem: &DeviceIdentity,
+        seq: i64,
+        id: &str,
+        hash: &str,
+    ) -> EventEnvelope {
+        let payload = format!(
+            r#"{{"id":"{id}","bookId":"b1","title":"{id}","content":"<p>x</p><img data-narrahub-blob=\"{hash}\" data-mime-type=\"image/png\">","summary":"","sceneOrigin":"","sceneDestination":"","status":"rascunho","canonStatus":"canon","customFields":[]}}"#
+        );
+        let mut envelope = envelope_de_origem(
+            origem.device_id(),
+            seq,
+            "u1",
+            &AggregateRef::new("chapter", id),
+            Operation::Upsert,
+            &payload,
+            "",
+        );
+        envelope.signature = origem.sign(&envelope);
+        envelope
+    }
+
+    fn existe_capitulo(connection: &Connection, id: &str) -> bool {
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM chapters WHERE id = ?1)",
+                [id],
+                |row| row.get(0),
+            )
+            .expect("existe")
+    }
+
+    fn marcado(connection: &Connection, envelope: &EventEnvelope) -> i64 {
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM sync_applied_events WHERE event_id = ?1",
+                [&envelope.event_id],
+                |row| row.get(0),
+            )
+            .expect("marcado")
+    }
+
+    fn revisao_corrente(connection: &Connection, id: &str) -> Option<String> {
+        crate::infrastructure::sqlite::sync_codec::revisao_corrente(
+            connection,
+            &AggregateRef::new("chapter", id),
+        )
+        .expect("revisão")
+    }
+
+    /// O evento que espera blob: no log, e em nenhum outro lugar.
+    fn so_no_log(connection: &Connection, origem: &str, envelope: &EventEnvelope, id: &str) {
+        assert!(!existe_capitulo(connection, id), "o domínio mudou");
+        assert_eq!(
+            revisao_corrente(connection, id),
+            None,
+            "a revisão corrente mudou"
+        );
+        assert_eq!(
+            marcado(connection, envelope),
+            0,
+            "o evento foi marcado como aplicado"
+        );
+        assert_eq!(cursor(connection, origem), 0, "o cursor andou");
+        assert_eq!(
+            eventos_no_log(connection, origem),
+            1,
+            "o envelope válido tinha de ficar no log"
+        );
+    }
+
+    /// **Blob disponível: aplica normalmente.**
+    #[test]
+    fn d12_blob_disponivel_aplica() {
+        let fixture = TemporaryDatabase::new();
+        let (mut connection, _eu, remota) = preparar(&fixture);
+        let disco = Disco::novo();
+        let hash = disco.store.put(&bytes_da_imagem(7)).expect("publicar");
+
+        let evento = capitulo_com_imagem(&remota, 1, "cap-img", &hash);
+        let relatorio =
+            super::receber_eventos(&mut connection, std::slice::from_ref(&evento), &disco.store)
+                .expect("receber");
+
+        assert_eq!(relatorio.aplicados, 1);
+        assert!(relatorio.esperando_blob.is_empty());
+        assert!(existe_capitulo(&connection, "cap-img"));
+        assert_eq!(marcado(&connection, &evento), 1);
+        assert_eq!(cursor(&connection, remota.device_id()), 1);
+    }
+
+    /// **Blob ausente: espera.** Nada materializa, nada marca, o cursor fica — e não é conflito.
+    #[test]
+    fn d12_blob_ausente_espera_sem_materializar_nem_divergir() {
+        let fixture = TemporaryDatabase::new();
+        let (mut connection, _eu, remota) = preparar(&fixture);
+        let disco = Disco::novo();
+        let hash = crate::infrastructure::blob_store::hash_dos_bytes(&bytes_da_imagem(7));
+
+        let evento = capitulo_com_imagem(&remota, 1, "cap-img", &hash);
+        let relatorio =
+            super::receber_eventos(&mut connection, std::slice::from_ref(&evento), &disco.store)
+                .expect("receber");
+
+        assert_eq!(relatorio.aplicados, 0);
+        assert_eq!(relatorio.pendentes, 1);
+        assert_eq!(
+            relatorio.divergencias, 0,
+            "faltar arquivo não é decisão de ninguém"
+        );
+        assert_eq!(relatorio.esperando_blob, BTreeSet::from([hash.clone()]));
+        so_no_log(&connection, remota.device_id(), &evento, "cap-img");
+        let divergencias: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sync_divergences", [], |row| {
+                row.get(0)
+            })
+            .expect("contar");
+        assert_eq!(divergencias, 0);
+        assert_eq!(
+            blobs_dos_pendentes(&connection).expect("pendentes"),
+            BTreeSet::from([hash])
+        );
+    }
+
+    /// **SHA inválido no disco: o arquivo existe e não confere — espera como se não existisse.**
+    #[test]
+    fn d12_blob_corrompido_aqui_espera() {
+        let fixture = TemporaryDatabase::new();
+        let (mut connection, _eu, remota) = preparar(&fixture);
+        let disco = Disco::novo();
+        let hash = disco.store.put(&bytes_da_imagem(7)).expect("publicar");
+        std::fs::write(
+            disco.store.path_for(&hash).expect("caminho"),
+            b"outros bytes",
+        )
+        .expect("corromper");
+
+        let evento = capitulo_com_imagem(&remota, 1, "cap-img", &hash);
+        let relatorio =
+            super::receber_eventos(&mut connection, std::slice::from_ref(&evento), &disco.store)
+                .expect("receber");
+
+        assert_eq!(relatorio.aplicados, 0);
+        assert_eq!(relatorio.esperando_blob, BTreeSet::from([hash]));
+        so_no_log(&connection, remota.device_id(), &evento, "cap-img");
+    }
+
+    /// **Grupo atômico com um blob ausente: nenhum membro materializa.**
+    ///
+    /// O primeiro membro não cita imagem nenhuma e, sozinho, aplicaria. Ele espera junto.
+    #[test]
+    fn d12_grupo_com_um_blob_ausente_nao_materializa_nenhum_membro() {
+        let fixture = TemporaryDatabase::new();
+        let (mut connection, _eu, remota) = preparar(&fixture);
+        let disco = Disco::novo();
+        let bytes = bytes_da_imagem(11);
+        let hash = crate::infrastructure::blob_store::hash_dos_bytes(&bytes);
+
+        let mut sem_imagem = cadeia(&remota, 1).remove(0);
+        sem_imagem.grupo = grupo("acao", 0, 2);
+        sem_imagem.signature = remota.sign(&sem_imagem);
+        let mut com_imagem = capitulo_com_imagem(&remota, 2, "cap-img", &hash);
+        com_imagem.grupo = grupo("acao", 1, 2);
+        com_imagem.signature = remota.sign(&com_imagem);
+        let lote = vec![sem_imagem.clone(), com_imagem.clone()];
+
+        let relatorio =
+            super::receber_eventos(&mut connection, &lote, &disco.store).expect("receber");
+        assert_eq!(relatorio.aplicados, 0);
+        assert_eq!(relatorio.pendentes, 2);
+        assert_eq!(relatorio.esperando_blob, BTreeSet::from([hash.clone()]));
+        assert!(
+            !existe_capitulo(&connection, "cap-1"),
+            "o membro sem imagem materializou sozinho"
+        );
+        assert!(!existe_capitulo(&connection, "cap-img"));
+        assert_eq!(
+            marcado(&connection, &sem_imagem) + marcado(&connection, &com_imagem),
+            0
+        );
+        assert_eq!(cursor(&connection, remota.device_id()), 0);
+
+        // O blob chega: a ação entra inteira, uma vez.
+        disco.store.put(&bytes).expect("chegou");
+        let relatorio = super::receber_eventos(&mut connection, &[], &disco.store).expect("drenar");
+        assert_eq!(relatorio.aplicados, 2);
+        assert!(existe_capitulo(&connection, "cap-1") && existe_capitulo(&connection, "cap-img"));
+        assert_eq!(cursor(&connection, remota.device_id()), 2);
+    }
+
+    /// **Pendente antigo continua bloqueado, e o retry posterior aplica exatamente uma vez.**
+    ///
+    /// O evento chegou numa sessão anterior (outra conexão, como se o app tivesse sido fechado).
+    /// A sessão seguinte traz outra coisa, e o pendente é reavaliado pela mesma drenagem — com a
+    /// mesma checagem. Só quando o arquivo está no disco ele entra, e entra uma vez.
+    #[test]
+    fn d12_pendente_antigo_continua_bloqueado_e_o_retry_aplica_uma_vez() {
+        let fixture = TemporaryDatabase::new();
+        let disco = Disco::novo();
+        let bytes = bytes_da_imagem(13);
+        let hash = crate::infrastructure::blob_store::hash_dos_bytes(&bytes);
+
+        let (evento, remota) = {
+            let (mut connection, _eu, remota) = preparar(&fixture);
+            let evento = capitulo_com_imagem(&remota, 1, "cap-img", &hash);
+            super::receber_eventos(&mut connection, std::slice::from_ref(&evento), &disco.store)
+                .expect("sessão antiga");
+            (evento, remota)
+        };
+
+        // Sessão nova, conexão nova. Chega o seq 2, que dependeria só da ordem.
+        let mut connection = fixture.database.write().expect("reabrir");
+        let seguinte = {
+            let mut envelope = cadeia(&remota, 2).remove(1);
+            envelope.signature = remota.sign(&envelope);
+            envelope
+        };
+        let relatorio = super::receber_eventos(
+            &mut connection,
+            std::slice::from_ref(&seguinte),
+            &disco.store,
+        )
+        .expect("sessão nova");
+        assert_eq!(
+            relatorio.aplicados, 0,
+            "o seq 2 não passa por cima do 1 que espera"
+        );
+        assert_eq!(relatorio.esperando_blob, BTreeSet::from([hash.clone()]));
+        assert!(!existe_capitulo(&connection, "cap-img"));
+        assert!(!existe_capitulo(&connection, "cap-2"));
+        assert_eq!(cursor(&connection, remota.device_id()), 0);
+
+        // O blob chega. Drenar aplica os dois, e o de imagem uma vez só.
+        disco.store.put(&bytes).expect("chegou");
+        let relatorio = super::receber_eventos(&mut connection, &[], &disco.store).expect("retry");
+        assert_eq!(relatorio.aplicados, 2);
+        assert!(relatorio.esperando_blob.is_empty());
+        assert_eq!(marcado(&connection, &evento), 1);
+        assert_eq!(cursor(&connection, remota.device_id()), 2);
+
+        // E repetir tudo — o reenvio que a rede faz — não aplica de novo.
+        let relatorio =
+            super::receber_eventos(&mut connection, &[evento.clone(), seguinte], &disco.store)
+                .expect("reenvio");
+        assert_eq!(relatorio.aplicados, 0);
+        assert_eq!(marcado(&connection, &evento), 1);
+        assert!(blobs_dos_pendentes(&connection)
+            .expect("pendentes")
+            .is_empty());
     }
 }

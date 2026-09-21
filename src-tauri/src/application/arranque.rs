@@ -243,6 +243,57 @@ mod tests {
         }
     }
 
+    /// **D0 — o arranque da C não pode tornar um aparelho novo "usado".**
+    ///
+    /// A adoção grava uma linha em `sync_adoptions`, e essa tabela é `ProtocoloNaoTransferido` —
+    /// categoria que `tabelas_que_bloqueiam` usa inteira para decidir se um aparelho está virgem.
+    /// Se ela contar, um aparelho recém-instalado deixa de ser elegível a receber bootstrap
+    /// **por ter aberto o aplicativo uma vez**, e o pareamento perde o caminho de semeadura.
+    ///
+    /// Virgem é não ter acervo nem passado causal. A marca de que a adoção rodou (sobre nada) não
+    /// é acervo.
+    #[test]
+    fn aparelho_novo_continua_elegivel_a_bootstrap_depois_do_arranque() {
+        use crate::infrastructure::sqlite::sync_snapshot::receptor_elegivel;
+
+        let aparelho = Aparelho::novo();
+        aparelho.preparar().expect("arranque de um aparelho novo");
+        assert_eq!(
+            aparelho
+                .banco
+                .connection()
+                .query_row("SELECT COUNT(*) FROM sync_adoptions", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("contar"),
+            1,
+            "o cenário exige que a adoção tenha registrado a versão"
+        );
+
+        let mut connection = aparelho.banco.connection();
+        assert!(
+            receptor_elegivel(&mut connection).expect("consultar"),
+            "o arranque tornou um aparelho novo inelegível a bootstrap"
+        );
+        drop(connection);
+
+        // E escrita de domínio de verdade continua tirando a virgindade, como sempre.
+        let banco = aparelho.banco_conforme_a_fase();
+        crate::application::universe_service::create(
+            &banco,
+            &aparelho.store,
+            &aparelho.identidade,
+            "Primeiro universo",
+            "",
+            "",
+        )
+        .expect("criar universo");
+        let mut connection = aparelho.banco.connection();
+        assert!(
+            !receptor_elegivel(&mut connection).expect("consultar"),
+            "um aparelho com acervo continuou elegível a ser semeado por cima"
+        );
+    }
+
     /// **Gate 1 — banco legado: abre, converte, adota sozinho, libera.**
     #[test]
     fn banco_legado_e_adotado_no_arranque_e_libera_o_aplicativo() {

@@ -217,7 +217,7 @@ mod tests {
     use crate::domain::sync::AggregateRef;
     use crate::domain::sync::Operation;
     use crate::infrastructure::sqlite::sync_repository::{append_local_event, LocalChange};
-    use crate::infrastructure::sqlite::sync_session::receber_eventos;
+    use crate::infrastructure::sqlite::sync_session::receber_eventos_sem_conferir_blobs as receber_eventos;
     use crate::infrastructure::sqlite::test_support::{seed_universe, TemporaryDatabase};
 
     /// Um aparelho de verdade: banco próprio, identidade própria, chave

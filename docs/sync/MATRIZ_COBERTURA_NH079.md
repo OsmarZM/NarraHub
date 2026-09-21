@@ -787,6 +787,62 @@ estado; sem gênese, o receptor nasceria com conteúdo que nenhum evento sustent
 continua sendo o vetor **por origem** — o baseline do receptor é derivado dele, e não um número
 global único.
 
+## 6.0.1 A etapa D: primeiro pareamento entre acervos
+
+Reconciliação bidirecional por evento sobre duas gêneses independentes; snapshot só semeia aparelho
+virgem. Três correções saíram do diagnóstico e entram antes de qualquer outra coisa da D:
+
+**D0 — ter aberto o aplicativo não é acervo.** `sync_adoptions` (`ProtocoloNaoTransferido`) saiu de
+`tabelas_que_bloqueiam`: o arranque adota "nada" num aparelho novo, e essa marca tornava todo aparelho
+real inelegível a bootstrap. Escrita de domínio continua tirando a virgindade.
+
+**D13 — o doador confere antes e admite depois do `Semeado { ok: true }`.**
+
+```text
+antes   admite → captura → envia → Semeado{ok:false}  →  doador pareado, receptor não
+agora   confere (só leitura) → captura → envia → Semeado{ok:true} → admite → incremental
+```
+
+Nada de admitir e desfazer: não existe instante em que o roster diga o que a sessão ainda não provou.
+As recusas da admissão (o próprio aparelho, aparelho abandonado ou aposentado) continuam antes de o
+acervo sair — `sync_trust::conferir_admissao_por_pareamento`, a mesma conferência que
+`admitir_por_pareamento` faz antes de gravar.
+
+**D12 — o blob é dependência de materialização.** Envelope válido entra em `sync_events`; se ele cita
+blob ausente ou que não confere o SHA aqui:
+
+```text
+domínio                 não muda
+revisão corrente        não muda
+sync_applied_events     não marca
+cursor                  não anda
+grupo de mutação        nenhum membro materializa
+```
+
+Blob ausente é **espera**, não divergência: nenhum conflict kind novo, nenhum evento apagado.
+
+| peça | onde |
+| --- | --- |
+| referências de blob de um payload, por tipo e propriedade | `sync_codec::midia::CAMPOS_DE_BLOB` / `blobs_do_evento` |
+| superfícies do ADR 0010 que não viajam em evento, com motivo | `sync_codec::midia::FORA_DO_EVENTO` |
+| checagem obrigatória, isolado e grupo (antes do savepoint) | `sync_session::receber_eventos(.., blobs)` → `Midia::faltam` |
+| blobs citados por pendentes, inclusive de sessões antigas | `sync_session::blobs_dos_pendentes` |
+| pedir → `put_esperando` (SHA) → drenar de novo | `sync_sessao::puxar_blobs` |
+| sobrou evento esperando blob | a sessão termina com erro "incompleta", **depois** de servir o outro lado |
+
+A checagem mora na drenagem, e não na rede: é a drenagem que reavalia pendentes de sessões antigas, e
+a rede só pré-busca. Evento que não vai materializar nada não espera blob (já aplicado por `event_id`,
+ou revisão já conhecida). Os gates que não são sobre mídia chamam
+`receber_eventos_sem_conferir_blobs`, que só existe em `cfg(test)`.
+
+Gates: `sync_session::tests::d12_*` (disponível, ausente, corrompido aqui, grupo com um blob
+ausente, pendente antigo bloqueado + retry aplica uma vez), `sync_sessao::tests::d_blob_*` (peer sem o
+blob; peer com bytes que não conferem; retry posterior), `midia::tests::toda_superficie_binaria_esta_classificada`,
+`sync_manuscrito_testes::d_extracao_de_blob_cobre_o_payload_real_de_cada_superficie` e
+`sync_sessao::tests::d_bootstrap_que_falha_nao_deixa_pareamento_pela_metade`. Mutação medida:
+desligar `Midia::faltam` reprova 6 dos 7 gates de blob (o "disponível" é o controle); admitir antes
+de doar reprova o gate da D13.
+
 ## 6.1 Decisões registradas para a B6, antes da gênese
 
 Duas coisas precisam estar resolvidas **antes** de a etapa C adotar os bancos, e nenhuma delas entra na

@@ -1353,17 +1353,17 @@ mod tests {
         assert!(erro.message.contains("canônico"), "{}", erro.message);
     }
 
-    /// **E o anexo bem formado aplica, mesmo sem o blob estar aqui.**
-    ///
-    /// É o item 7 do contrato: a transferência de blob é separada do log
-    /// causal. O evento aplica, a linha materializa com a referência, e o
-    /// cursor avança — travar a replicação inteira por um arquivo faltando
-    /// pararia capítulos e entidades de convergir também.
+    /// **E o anexo bem formado aplica.**
     ///
     /// Senão os dois gates acima passariam por vácuo: uma aplicação que recusa
     /// tudo também recusa bytes.
+    ///
+    /// `apply_remote_event` não consulta o disco — a presença do blob é
+    /// conferida antes, na drenagem (`sync_session`, etapa D item 12), que é o
+    /// único caminho que chama esta função fora de teste. Aqui o que se prova é
+    /// só a forma: referência canônica entra, coluna legada fica vazia.
     #[test]
-    fn anexo_aplica_mesmo_com_o_blob_ainda_ausente() {
+    fn anexo_bem_formado_aplica() {
         let fixture = TemporaryDatabase::new();
         let mut connection = preparar(&fixture);
         connection
@@ -1398,7 +1398,7 @@ mod tests {
         assert_eq!(gravado, hash, "a referência tinha que ficar");
         assert_eq!(inline, "", "e a coluna legada, vazia");
 
-        // O cursor avançou: o arquivo ausente não trava a causalidade.
+        // E o evento foi marcado como aplicado.
         let aplicados: i64 = connection
             .query_row("SELECT COUNT(*) FROM sync_applied_events", [], |row| {
                 row.get(0)

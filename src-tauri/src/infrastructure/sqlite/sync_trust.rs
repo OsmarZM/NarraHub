@@ -332,6 +332,36 @@ pub fn admitir_por_pareamento(
     sessao: &SessaoAutenticada,
     nome: &str,
 ) -> DatabaseCommandResult<()> {
+    conferir_admissao_por_pareamento(connection, sessao)?;
+
+    // `introduced_by` vazio é o que o schema documenta como pareamento direto.
+    // O nome é o que o humano vai ler na lista, e só ele é atualizado num
+    // repareamento: chave e estado não se mexem por aqui.
+    connection
+        .execute(
+            "INSERT INTO sync_devices (device_id, name, ed25519_public, introduced_by, is_self)
+             VALUES (?1, ?2, ?3, '', 0)
+             ON CONFLICT(device_id) DO UPDATE SET name = excluded.name",
+            rusqlite::params![sessao.device_id(), nome, sessao.ed25519_public()],
+        )
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Ok(())
+}
+
+/// **As recusas de [`admitir_por_pareamento`], sem escrever nada.**
+///
+/// Existe para o doador do bootstrap (etapa D, item 13). Ele só pode gravar o receptor no roster
+/// depois de o receptor confirmar que semeou — senão uma semeadura que falha deixa um lado pareado
+/// e o outro não. Mas as recusas (o próprio aparelho, chave que não deriva o id, aparelho que saiu
+/// do conjunto) precisam ser conhecidas ANTES de mandar o acervo: descobrir depois que o receptor é
+/// um aparelho abandonado seria ter entregado tudo a quem não podia voltar.
+///
+/// Conferir antes e gravar depois, e não gravar antes e desfazer: não existe instante em que o
+/// roster diga algo que a sessão ainda não provou.
+pub fn conferir_admissao_por_pareamento(
+    connection: &Connection,
+    sessao: &SessaoAutenticada,
+) -> DatabaseCommandResult<()> {
     let device_id = sessao.device_id();
     let ed25519_public = sessao.ed25519_public();
 
@@ -394,18 +424,6 @@ pub fn admitir_por_pareamento(
             ),
         }));
     }
-
-    // `introduced_by` vazio é o que o schema documenta como pareamento direto.
-    // O nome é o que o humano vai ler na lista, e só ele é atualizado num
-    // repareamento: chave e estado não se mexem por aqui.
-    connection
-        .execute(
-            "INSERT INTO sync_devices (device_id, name, ed25519_public, introduced_by, is_self)
-             VALUES (?1, ?2, ?3, '', 0)
-             ON CONFLICT(device_id) DO UPDATE SET name = excluded.name",
-            rusqlite::params![device_id, nome, ed25519_public],
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
     Ok(())
 }
 
@@ -450,7 +468,7 @@ mod tests {
     use crate::domain::sync::{AggregateRef, Operation};
     use crate::infrastructure::sqlite::sync_apply::envelope_de_origem;
     use crate::infrastructure::sqlite::sync_gc::{abandonar, revogar, FalhaDeSaida};
-    use crate::infrastructure::sqlite::sync_session::receber_eventos;
+    use crate::infrastructure::sqlite::sync_session::receber_eventos_sem_conferir_blobs as receber_eventos;
     use crate::infrastructure::sqlite::test_support::{
         origem_remota_confiavel, seed_universe, self_de_teste, TemporaryDatabase,
     };

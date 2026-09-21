@@ -465,7 +465,19 @@ fn tabelas_que_bloqueiam() -> Vec<&'static str> {
         // identidade ali antes de semear. A coerência dele é checada à parte.
         .filter(|t| *t != "sync_devices")
         .collect();
-    tabelas.extend(tabelas_de(ProtocoloNaoTransferido));
+    tabelas.extend(
+        tabelas_de(ProtocoloNaoTransferido)
+            .into_iter()
+            // **`sync_adoptions` é a segunda exceção justificada.** Ela registra que a adoção da
+            // etapa C rodou neste arquivo — e num aparelho recém-instalado ela roda sobre NADA,
+            // adotando zero agregados. Virgem é não ter acervo nem passado causal; ter aberto o
+            // aplicativo uma vez não é acervo.
+            //
+            // Sem esta linha, todo aparelho real deixa de poder ser semeado: o arranque acontece
+            // antes de qualquer pareamento, e a marca dele bloquearia o bootstrap para sempre.
+            // A tabela continua fora do bundle: ela não viaja, e também não suja o receptor.
+            .filter(|t| *t != "sync_adoptions"),
+    );
     tabelas.extend(tabelas_de(BloqueiaBootstrap));
     tabelas.sort_unstable();
     tabelas
@@ -982,15 +994,16 @@ pub fn semear(
 ) -> DatabaseCommandResult<Result<(), FalhaDeSemeadura>> {
     // **Os blobs primeiro, antes de qualquer escrita no banco.**
     //
-    // A ordem é a exigência da fatia 8, e ela é o oposto da do incremental:
+    // A ordem é a exigência da fatia 8, e desde a etapa D (item 12) é a mesma
+    // do incremental:
     //
-    //   incremental   evento aplica, blob chega depois, cursor avança
+    //   incremental   evento espera no log até o blob chegar verificado
     //   bootstrap     blob verificado, e SÓ ENTÃO o banco é semeado
     //
-    // O motivo é que o bootstrap não se repete. Depois de semeado, o cursor
-    // está no baseline: o que faltou não é reenviado por ninguém, e a imagem
-    // ausente fica ausente para sempre. No incremental há sempre uma próxima
-    // sessão.
+    // A diferença é o que acontece quando falta: o evento incremental fica
+    // pendente e a próxima sessão tenta de novo; o bootstrap não se repete —
+    // depois de semeado, o cursor está no baseline e o que faltou não é
+    // reenviado por ninguém. Por isso aqui a falta recusa a semeadura inteira.
     let faltantes = blob_backfill::blobs_faltantes(store, &bundle.blobs)?;
     if !faltantes.is_empty() {
         return Ok(Err(FalhaDeSemeadura::BlobObrigatorioAusente {
@@ -1313,7 +1326,7 @@ mod tests {
     use crate::infrastructure::sqlite::sync_repository::{
         append_event_in_transaction, LocalChange,
     };
-    use crate::infrastructure::sqlite::sync_session::receber_eventos;
+    use crate::infrastructure::sqlite::sync_session::receber_eventos_sem_conferir_blobs as receber_eventos;
     use crate::infrastructure::sqlite::test_support::{seed_universe, TemporaryDatabase};
 
     // ═══════════════════════════════════════════════════════════════════════

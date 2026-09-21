@@ -201,11 +201,12 @@ pub(super) fn pai_ausente(
     validar(connection, &envelope.payload)
 }
 
-/// ## O cursor não espera o arquivo
+/// ## Quem espera o arquivo é a drenagem, não o codec
 ///
-/// O payload carrega `blobHash`, e o blob pode não estar aqui ainda — a transferência é separada
-/// do log causal. O evento é aplicado, a linha materializa com a referência, e o cursor avança.
-/// Travar o cursor por arquivo faltando pararia a replicação inteira por causa de uma imagem.
+/// O payload carrega `blobHash`, e o arquivo viaja fora do log. Este `aplicar` não olha o disco: a
+/// pergunta "o blob está aqui?" é da drenagem (`sync_session`), que só chama a aplicação depois de
+/// conferir as referências extraídas por `sync_codec::midia` (etapa D, item 12). Blob ausente é
+/// dependência de materialização — o evento espera, como espera um pai que não chegou.
 pub(super) fn aplicar(tx: &Transaction<'_>, envelope: &EventEnvelope) -> DatabaseCommandResult<()> {
     if envelope.operation == Operation::Delete {
         tx.execute(

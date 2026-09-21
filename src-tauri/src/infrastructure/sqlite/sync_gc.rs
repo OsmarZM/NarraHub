@@ -523,7 +523,7 @@ mod tests {
     use crate::domain::identity::DeviceIdentity;
     use crate::domain::sync::{AggregateRef, Operation};
     use crate::infrastructure::sqlite::sync_apply::envelope_de_origem;
-    use crate::infrastructure::sqlite::sync_session::receber_eventos;
+    use crate::infrastructure::sqlite::sync_session::receber_eventos_sem_conferir_blobs as receber_eventos;
     use crate::infrastructure::sqlite::test_support::{
         origem_remota_confiavel, seed_universe, self_de_teste, TemporaryDatabase,
     };

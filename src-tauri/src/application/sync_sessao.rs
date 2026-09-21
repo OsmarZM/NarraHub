@@ -38,7 +38,8 @@
 //! eu fresco   ele fresco   papel
 //! ---------   ----------   -----------------------------------------------
 //!    sim         nao       RECEPTOR  nao admite; recebe bundle, blobs, semeia
-//!    nao         sim       DOADOR    admite; captura, envia, serve blobs
+//!    nao         sim       DOADOR    confere; captura, envia, serve blobs;
+//!                                    admite SO depois do `Semeado { ok }`
 //!    sim         sim       PAR       os dois admitem; nada a semear
 //!    nao         nao       PAR       os dois admitem; incremental
 //! ```
@@ -48,12 +49,28 @@
 //! do roster do bundle. Admitir antes tornaria o bootstrap impossível, e isso
 //! foi medido.
 //!
+//! **E o doador só admite depois da prova** (etapa D, item 13). Até lá ele
+//! apenas confere que admitiria. Uma semeadura que falha termina com os dois
+//! roster como começaram — nenhum lado pareado pela metade — e o incremental
+//! só começa com os dois lados já confiando um no outro.
+//!
 //! ## Lock-step, e por quê
 //!
 //! Toda troca é "um fala, o outro responde". Com os dois escrevendo ao mesmo
 //! tempo, duas mensagens grandes podem encher a janela do TCP nos dois sentidos
 //! e travar a sessão com os dois lados esperando. O visitante sempre fala
 //! primeiro.
+//!
+//! ## Blob que falta segura o evento, e a sessão diz que ficou incompleta
+//!
+//! A drenagem (`sync_session`) não materializa evento que cite imagem ausente
+//! aqui: ele fica no log, pendente. Depois dos eventos, cada lado pede ao outro
+//! os blobs do seu domínio e os dos seus pendentes — inclusive de sessões
+//! antigas —, grava só o que conferir o SHA e drena de novo. Se ainda sobrar
+//! evento esperando blob (o outro não tinha, ou mandou bytes que não conferem),
+//! a sessão termina com erro explícito, **depois** de servir os blobs que o
+//! outro lado pediu. O evento não é apagado e não vira conflito: a próxima
+//! sessão tenta de novo.
 //!
 //! ## O incremental termina por falta de progresso, nunca por repetição
 //!
@@ -79,6 +96,7 @@ use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::identity::DeviceIdentity;
 use crate::domain::sync::EventEnvelope;
 use crate::infrastructure::blob_store::BlobStore;
+use crate::infrastructure::sqlite::sync_session::BlobsLocais;
 use crate::infrastructure::sqlite::sync_snapshot::{self, Categoria};
 use crate::infrastructure::sqlite::{blob_backfill, sync_exchange, sync_session, SqliteDatabase};
 use crate::infrastructure::sync_bundle_wire::{de_fio, para_fio, BundleNoFio};
@@ -342,8 +360,24 @@ fn depois_do_pin(
             resultado.houve_bootstrap = true;
         }
         Papel::Doador => {
-            para_admitir(ctx.database)?;
+            // **Confere antes, grava depois do `Semeado { ok: true }`** (etapa D, item 13).
+            //
+            // Admitir antes de capturar deixava, numa semeadura que falha, o doador pareado com
+            // um aparelho que não recebeu nada — e o receptor sem o doador. O próximo encontro
+            // dos dois seria uma sessão entre pareados que um dos lados nunca concluiu.
+            //
+            // As recusas da admissão (o próprio aparelho, aparelho que saiu do conjunto) são
+            // conhecidas ANTES de o acervo sair daqui: descobrir depois seria ter entregado tudo
+            // a quem não podia entrar. A escrita no roster é que espera a prova.
+            {
+                let connection = ctx.database.read()?;
+                crate::infrastructure::sqlite::sync_trust::conferir_admissao_por_pareamento(
+                    &connection,
+                    &sessao,
+                )?;
+            }
             doar_bootstrap(&mut canal, ctx)?;
+            para_admitir(ctx.database)?;
             resultado.houve_bootstrap = true;
         }
         Papel::Par => {
@@ -498,6 +532,8 @@ fn servir_blobs(canal: &mut Canal<'_>, ctx: &Contexto<'_>) -> DatabaseCommandRes
                 // `read` confere o SHA antes de devolver: blob corrompido no
                 // disco deste lado vira "ausente", e não bytes errados no outro.
                 Ok(bytes) => {
+                    #[cfg(test)]
+                    let bytes = blob_adulterado::talvez(bytes);
                     canal.enviar(&Mensagem::BlobSegue { hash })?;
                     canal.enviar_bytes(&bytes)?;
                 }
@@ -611,9 +647,9 @@ fn vetor(database: &SqliteDatabase) -> DatabaseCommandResult<BTreeMap<String, i6
 /// Eventos nos dois sentidos, e depois blobs nos dois sentidos.
 ///
 /// Ordem fixa, e é a mesma dos dois lados: o visitante (quem fala primeiro)
-/// envia antes, depois recebe. Blobs vêm por último porque o incremental aplica
-/// a referência antes de o arquivo chegar — a etapa 13 aceita isso no
-/// incremental, e o arquivo chega na mesma sessão.
+/// envia antes, depois recebe. Blobs vêm depois porque só então cada lado sabe
+/// de quais precisa: o evento que cita imagem ausente ficou pendente na
+/// drenagem, e a puxada busca o arquivo e drena de novo (etapa D, item 12).
 fn incremental(
     canal: &mut Canal<'_>,
     ctx: &Contexto<'_>,
@@ -639,16 +675,30 @@ fn incremental(
     // esperava um vetor novo nesse ponto, e os dois lados ficavam lendo ao
     // mesmo tempo — o deadlock que o lock-step existe para impedir, escrito à
     // mão. Achado na leitura, antes do primeiro teste.
-    if falo_primeiro {
+    let esperando_blob = if falo_primeiro {
         resultado.eventos_enviados += enviar_eventos(canal, ctx, dele)?;
         receber_eventos(canal, ctx, resultado)?;
-        resultado.blobs_recebidos += puxar_blobs(canal, ctx)?;
+        let esperando = puxar_blobs(canal, ctx, resultado)?;
         servir_blobs(canal, ctx)?;
+        esperando
     } else {
         receber_eventos(canal, ctx, resultado)?;
         resultado.eventos_enviados += enviar_eventos(canal, ctx, dele)?;
         servir_blobs(canal, ctx)?;
-        resultado.blobs_recebidos += puxar_blobs(canal, ctx)?;
+        puxar_blobs(canal, ctx, resultado)?
+    };
+
+    // Só agora, com o protocolo inteiro cumprido dos dois lados: o outro aparelho recebeu o que
+    // pediu deste, e a falha daqui não vira falha de rede do lado de lá.
+    if !esperando_blob.is_empty() {
+        return Err(falha(format!(
+            "Sincronização incompleta: {} imagem(ns) de que as alterações recebidas dependem não \
+             chegaram — o outro aparelho não as tem, ou mandou um arquivo que não confere. As \
+             alterações ficaram guardadas, sem aplicar, e entram quando a imagem chegar. \
+             Exemplo: {}.",
+            esperando_blob.len(),
+            esperando_blob.iter().next().cloned().unwrap_or_default()
+        )));
     }
     Ok(())
 }
@@ -703,7 +753,7 @@ fn receber_eventos(
         }
         let relatorio = {
             let mut connection = ctx.database.write()?;
-            sync_session::receber_eventos(&mut connection, &lote)?
+            sync_session::receber_eventos(&mut connection, &lote, ctx.store)?
         };
         resultado.eventos_aplicados += relatorio.aplicados;
         resultado.eventos_pendentes = relatorio.pendentes;
@@ -711,9 +761,63 @@ fn receber_eventos(
     }
 }
 
-fn puxar_blobs(canal: &mut Canal<'_>, ctx: &Contexto<'_>) -> DatabaseCommandResult<usize> {
-    let faltam = blobs_que_faltam(ctx)?;
-    pedir_blobs(canal, ctx.store, &faltam)
+/// Pede os blobs que faltam, grava o que conferir e drena os pendentes de novo.
+///
+/// O que falta é a soma de duas perguntas: o domínio cita e o disco não tem (acervo antigo), e um
+/// evento pendente cita e o disco não tem — este segundo é o que segura a fila. A drenagem de
+/// depois é a mesma função da recepção, com a mesma checagem: um blob que não chegou continua
+/// segurando o evento.
+///
+/// Devolve os blobs que ainda seguram eventos. Vazio = nada ficou para trás por falta de arquivo.
+fn puxar_blobs(
+    canal: &mut Canal<'_>,
+    ctx: &Contexto<'_>,
+    resultado: &mut ResultadoDaSessao,
+) -> DatabaseCommandResult<BTreeSet<String>> {
+    let mut faltam = blobs_que_faltam(ctx)?;
+    let dos_pendentes = {
+        let connection = ctx.database.read()?;
+        sync_session::blobs_dos_pendentes(&connection)?
+    };
+    for hash in dos_pendentes {
+        if !faltam.contains(&hash) && !ctx.store.verificado(&hash)? {
+            faltam.insert(hash);
+        }
+    }
+    resultado.blobs_recebidos += pedir_blobs(canal, ctx.store, &faltam)?;
+
+    let relatorio = {
+        let mut connection = ctx.database.write()?;
+        sync_session::receber_eventos(&mut connection, &[], ctx.store)?
+    };
+    resultado.eventos_aplicados += relatorio.aplicados;
+    resultado.eventos_pendentes = relatorio.pendentes;
+    Ok(relatorio.esperando_blob)
+}
+
+/// Bytes adulterados na saída, só em teste: o outro lado precisa recusar pelo SHA.
+///
+/// O `servir_blobs` real não consegue mentir — `BlobStore::read` confere antes de devolver —, e é
+/// exatamente por isso que o gate do "peer mandou outros bytes" precisa de uma porta aqui.
+#[cfg(test)]
+pub(crate) mod blob_adulterado {
+    thread_local! {
+        static ARMADO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    pub fn armar(armado: bool) {
+        ARMADO.with(|celula| celula.set(armado));
+    }
+
+    pub fn talvez(mut bytes: Vec<u8>) -> Vec<u8> {
+        if ARMADO.with(|celula| celula.get()) {
+            match bytes.first_mut() {
+                Some(primeiro) => *primeiro ^= 0xFF,
+                None => bytes.push(0),
+            }
+        }
+        bytes
+    }
 }
 
 #[cfg(test)]
@@ -1084,6 +1188,374 @@ mod tests {
             !erro.message.contains("não foi adotado"),
             "{}",
             erro.message
+        );
+    }
+    /// **D0 — o receptor que já abriu o aplicativo continua sendo receptor.**
+    ///
+    /// O arranque da etapa C adota o acervo (sobre nada, num aparelho novo) e registra a versão em
+    /// `sync_adoptions`. Se essa marca contar como "conteúdo", o aparelho recém-instalado deixa de
+    /// ser elegível — e o pareamento perde o caminho de semeadura para sempre, porque todo
+    /// aparelho real abre o aplicativo antes de parear.
+    ///
+    /// Este gate passa pelo fluxo de verdade: arranque no receptor, pareamento por PIN, papéis.
+    #[test]
+    fn receptor_que_ja_passou_pelo_arranque_ainda_recebe_bootstrap() {
+        let a = Aparelho::novo("Desktop");
+        let b = Aparelho::novo("Celular");
+
+        // A tem acervo.
+        universe_service::create(
+            &a.banco.database,
+            &a.store,
+            &a.identidade,
+            "Terra Média",
+            "",
+            "",
+        )
+        .expect("universo");
+
+        // B é novo — e abriu o aplicativo uma vez, como qualquer aparelho real.
+        let estado_de_b = crate::database::estado::EstadoDoBanco::default();
+        estado_de_b.definir(crate::database::estado::FaseDoBanco::UpgradingBlobs);
+        crate::application::arranque::preparar_acervo(
+            &b.banco.database,
+            &b.store,
+            &b.identidade,
+            &estado_de_b,
+        )
+        .expect("arranque de B");
+        assert_eq!(
+            estado_de_b.fase(),
+            crate::database::estado::FaseDoBanco::Ready,
+            "o arranque de um aparelho novo tem de terminar pronto"
+        );
+
+        let escuta_a = TcpListener::bind("127.0.0.1:0").expect("porta de A");
+        let endereco_a = escuta_a.local_addr().expect("endereço").to_string();
+        let mut codigos_a = Codigos::default();
+        let (_, legivel) = codigos_a.emitir();
+        let pin: String = legivel.chars().filter(|c| c.is_ascii_digit()).collect();
+
+        let (em_a, em_b) = std::thread::scope(|escopo| {
+            let servidor = escopo.spawn(|| {
+                let (mut fluxo, _) = escuta_a.accept().expect("A aceita");
+                atender_conexao(&mut fluxo, &mut codigos_a, &a.ctx())
+            });
+            let em_b = parear_por_pin(&endereco_a, &pin, &b.ctx());
+            (servidor.join().expect("thread de A"), em_b)
+        });
+        let em_a = em_a.expect("A: sessão de pareamento");
+        let em_b = em_b.expect("B: sessão de pareamento");
+
+        assert_eq!(
+            em_b.papel,
+            Papel::Receptor,
+            "B abriu o aplicativo uma vez e deixou de ser elegível a receber o acervo"
+        );
+        assert_eq!(em_a.papel, Papel::Doador);
+        assert!(em_a.houve_bootstrap && em_b.houve_bootstrap);
+        assert!(
+            b.banco
+                .database
+                .read()
+                .expect("leitura")
+                .query_row("SELECT COUNT(*) FROM universes", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("contar")
+                > 0,
+            "o acervo de A não chegou em B"
+        );
+    }
+    /// Um par de aparelhos com acervo, já pareados e convergidos.
+    fn dois_pareados_com_acervo() -> (Aparelho, Aparelho, String) {
+        let a = Aparelho::novo("Desktop");
+        let b = Aparelho::novo("Celular");
+        let universo = universe_service::create(
+            &a.banco.database,
+            &a.store,
+            &a.identidade,
+            "Terra Média",
+            "",
+            "",
+        )
+        .expect("universo");
+        let historia = manuscript_service::create_story(
+            &a.banco.database,
+            &a.identidade,
+            &universo.id,
+            "Saga",
+        )
+        .expect("história");
+        let livro = manuscript_service::create_book(
+            &a.banco.database,
+            &a.identidade,
+            &historia.id,
+            "Livro",
+        )
+        .expect("livro");
+        let capitulo =
+            manuscript_service::create_chapter(&a.banco.database, &a.identidade, &livro.id, "Um")
+                .expect("capítulo");
+
+        let escuta = TcpListener::bind("127.0.0.1:0").expect("porta");
+        let endereco = escuta.local_addr().expect("endereço").to_string();
+        let mut codigos = Codigos::default();
+        let (_, legivel) = codigos.emitir();
+        let pin: String = legivel.chars().filter(|c| c.is_ascii_digit()).collect();
+        let (em_a, em_b) = std::thread::scope(|escopo| {
+            let servidor = escopo.spawn(|| {
+                let (mut fluxo, _) = escuta.accept().expect("aceita");
+                atender_conexao(&mut fluxo, &mut codigos, &a.ctx())
+            });
+            let em_b = parear_por_pin(&endereco, &pin, &b.ctx());
+            (servidor.join().expect("thread"), em_b)
+        });
+        em_a.expect("A: pareamento");
+        em_b.expect("B: pareamento");
+        (a, b, capitulo.id)
+    }
+
+    /// Sincroniza dois aparelhos já pareados e devolve os dois resultados.
+    fn sincronizar_pareados(
+        a: &Aparelho,
+        b: &Aparelho,
+    ) -> (
+        DatabaseCommandResult<ResultadoDaSessao>,
+        DatabaseCommandResult<ResultadoDaSessao>,
+    ) {
+        sincronizar_pareados_adulterando(a, b, false)
+    }
+
+    /// Idem, com A adulterando os bytes de todo blob que servir.
+    fn sincronizar_pareados_adulterando(
+        a: &Aparelho,
+        b: &Aparelho,
+        adulterar: bool,
+    ) -> (
+        DatabaseCommandResult<ResultadoDaSessao>,
+        DatabaseCommandResult<ResultadoDaSessao>,
+    ) {
+        let escuta = TcpListener::bind("127.0.0.1:0").expect("porta");
+        let endereco = escuta.local_addr().expect("endereço").to_string();
+        let mut codigos = Codigos::default();
+        std::thread::scope(|escopo| {
+            let servidor = escopo.spawn(|| {
+                // A porta é por thread: só o lado de A mente.
+                blob_adulterado::armar(adulterar);
+                let (mut fluxo, _) = escuta.accept().expect("aceita");
+                let resultado = atender_conexao(&mut fluxo, &mut codigos, &a.ctx());
+                blob_adulterado::armar(false);
+                resultado
+            });
+            let em_b = sincronizar_com(&endereco, &b.ctx());
+            (servidor.join().expect("thread"), em_b)
+        })
+    }
+
+    /// Eventos no log de B que não foram aplicados.
+    fn pendentes(aparelho: &Aparelho) -> i64 {
+        aparelho
+            .banco
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sync_events e
+              LEFT JOIN sync_applied_events a ON a.event_id = e.event_id
+                  WHERE a.event_id IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar pendentes")
+    }
+
+    fn cursor_de(aparelho: &Aparelho, origem: &str) -> i64 {
+        aparelho
+            .banco
+            .connection()
+            .query_row(
+                "SELECT last_seq_applied FROM sync_cursors WHERE origin_device_id = ?1",
+                [origem],
+                |row| row.get(0),
+            )
+            .unwrap_or(0)
+    }
+
+    /// **D12 — blob que o outro lado não tem: o estado não pode ser materializado.**
+    ///
+    /// O evento referencia um blob; o blob é dependência de materialização, não um extra que
+    /// chega depois. Se ele não vem, o agregado não pode avançar — senão o aparelho fica com uma
+    /// referência que nenhuma sessão futura vai buscar, porque o cursor já passou.
+    #[test]
+    fn d_blob_que_o_outro_lado_nao_tem_nao_materializa_o_evento() {
+        let (a, b, capitulo) = dois_pareados_com_acervo();
+
+        // A edita o capítulo com uma imagem — e o arquivo dela some do store de A antes da
+        // sessão. Do ponto de vista de B, é um blob que o outro lado não consegue entregar.
+        let imagem: Vec<u8> = (0..1024_u32).map(|i| (i * 13 % 251) as u8).collect();
+        let hash = a.store.put(&imagem).expect("publicar");
+        let com_imagem =
+            format!("<p>com imagem</p><img {ATTR_BLOB}=\"{hash}\" {ATTR_MIME}=\"image/png\">");
+        a.editar(&capitulo, &com_imagem);
+        std::fs::remove_file(a.store.path_for(&hash).expect("caminho"))
+            .expect("sumir com o arquivo em A");
+
+        let cursor_antes = cursor_de(&b, a.identidade.device_id());
+        let (em_a, em_b) = sincronizar_pareados(&a, &b);
+        em_a.expect("A cumpriu o protocolo: serviu o que tinha e puxou o que quis");
+
+        let erro = em_b.expect_err("a sessão terminou como sucesso sem o blob que o evento cita");
+        assert!(erro.message.contains("incompleta"), "{}", erro.message);
+        let no_b = b.capitulo(&capitulo).expect("capítulo em B");
+        assert!(
+            !no_b.content.contains(&hash),
+            "B materializou uma referência a um blob que ele nunca recebeu"
+        );
+        // O evento não foi apagado nem virou conflito: está no log, esperando.
+        assert_eq!(
+            pendentes(&b),
+            1,
+            "o evento da edição tinha de ficar pendente em B"
+        );
+        assert_eq!(
+            cursor_de(&b, a.identidade.device_id()),
+            cursor_antes,
+            "o cursor de B passou por cima do evento que espera o blob"
+        );
+        let divergencias: i64 = b
+            .banco
+            .connection()
+            .query_row("SELECT COUNT(*) FROM sync_divergences", [], |row| {
+                row.get(0)
+            })
+            .expect("contar");
+        assert_eq!(divergencias, 0, "blob ausente não é divergência");
+
+        // ── retry posterior: A recupera o arquivo, e a próxima sessão aplica uma vez ──
+        assert_eq!(a.store.put(&imagem).expect("A recupera a imagem"), hash);
+        let (em_a, em_b) = sincronizar_pareados(&a, &b);
+        em_a.expect("A: retry");
+        let em_b = em_b.expect("B: com o blob disponível, a sessão conclui");
+        assert_eq!(
+            em_b.eventos_aplicados, 1,
+            "o pendente entra exatamente uma vez"
+        );
+        assert_eq!(em_b.blobs_recebidos, 1);
+        assert!(b.store.verify(&hash).expect("verify"));
+        assert_eq!(b.capitulo(&capitulo).expect("B").content, com_imagem);
+        assert_eq!(pendentes(&b), 0);
+
+        // E uma terceira sessão não reaplica nada.
+        let (em_a, em_b) = sincronizar_pareados(&a, &b);
+        em_a.expect("A: terceira");
+        let em_b = em_b.expect("B: terceira");
+        assert_eq!(em_b.eventos_aplicados, 0);
+        assert_eq!(em_b.blobs_recebidos, 0);
+    }
+
+    /// **D12 — o outro lado manda bytes que não conferem o SHA.**
+    ///
+    /// Nada é publicado sob aquele endereço, o evento continua pendente, e a sessão termina como
+    /// incompleta. Na sessão seguinte, com bytes honestos, entra.
+    #[test]
+    fn d_blob_com_sha_invalido_na_rede_nao_materializa_o_evento() {
+        let (a, b, capitulo) = dois_pareados_com_acervo();
+
+        let imagem: Vec<u8> = (0..900_u32).map(|i| (i * 29 % 251) as u8).collect();
+        let hash = a.store.put(&imagem).expect("publicar");
+        let com_imagem =
+            format!("<p>com imagem</p><img {ATTR_BLOB}=\"{hash}\" {ATTR_MIME}=\"image/png\">");
+        a.editar(&capitulo, &com_imagem);
+
+        let (em_a, em_b) = sincronizar_pareados_adulterando(&a, &b, true);
+        em_a.expect("A cumpriu o protocolo");
+        let erro = em_b.expect_err("bytes adulterados não podiam concluir a sessão");
+        assert!(erro.message.contains("incompleta"), "{}", erro.message);
+        assert!(
+            !b.store.has(&hash).expect("has"),
+            "B publicou sob um endereço que os bytes não sustentam"
+        );
+        assert!(!b.capitulo(&capitulo).expect("B").content.contains(&hash));
+        assert_eq!(pendentes(&b), 1);
+
+        let (em_a, em_b) = sincronizar_pareados(&a, &b);
+        em_a.expect("A: honesto");
+        let em_b = em_b.expect("B: honesto");
+        assert_eq!(em_b.eventos_aplicados, 1);
+        assert_eq!(b.capitulo(&capitulo).expect("B").content, com_imagem);
+    }
+
+    /// **D13 — bootstrap que falha não deixa ninguém pareado pela metade.**
+    ///
+    /// Hoje o doador admite o receptor no roster ANTES de capturar. Se a semeadura falhar, o
+    /// doador fica achando que pareou e o receptor não — e o próximo encontro dos dois é uma
+    /// sessão entre pareados que nunca existiu.
+    #[test]
+    fn d_bootstrap_que_falha_nao_deixa_pareamento_pela_metade() {
+        let a = Aparelho::novo("Desktop");
+        let b = Aparelho::novo("Celular");
+        let universo = universe_service::create(
+            &a.banco.database,
+            &a.store,
+            &a.identidade,
+            "Terra Média",
+            "",
+            "",
+        )
+        .expect("universo");
+        let historia = manuscript_service::create_story(
+            &a.banco.database,
+            &a.identidade,
+            &universo.id,
+            "Saga",
+        )
+        .expect("história");
+        let livro = manuscript_service::create_book(
+            &a.banco.database,
+            &a.identidade,
+            &historia.id,
+            "Livro",
+        )
+        .expect("livro");
+        let capitulo =
+            manuscript_service::create_chapter(&a.banco.database, &a.identidade, &livro.id, "Um")
+                .expect("capítulo");
+        // Uma imagem que o doador não consegue entregar: a semeadura do receptor precisa dela.
+        let imagem: Vec<u8> = (0..512_u32).map(|i| (i * 17 % 251) as u8).collect();
+        let hash = a.store.put(&imagem).expect("publicar");
+        a.editar(
+            &capitulo.id,
+            &format!("<p>x</p><img {ATTR_BLOB}=\"{hash}\" {ATTR_MIME}=\"image/png\">"),
+        );
+        std::fs::remove_file(a.store.path_for(&hash).expect("caminho"))
+            .expect("sumir com o arquivo");
+
+        let escuta = TcpListener::bind("127.0.0.1:0").expect("porta");
+        let endereco = escuta.local_addr().expect("endereço").to_string();
+        let mut codigos = Codigos::default();
+        let (_, legivel) = codigos.emitir();
+        let pin: String = legivel.chars().filter(|c| c.is_ascii_digit()).collect();
+        let (em_a, em_b) = std::thread::scope(|escopo| {
+            let servidor = escopo.spawn(|| {
+                let (mut fluxo, _) = escuta.accept().expect("aceita");
+                atender_conexao(&mut fluxo, &mut codigos, &a.ctx())
+            });
+            let em_b = parear_por_pin(&endereco, &pin, &b.ctx());
+            (servidor.join().expect("thread"), em_b)
+        });
+
+        assert!(
+            em_b.is_err(),
+            "a semeadura sem o blob obrigatório tinha de falhar"
+        );
+        let _ = em_a;
+        assert_eq!(
+            b.roster(),
+            Vec::<String>::new(),
+            "o receptor ficou com o doador no roster depois de uma semeadura que falhou"
+        );
+        assert_eq!(
+            a.roster(),
+            Vec::<String>::new(),
+            "o doador ficou pareado com um aparelho que não recebeu nada"
         );
     }
 }
