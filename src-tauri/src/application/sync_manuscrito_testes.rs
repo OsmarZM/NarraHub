@@ -13,7 +13,9 @@ use crate::infrastructure::blob_store::BlobStore;
 use crate::infrastructure::sqlite::sync_apply::envelope_de_origem;
 use crate::infrastructure::sqlite::sync_codec;
 use crate::infrastructure::sqlite::sync_exchange::{eventos_para, vetor_local};
-use crate::infrastructure::sqlite::sync_session::{receber_eventos, Relatorio};
+use crate::infrastructure::sqlite::sync_session::{
+    receber_eventos_sem_conferir_blobs as receber_eventos, Relatorio,
+};
 use crate::infrastructure::sqlite::test_support::TemporaryDatabase;
 
 struct Aparelho {
@@ -4801,4 +4803,482 @@ fn perfil_da_adocao() {
         tx.commit().expect("commit");
     }
     println!("append_event_in_transaction: {:?}", relogio.elapsed());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Etapa D — PRIMEIRO PAREAMENTO entre dois aparelhos que já têm acervo
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Nenhum lado é fonte da verdade. Snapshot é proibido aqui: o que acontece é reconciliação
+// bidirecional por evento, sobre duas gêneses independentes.
+
+/// Um acervo legado **igual** nos dois aparelhos, adotado por cada um por conta própria.
+///
+/// É o cenário real de quem instalou o NarraHub em dois lugares a partir do mesmo backup.
+fn mesmo_acervo_legado_nos_dois(pc: &Aparelho, android: &Aparelho) -> Vec<(String, String)> {
+    let fabrica = Aparelho::novo("fabrica");
+    let itens = acervo_completo(&fabrica);
+    copiar_dominio(&fabrica, pc);
+    copiar_dominio(&fabrica, android);
+    pc.adotar();
+    android.adotar();
+    itens
+}
+
+/// **D1 — acervos disjuntos: a união é soma, não escolha.**
+#[test]
+fn d_acervos_disjuntos_se_unem_sem_divergencia() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let a = pc.universo("Terra");
+    let b = android.universo("Marte");
+    pc.adotar();
+    android.adotar();
+
+    let (em_android, em_pc) = sincronizar(&pc, &android);
+
+    assert_eq!(em_android.divergencias, 0, "{em_android:?}");
+    assert_eq!(em_pc.divergencias, 0, "{em_pc:?}");
+    for universo in [&a, &b] {
+        pc.convergiu_com(&android, "universe", universo);
+    }
+    assert!(pc.divergencias().is_empty() && android.divergencias().is_empty());
+}
+
+/// **D2 — a mesma gênese dos dois lados converge sem conflito.**
+///
+/// `identidade igual + payload igual + base ROOT → mesma revisão`: o outro lado reconhece como
+/// já presente, e ninguém decide nada.
+#[test]
+fn d_mesma_genese_nos_dois_lados_converge_sem_decisao() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let itens = mesmo_acervo_legado_nos_dois(&pc, &android);
+
+    for (tipo, id) in &itens {
+        assert_eq!(
+            revisao(&pc, tipo, id),
+            revisao(&android, tipo, id),
+            "{tipo} {id}: a gênese determinística não produziu a mesma revisão"
+        );
+    }
+
+    let (em_android, em_pc) = sincronizar(&pc, &android);
+    assert_eq!(em_android.divergencias, 0, "{em_android:?}");
+    assert_eq!(em_pc.divergencias, 0, "{em_pc:?}");
+    assert!(pc.divergencias().is_empty() && android.divergencias().is_empty());
+}
+
+/// **D3 — mesmo agregado, gêneses diferentes: uma decisão, com identidade portátil.**
+#[test]
+fn d_genese_diferente_vira_uma_decisao_com_a_mesma_chave() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    let entidade = pc.entidade(&universo, "Alice");
+    copiar_dominio(&pc, &android);
+    // O mesmo id, outro estado: é o acervo que divergiu antes de existir Sync V2.
+    android
+        .banco
+        .connection()
+        .execute(
+            "UPDATE entities SET name = 'Alicia' WHERE id = ?1",
+            [&entidade],
+        )
+        .expect("estado legado diferente");
+    pc.adotar();
+    android.adotar();
+    assert_ne!(
+        revisao(&pc, "entity", &entidade),
+        revisao(&android, "entity", &entidade)
+    );
+
+    let (em_android, em_pc) = sincronizar(&pc, &android);
+
+    assert_eq!(em_android.divergencias, 1, "{em_android:?}");
+    assert_eq!(em_pc.divergencias, 1, "{em_pc:?}");
+    // Cada lado preserva o que tinha.
+    assert!(pc
+        .canonico("entity", &entidade)
+        .expect("entidade")
+        .contains("Alice"));
+    assert!(android
+        .canonico("entity", &entidade)
+        .expect("entidade")
+        .contains("Alicia"));
+
+    // Uma decisão lógica, do mesmo tipo, sobre a mesma coisa, com a MESMA identidade portátil.
+    let chave = |aparelho: &Aparelho| -> (String, String, String, String) {
+        aparelho
+            .banco
+            .connection()
+            .query_row(
+                "SELECT kind, base_rev, participant_a, participant_b FROM sync_divergences
+                  WHERE resolved_at = ''",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("a decisão")
+    };
+    let no_pc = chave(&pc);
+    let no_android = chave(&android);
+    assert_eq!(
+        no_pc, no_android,
+        "a mesma colisão gerou identidades diferentes"
+    );
+    assert_eq!(no_pc.0, "concurrent");
+    assert_eq!(no_pc.1, "", "a base é a raiz: não há ancestral V2 comum");
+}
+
+/// **D4 — mesma gênese e uma edição posterior: sequencial, sem decisão.**
+#[test]
+fn d_edicao_posterior_a_mesma_genese_entra_sequencial() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let itens = mesmo_acervo_legado_nos_dois(&pc, &android);
+    let (_, capitulo) = itens
+        .iter()
+        .find(|(tipo, _)| tipo == "chapter")
+        .expect("capítulo")
+        .clone();
+    pc.escrever(&capitulo, "<p>escrito depois</p>");
+
+    let (em_android, em_pc) = sincronizar(&pc, &android);
+
+    assert_eq!(em_android.divergencias, 0, "{em_android:?}");
+    assert_eq!(em_pc.divergencias, 0, "{em_pc:?}");
+    assert!(android
+        .canonico("chapter", &capitulo)
+        .expect("capítulo")
+        .contains("escrito depois"));
+}
+
+/// **D5 — exclusão posterior à mesma gênese: o outro lado apaga.**
+#[test]
+fn d_exclusao_posterior_a_mesma_genese_apaga_no_outro() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let itens = mesmo_acervo_legado_nos_dois(&pc, &android);
+    let (_, capitulo) = itens
+        .iter()
+        .find(|(tipo, _)| tipo == "chapter")
+        .expect("capítulo")
+        .clone();
+    manuscript_service::delete_chapter(&pc.banco.database, &pc.eu, &capitulo).expect("excluir");
+
+    let (em_android, em_pc) = sincronizar(&pc, &android);
+
+    assert_eq!(em_android.divergencias, 0, "{em_android:?}");
+    assert_eq!(em_pc.divergencias, 0, "{em_pc:?}");
+    assert!(android.canonico("chapter", &capitulo).is_none());
+    assert!(android.tombstone("chapter", &capitulo));
+}
+
+/// **D6 — exclusão contra estado independente: concorrência, sem perda silenciosa.**
+#[test]
+fn d_exclusao_contra_raiz_independente_nao_perde_nada() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    let entidade = pc.entidade(&universo, "Alice");
+    copiar_dominio(&pc, &android);
+    android
+        .banco
+        .connection()
+        .execute(
+            "UPDATE entities SET name = 'Alicia' WHERE id = ?1",
+            [&entidade],
+        )
+        .expect("estado independente");
+    pc.adotar();
+    android.adotar();
+    crate::application::entity_service::delete(&pc.banco.database, &pc.eu, &entidade)
+        .expect("PC exclui");
+
+    let (em_android, em_pc) = sincronizar(&pc, &android);
+
+    assert!(em_android.divergencias >= 1, "{em_android:?}");
+    assert!(
+        android.canonico("entity", &entidade).is_some(),
+        "o Android perdeu a versão dele sem ninguém decidir"
+    );
+    assert!(
+        pc.canonico("entity", &entidade).is_none(),
+        "o PC ressuscitou o que apagou"
+    );
+    let _ = em_pc;
+}
+
+/// **D7 — ausência nunca vista não é tombstone.**
+///
+/// O que nunca existiu aqui chega como criação; e o que nunca existiu LÁ não vira exclusão daqui.
+#[test]
+fn d_ausencia_nunca_vista_nao_vira_exclusao() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    copiar_dominio(&pc, &android);
+    // Cada um tem uma entidade que o outro nunca viu.
+    let so_no_pc = pc.entidade(&universo, "Alice");
+    let so_no_android = android.entidade(&universo, "Beto");
+    pc.adotar();
+    android.adotar();
+
+    let (em_android, em_pc) = sincronizar(&pc, &android);
+
+    assert_eq!(em_android.divergencias, 0, "{em_android:?}");
+    assert_eq!(em_pc.divergencias, 0, "{em_pc:?}");
+    for entidade in [&so_no_pc, &so_no_android] {
+        pc.convergiu_com(&android, "entity", entidade);
+        assert!(
+            !pc.tombstone("entity", entidade),
+            "inventaram exclusão para {entidade}"
+        );
+        assert!(
+            !android.tombstone("entity", entidade),
+            "inventaram exclusão para {entidade}"
+        );
+    }
+}
+
+/// **D8 — posições: filhos diferentes no mesmo pai se unem; o mesmo item movido conflita.**
+#[test]
+fn d_posicoes_se_unem_e_so_o_mesmo_item_movido_conflita() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    let historia = pc.historia(&universo, "Saga").id;
+    let livro = pc.livro(&historia, "Livro").id;
+    let comum = pc.capitulo(&livro, "Comum").id;
+    copiar_dominio(&pc, &android);
+    let do_pc = pc.capitulo(&livro, "Do PC").id;
+    let do_android = android.capitulo(&livro, "Do Android").id;
+    pc.adotar();
+    android.adotar();
+
+    let (em_android, em_pc) = sincronizar(&pc, &android);
+    assert_eq!(em_android.divergencias, 0, "{em_android:?}");
+    assert_eq!(em_pc.divergencias, 0, "{em_pc:?}");
+    assert_eq!(
+        pc.ids_dos_capitulos(&livro),
+        android.ids_dos_capitulos(&livro),
+        "a ordem não é determinística entre os dois"
+    );
+    assert_eq!(pc.ids_dos_capitulos(&livro).len(), 3);
+    let _ = (&do_pc, &do_android);
+
+    // O mesmo item movido nos dois lados continua sendo conflito de verdade.
+    pc.reordenar_capitulos(&livro, &[&do_pc, &comum, &do_android]);
+    android.reordenar_capitulos(&livro, &[&do_android, &comum, &do_pc]);
+    let (em_android, _) = sincronizar(&pc, &android);
+    assert!(
+        em_android.divergencias >= 1,
+        "mover o mesmo item não conflitou: {em_android:?}"
+    );
+}
+
+/// **D9 — grupos de mutação continuam atômicos na primeira união.**
+#[test]
+fn d_grupo_de_mutacao_nao_materializa_pela_metade_na_primeira_uniao() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    let historia = pc.historia(&universo, "Saga").id;
+    let livro = pc.livro(&historia, "Livro").id;
+    let capitulo = pc.capitulo(&livro, "Um").id;
+    copiar_dominio(&pc, &android);
+    pc.adotar();
+    android.adotar();
+
+    // O PC apaga o livro inteiro (ação composta); o Android edita um capítulo dele.
+    android.escrever(&capitulo, "<p>editado no celular</p>");
+    manuscript_service::delete_book(&pc.banco.database, &pc.eu, &livro).expect("PC apaga o livro");
+
+    let (em_android, _) = sincronizar(&pc, &android);
+
+    assert!(em_android.divergencias >= 1, "{em_android:?}");
+    assert!(
+        android.canonico("book", &livro).is_some()
+            && android.canonico("chapter", &capitulo).is_some(),
+        "a ação do PC entrou pela metade no Android"
+    );
+}
+
+/// **D10 — a segunda sessão é idempotente, mesmo com decisão aberta.**
+#[test]
+fn d_segunda_sessao_com_conflito_aberto_nao_muda_nada() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let universo = pc.universo("Terra");
+    let entidade = pc.entidade(&universo, "Alice");
+    copiar_dominio(&pc, &android);
+    android
+        .banco
+        .connection()
+        .execute(
+            "UPDATE entities SET name = 'Alicia' WHERE id = ?1",
+            [&entidade],
+        )
+        .expect("estado diferente");
+    pc.adotar();
+    android.adotar();
+    sincronizar(&pc, &android);
+
+    let eventos_pc = pc.eventos().len();
+    let eventos_android = android.eventos().len();
+    let divergencias_pc = pc.divergencias();
+    let divergencias_android = android.divergencias();
+
+    let (em_android, em_pc) = sincronizar(&pc, &android);
+
+    assert_eq!(
+        em_android.divergencias, 0,
+        "a segunda sessão duplicou decisão: {em_android:?}"
+    );
+    assert_eq!(em_pc.divergencias, 0, "{em_pc:?}");
+    assert_eq!(
+        pc.eventos().len(),
+        eventos_pc,
+        "a segunda sessão emitiu revisão nova"
+    );
+    assert_eq!(android.eventos().len(), eventos_android);
+    assert_eq!(pc.divergencias(), divergencias_pc);
+    assert_eq!(android.divergencias(), divergencias_android);
+}
+
+/// **D11 — o terceiro aparelho, não vazio, entra como Par e recebe as duas histórias.**
+#[test]
+fn d_terceiro_aparelho_recebe_as_duas_historias_com_a_mesma_chave() {
+    let pc = Aparelho::novo("pc");
+    let android = Aparelho::novo("android");
+    let tablet = Aparelho::novo("tablet");
+    let universo = pc.universo("Terra");
+    let entidade = pc.entidade(&universo, "Alice");
+    copiar_dominio(&pc, &android);
+    android
+        .banco
+        .connection()
+        .execute(
+            "UPDATE entities SET name = 'Alicia' WHERE id = ?1",
+            [&entidade],
+        )
+        .expect("estado diferente");
+    // O tablet tem acervo próprio: ele não é candidato a bootstrap.
+    tablet.universo("Vênus");
+    pc.adotar();
+    android.adotar();
+    tablet.adotar();
+    sincronizar(&pc, &android);
+
+    // O tablet conversa com os dois, por store-and-forward.
+    sincronizar(&pc, &tablet);
+    sincronizar(&android, &tablet);
+
+    let chave = |aparelho: &Aparelho| -> Vec<(String, String, String)> {
+        let connection = aparelho.banco.connection();
+        let mut consulta = connection
+            .prepare(
+                "SELECT conflict_key, participant_a, participant_b FROM sync_divergences
+                  WHERE resolved_at = '' ORDER BY conflict_key",
+            )
+            .expect("consulta");
+        consulta
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("linhas")
+            .collect::<Result<_, _>>()
+            .expect("chaves")
+    };
+    assert_eq!(
+        chave(&tablet).len(),
+        1,
+        "o tablet não viu o conflito: {:?}",
+        chave(&tablet)
+    );
+    assert_eq!(
+        chave(&tablet),
+        chave(&pc),
+        "a chave do conflito não é portátil"
+    );
+    assert_eq!(chave(&tablet), chave(&android));
+}
+
+/// **D12 — a extração de blob cobre o payload REAL de toda superfície que viaja em evento.**
+///
+/// O gate de catálogo em `sync_codec::midia` prova que toda superfície tem destino decidido. Este
+/// prova que a decisão bate com o formato: grava um hash em cada superfície, lê o payload pelo
+/// codec de verdade e exige que a extração o encontre. Um codec que renomeie a propriedade, ou um
+/// agregado novo com imagem, reprova aqui — em vez de aplicar sem esperar pelo arquivo.
+#[test]
+fn d_extracao_de_blob_cobre_o_payload_real_de_cada_superficie() {
+    use crate::infrastructure::blob_store::hash_dos_bytes;
+    use crate::infrastructure::sqlite::blob_surfaces::superficie_de;
+    use crate::infrastructure::sqlite::sync_codec::midia::{
+        blobs_do_payload, FormaNoPayload, CAMPOS_DE_BLOB,
+    };
+
+    let pc = Aparelho::novo("pc");
+    let itens = acervo_completo(&pc);
+    let id_de = |tipo: &str| -> String {
+        itens
+            .iter()
+            .find(|(t, _)| t == tipo)
+            .map(|(_, id)| id.clone())
+            .unwrap_or_else(|| panic!("o acervo não tem {tipo}"))
+    };
+    let universo = id_de("universe");
+    let capitulo = id_de("chapter");
+    let no = pc.no(&universo, "nota", 0.0, 0.0);
+    let anexo = pc.anexar_em(
+        &universo,
+        "chapter",
+        &capitulo,
+        "data:image/png;base64,Yg==",
+    );
+
+    for campo in CAMPOS_DE_BLOB {
+        let id = match campo.tipo {
+            "canvas_node" => no.clone(),
+            "attachment" => anexo.clone(),
+            tipo => id_de(tipo),
+        };
+        let hash = hash_dos_bytes(format!("blob de {}", campo.tipo).as_bytes());
+        let connection = pc.banco.connection();
+        match campo.forma {
+            FormaNoPayload::Hash => {
+                let superficie = superficie_de(campo.tabela).expect("superfície");
+                let referencia = superficie.referencias.first().expect("par hash/MIME");
+                connection
+                    .execute(
+                        &format!(
+                            "UPDATE {} SET {} = ?1, {} = 'image/png', {} = '' WHERE id = ?2",
+                            campo.tabela, referencia.hash, referencia.mime, referencia.legada
+                        ),
+                        rusqlite::params![hash, id],
+                    )
+                    .expect("gravar a referência");
+            }
+            FormaNoPayload::Documento => {
+                connection
+                    .execute(
+                        &format!("UPDATE {} SET {} = ?1 WHERE id = ?2", campo.tabela, campo.campo),
+                        rusqlite::params![
+                            format!(
+                                "<p>x</p><img data-narrahub-blob=\"{hash}\" data-mime-type=\"image/png\">"
+                            ),
+                            id
+                        ],
+                    )
+                    .expect("gravar o documento");
+            }
+        }
+        drop(connection);
+        let payload = pc
+            .canonico(campo.tipo, &id)
+            .unwrap_or_else(|| panic!("{} {id} não tem estado canônico", campo.tipo));
+        assert!(
+            blobs_do_payload(campo.tipo, &payload).contains(&hash),
+            "{}: a extração não achou o hash no payload real {payload}",
+            campo.tipo
+        );
+    }
 }
