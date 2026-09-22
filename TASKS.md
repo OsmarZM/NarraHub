@@ -183,6 +183,48 @@ de ser esta tarefa.
 
 ---
 
+### H-R1 — Resolução antiga depois de o GC coletar o tombstone participante
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   Hardening pré-release estável
+        Não bloqueia G · Não reabre F
+```
+
+Uma decisão de `conflict_resolution` que chega tarde, depois de o GC ter podado o tombstone de
+um participante, encontra o agregado sem cabeça local. A regra R2 da etapa F ("nunca
+materializou aqui") poderia tratar isso como primeira materialização e **ressuscitar** o agregado
+ou **sobrescrever em silêncio** o estado que o GC julgou definitivo.
+
+**Critério de saída:** um gate — antes da release estável — que monta exclusão, coleta pelo GC e
+só então entrega a resolução antiga, e prova que não há ressurreição nem sobrescrita silenciosa
+(a resolução espera, é recusada ou vira concorrência explícita). Contexto:
+`docs/sync/MATRIZ_COBERTURA_NH079.md` §5.1, "Riscos para o hardening".
+
+---
+
+### H-R2 — Legitimidade semântica dos efeitos irmãos/meta em grupos `resolution`
+
+```text
+Owner:  não atribuída
+Status: BACKLOG
+Fase:   Hardening pré-release estável
+        Não bloqueia G · Não reabre F
+```
+
+`results[]` garante coerência **estrutural** entre o certificado e o grupo: mesma contagem, mesmos
+agregados, operação, base e `resultRev` recomputável. Mas para efeitos sobre agregados que não são
+os participantes (irmãos da ação inteira, efeitos meta como as marcações movidas numa mesclagem de
+tags) a regra de par é de conhecimento genérico, não amarrada à `conflictKey`.
+
+**Critério de saída:** restringir o que um certificado de cada `(kind, choice)` pode tocar, ou
+provar por gate que um certificado válido não consegue autorizar efeitos semanticamente
+arbitrários (agregado sem relação com o conflito, operação que a escolha não implica). Contexto:
+`docs/sync/MATRIZ_COBERTURA_NH079.md` §5.1, "Riscos para o hardening".
+
+---
+
 ### NH-079 — Só 2 de ~47 escritas de domínio geram evento V2
 
 ```text
