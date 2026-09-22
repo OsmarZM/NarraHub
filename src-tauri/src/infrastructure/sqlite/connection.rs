@@ -92,6 +92,9 @@ pub fn apply_pragmas(connection: &Connection) -> DatabaseCommandResult<()> {
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    // Os gates G10/G11 da etapa G vigiam, por esta porta, toda conexão do runtime.
+    #[cfg(test)]
+    crate::database::legado_v1::vigia::instalar(connection);
     Ok(())
 }
 

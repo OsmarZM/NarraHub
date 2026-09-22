@@ -18,6 +18,31 @@ Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 
 ## ACTIVE
 
+### NH-081 — Sync V2, etapa G: remoção definitiva do Sync V1
+
+```text
+Owner:  Claude
+Status: REVIEW
+Fase:   4 — Sync V2
+Branch: sync-g-remocao-v1 (base: mobile-shell)
+```
+
+**Sync V1 = removido do runtime. Sync V2 = único protocolo alcançável.**
+
+Saiu: `src-tauri/src/sync.rs` (snapshot de 17 tabelas por TCP, código de seis dígitos, LWW), os
+comandos `sync_status/start/stop/connect` e o `SyncState`; no frontend, `SyncService`,
+`SyncServerStatus`/`SyncResult`, o estado e as travas V1↔V2 do `SettingsStore` e os cartões
+"Receber sincronização" e "Conectar a outro dispositivo". A captura do bootstrap deixou de ler
+`sync_conflicts` (`ConflitoV1Aberto` saiu): o V1 nunca teve como resolver um conflito, e a trava
+virava um aparelho trancado para sempre.
+
+Ficou, como **legado histórico não utilizado em produção**: as tabelas `sync_conflicts`,
+`sync_peers` e `devices` (sem `DROP`, sem migration nova), a conversão de mídia do ADR 0010 sobre
+`sync_conflicts` no arranque (migração de banco antigo) e as citações de catálogo. Detalhe em
+`docs/sync/MATRIZ_COBERTURA_NH079.md` §5.2 e no handoff da etapa G.
+
+---
+
 ### NH-080 — NarraHub Mobile: navegação gestual e APK assinado nas releases
 
 ```text
@@ -160,8 +185,8 @@ semear devolvia `ReceptorNaoEstaVazio { tabela: "sync_devices" }`:
   não-transitividade vale para pareamento e para sessão pareada — um estranho autenticado é
   recusado pelo roster (`estranho_autenticado_nao_sincroniza`).
 
-**O V1 continua no código, congelado**, e a tela impede os dois ativos juntos. Ele sai do fluxo
-de produto quando o gate físico fechar — mas veja a `NH-079` antes disso.
+~~O V1 continua no código, congelado~~ — **saiu do runtime na etapa G** (`NH-081`), por decisão do
+autor, antes do gate físico desta tarefa; o roteiro físico continua valendo para o V2.
 
 ---
 
@@ -229,7 +254,7 @@ arbitrários (agregado sem relação com o conflito, operação que a escolha n�
 
 ```text
 Owner:  não atribuída
-Status: BACKLOG — bloqueia remover o Sync V1 do fluxo de produto
+Status: DONE — coberta pelas etapas B1–B6 (gate de cobertura total na B6); o V1 saiu na etapa G
 Fase:   4
 ```
 

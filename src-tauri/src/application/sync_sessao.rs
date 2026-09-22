@@ -1617,6 +1617,169 @@ mod tests {
             "o acervo de A não chegou em B"
         );
     }
+    /// **Etapa G — G4, G5, G6, G10 e G11: o fluxo inteiro do V2 não lê nem escreve o legado V1.**
+    ///
+    /// Os dois bancos carregam o legado do V1 como um banco publicado carregaria: um conflito V1
+    /// aberto, um peer e um aparelho antigos. Com o autorizador do SQLite vigiando toda conexão
+    /// dos dois bancos — inclusive a da thread que atende o outro aparelho —, o fluxo de produto
+    /// inteiro roda sobre TCP real:
+    ///
+    /// ```text
+    /// escrita de domínio (Mutacao) → pareamento por PIN com bootstrap (G4)
+    /// → sessão já pareada (G5) → edição concorrente → conflito V2 listado, inspecionado,
+    /// resolvido e propagado (G6) → panorama
+    /// ```
+    ///
+    /// Nenhuma leitura e nenhuma escrita das tabelas do V1 (G10/G11), e o legado fica intacto.
+    #[test]
+    fn g_o_fluxo_do_v2_nao_le_nem_escreve_o_legado_do_v1() {
+        use crate::application::conflitos;
+        use crate::application::resolucao_divergencia::{resolver_conflito, Acao};
+        use crate::database::legado_v1::vigia::Vigia;
+
+        let a = Aparelho::novo("Desktop");
+        let b = Aparelho::novo("Celular");
+        let legado = "INSERT INTO sync_conflicts
+                          (id, aggregate_type, aggregate_id, field, local_value, remote_value)
+                      VALUES ('c-v1','chapter','cap-antigo','content','<p>meu</p>','<p>dele</p>');
+                      INSERT INTO sync_peers (id, name, trusted_at) VALUES ('p-v1','Velho','2025-01-01');
+                      INSERT INTO devices (id, name, created_at, last_seen_at)
+                      VALUES ('d-v1','Velho','2025-01-01','2025-01-01');";
+        for aparelho in [&a, &b] {
+            aparelho
+                .banco
+                .connection()
+                .execute_batch(legado)
+                .expect("legado do V1");
+        }
+        let vigia = Vigia::armar(&[a.banco.database.path(), b.banco.database.path()]);
+
+        // ── escrita de domínio em A ─────────────────────────────────────────
+        let universo = universe_service::create(
+            &a.banco.database,
+            &a.store,
+            &a.identidade,
+            "Terra Média",
+            "",
+            "",
+        )
+        .expect("universo");
+        let historia = manuscript_service::create_story(
+            &a.banco.database,
+            &a.identidade,
+            &universo.id,
+            "Saga",
+        )
+        .expect("história");
+        let livro = manuscript_service::create_book(
+            &a.banco.database,
+            &a.identidade,
+            &historia.id,
+            "Livro",
+        )
+        .expect("livro");
+        let capitulo =
+            manuscript_service::create_chapter(&a.banco.database, &a.identidade, &livro.id, "Um")
+                .expect("capítulo")
+                .id;
+
+        // ── G4: pareamento por PIN, com bootstrap ───────────────────────────
+        let escuta = TcpListener::bind("127.0.0.1:0").expect("porta");
+        let endereco = escuta.local_addr().expect("endereço").to_string();
+        let mut codigos = Codigos::default();
+        let (_, legivel) = codigos.emitir();
+        let pin: String = legivel.chars().filter(|c| c.is_ascii_digit()).collect();
+        let (em_a, em_b) = std::thread::scope(|escopo| {
+            let servidor = escopo.spawn(|| {
+                let (mut fluxo, _) = escuta.accept().expect("aceita");
+                atender_conexao(&mut fluxo, &mut codigos, &a.ctx())
+            });
+            let em_b = parear_por_pin(&endereco, &pin, &b.ctx());
+            (servidor.join().expect("thread"), em_b)
+        });
+        let em_b = em_b.expect("B: pareamento");
+        em_a.expect("A: pareamento");
+        assert!(em_b.houve_bootstrap, "o pareamento por PIN não semeou B");
+        assert!(
+            b.capitulo(&capitulo).is_some(),
+            "o acervo de A não chegou em B"
+        );
+
+        // ── G5: sessão já pareada ────────────────────────────────────────────
+        b.editar(&capitulo, "<p>de B</p>");
+        let (em_a, em_b) = sincronizar_pareados(&a, &b);
+        em_a.expect("A: sessão pareada");
+        em_b.expect("B: sessão pareada");
+        assert_eq!(
+            a.capitulo(&capitulo).expect("capítulo").content,
+            "<p>de B</p>"
+        );
+
+        // ── G6: conflito V2 de ponta a ponta ─────────────────────────────────
+        a.editar(&capitulo, "<p>versão de A</p>");
+        b.editar(&capitulo, "<p>versão de B</p>");
+        let (em_a, em_b) = sincronizar_pareados(&a, &b);
+        em_a.expect("A: sessão com concorrência");
+        em_b.expect("B: sessão com concorrência");
+        let abertos = conflitos::listar(
+            &b.banco.database.read().expect("leitura"),
+            &conflitos::FiltroDeConflitos {
+                status: "aberto".into(),
+                ..Default::default()
+            },
+        )
+        .expect("listar");
+        assert_eq!(abertos.len(), 1, "o conflito V2 não apareceu em B");
+        let chave = abertos[0].conflict_key.clone();
+        let detalhe = conflitos::inspecionar(&b.banco.database.read().expect("leitura"), &chave)
+            .expect("inspecionar");
+        assert!(!detalhe.acoes.is_empty());
+        resolver_conflito(&b.banco.database, &b.identidade, &chave, &Acao::FicarComA)
+            .expect("resolver");
+        let (em_a, em_b) = sincronizar_pareados(&a, &b);
+        em_a.expect("A: sessão com a decisão");
+        em_b.expect("B: sessão com a decisão");
+        for aparelho in [&a, &b] {
+            assert_eq!(
+                conflitos::contar_abertos(&aparelho.banco.database.read().expect("leitura"))
+                    .expect("contar"),
+                0,
+                "{}: o conflito continuou aberto",
+                aparelho.nome
+            );
+            crate::application::sync_panorama::panorama(
+                &aparelho.banco.database,
+                &aparelho.identidade,
+            )
+            .expect("panorama");
+        }
+        assert_eq!(
+            a.capitulo(&capitulo).expect("A").content,
+            b.capitulo(&capitulo).expect("B").content,
+            "a decisão não convergiu"
+        );
+
+        let acessos = vigia.acessos();
+        drop(vigia);
+        assert!(
+            acessos.is_empty(),
+            "o runtime do V2 tocou no legado do Sync V1: {acessos:?}"
+        );
+        for aparelho in [&a, &b] {
+            let intacto: i64 = aparelho
+                .banco
+                .connection()
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM sync_conflicts WHERE remote_value = '<p>dele</p>')
+                          + (SELECT COUNT(*) FROM sync_peers) + (SELECT COUNT(*) FROM devices)",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("legado");
+            assert_eq!(intacto, 3, "{}: o legado do V1 mudou", aparelho.nome);
+        }
+    }
+
     /// Um par de aparelhos com acervo, já pareados e convergidos.
     fn dois_pareados_com_acervo() -> (Aparelho, Aparelho, String) {
         let a = Aparelho::novo("Desktop");

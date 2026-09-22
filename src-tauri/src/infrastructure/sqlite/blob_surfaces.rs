@@ -56,7 +56,8 @@ pub enum Escritor {
     /// **Gatilho SQL.** O escritor mora no banco, e nenhuma busca em
     /// código-fonte o encontra.
     GatilhoSql(&'static str),
-    /// O protocolo antigo de sincronização, ainda em produção.
+    /// O protocolo antigo de sincronização. Saiu do runtime na etapa G: a superfície fica só
+    /// para converter o legado de bancos antigos no arranque, e nada mais escreve nela.
     ProtocoloV1,
     /// Valor que vem de fora, de um convidado com link.
     Colaboracao,

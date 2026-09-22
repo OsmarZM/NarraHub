@@ -486,7 +486,7 @@ mod tests {
         for proibido in ["crate::sync::", "SyncState", "sync_start", "sync_connect"] {
             assert!(
                 !codigo.contains(proibido),
-                "`{proibido}` é do Sync V1. O V1 está congelado: nada novo se apoia nele, e \
+                "`{proibido}` é do Sync V1, que saiu do runtime na etapa G: nada se apoia nele, e \
                  não existe interoperabilidade V1 <-> V2."
             );
         }

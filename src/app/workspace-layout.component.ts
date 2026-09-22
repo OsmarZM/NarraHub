@@ -381,7 +381,7 @@ export class WorkspaceLayoutComponent implements OnDestroy {
   }
 
   async prepareRestoreBackup(backup: BackupManifest): Promise<void> {
-    if (this.collaborationStore.shareSession().running || this.settingsStore.syncStatus().running) {
+    if (this.collaborationStore.shareSession().running || this.settingsStore.syncV2State().escutando) {
       this.settingsStore.backupError.set('Encerre o compartilhamento e a sincronização antes de restaurar um backup.');
       return;
     }

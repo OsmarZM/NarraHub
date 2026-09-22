@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -119,7 +119,6 @@ test('só as portas nativas falam com o Tauri', () => {
     'core/services/rust-core.service.ts',
     // As portas de plataforma. Cada uma existe porque a capacidade é do sistema, não do
     // domínio: elas não gravam conteúdo do escritor, elas acionam o dispositivo.
-    'core/native/sync.service.ts',
     'core/native/online-share.service.ts',
     'core/native/ai.service.ts',
     'core/native/backup.service.ts',
@@ -136,7 +135,7 @@ test('só as portas nativas falam com o Tauri', () => {
     'core/services/database.service.ts',
     // O estado do Sync V2 (etapa 14, fatia 2). É plataforma: o que ela lê é sobre
     // ESTE APARELHO -- identidade, roster, cursor, pendência --, e não conteúdo do
-    // escritor. Distinta de `sync.service.ts`, que é a porta do V1 e está congelada.
+    // escritor. É a única porta de sincronização: o V1 saiu do runtime na etapa G.
     'core/native/sync-v2.service.ts',
     // Atualização do Android por APK das GitHub Releases. É plataforma: baixa e abre o instalador do
     // sistema, e não recebe URL nem caminho da tela -- o Rust usa o que ele próprio verificou.
@@ -644,27 +643,92 @@ test('os sete comandos do Sync V2 estao registrados e a porta chama cada um', ()
   );
 });
 
-test('a tela nao deixa o Sync V1 e o Sync V2 ativos ao mesmo tempo', () => {
-  // Decisao registrada: congelar o V1 e substituir, sem coexistir. A trava fica na tela
-  // porque o Rust do V2 nao pode depender do V1. Este gate cobra os dois lados da trava.
-  const html = readFileSync(
-    new URL('../src/app/features/settings/settings-page.component.html', import.meta.url), 'utf8');
-  const store = readFileSync(
-    new URL('../src/app/features/settings/state/settings.store.ts', import.meta.url), 'utf8');
+test('ETAPA G — G1: nenhum comando do Sync V1 existe nem esta registrado', () => {
+  const lib = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+  const inicio = lib.indexOf('invoke_handler');
+  const lista = lib.slice(inicio, lib.indexOf('])', inicio));
+  for (const comando of ['sync_status', 'sync_start', 'sync_stop', 'sync_connect']) {
+    assert.ok(
+      !new RegExp(`\\b${comando}\\b`, 'u').test(lista),
+      `\`${comando}\` e comando do Sync V1 e voltou ao invoke_handler. O V1 saiu do runtime na etapa G.`,
+    );
+  }
+  assert.doesNotMatch(lib, /^\s*mod sync;/mu, 'o modulo do Sync V1 voltou');
+  assert.doesNotMatch(lib, /SyncState/u, 'o estado do Sync V1 voltou a ser gerenciado');
+  assert.ok(
+    !existsSync(fileURLToPath(new URL('../src-tauri/src/sync.rs', import.meta.url))),
+    'src-tauri/src/sync.rs voltou',
+  );
+});
 
+test('ETAPA G — G2/G12: o frontend nao referencia servico, store, DTO nem API do Sync V1', () => {
+  // O V1 era: porta `core/native/sync.service.ts` (SyncService), DTOs SyncServerStatus e
+  // SyncResult, o sinal `syncStatus`, as travas V1<->V2 e quatro comandos Tauri. Nada disso pode
+  // voltar a ser citado em codigo do app -- nem em comentario, para a busca continuar trivial.
+  const proibidos = /\bSyncService\b|\bSyncServerStatus\b|\bSyncResult\b|native\/sync\.service|\bsyncStatus\b|\bsyncV1Blocked\b|\bsyncV2Blocked\b|\bsync_status\b|\bsync_start\b|\bsync_stop\b|\bsync_connect\b|\bsync_conflicts\b|\bsync_peers\b|\bconnectSync\b|\bstartSync\b|\bstopSync\b/u;
+  const infratores = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const caminho = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(caminho); continue; }
+      if (!/\.(ts|html|css)$/u.test(entry.name)) continue;
+      const fonte = readFileSync(caminho, 'utf8');
+      const achado = fonte.match(proibidos);
+      if (achado) {
+        const relativo = caminho.split(/[\\/]/u).join('/');
+        infratores.push(`${relativo.slice(relativo.indexOf('src/app/'))}: ${achado[0]}`);
+      }
+    }
+  };
+  walk(fileURLToPath(new URL('../src/app/', import.meta.url)));
+  assert.deepEqual(infratores, [], `o frontend voltou a citar o Sync V1:\n${infratores.join('\n')}`);
   assert.ok(
-    /\(click\)="startSync\(\)"/u.test(html) && /store\.syncV1Blocked\(\)[^"]*"\s*\(click\)="startSync\(\)"/u.test(html),
-    'o botao de ligar o V1 precisa ficar travado enquanto a escuta do V2 estiver ativa.',
+    !existsSync(fileURLToPath(new URL('../src/app/core/native/sync.service.ts', import.meta.url))),
+    'a porta do Sync V1 voltou',
   );
-  assert.ok(
-    /store\.syncV2Blocked\(\)[^"]*"\s*\(click\)="startSyncV2\(\)"/u.test(html),
-    'o botao de ligar a escuta do V2 precisa ficar travado enquanto o V1 estiver ativo.',
-  );
-  assert.ok(
-    /syncV1Blocked\(\): boolean \{\s*return this\.syncV2State\(\)\.escutando;/u.test(store)
-      && /syncV2Blocked\(\): boolean \{\s*return this\.syncStatus\(\)\.running;/u.test(store),
-    'as travas precisam olhar o estado real de cada mecanismo.',
-  );
+});
+
+test('ETAPA G — G4/G5: todo comando de sincronizacao chamado pelo app e do V2', () => {
+  // Parear (PIN/Noise) e sincronizar aparelho ja pareado so existem como `sync_v2_*`, e os
+  // conflitos so pelos comandos da etapa F. Qualquer outro `sync_*` invocado e um caminho paralelo.
+  const PERMITIDOS = new Set([
+    'sync_v2_panorama', 'sync_v2_estado', 'sync_v2_escuta_iniciar', 'sync_v2_escuta_parar',
+    'sync_v2_pin_novo', 'sync_v2_parear', 'sync_v2_sincronizar', 'sync_v2_aviso_de_epoca',
+    'sync_conflitos_listar', 'sync_conflito_inspecionar', 'sync_conflito_resolver',
+  ]);
+  const chamados = new Set();
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const caminho = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(caminho); continue; }
+      if (!entry.name.endsWith('.ts')) continue;
+      const fonte = readFileSync(caminho, 'utf8');
+      for (const m of fonte.matchAll(/'(sync_[a-z0-9_]+)'/gu)) chamados.add(m[1]);
+    }
+  };
+  walk(fileURLToPath(new URL('../src/app/', import.meta.url)));
+  const estranhos = [...chamados].filter((c) => !PERMITIDOS.has(c));
+  assert.deepEqual(estranhos, [], `comando de sincronizacao fora do V2: ${estranhos.join(', ')}`);
+  for (const essencial of ['sync_v2_parear', 'sync_v2_sincronizar']) {
+    assert.ok(chamados.has(essencial), `o app nao chama mais \`${essencial}\`; a varredura quebrou`);
+  }
+
+  // A tela liga os botoes de parear e de sincronizar ao fluxo do V2, e so a ele.
+  const html = readFileSync(new URL('../src/app/features/settings/settings-page.component.html', import.meta.url), 'utf8');
+  assert.match(html, /\(click\)="pairSyncV2\(\)"/u);
+  assert.match(html, /\(click\)="syncNowV2\(\)"/u);
+  const store = readFileSync(new URL('../src/app/features/settings/state/settings.store.ts', import.meta.url), 'utf8');
+  assert.match(store, /this\.syncV2\.pair\(/u, 'parear precisa passar pela porta do V2');
+  assert.match(store, /this\.syncV2\.syncWith\(/u, 'sincronizar pareado precisa passar pela porta do V2');
+});
+
+test('ETAPA G — G3: o panorama e o contador de conflitos leem so sync_divergences', () => {
+  const ler = (r) => readFileSync(new URL(r, import.meta.url), 'utf8').split('#[cfg(test)]')[0];
+  for (const arquivo of ['../src-tauri/src/application/sync_panorama.rs', '../src-tauri/src/application/conflitos.rs']) {
+    const codigo = ler(arquivo).replace(/^\s*\/\/.*$/gmu, '');
+    assert.doesNotMatch(codigo, /\bsync_conflicts\b/u, `${arquivo} voltou a ler o Sync V1`);
+    assert.match(codigo, /FROM sync_divergences/u, `${arquivo} deixou de ler sync_divergences`);
+  }
 });
 
 test('os tipos da atualizacao do Android tem os mesmos campos no Rust e no TypeScript', () => {

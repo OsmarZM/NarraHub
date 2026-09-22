@@ -48,8 +48,6 @@ export class SettingsPageComponent implements OnInit {
   aiInstallError = signal('');
 
   deviceName = localStorage.getItem('narrahub.deviceName') || 'Meu computador';
-  remoteAddress = '';
-  pairingCode = '';
   v2Address = '';
   v2Pin = '';
   restoreConfirmation = '';
@@ -219,7 +217,7 @@ export class SettingsPageComponent implements OnInit {
   async requestPrepareRestore(): Promise<void> {
     const backup = this.pendingRestoreBackup();
     if (!backup) return;
-    if (this.collaboration.shareSession().running || this.store.syncStatus().running) {
+    if (this.collaboration.shareSession().running || this.store.syncV2State().escutando) {
       this.store.backupError.set('Encerre o compartilhamento e a sincronização antes de restaurar um backup.');
       return;
     }
@@ -263,25 +261,7 @@ export class SettingsPageComponent implements OnInit {
     this.showInfo('Nome do dispositivo salvo.');
   }
 
-  async startSync(): Promise<void> {
-    this.saveDeviceName();
-    const result = await this.store.startSync(this.deviceName);
-    if (!result.ok && result.error) this.showError(result.error);
-  }
-
-  async stopSync(): Promise<void> {
-    const result = await this.store.stopSync();
-    if (!result.ok && result.error) this.showError(result.error);
-  }
-
-  async connectSync(): Promise<void> {
-    const result = await this.store.connectSync(this.remoteAddress, this.pairingCode, this.deviceName);
-    if (!result.ok) { if (result.error) this.showError(result.error); return; }
-    const peer = result.result;
-    if (peer) this.showInfo(`Sincronizado com ${peer.peer_name}: ${peer.received} recebidos, ${peer.sent} enviados, ${peer.conflicts} conflitos.`);
-  }
-
-  // ── Sync V2 (etapa 14) ───────────────────────────────────
+  // ── Sync V2 ───────────────────────────────────────────────
 
   async startSyncV2(): Promise<void> {
     this.saveDeviceName();

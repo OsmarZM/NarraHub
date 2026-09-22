@@ -62,7 +62,7 @@ com build verde.
 ## Gateway é opcional
 
 Nem todo domínio precisa. O gateway abstrai a fronteira SQL-vs-Rust — se o
-domínio já fala só com comandos Tauri nativos (`BackupService`, `SyncService`,
+domínio já fala só com comandos Tauri nativos (`BackupService`, `SyncV2Service`,
 `UpdateService`), não há fronteira para abstrair e o store injeta os serviços
 direto, como `SettingsStore` faz. A única exceção sancionada a "feature não
 conhece `DatabaseService`" é ciclo de vida do pool (fechar/reabrir na
