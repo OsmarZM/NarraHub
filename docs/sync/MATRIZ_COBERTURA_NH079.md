@@ -777,6 +777,14 @@ amarrada à chave; R2 poderia ressuscitar um agregado cujo tombstone o GC já po
 pergunta obsoleta só cobre sucessão remota; "manter local" num conflito de grupo exclui as criações
 que só existem no outro lado; mesclar tags exige que os donos das marcações existam localmente.
 
+**Riscos para o hardening** (registrados no fechamento da F; `BACKLOG`, fase *Hardening pré-release
+estável*; não bloqueiam a G e não reabrem a F — ver `TASKS.md`):
+
+| id | risco | o que precisa existir antes da release estável |
+| --- | --- | --- |
+| H-R1 | resolução antiga chegando depois de o GC coletar o tombstone participante: sem cabeça local, a R2 pode tratar como primeira materialização | gate que prove que não há ressurreição nem sobrescrita silenciosa |
+| H-R2 | efeitos irmãos/meta de um grupo `resolution`: `results[]` garante coerência estrutural, mas a regra de par desses efeitos não é amarrada à chave | restringir o que cada `(kind, choice)` pode tocar, ou provar que um certificado válido não autoriza efeitos semanticamente arbitrários |
+
 ## 6. Legado e conversões
 
 - `blob_backfill` (imagens antigas) roda **antes** da gênese (etapa C). Desde a C isso é cobrado no
