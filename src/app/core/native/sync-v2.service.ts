@@ -76,10 +76,8 @@ export const SYNC_V2_DEFAULT_PORT = 45870;
 /**
  * A porta do Sync V2 no frontend (etapas 14, fatias 2 e 4).
  *
- * **Não é o `SyncService`.** Aquele fala com o Sync V1 — `sync_start`,
- * `sync_connect` —, que copia tabelas inteiras sem passar pelo log de eventos.
- * A decisão registrada é congelar e substituir, sem coexistir: este serviço
- * não chama nada do V1, e o V1 não recebe nada novo.
+ * É a única porta de sincronização do app: o protocolo antigo, que copiava tabelas
+ * inteiras sem passar pelo log de eventos, saiu do runtime na etapa G.
  *
  * `panorama()` é só leitura. Escuta e pareamento entram na fatia 3, junto com
  * o transporte que dá a eles algo para conversar.

@@ -130,27 +130,9 @@
         <button type="button" class="secondary-button" (click)="saveDeviceName()">Salvar nome</button>
       </article>
 
-      <article class="surface-card sync-host-card" [hidden]="section() !== 'sync'">
-        <div class="card-head"><div><div class="card-icon">⇄</div><h2>Receber sincronização</h2></div><span class="status-badge" [class.online]="store.syncStatus().running">{{ store.syncStatus().running ? 'Disponível' : 'Desativado' }}</span></div>
-        <p>Deixe esta tela aberta e informe o endereço e código ao outro dispositivo.</p>
-        @if (store.syncStatus().running) {
-          <div class="pairing-panel"><small>Endereço local</small><strong>{{ store.syncStatus().address }}</strong><small>Código temporário</small><b>{{ store.syncStatus().pairing_code }}</b></div>
-          <button type="button" class="secondary-button danger-outline" [disabled]="store.syncBusy()" (click)="stopSync()">Parar compartilhamento</button>
-        } @else {
-          <button type="button" class="primary-button" [disabled]="store.syncBusy() || store.syncV1Blocked()" (click)="startSync()">Disponibilizar na rede</button>
-        }
-        <small class="security-note">Use apenas em uma rede Wi-Fi privada. O código muda a cada sessão.</small>
-      </article>
-
-      <article class="surface-card sync-connect-card" [hidden]="section() !== 'sync'">
-        <div class="card-icon">⌁</div><h2>Conectar a outro dispositivo</h2><p>Digite os dados exibidos no computador ou celular que receberá a conexão.</p>
-        <div class="field-row"><label class="field-label">Endereço<input [(ngModel)]="remoteAddress" placeholder="192.168.0.10:41337" /></label><label class="field-label code-field">Código<input [(ngModel)]="pairingCode" inputmode="numeric" maxlength="6" placeholder="000000" /></label></div>
-        <button type="button" class="primary-button" [disabled]="store.syncBusy() || store.syncV1Blocked() || !remoteAddress.trim() || pairingCode.trim().length !== 6" (click)="connectSync()">Sincronizar agora</button>
-      </article>
-
       <article class="surface-card sync-host-card" [hidden]="section() !== 'sync'" data-testid="sync-v2-card">
-        <div class="card-head"><div><div class="card-icon">⇄</div><h2>Sincronização nova (teste de campo)</h2></div><span class="status-badge" [class.online]="store.syncV2State().escutando">{{ store.syncV2State().escutando ? 'Escutando' : 'Desligada' }}</span></div>
-        <p>Pareamento por código de oito dígitos, conexão cifrada e imagens conferidas. Não use junto com a sincronização antiga.</p>
+        <div class="card-head"><div><div class="card-icon">⇄</div><h2>Sincronização entre aparelhos</h2></div><span class="status-badge" [class.online]="store.syncV2State().escutando">{{ store.syncV2State().escutando ? 'Escutando' : 'Desligada' }}</span></div>
+        <p>Pareamento por código de oito dígitos, conexão cifrada e imagens conferidas.</p>
         @if (conflicts.epochNotice()?.pareamentosInvalidados && !epochNoticeDismissed()) {
           <div class="sync-epoch-notice" role="status" data-testid="aviso-epoca">
             <strong>A sincronização foi atualizada.</strong>
@@ -179,12 +161,12 @@
             <button type="button" class="secondary-button danger-outline" [disabled]="store.syncV2Busy()" (click)="stopSyncV2()">Parar escuta</button>
           </div>
         } @else {
-          <button type="button" class="primary-button" [disabled]="store.syncV2Busy() || store.syncV2Blocked()" (click)="startSyncV2()">Escutar nesta rede</button>
+          <button type="button" class="primary-button" [disabled]="store.syncV2Busy()" (click)="startSyncV2()">Escutar nesta rede</button>
         }
         <div class="field-row"><label class="field-label">Endereço do outro aparelho<input [(ngModel)]="v2Address" placeholder="192.168.0.10:45870" /></label><label class="field-label code-field">Código<input [(ngModel)]="v2Pin" inputmode="numeric" maxlength="9" placeholder="0000 0000" /></label></div>
         <div class="field-row">
-          <button type="button" class="primary-button" [disabled]="store.syncV2Busy() || store.syncV2Blocked() || !v2Address.trim()" (click)="pairSyncV2()">Parear com código</button>
-          <button type="button" class="secondary-button" [disabled]="store.syncV2Busy() || store.syncV2Blocked() || !v2Address.trim()" (click)="syncNowV2()">Sincronizar pareado</button>
+          <button type="button" class="primary-button" [disabled]="store.syncV2Busy() || !v2Address.trim()" (click)="pairSyncV2()">Parear com código</button>
+          <button type="button" class="secondary-button" [disabled]="store.syncV2Busy() || !v2Address.trim()" (click)="syncNowV2()">Sincronizar pareado</button>
         </div>
         @if (store.syncV2State().ultimoErro) { <small class="security-note">Última tentativa: {{ store.syncV2State().ultimoErro }}</small> }
         <small class="security-note">Use apenas em uma rede Wi-Fi privada. O código vale três minutos e três tentativas.</small>

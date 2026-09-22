@@ -67,7 +67,9 @@ O esquema principal contém:
 - `timeline_events`, `planning_items`, `planning_field_definitions`, `attachments`;
 - `chapter_revisions` (escrita pelo gatilho `trg_chapter_revision`, não por comando),
   `change_log`;
-- Sync V1, ainda em produção: `devices`, `sync_peers`, `sync_conflicts`.
+- Sync V1 — **removido do runtime na etapa G**; as tabelas `devices`, `sync_peers` e
+  `sync_conflicts` ficam como legado histórico, não utilizado em produção, preservado só para
+  upgrade e auditoria (`src-tauri/src/database/legado_v1.rs`).
 - Sync V2 (ADR 0009), em produção desde as etapas 3 a 12: `sync_devices`,
   `sync_events`, `sync_applied_events`, `sync_cursors`, `sync_aggregate_state`,
   `sync_revision_history`, `sync_tombstones`, `sync_divergences`. Só
@@ -121,9 +123,8 @@ implementação que as acompanham.
 - Toda exclusão em cascata respeita foreign keys.
 - Capítulos geram revisão antes de alteração de título ou conteúdo.
 - Um snapshot remoto mais antigo não substitui um registro local mais novo.
-- Conteúdo de capítulo alterado simultaneamente gera `sync_conflicts` — no **Sync V1**. O V2
-  registra em `sync_divergences` e reconcilia por revisão (ADR 0009 §16); as duas tabelas não
-  se misturam.
+- Conteúdo de capítulo alterado simultaneamente vira divergência em `sync_divergences` e é
+  resolvido como fato causal (ADR 0009 §16, etapa F). O `sync_conflicts` do V1 é só legado.
 - Dados de demonstração só podem existir em fixtures explícitas de teste.
 - Toda consulta de workspace é limitada pelo universo ativo; respostas assíncronas de um universo anterior são descartadas após a troca.
 

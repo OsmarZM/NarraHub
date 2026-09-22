@@ -123,9 +123,17 @@ diretório não o pegaria; o gate contra **colocação** pega.
 > e incremental nas duas direções, provado por gate E2E com dois bancos, duas identidades e dois
 > blob stores. Sete comandos na fronteira e um cartão mínimo em Configurações. O alvo Android
 > compila e o CI constrói o APK. Falta executar `docs/ETAPA_14_ROTEIRO_FISICO.md` em Windows e
-> Android reais. O Sync V1 continua no código, congelado e travado na tela contra uso simultâneo.
-> **Atenção à `NH-079`:** só 2 de ~47 escritas de domínio geram evento V2 — criar conteúdo depois
-> do pareamento não propaga, e isso bloqueia remover o V1 do fluxo de produto.
+> Android reais.
+>
+> **Etapa G — Sync V1 removido do runtime.** O Sync V2 é o único protocolo de sincronização
+> alcançável: `src-tauri/src/sync.rs`, os quatro comandos (`sync_status/start/stop/connect`), a
+> porta `SyncService`, os DTOs e os cartões antigos de Configurações saíram. A cobertura que a
+> `NH-079` cobrava fechou nas etapas B1–B6 (gate de cobertura total na B6). As tabelas
+> `sync_conflicts`, `sync_peers` e `devices` ficam no schema como **legado histórico, não
+> utilizado em produção, preservado só para upgrade e auditoria** — sem `DROP`, sem migration nova.
+> Gates: `database/legado_v1.rs` (G1, G7, G12 e o vigia pelo autorizador do SQLite),
+> `sync_sessao::g_o_fluxo_do_v2_nao_le_nem_escreve_o_legado_do_v1` (G4–G6, G10, G11) e os
+> testes `ETAPA G` de `tests/rust-core-contract.test.mjs`.
 >
 > Reconciliação fina de capítulo por bloco depende da **NH-045** e não faz parte das 14
 > etapas. O Sync V2 pode fechar com conflito seguro de capítulo inteiro.
@@ -155,7 +163,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | `WorkspaceLayout` | **Resolvido** na Fase 2, com gate executável |
 | `commands/` legado | **Removido** na Fase 3 |
 | Fronteira nativa do frontend | **Formalizada** — ADR 0008 |
-| Sync V1 sem criptografia | **Foco atual** — Fase 4 |
+| Sync V1 sem criptografia | **Removido do runtime** (etapa G); tabelas ficam como legado histórico |
 | Sync V2 | **ADR 0009 `Accepted`.** Etapas 1–13 concluídas (**ADR 0010** fecha os assets); falta rede real, o gate de saída **NH-053** e a propagação da saída (**NH-058**, parcial) |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
@@ -285,9 +293,9 @@ conjunto começaria a escrever em `seq = 1` sobre coordenadas que já existem.
   voltar para ela seguirá com um app que não abre. O portão só protege downgrades feitos a
   partir da primeira versão que o contiver.
 
-- Sync V1 não tem transporte criptografado, identidade de dispositivo, outbox nem
-  tombstones, e usa `updated_at` para decidir concorrência. É o escopo da Fase 4, e a
-  primeira tarefa é o ADR — não código.
+- ~~Sync V1 sem transporte criptografado, identidade, outbox nem tombstones~~ — **removido do
+  runtime na etapa G**. Um conflito V1 que ficou aberto num banco publicado continua guardado em
+  `sync_conflicts`, sem tela para resolvê-lo (o V1 nunca teve uma) e sem bloquear o pareamento.
 - Sem teste de tokens de design — foi a causa do bug 0.9.0/0.9.1 (`var(--nh-glass-panel)`
   usado sem definição). Checagem ad hoc em 2026-08-31: 34 tokens definidos, 22 usados sem
   valor de reserva, **zero** usados sem definição. O estado hoje está são; nada impede a

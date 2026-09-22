@@ -33,8 +33,7 @@
 //! existia.
 //!
 //! Quem transita é só o `upgrade.rs` (e a restauração de backup, que devolve para `Unprepared`).
-//! Quem checa é `interface::tauri::database` — o único caminho dos comandos de domínio ao banco — e
-//! o Sync V1, que abre o arquivo por conta própria.
+//! Quem checa é `interface::tauri::database` — o único caminho dos comandos de domínio ao banco.
 
 use std::sync::Mutex;
 
@@ -214,21 +213,10 @@ mod tests {
              ReadyReadOnly ele escreveria."
         );
 
-        let v1 = include_str!("../sync.rs").replace("\r\n", "\n");
-        let inicio = v1
-            .find("fn database_path(")
-            .expect("database_path do V1 sumiu");
-        let corpo = &v1[inicio..v1[inicio..].find("\n}\n").map(|f| inicio + f).expect("fim")];
-        assert!(
-            corpo.contains("exigir_pronto()"),
-            "o Sync V1 abre o banco sem checar o estado"
-        );
-
         // Quem mais resolve o arquivo do banco pelo AppHandle? Varre o `src/` inteiro: um arquivo novo
         // que abra o banco por conta própria reprova aqui, sem precisar estar numa lista.
         let permitidos: &[(&str, usize)] = &[
             ("interface/tauri/mod.rs", 1), // o ponto comum, com a guarda
-            ("sync.rs", 1),                // Sync V1, com a guarda
             ("database/health.rs", 2),     // compatibility e health: só leitura, antes do upgrade
             ("database/mod.rs", 1),        // a própria definição
             // O comando que PRODUZ o `Ready` (etapa C): ele roda a conversão de mídia e a adoção

@@ -59,7 +59,7 @@ Código: `src-tauri/src/database/duravel.rs`.
 ## Nenhum comando toca o banco antes disso
 
 O backend guarda o estado do banco (`Unprepared`, `Migrating`, `Ready`, `RecoveryRequired`), e o ponto
-comum de acesso dos comandos (`interface::tauri::database`) e o Sync V1 recusam qualquer operação antes
+comum de acesso dos comandos (`interface::tauri::database`) recusa qualquer operação antes
 de `Ready`. A proteção não depende de o frontend chamar as funções na ordem certa. Código:
 `src-tauri/src/database/estado.rs`.
 

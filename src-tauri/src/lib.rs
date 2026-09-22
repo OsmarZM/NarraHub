@@ -5,7 +5,6 @@ pub mod infrastructure;
 pub mod interface;
 mod local_ai;
 mod online_share;
-mod sync;
 
 use database::migrations::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V14,
@@ -36,14 +35,13 @@ pub fn run() {
         // Nenhum comando toca o banco antes do upgrade seguro terminar (database/estado.rs).
         .manage(database::estado::EstadoDoBanco::default())
         .manage(database::recovery::RestoreRuntimeState::default())
-        .manage(std::sync::Mutex::new(sync::SyncState::default()))
         .manage(std::sync::Mutex::new(
             local_ai::LocalAiRuntimeState::default(),
         ))
         .manage(std::sync::Mutex::new(
             online_share::OnlineShareState::default(),
         ))
-        // Sync V2 (etapa 14). Estado proprio, que nao conversa com o do V1.
+        // Sync V2: o unico protocolo de sincronizacao alcancavel (etapa G).
         .manage(interface::tauri::sync_v2_commands::EstadoV2::default())
         .manage(interface::tauri::android_update_commands::EstadoAtualizacaoAndroid::default())
         .plugin(tauri_plugin_process::init())
@@ -372,10 +370,6 @@ pub fn run() {
             local_ai::install_local_ai,
             local_ai::start_local_ai_engine,
             local_ai::restart_local_ai_engine,
-            sync::sync_status,
-            sync::sync_start,
-            sync::sync_stop,
-            sync::sync_connect,
             online_share::online_share_status,
             online_share::online_share_start,
             online_share::online_share_stop,

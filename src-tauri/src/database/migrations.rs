@@ -2509,14 +2509,16 @@ mod tests {
         std::fs::remove_file(path).ok();
     }
 
-    /// A migration nao pode ter tocado no que o Sync V1 ainda usa.
+    /// A migration nao pode ter tocado nas tabelas do Sync V1.
     ///
-    /// `sync_conflicts` continua sendo escrita por `sync.rs` em producao. A
+    /// Na v16, `sync_conflicts` ainda era escrita pelo V1 em producao. Desde a
+    /// etapa G o V1 saiu do runtime, e as tres ficam como legado de schema, so
+    /// para upgrade e auditoria (G10/G11 provam que ninguem as le nem escreve). A
     /// v16 substitui `sync_events`, que nunca foi povoada, e deixa o resto em
     /// paz - trocar as duas coisas de uma vez seria quebrar o que funciona
     /// para preparar o que ainda nao existe.
     #[test]
-    fn a_v16_nao_derruba_as_tabelas_que_o_sync_v1_usa() {
+    fn a_v16_preserva_as_tabelas_legadas_do_sync_v1() {
         let (db, path) = banco_v16_com_fixture();
 
         for tabela in ["sync_conflicts", "sync_peers", "devices"] {
@@ -2527,7 +2529,10 @@ mod tests {
                     |row| row.get(0),
                 )
                 .expect("consultar sqlite_master");
-            assert_eq!(existe, 1, "{tabela} sumiu, e o Sync V1 ainda escreve nela");
+            assert_eq!(
+                existe, 1,
+                "{tabela} sumiu: e legado do Sync V1 preservado para upgrade e auditoria"
+            );
         }
 
         // E o formato antigo de sync_events, esse sim, foi embora.

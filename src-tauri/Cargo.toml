@@ -43,6 +43,10 @@ zip = { version = "4", default-features = false, features = ["deflate"] }
 # atributo desconhecido e o HTML ao redor.
 lol_html = "3.0.1"
 
+[dev-dependencies]
+# Só nos testes: o autorizador do SQLite vigia as tabelas legadas do Sync V1 (etapa G, G10/G11).
+rusqlite = { version = "0.32", features = ["backup", "bundled", "hooks"] }
+
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2"
 

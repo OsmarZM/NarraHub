@@ -785,6 +785,74 @@ estável*; não bloqueiam a G e não reabrem a F — ver `TASKS.md`):
 | H-R1 | resolução antiga chegando depois de o GC coletar o tombstone participante: sem cabeça local, a R2 pode tratar como primeira materialização | gate que prove que não há ressurreição nem sobrescrita silenciosa |
 | H-R2 | efeitos irmãos/meta de um grupo `resolution`: `results[]` garante coerência estrutural, mas a regra de par desses efeitos não é amarrada à chave | restringir o que cada `(kind, choice)` pode tocar, ou provar que um certificado válido não autoriza efeitos semanticamente arbitrários |
 
+## 5.2 Remoção do Sync V1 (etapa G)
+
+**Sync V1 = removido do runtime. Sync V2 = único protocolo alcançável.**
+
+Inventário (G0) — A produção alcançável · B migração/compatibilidade histórica · C só teste · D morto:
+
+| peça | classe | destino |
+| --- | --- | --- |
+| `src-tauri/src/sync.rs` (snapshot de 17 tabelas por TCP, código de 6 dígitos, LWW por `updated_at`, grava `sync_conflicts`) | A | **removido** |
+| comandos `sync_status/start/stop/connect` + `SyncState` no `lib.rs` | A | **removidos** |
+| `core/native/sync.service.ts` (`SyncService`) | A | **removido** |
+| `SyncServerStatus`, `SyncResult` (`core/models`) | A | **removidos** |
+| `SettingsStore`: `syncStatus`, `syncBusy`, `startSync/stopSync/connectSync`, travas `syncV1Blocked/syncV2Blocked` | A | **removidos** |
+| Configurações: cartões "Receber sincronização" e "Conectar a outro dispositivo"; "Não use junto com a sincronização antiga"; título "(teste de campo)" | A | **removidos** |
+| restaurar backup com "sincronização ativa" (tela e layout) | A | passa a olhar a escuta do V2 |
+| `sync_snapshot::capturar` lendo `sync_conflicts` (`ConflitoV1Aberto`) e `sync_conflicts` como `BloqueiaBootstrap` | A | **removido**; a tabela vira legado local (`LocalNaoTransferida`) |
+| `sync_panorama` | — | já lia `sync_divergences` desde a F |
+| tabelas `sync_conflicts`, `sync_peers`, `devices` (migration 1) | B | **ficam**, sem `DROP` |
+| conversão de mídia do ADR 0010 sobre `sync_conflicts` (superfície 9) no arranque | B | fica: migra banco antigo antes de `Ready` |
+| `epoca::PRESERVADAS_NA_ROTACAO`, `midia::FORA_DO_EVENTO`, catálogo do bootstrap | B | ficam: listas de classificação, sem SQL |
+| gate `estado.rs` sobre o `database_path` do V1 | C | removido junto com o V1 |
+| testes de conflito V1 na captura | C | substituídos pelos gates G9/G11 |
+| `sync_peers`, `devices` | D | nunca tiveram escritor |
+
+**Por que não há `DROP`.** `sync_conflicts` é a única cópia da versão perdedora de um conflito V1
+(o V1 gravava e nunca teve tela para resolver), e as outras duas nunca tiveram escritor: apagá-las
+exigiria uma migration nova só para remover bytes históricos, com fixture e upgrade próprios, sem
+ganho de runtime. O que importa é que nada vivo as leia ou escreva, e isso é provado.
+
+**Por que a captura deixou de recusar conflito V1 aberto.** A trava protegia a versão remota de
+ser esquecida pelo aparelho novo — mas mandava o escritor "resolver os conflitos", e não existe
+(nem nunca existiu) como resolver um conflito V1. Sem o V1, a trava viraria um aparelho que nunca
+mais doa o acervo. A linha continua no banco do doador, intacta; ela só não viaja, como nunca viajou.
+
+**Gates.**
+
+| gate | onde |
+| --- | --- |
+| G1 nenhum comando V1 registrado | `database::legado_v1::g1_…` e `ETAPA G — G1` (JS) |
+| G2 frontend sem serviço/store/API V1 | `ETAPA G — G2/G12` (JS) |
+| G3 panorama e contador leem só `sync_divergences` | `ETAPA G — G3` (JS) + `sync_panorama` (inserção V1 não conta) |
+| G4 PIN só V2 · G5 pareado só V2 | `ETAPA G — G4/G5` (JS) + `sync_sessao::g_o_fluxo_do_v2_nao_le_nem_escreve_o_legado_do_v1` |
+| G6 conflitos V2 funcionando | o mesmo gate de sessão (listar → inspecionar → resolver → propagar) + F1–F21 |
+| G7 upgrade de banco antigo | `database::legado_v1::g7_…` (schema 15 com legado V1 → 28 → arranque `Ready`, `integrity_check`, `foreign_key_check`) |
+| G8 beta.2 → atual pela E0 | `epoca_testes` (fixtures `beta2`) |
+| G9 banco novo elegível | `receptor_que_ja_passou_pelo_arranque_ainda_recebe_bootstrap`, `receptor_com_legado_v1_continua_elegivel` |
+| G10/G11 nenhuma escrita/leitura V1 em runtime | vigia pelo **autorizador do SQLite** (`legado_v1::vigia`, instalado em toda conexão por `apply_pragmas`) no fluxo inteiro sobre TCP real; `o_vigia_pega_leitura_e_escrita_do_legado` prova que ele morde |
+| G12 reintrodução impedida | `database::legado_v1::g12_…` (Rust, código de produção) e `ETAPA G — G2/G12` (JS) |
+
+**Busca global (G6).** O que resta dos termos do V1, e por quê:
+
+| referência | arquivo | motivo de ainda existir |
+| --- | --- | --- |
+| `CREATE TABLE devices/sync_peers/sync_conflicts`, comentários da v16 | `database/migrations.rs` | migration histórica |
+| `TABELAS_DO_SYNC_V1`, vigia | `database/legado_v1.rs` | catálogo do legado e gates |
+| superfície 9 (`sync_conflicts`), `Escritor::ProtocoloV1` | `infrastructure/sqlite/blob_surfaces.rs` | migração histórica de mídia (ADR 0010) |
+| `ORDEM_DOS_DOCUMENTOS` | `infrastructure/sqlite/blob_backfill.rs` | migração histórica de mídia |
+| catálogo `LocalNaoTransferida` | `infrastructure/sqlite/sync_snapshot.rs` | classificação de legado, sem SQL |
+| `PRESERVADAS_NA_ROTACAO` | `application/epoca.rs` | migração de época (E0-beta) |
+| `FORA_DO_EVENTO` | `infrastructure/sqlite/sync_codec/midia.rs` | classificação de legado, sem SQL |
+| `INSERT INTO sync_conflicts…` em `#[cfg(test)]` | `sync_snapshot`, `blob_backfill`, `blob_surfaces`, `blob_document`, `sync_panorama`, `sync_sessao`, `migrations` | teste de upgrade / gate de ausência |
+| linhas `sync_conflicts`/`sync_peers` | `fixtures/beta2/*.sql`, `fixtures/schema20_native.sql`, `schema21_native.sql` | fixture histórica |
+| "Não toca no Sync V1", guarda de símbolos | `sync_sessao.rs`, `sync_pin_pairing.rs`, `sync_v2_commands.rs` | documentação histórica e gate |
+| `sync_start` etc. em testes JS | `tests/rust-core-contract.test.mjs` | gate de ausência |
+| ADRs, levantamentos, plano de evolução | `docs/ADR/0008`, `0009`, `0010`, `docs/ETAPA_14_LEVANTAMENTO.md`, `docs/ARCHITECTURE_EVOLUTION_PLAN.md`, `docs/sync/*` | documentação histórica |
+
+Nenhuma ocorrência em caminho de produção que leia, escreva ou chame o V1.
+
 ## 6. Legado e conversões
 
 - `blob_backfill` (imagens antigas) roda **antes** da gênese (etapa C). Desde a C isso é cobrado no
