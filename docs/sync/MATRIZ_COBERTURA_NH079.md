@@ -784,6 +784,15 @@ estável*; não bloqueiam a G e não reabrem a F — ver `TASKS.md`):
 | --- | --- | --- |
 | H-R1 | resolução antiga chegando depois de o GC coletar o tombstone participante: sem cabeça local, a R2 pode tratar como primeira materialização | gate que prove que não há ressurreição nem sobrescrita silenciosa |
 | H-R2 | efeitos irmãos/meta de um grupo `resolution`: `results[]` garante coerência estrutural, mas a regra de par desses efeitos não é amarrada à chave | restringir o que cada `(kind, choice)` pode tocar, ou provar que um certificado válido não autoriza efeitos semanticamente arbitrários |
+| H-R3 | conflito V1 legado: `sync_conflicts.remote_value` guarda uma alternativa (B) que não está no conteúdo materializado (A) e não viaja no bootstrap V2 — se o último aparelho com o legado sair de uso, B some sem decisão do usuário | banco legado com conflito A/B → upgrade → bootstrap → saída do último aparelho com o legado resulta em **B preservado em artefato/histórico transferível** ou em **aviso explícito aceito pelo usuário**; nunca perda silenciosa |
+
+**H-R3 em detalhe.** Registrado na abertura da etapa H, depois de a G (§5.2) tirar a trava que
+recusava o bootstrap com conflito V1 aberto. Status: **hardening, obrigatório antes da release
+estável**; não reabre a G, não bloqueia o desenvolvimento da H, bloqueia a release estável enquanto
+aberto. Restrições: **não** reintroduzir o Sync V1; **não** converter automaticamente
+`sync_conflicts` em `sync_divergences` V2; **não** inventar payload canônico completo a partir de
+um conflito por campo; preservar a compatibilidade de upgrade. A etapa H trata H-R1, H-R2 e H-R3
+em conjunto.
 
 ## 5.2 Remoção do Sync V1 (etapa G)
 

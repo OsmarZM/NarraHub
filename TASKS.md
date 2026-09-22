@@ -250,6 +250,57 @@ arbitrários (agregado sem relação com o conflito, operação que a escolha n�
 
 ---
 
+### H-R3 — Conflito V1 legado no bootstrap
+
+```text
+Owner:  não atribuída
+Status: HARDENING — obrigatório antes da release estável
+Fase:   Etapa H (sync-h-hardening), junto com H-R1 e H-R2
+        Não reabre G · Não bloqueia o desenvolvimento da H · Bloqueia a release estável enquanto aberto
+```
+
+**Cenário.** `sync_conflicts` pode guardar uma alternativa histórica (`remote_value`) que não faz
+parte do conteúdo materializado e não viaja no bootstrap V2.
+
+```text
+conteúdo materializado = A
+local_value            = A
+remote_value           = B
+
+bootstrap para aparelho novo
+→ A viaja
+→ B fica apenas no aparelho antigo
+```
+
+**Risco.** Se o último aparelho que contém esse legado for aposentado, abandonado, perdido ou
+descartado, B pode desaparecer sem uma decisão explícita do usuário.
+
+**Restrições.**
+
+- NÃO reintroduzir o Sync V1;
+- NÃO converter automaticamente `sync_conflicts` em `sync_divergences` V2;
+- NÃO inventar payload canônico completo a partir de um conflito por campo;
+- preservar a compatibilidade de upgrade.
+
+**Critério de saída.**
+
+```text
+banco legado com conflito A/B
+→ upgrade
+→ bootstrap para aparelho novo
+→ saída definitiva do último aparelho que contém o legado
+```
+
+deve resultar em UMA destas propriedades:
+
+1. B foi preservado em artefato/histórico transferível; ou
+2. o usuário recebeu aviso explícito e aceitou a perda.
+
+**Nunca perda silenciosa.** Contexto: `docs/sync/MATRIZ_COBERTURA_NH079.md` §5.1, "Riscos para o
+hardening", e §5.2 (por que a etapa G deixou de bloquear o bootstrap por conflito V1 aberto).
+
+---
+
 ### NH-079 — Só 2 de ~47 escritas de domínio geram evento V2
 
 ```text
