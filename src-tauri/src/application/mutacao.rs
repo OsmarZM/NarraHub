@@ -68,6 +68,19 @@
 //! automática é a de `.part` abandonado em staging, uma vez por arranque
 //! (`BlobStore::limpar_staging_abandonado`).
 //!
+//! ## Resolução de conflito (etapa F)
+//!
+//! Uma resolução também é uma `Mutacao` — não existe caminho paralelo. Ela declara o conflito
+//! ([`Mutacao::declarar_resolucao`]) e os efeitos com a base escolhida ([`Mutacao::efeito`],
+//! [`Mutacao::excluir_como_efeito`]); o fim monta o **certificado** a partir da lista exata do que
+//! vai ser emitido e o emite como membro 0 de um grupo `resolution`:
+//!
+//! ```text
+//! membro 0     conflict_resolution/<conflictKey>   upsert da raiz, payload = certificado
+//! membros 1..N os efeitos, na ordem declarada; efeito com base escolhida SEMPRE vira evento
+//! mesma transação: sync_divergences daquele conflito fecha (índice local)
+//! ```
+//!
 //! ## O que ela não é
 //!
 //! Não é savepoint: `executar` dentro de `executar` é erro. Não guarda transação entre chamadas.
@@ -126,6 +139,30 @@ enum Operacao {
         agregado: AggregateRef,
         universe_id: String,
     },
+    /// Efeito de uma resolução: parte de uma base ESCOLHIDA (um dos lados do conflito), e não da
+    /// revisão corrente. Sempre vira evento, mesmo quando o estado não mudou: a revisão nova é o
+    /// ponto em que os dois lados passam a ter uma cabeça só.
+    Efeito {
+        agregado: AggregateRef,
+        operacao: Operation,
+        base_rev: String,
+        other_rev: String,
+        universe_id: String,
+    },
+}
+
+/// O conflito que uma resolução fecha. Ver [`Mutacao::declarar_resolucao`].
+#[derive(Debug, Clone)]
+pub struct DeclaracaoDeResolucao {
+    pub conflict_key: String,
+    pub kind: String,
+    pub participante_um: crate::domain::conflito::ConflictParticipant,
+    pub participante_outro: crate::domain::conflito::ConflictParticipant,
+    /// A escolha, em termos portáteis (`a`, `b`, `auto`, `rename`, `merge`, …).
+    pub choice: String,
+    pub universe_id: String,
+    /// Como o índice LOCAL registra o fechamento: `local`, `remote` ou `manual`.
+    pub resolucao_local: String,
 }
 
 /// A mutação em andamento. Só existe dentro de [`Mutacao::executar`].
@@ -135,6 +172,8 @@ pub struct Mutacao<'t, 'c> {
     /// A raiz da primeira exclusão declarada. Faz do grupo um `delete_tree`, e é o que a decisão
     /// apresenta ao escritor se o grupo for bloqueado em outro aparelho.
     raiz_da_exclusao: Option<AggregateRef>,
+    /// Presente quando esta mutação é a resolução de um conflito.
+    resolucao: Option<DeclaracaoDeResolucao>,
 }
 
 impl<'t, 'c> Mutacao<'t, 'c> {
@@ -155,6 +194,7 @@ impl<'t, 'c> Mutacao<'t, 'c> {
                 tx: &tx,
                 operacoes: Vec::new(),
                 raiz_da_exclusao: None,
+                resolucao: None,
             };
             let valor = acao(&mut mutacao)?;
             mutacao.finalizar(identidade)?;
@@ -266,6 +306,7 @@ impl<'t, 'c> Mutacao<'t, 'c> {
         for (agregado, universe_id) in preparados {
             let ja = self.operacoes.iter().any(|operacao| {
                 matches!(operacao, Operacao::Excluiu { agregado: existente, .. } if existente == &agregado)
+                    || matches!(operacao, Operacao::Efeito { agregado: existente, .. } if existente == &agregado)
             });
             if ja {
                 continue;
@@ -292,6 +333,86 @@ impl<'t, 'c> Mutacao<'t, 'c> {
             agregado,
             universe_id: universe_id.to_string(),
         });
+    }
+
+    /// **Esta mutação é a resolução de um conflito.** Uma vez por mutação.
+    pub fn declarar_resolucao(
+        &mut self,
+        declaracao: DeclaracaoDeResolucao,
+    ) -> DatabaseCommandResult<()> {
+        if self.resolucao.is_some() {
+            return Err(DatabaseCommandError::storage(
+                "Uma mutação resolve um conflito só. Nada foi confirmado.",
+            ));
+        }
+        let chave = crate::domain::conflito::chave_do_conflito(
+            &declaracao.kind,
+            &declaracao.participante_um,
+            &declaracao.participante_outro,
+        );
+        if chave != declaracao.conflict_key {
+            return Err(DatabaseCommandError::storage(
+                "A resolução declara participantes que não produzem a chave do conflito. Nada foi confirmado.",
+            ));
+        }
+        self.resolucao = Some(declaracao);
+        Ok(())
+    }
+
+    /// Efeito de uma resolução com a base escolhida. O estado final (existe ou não) já precisa
+    /// estar no domínio quando a mutação terminar.
+    pub fn efeito(
+        &mut self,
+        agregado: AggregateRef,
+        operacao: Operation,
+        base_rev: &str,
+        other_rev: &str,
+        universe_id: &str,
+    ) -> DatabaseCommandResult<()> {
+        if self.resolucao.is_none() {
+            return Err(DatabaseCommandError::storage(
+                "Efeito com base escolhida só existe dentro de uma resolução. Nada foi confirmado.",
+            ));
+        }
+        if !sync_codec::coberto(&agregado.aggregate_type) {
+            return Err(sync_codec::nao_coberto(&agregado.aggregate_type));
+        }
+        self.operacoes.retain(|operacao| {
+            !matches!(operacao, Operacao::Gravou(a) | Operacao::Reescreveu(a) if a == &agregado)
+        });
+        self.operacoes.push(Operacao::Efeito {
+            agregado,
+            operacao,
+            base_rev: base_rev.to_string(),
+            other_rev: other_rev.to_string(),
+            universe_id: universe_id.to_string(),
+        });
+        Ok(())
+    }
+
+    /// A exclusão como efeito de uma resolução: o MESMO preflight de [`Mutacao::excluir`] (roda de
+    /// novo, agora — a decisão antiga não autoriza a cascata), e a raiz sai com a base escolhida.
+    pub fn excluir_como_efeito(
+        &mut self,
+        tipo: &str,
+        id: &str,
+        base_rev: &str,
+        other_rev: &str,
+    ) -> DatabaseCommandResult<()> {
+        self.excluir(tipo, id)?;
+        let raiz = AggregateRef::new(tipo, id);
+        let posicao = self.operacoes.iter().position(
+            |operacao| matches!(operacao, Operacao::Excluiu { agregado, .. } if agregado == &raiz),
+        );
+        let Some(posicao) = posicao else {
+            return Err(DatabaseCommandError::storage(
+                "A exclusão preparada da resolução sumiu. Nada foi confirmado.",
+            ));
+        };
+        let Operacao::Excluiu { universe_id, .. } = self.operacoes.remove(posicao) else {
+            unreachable!("a posição veio de um Excluiu");
+        };
+        self.efeito(raiz, Operation::Delete, base_rev, other_rev, &universe_id)
     }
 
     fn declarar_reescrita(&mut self, agregado: AggregateRef) {
@@ -324,6 +445,9 @@ impl<'t, 'c> Mutacao<'t, 'c> {
             agregado: AggregateRef,
             operacao: Operation,
             payload: String,
+            /// A base escolhida de um efeito de resolução; `None` = a revisão corrente.
+            base_forcada: Option<String>,
+            outra: String,
         }
         let mut pendentes: Vec<Pendente> = Vec::new();
         let mut emitidos: Vec<AggregateRef> = Vec::new();
@@ -361,12 +485,17 @@ impl<'t, 'c> Mutacao<'t, 'c> {
                         agregado: agregado.clone(),
                         operacao: Operation::Upsert,
                         payload: estado.payload,
+                        base_forcada: None,
+                        outra: String::new(),
                     });
                 }
                 Operacao::Excluiu {
                     agregado,
                     universe_id,
                 } => {
+                    if emitidos.contains(agregado) {
+                        continue;
+                    }
                     if sync_codec::ler_canonico(self.tx, agregado)?.is_some() {
                         return Err(DatabaseCommandError::storage(format!(
                             "A mutação preparou a exclusão de {} {}, e ele continua existindo no fim \
@@ -380,9 +509,145 @@ impl<'t, 'c> Mutacao<'t, 'c> {
                         agregado: agregado.clone(),
                         operacao: Operation::Delete,
                         payload: String::new(),
+                        base_forcada: None,
+                        outra: String::new(),
+                    });
+                }
+                Operacao::Efeito {
+                    agregado,
+                    operacao,
+                    base_rev,
+                    other_rev,
+                    universe_id,
+                } => {
+                    if emitidos.contains(agregado) {
+                        return Err(DatabaseCommandError::storage(format!(
+                            "A resolução declarou {} {} duas vezes. Nada foi confirmado.",
+                            agregado.aggregate_type, agregado.aggregate_id
+                        )));
+                    }
+                    let estado = sync_codec::ler_canonico(self.tx, agregado)?;
+                    let payload = match (operacao, estado) {
+                        (Operation::Upsert, Some(estado)) => {
+                            sync_codec::validar_para_emissao(self.tx, agregado, &estado.payload)?;
+                            estado.payload
+                        }
+                        (Operation::Delete, None) => String::new(),
+                        (Operation::Upsert, None) => {
+                            return Err(DatabaseCommandError::storage(format!(
+                                "A resolução mantém {} {}, e ele não existe no fim da transação. Nada foi confirmado.",
+                                agregado.aggregate_type, agregado.aggregate_id
+                            )))
+                        }
+                        (Operation::Delete, Some(_)) => {
+                            return Err(DatabaseCommandError::storage(format!(
+                                "A resolução exclui {} {}, e ele continua existindo no fim da transação. Nada foi confirmado.",
+                                agregado.aggregate_type, agregado.aggregate_id
+                            )))
+                        }
+                    };
+                    emitidos.push(agregado.clone());
+                    pendentes.push(Pendente {
+                        universe_id: universe_id.clone(),
+                        agregado: agregado.clone(),
+                        operacao: *operacao,
+                        payload,
+                        base_forcada: Some(base_rev.clone()),
+                        outra: other_rev.clone(),
                     });
                 }
             }
+        }
+
+        // ── 1b. A resolução: o certificado sai da lista EXATA do que vai ser emitido ──
+        if self.resolucao.is_some() && pendentes.is_empty() {
+            return Err(DatabaseCommandError::storage(
+                "A resolução não produziu nenhum efeito: não há o que certificar. Nada foi confirmado.",
+            ));
+        }
+        let mut revisoes_esperadas: Vec<String> = Vec::with_capacity(pendentes.len() + 1);
+        let mut chave_da_resolucao: Option<(String, String)> = None;
+        if let Some(declaracao) = &self.resolucao {
+            use crate::infrastructure::sqlite::sync_codec::resolucao::{
+                Certificado, EfeitoCanonico, ParticipanteCanonico, TIPO,
+            };
+            let mut results = Vec::with_capacity(pendentes.len());
+            for pendente in &pendentes {
+                let base = match &pendente.base_forcada {
+                    Some(base) => base.clone(),
+                    None => sync_codec::revisao_corrente(self.tx, &pendente.agregado)?
+                        .unwrap_or_default(),
+                };
+                let resultado = crate::domain::sync::compute_revision(
+                    &base,
+                    &pendente.agregado,
+                    pendente.operacao,
+                    &pendente.payload,
+                );
+                revisoes_esperadas.push(resultado.clone());
+                results.push(EfeitoCanonico {
+                    aggregate_type: pendente.agregado.aggregate_type.clone(),
+                    aggregate_id: pendente.agregado.aggregate_id.clone(),
+                    operation: pendente.operacao.as_str().to_string(),
+                    base_rev: base,
+                    other_rev: pendente.outra.clone(),
+                    result_rev: resultado,
+                });
+            }
+            let (um, outro) = (
+                declaracao.participante_um.clone(),
+                declaracao.participante_outro.clone(),
+            );
+            let (a, b) = if um.canonico().as_bytes() <= outro.canonico().as_bytes() {
+                (um, outro)
+            } else {
+                (outro, um)
+            };
+            let certificado = Certificado {
+                conflict_key: declaracao.conflict_key.clone(),
+                kind: declaracao.kind.clone(),
+                participant_a: ParticipanteCanonico::do_conflito(&a),
+                participant_b: ParticipanteCanonico::do_conflito(&b),
+                choice: declaracao.choice.clone(),
+                results,
+            };
+            let payload = certificado.canonico()?;
+            let agregado = AggregateRef::new(TIPO, &declaracao.conflict_key);
+            if sync_codec::revisao_corrente(self.tx, &agregado)?.is_some()
+                || sync_codec::ler_canonico(self.tx, &agregado)?.is_some()
+            {
+                return Err(DatabaseCommandError::conflict(
+                    "Este conflito já tem uma decisão registrada aqui. Nada foi alterado.",
+                ));
+            }
+            self.tx
+                .execute(
+                    "INSERT INTO conflict_resolutions (conflict_key, universe_id, kind, certificate)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![
+                        &declaracao.conflict_key,
+                        &declaracao.universe_id,
+                        &declaracao.kind,
+                        &payload
+                    ],
+                )
+                .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+            sync_codec::validar_para_emissao(self.tx, &agregado, &payload)?;
+            let resultado =
+                crate::domain::sync::compute_revision("", &agregado, Operation::Upsert, &payload);
+            revisoes_esperadas.insert(0, resultado.clone());
+            pendentes.insert(
+                0,
+                Pendente {
+                    universe_id: declaracao.universe_id.clone(),
+                    agregado,
+                    operacao: Operation::Upsert,
+                    payload,
+                    base_forcada: None,
+                    outra: String::new(),
+                },
+            );
+            chave_da_resolucao = Some((declaracao.conflict_key.clone(), resultado));
         }
 
         // ── 2. A ação inteira como um grupo ──
@@ -401,16 +666,47 @@ impl<'t, 'c> Mutacao<'t, 'c> {
                     crate::domain::sync::MAXIMO_DE_MEMBROS_DO_GRUPO
                 ))
             })?;
-        let (kind, root_type, root_id) = match &self.raiz_da_exclusao {
-            Some(raiz) => (
+        let (kind, root_type, root_id) = match (&self.resolucao, &self.raiz_da_exclusao) {
+            (Some(declaracao), _) => (
+                crate::infrastructure::sqlite::sync_codec::resolucao::KIND_DO_GRUPO.to_string(),
+                crate::infrastructure::sqlite::sync_codec::resolucao::TIPO.to_string(),
+                declaracao.conflict_key.clone(),
+            ),
+            (None, Some(raiz)) => (
                 "delete_tree".to_string(),
                 raiz.aggregate_type.clone(),
                 raiz.aggregate_id.clone(),
             ),
-            None => (String::new(), String::new(), String::new()),
+            (None, None) => (String::new(), String::new(), String::new()),
         };
         for (indice, pendente) in pendentes.iter().enumerate() {
-            append_event_in_transaction(
+            if let Some(base) = &pendente.base_forcada {
+                // A base escolhida vira, por um instante, a revisão corrente: é dela que o evento
+                // parte. O tombstone sai — o que for emitido agora é a cabeça nova.
+                self.tx
+                    .execute(
+                        "INSERT INTO sync_aggregate_state (aggregate_type, aggregate_id, current_rev)
+                         VALUES (?1, ?2, ?3)
+                         ON CONFLICT(aggregate_type, aggregate_id)
+                         DO UPDATE SET current_rev = excluded.current_rev",
+                        rusqlite::params![
+                            &pendente.agregado.aggregate_type,
+                            &pendente.agregado.aggregate_id,
+                            base
+                        ],
+                    )
+                    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+                self.tx
+                    .execute(
+                        "DELETE FROM sync_tombstones WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+                        [
+                            &pendente.agregado.aggregate_type,
+                            &pendente.agregado.aggregate_id,
+                        ],
+                    )
+                    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+            }
+            let envelope = append_event_in_transaction(
                 self.tx,
                 identidade,
                 &LocalChange {
@@ -428,9 +724,36 @@ impl<'t, 'c> Mutacao<'t, 'c> {
                     },
                 },
             )?;
+            if let Some(esperada) = revisoes_esperadas.get(indice) {
+                if envelope.new_rev != *esperada {
+                    return Err(DatabaseCommandError::storage(format!(
+                        "{} {} saiu com uma revisão diferente da que o certificado declara. Nada foi confirmado.",
+                        pendente.agregado.aggregate_type, pendente.agregado.aggregate_id
+                    )));
+                }
+            }
             if indice == 0 {
                 falha::verificar(falha::Ponto::DuranteOsEventos)?;
             }
+        }
+
+        // ── 3. O índice local do conflito fecha na mesma transação ──
+        if let (Some(declaracao), Some((chave, revisao))) = (&self.resolucao, chave_da_resolucao) {
+            self.tx
+                .execute(
+                    "UPDATE sync_divergences
+                        SET resolved_at = CASE WHEN resolved_at = '' THEN ?1 ELSE resolved_at END,
+                            resolution = CASE WHEN resolution = '' THEN ?2 ELSE resolution END,
+                            resolution_rev = ?3
+                      WHERE conflict_key = ?4 AND resolution_rev = ''",
+                    rusqlite::params![
+                        crate::domain::ids::now_timestamp(),
+                        &declaracao.resolucao_local,
+                        revisao,
+                        chave
+                    ],
+                )
+                .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
         }
         Ok(())
     }

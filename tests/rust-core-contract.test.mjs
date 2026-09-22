@@ -141,6 +141,10 @@ test('só as portas nativas falam com o Tauri', () => {
     // Atualização do Android por APK das GitHub Releases. É plataforma: baixa e abre o instalador do
     // sistema, e não recebe URL nem caminho da tela -- o Rust usa o que ele próprio verificou.
     'core/native/android-update.service.ts',
+    // Os conflitos do Sync V2 (etapa F). É plataforma pelo mesmo motivo do Sync V2: o que ela
+    // lê é sobre a sincronização DESTE APARELHO. Ela recebe DTOs prontos -- nunca tabela de
+    // sincronização, envelope nem revisão crua -- e a decisão viaja como ação portátil.
+    'core/native/sync-conflicts.service.ts',
   ];
 
   const infratores = [];
@@ -714,5 +718,71 @@ test('os comandos de atualizacao do Android nao recebem URL, caminho nem hash da
   const lib = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
   for (const comando of ['android_update_supported', 'android_update_check', 'android_update_download', 'android_update_install']) {
     assert.ok(lib.includes(`android_update_commands::${comando}`), `${comando} fora do invoke_handler`);
+  }
+});
+
+test('os DTOs dos conflitos (etapa F) tem os mesmos campos no Rust e no TypeScript', () => {
+  // Mesmo motivo dos gates do Sync V2: o IPC serializa em camelCase e ninguém compara as duas
+  // declarações. Um campo renomeado chega como `undefined` -- e numa tela de conflito isso vira
+  // uma versão vazia, que o escritor pode escolher achando que é a certa.
+  const ler = (relativo) => readFileSync(new URL(relativo, import.meta.url), 'utf8');
+  const ts = ler('../src/app/core/native/sync-conflicts.service.ts');
+  const camposRust = (fonte, nome) => {
+    const inicio = fonte.indexOf(`pub struct ${nome} {`);
+    assert.ok(inicio >= 0, `nao achei o struct ${nome}; a varredura quebrou`);
+    const corpo = fonte.slice(inicio, fonte.indexOf('\n}', inicio));
+    return [...corpo.matchAll(/^\s{4}pub ([a-z0-9_]+):/gmu)].map((m) => m[1]);
+  };
+  const camposTs = (nome) => {
+    const inicio = ts.indexOf(`export interface ${nome} {`);
+    assert.ok(inicio >= 0, `nao achei a interface ${nome}; a varredura quebrou`);
+    const corpo = ts.slice(inicio, ts.indexOf('\n}', inicio));
+    return [...corpo.matchAll(/^\s{2}([A-Za-z0-9_]+)\??:/gmu)].map((m) => m[1]);
+  };
+  const camel = (snake) => snake.replace(/_([a-z0-9])/gu, (_, c) => c.toUpperCase());
+  const conflitos = '../src-tauri/src/application/conflitos.rs';
+  for (const [arquivo, nomeRust, nomeTs] of [
+    [conflitos, 'FiltroDeConflitos', 'ConflictFilter'],
+    [conflitos, 'ResumoDoConflito', 'ConflictSummary'],
+    [conflitos, 'Campo', 'ConflictField'],
+    [conflitos, 'LadoDoConflito', 'ConflictSide'],
+    [conflitos, 'Diferenca', 'ConflictDifference'],
+    [conflitos, 'LinhaDeDiff', 'ConflictDiffLine'],
+    [conflitos, 'AcaoDisponivel', 'ConflictAction'],
+    [conflitos, 'DetalheDoConflito', 'ConflictDetail'],
+    [conflitos, 'AvisoDeEpoca', 'EpochNotice'],
+    ['../src-tauri/src/application/resolucao_divergencia.rs', 'ResultadoDaResolucao', 'ConflictResolutionResult'],
+  ]) {
+    const esperados = camposRust(ler(arquivo), nomeRust).map(camel).sort();
+    assert.ok(esperados.length >= 2, `${nomeRust}: a varredura achou campos de menos`);
+    assert.deepStrictEqual(camposTs(nomeTs).sort(), esperados, `${nomeRust} (Rust) e ${nomeTs} (TypeScript) divergiram.`);
+  }
+
+  // A ação é um enum com `tag = "tipo"`: as variantes, em camelCase, são o tipo do TS.
+  const resolucao = ler('../src-tauri/src/application/resolucao_divergencia.rs');
+  const inicio = resolucao.indexOf('pub enum Acao {');
+  const corpo = resolucao.slice(inicio, resolucao.indexOf('\n}', inicio));
+  const variantes = [...corpo.matchAll(/^\s{4}([A-Z][A-Za-z]+)[ ,{]/gmu)]
+    .map((m) => m[1].charAt(0).toLowerCase() + m[1].slice(1)).sort();
+  const declaradas = [...ts.match(/export type ConflictActionType =([^;]+);/u)[1].matchAll(/'([A-Za-z]+)'/gu)]
+    .map((m) => m[1]).sort();
+  assert.ok(variantes.length >= 8, 'a varredura das ações quebrou');
+  assert.deepStrictEqual(declaradas, variantes, 'as ações de resolução divergiram entre Rust e TypeScript');
+  assert.match(corpo, /#\[serde\(rename_all = "camelCase"\)\]\s*Renomear \{ tag_id/u, 'renomear precisa chegar como tagId');
+});
+
+test('os quatro comandos dos conflitos estao registrados e a porta chama cada um', () => {
+  const lib = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+  const inicio = lib.indexOf('invoke_handler');
+  const lista = lib.slice(inicio, lib.indexOf('])', inicio));
+  const ts = readFileSync(new URL('../src/app/core/native/sync-conflicts.service.ts', import.meta.url), 'utf8');
+  for (const comando of [
+    'sync_conflitos_listar',
+    'sync_conflito_inspecionar',
+    'sync_conflito_resolver',
+    'sync_v2_aviso_de_epoca',
+  ]) {
+    assert.ok(lista.includes(`conflitos_commands::${comando}`), `\`${comando}\` nao esta no invoke_handler.`);
+    assert.ok(ts.includes(`'${comando}'`), `a porta do frontend nao chama \`${comando}\`.`);
   }
 });

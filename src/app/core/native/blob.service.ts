@@ -26,6 +26,8 @@ export interface ArchivePreparation {
   adocao: ArchiveAdoptionSummary;
   sincronizacaoDisponivel: boolean;
   motivoDaIndisponibilidade: string;
+  /** A atualização girou a época causal (Sync V2, E0-beta): os aparelhos precisam parear de novo. */
+  pareamentosInvalidados: boolean;
 }
 
 /**

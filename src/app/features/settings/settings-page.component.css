@@ -177,3 +177,27 @@ html.nh-mobile app-settings-page .card-head h2,
 html.nh-mobile app-settings-page .card-head h3 { font-size: 18px; }
 html.nh-mobile app-settings-page :is(.security-note, .field-label, .modal-guidance) { font-size: 13px; }
 html.nh-mobile app-settings-page .surface-card p { font-size: 14px; line-height: 1.5; }
+
+/* Etapa F: aviso da atualização da sincronização e atalho para os conflitos. */
+.sync-epoch-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--nh-ochre, var(--line));
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+.sync-epoch-notice small { color: var(--muted); }
+.sync-epoch-notice button { align-self: flex-start; }
+.sync-conflicts-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--nh-touch-target, 40px);
+  color: var(--muted);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.sync-conflicts-link.attention { color: var(--nh-danger); font-weight: 600; }

@@ -76,7 +76,8 @@ pub struct Panorama {
     /// Eventos de outras origens ainda não aplicados, somados.
     pub eventos_pendentes: i64,
     pub pendentes_por_origem: Vec<PendenciaDeOrigem>,
-    /// Conflitos de capítulo esperando decisão humana.
+    /// Conflitos do Sync V2 esperando decisão (`sync_divergences` abertas). Até a etapa F este
+    /// número vinha de `sync_conflicts`, a tabela do V1 — o contador existia e não media o V2.
     pub conflitos_abertos: i64,
     /// Pendências de mídia da etapa 13 que continuam abertas.
     ///
@@ -121,7 +122,7 @@ pub fn panorama(
         pendentes_por_origem: pendentes_por_origem(&connection, &eu)?,
         conflitos_abertos: contar(
             &connection,
-            "SELECT COUNT(*) FROM sync_conflicts WHERE resolved_at = ''",
+            "SELECT COUNT(*) FROM sync_divergences WHERE resolved_at = ''",
             [],
         )?,
         pendencias_de_midia: contar(
@@ -351,12 +352,12 @@ mod tests {
         );
     }
 
-    /// Conflito aberto aparece; conflito resolvido sai.
+    /// **O contador é do V2** (etapa F): divergência aberta soma, resolvida sai — e conflito do
+    /// V1 não mexe no número.
     #[test]
     fn conflito_aberto_aparece_e_o_resolvido_sai() {
         let aparelho = Aparelho::novo();
-        let visto_antes = aparelho.panorama();
-        assert_eq!(visto_antes.conflitos_abertos, 0);
+        assert_eq!(aparelho.panorama().conflitos_abertos, 0);
 
         let connection = aparelho.banco.connection();
         connection
@@ -364,14 +365,35 @@ mod tests {
                 "INSERT INTO sync_conflicts
                         (id, aggregate_type, aggregate_id, field, local_value, remote_value,
                          resolved_at)
-                    VALUES ('c1','chapter','cap1','content','a','b','');
-                 INSERT INTO sync_conflicts
-                        (id, aggregate_type, aggregate_id, field, local_value, remote_value,
-                         resolved_at)
-                    VALUES ('c2','chapter','cap2','content','a','b','2026-01-02');",
+                    VALUES ('v1','chapter','cap1','content','a','b','');",
             )
-            .expect("semear conflitos");
+            .expect("conflito do V1");
+        assert_eq!(
+            aparelho.panorama().conflitos_abertos,
+            0,
+            "um conflito do V1 entrou no contador do V2"
+        );
 
-        assert_eq!(aparelho.panorama().conflitos_abertos, 1);
+        connection
+            .execute_batch(
+                "INSERT INTO sync_divergences
+                        (id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev,
+                         remote_event_id, conflict_key)
+                    VALUES ('d1','chapter','cap1','r0','r1','r2','ev','k1');
+                 INSERT INTO sync_divergences
+                        (id, aggregate_type, aggregate_id, base_rev, local_rev, remote_rev,
+                         remote_event_id, conflict_key, resolved_at)
+                    VALUES ('d2','chapter','cap2','r0','r1','r2','ev','k2','2026-01-02');",
+            )
+            .expect("divergências do V2");
+        assert_eq!(aparelho.panorama().conflitos_abertos, 1, "abre → +1");
+
+        connection
+            .execute(
+                "UPDATE sync_divergences SET resolved_at = '2026-01-03' WHERE id = 'd1'",
+                [],
+            )
+            .expect("resolver");
+        assert_eq!(aparelho.panorama().conflitos_abertos, 0, "resolve → -1");
     }
 }

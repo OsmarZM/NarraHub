@@ -114,6 +114,9 @@ pub const FASES: &[Fase] = &[
     },
     fase("attachment", anexos),
     fase("attachment_position", anexos),
+    // Etapa F. Uma resolução só nasce pela `Mutacao`, então um acervo antigo não tem nenhuma —
+    // a fase existe para a regra "todo tipo coberto tem fase" continuar sem exceção.
+    fase("conflict_resolution", super::resolucao::enumerar),
 ];
 
 const fn fase(

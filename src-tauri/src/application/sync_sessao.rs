@@ -1100,6 +1100,11 @@ fn receber_eventos(
             let mut connection = ctx.database.write()?;
             sync_session::receber_eventos(&mut connection, &lote, ctx.store)?
         };
+        // Exclusão contra exclusão e conteúdos idênticos não esperam o escritor (etapa F).
+        crate::application::resolucao_divergencia::resolver_automaticas(
+            ctx.database,
+            ctx.identidade,
+        )?;
         resultado.eventos_aplicados += relatorio.aplicados;
         resultado.eventos_pendentes = relatorio.pendentes;
         canal.enviar(&Mensagem::Vetor(vetor(ctx.database)?))?;
@@ -1135,6 +1140,7 @@ fn puxar_blobs(
         let mut connection = ctx.database.write()?;
         sync_session::receber_eventos(&mut connection, &[], ctx.store)?
     };
+    crate::application::resolucao_divergencia::resolver_automaticas(ctx.database, ctx.identidade)?;
     resultado.eventos_aplicados += relatorio.aplicados;
     resultado.eventos_pendentes = relatorio.pendentes;
     Ok(relatorio.esperando_blob)
@@ -2042,8 +2048,9 @@ mod tests {
     fn protocolo_2() {
         hello_de_teste::alterar(Some(|h| h.protocolo = 2));
     }
-    fn canonico_2() {
-        hello_de_teste::alterar(Some(|h| h.formato_canonico = 2));
+    /// O outro lado ainda no formato canônico 1 (anterior à etapa F): o `Hello` recusa 1 contra 2.
+    fn canonico_antigo() {
+        hello_de_teste::alterar(Some(|h| h.formato_canonico = 1));
     }
     fn modo_trocado() {
         hello_de_teste::alterar(Some(|h| {
@@ -2075,7 +2082,7 @@ mod tests {
             ("protocolo", protocolo_2, |m| {
                 matches!(m, Incompatibilidade::Protocolo { .. })
             }),
-            ("canônico", canonico_2, |m| {
+            ("canônico", canonico_antigo, |m| {
                 matches!(m, Incompatibilidade::FormatoCanonico { .. })
             }),
         ];

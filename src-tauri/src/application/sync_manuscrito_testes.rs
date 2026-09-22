@@ -2375,7 +2375,13 @@ fn manter_local_com_os_dois_lados_excluindo_adota_o_tombstone_da_origem() {
     assert!(revisao(&a, "planning_field_definition", &quadro.campo_texto).is_none());
     // A ausência igual não gera evento. O card_a de A é outro estado (perdeu as ligações ao ser
     // salvo) e ganha revisão sobre a de B, pela regra de estado diferente.
-    let novos: Vec<_> = a.eventos()[eventos_antes.len()..].to_vec();
+    // Etapa F: a decisão é o primeiro membro do grupo; fora ela, só o que mudou de estado.
+    let mut novos: Vec<_> = a.eventos()[eventos_antes.len()..].to_vec();
+    assert_eq!(
+        novos[0].0, "conflict_resolution",
+        "a decisão não é o primeiro membro"
+    );
+    novos.remove(0);
     assert_eq!(
         novos,
         vec![(

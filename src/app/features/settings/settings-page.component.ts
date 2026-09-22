@@ -8,6 +8,8 @@ import { ThemeService } from '../../core/services/theme.service';
 import { CollaborationStore } from '../collaboration/state/collaboration.store';
 import { ProductionReplicaComponent } from '../production-replica/production-replica.component';
 import { SettingsStore } from './state/settings.store';
+import { ConflictsStore } from '../conflicts/state/conflicts.store';
+import { RouterLink } from '@angular/router';
 
 export type SettingsSection = 'general' | 'ai' | 'sync' | 'share' | 'updates';
 
@@ -16,13 +18,16 @@ type RestoreModal = 'restore-backup' | null;
 @Component({
   selector: 'app-settings-page',
   standalone: true,
-  imports: [FormsModule, ProductionReplicaComponent],
+  imports: [FormsModule, ProductionReplicaComponent, RouterLink],
   templateUrl: './settings-page.component.html',
   styleUrl: './settings-page.component.css',
   encapsulation: ViewEncapsulation.None,
 })
 export class SettingsPageComponent implements OnInit {
   readonly store = inject(SettingsStore);
+  /** Etapa F: o contador de conflitos e o aviso da atualização da sincronização. */
+  readonly conflicts = inject(ConflictsStore);
+  readonly epochNoticeDismissed = signal(false);
   readonly collaboration = inject(CollaborationStore);
   readonly ai = inject(AiService);
   readonly theme = inject(ThemeService);
@@ -54,6 +59,23 @@ export class SettingsPageComponent implements OnInit {
     void this.store.refreshSyncStatus();
     void this.store.refreshBackupStatus();
     void this.store.primeCurrentVersion();
+    void this.conflicts.refreshOpenCount();
+    void this.conflicts.loadEpochNotice().then(() => {
+      const aviso = this.conflicts.epochNotice();
+      this.epochNoticeDismissed.set(Boolean(aviso && this.readDismissed() === aviso.iniciadaEm));
+    });
+  }
+
+  /** O aviso da atualização (E0-beta) some depois de lido — por época, não para sempre. */
+  dismissEpochNotice(): void {
+    const aviso = this.conflicts.epochNotice();
+    if (!aviso) return;
+    try { localStorage.setItem('narrahub.syncEpochNoticeSeen', aviso.iniciadaEm); } catch { /* sem armazenamento: o aviso volta na próxima abertura */ }
+    this.epochNoticeDismissed.set(true);
+  }
+
+  private readDismissed(): string {
+    try { return localStorage.getItem('narrahub.syncEpochNoticeSeen') ?? ''; } catch { return ''; }
   }
 
   selectSection(section: SettingsSection): void {
@@ -281,12 +303,14 @@ export class SettingsPageComponent implements OnInit {
     const result = await this.store.pairSyncV2(this.v2Address, this.v2Pin, this.deviceName);
     if (!result.ok) { if (result.error) this.showError(result.error); return; }
     if (result.result) this.showInfo(this.describeSyncV2(result.result));
+    void this.conflicts.refreshOpenCount();
   }
 
   async syncNowV2(): Promise<void> {
     const result = await this.store.syncNowV2(this.v2Address, this.deviceName);
-    if (!result.ok) { if (result.error) this.showError(result.error); return; }
+    if (!result.ok) { if (result.error) this.showError(result.error); void this.conflicts.refreshOpenCount(); return; }
     if (result.result) this.showInfo(this.describeSyncV2(result.result));
+    void this.conflicts.refreshOpenCount();
   }
 
   private describeSyncV2(r: import('../../core/native/sync-v2.service').SyncSessionResult): string {

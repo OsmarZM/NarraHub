@@ -99,6 +99,11 @@ export class AppBootstrapService {
           `[NarraHub] Acervo adotado pela sincronização: ${acervo.adocao.adotados} itens.`,
         );
       }
+      if (acervo?.pareamentosInvalidados) {
+        console.warn(
+          '[NarraHub] A sincronização foi atualizada. Por segurança, pareie seus aparelhos novamente.',
+        );
+      }
       if (acervo && !acervo.sincronizacaoDisponivel) {
         console.warn(
           '[NarraHub] Sincronização indisponível nesta sessão: '

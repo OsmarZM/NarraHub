@@ -174,7 +174,7 @@ migration — não pegar a versão mais recente:
 | 0.9.0 e 0.9.1 | 15 |
 | 0.9.2 (publicada) | 15 |
 | 0.10.0-beta.1 e beta.2 (pré-releases Android) | 20 — Sync V2 anterior ao `Hello`; o upgrade gira a época causal (E0-beta, `fixtures/beta2`) |
-| `main` hoje | **27** — época causal do protocolo 1 (etapa E): marcador, arquivo do passado pré-Hello |
+| `main` hoje | **28** — resolução de conflito como fato causal (etapa F): `conflict_resolutions` e `sync_divergences.resolution_rev` |
 
 Consequência prática, e ela **mudou** com a migration 16: a próxima versão publicada será a
 primeira desde a 0.9.2 a carregar migration de verdade. O par `0.9.2 → próxima` deixa de ser
