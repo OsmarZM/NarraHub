@@ -267,16 +267,18 @@ só então entrega a resolução antiga, e prova que não há ressurreição nem
 
 ```text
 Owner:  Claude
-Status: CLOSED na etapa H (gates H7–H15, mutações HM2–HM4)
+Status: CLOSED na etapa H (gates H7–H15 e H28, mutações HM2–HM4 e HM9)
 Fase:   Hardening pré-release estável
 ```
 
 **Fechado assim:** `other_rev` deixou de ser autoridade. Um efeito sobre agregado que não é
 participante só ganha a junção de dois pais quando ESTE aparelho prova que ele pertence à ação
 original do conflito — mesma origem e mesmo `mutation_id` do evento que produziu a revisão
-participante — e o par contém a revisão exata daquele membro. Sem prova, o `other_rev` é
-descartado e o efeito segue pelo classificador comum: sequencial aplica, concorrente vira
-pergunta, desconhecido espera. Certificado inválido continua sendo recusa do grupo inteiro; falta
+participante — e o **par inteiro** é a aresta daquela ação (`{baseRev, newRev}` de um membro) ou as
+cabeças das duas ações participantes. Conhecer uma das pontas não basta: a revisão do PR #73 mostrou
+que `{X1, X2}`, com X1 da ação e X2 produzido depois pelo receptor, passaria e sobrescreveria X2.
+Sem prova, o `other_rev` é descartado e o efeito segue pelo classificador comum: sequencial aplica,
+concorrente vira pergunta, desconhecido espera. Certificado inválido continua sendo recusa do grupo inteiro; falta
 de prova local, não.
 
 O problema original:

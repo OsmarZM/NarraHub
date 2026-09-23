@@ -143,8 +143,9 @@ diretório não o pegaria; o gate contra **colocação** pega.
 > por `sync_repository::remover_tombstone`, com motivo declarado; o GC físico continua não existindo.
 > **H-R2**: `other_rev` deixou de ser autoridade. Um efeito sobre agregado que não é participante só
 > ganha a junção de dois pais quando este aparelho prova que ele pertence à ação original do
-> conflito (mesma origem, mesmo `mutation_id`) e o par contém a revisão exata daquele membro. Sem
-> prova, o efeito segue como evento comum: sequencial aplica, concorrente vira pergunta.
+> conflito (mesma origem, mesmo `mutation_id`) e o **par inteiro** é a aresta daquela ação ou as
+> cabeças das duas ações participantes — uma das pontas não basta (H28). Sem prova, o efeito segue
+> como evento comum: sequencial aplica, concorrente vira pergunta.
 > **H-R3**: `legacy_recovery_items` (migration 29) inventaria o que o Sync V1 deixou pendente neste
 > aparelho. O import roda no arranque, depois da conversão de mídia e antes de `Ready`; depois
 > disso ninguém lê `sync_conflicts`. O escritor preserva (vira capítulo novo, que sincroniza) ou

@@ -23,9 +23,14 @@ A etapa que prova o que os casos extremos **não** conseguem. A prioridade acima
   **não** foi implementado.
 - **H-R2 — `other_rev` não é autoridade.** Um efeito sobre agregado que não é participante só ganha
   a junção de dois pais quando ESTE aparelho prova que ele pertence à ação original do conflito
-  (mesma origem, mesmo `mutation_id`) e o par contém a revisão exata daquele membro. Sem prova, o
-  `other_rev` é descartado e o efeito segue como evento comum. Certificado inválido continua sendo
-  recusa do grupo; falta de prova local, não — a diferença é o que protege o terceiro aparelho.
+  (mesma origem, mesmo `mutation_id`) **e o par inteiro** é a aresta daquela ação (`{baseRev,
+  newRev}` de um membro) ou as cabeças das duas ações participantes. Sem prova, o `other_rev` é
+  descartado e o efeito segue como evento comum. Certificado inválido continua sendo recusa do
+  grupo; falta de prova local, não — a diferença é o que protege o terceiro aparelho.
+- **Correção pedida na revisão do PR #73:** a primeira versão provava "base ∈ ação **ou** other ∈
+  ação". Isso deixava passar `{X1, X2}` — X1 da ação, X2 produzido depois pelo receptor —, e a R1
+  sobrescrevia o X2. Agora `membros_da_acao_de` carrega a aresta inteira de cada membro, e o par é
+  provado por completo (gate H28, mutação HM9).
 - **H-R3 — caixa de recuperação do legado.** Migration 29 cria `legacy_recovery_items` (local, não
   causal). O import roda no arranque, depois da conversão de mídia e antes de `Ready`; é idempotente
   e nunca reabre decisão. A tela `/settings/recuperacao-sync-antigo` deixa o escritor preservar (vira
@@ -51,6 +56,15 @@ A etapa que prova o que os casos extremos **não** conseguem. A prioridade acima
 - O lote de mutações estourou o tempo no meio e deixou uma mutação aplicada no código. Foi por isso
   que o tempo de cada rodada virou filtro estreito, e o script passou a imprimir a conferência do
   `git status` depois de cada restauração.
+
+## O que a revisão do PR #73 pegou
+
+A prova do par auxiliar era fraca: bastava uma das pontas pertencer à ação. O ataque é uma ação
+legítima `X0 → X1`, o receptor andando para `X2`, e um certificado dizendo `base = X1, other = X2`.
+Corrigido com a prova do par inteiro, mais o gate H28 (com `chapter_position`, um auxiliar real) e a
+mutação HM9, que reverte a prova e derruba exatamente o H28. Ao escrever o H28 eu mesmo errei antes:
+reassinei a decisão com a chave do aparelho errado, e o receptor descartava os eventos — o gate
+passava sem provar nada. A instrumentação mostrou o silêncio, e a correção fez a HM9 morder.
 
 ## Dívidas que ficam
 

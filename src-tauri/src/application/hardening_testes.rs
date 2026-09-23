@@ -745,6 +745,104 @@ fn h15_decisao_concorrente_continua_resolvivel() {
     }
 }
 
+/// **H28 — o par auxiliar precisa ser provável INTEIRO, não por uma ponta.**
+///
+/// O buraco que a revisão do PR #73 encontrou, com um auxiliar de verdade (`chapter_position`):
+///
+/// ```text
+/// ação legítima de B     posição X0 → X1   (a exclusão do capítulo levou a posição junto)
+/// o receptor A andou     posição X1 → X2   (reordenou os capítulos depois)
+/// certificado forjado    base = X1, other = X2
+/// ```
+///
+/// `X1` pertence à ação, então a prova antiga ("base ∈ ação **ou** other ∈ ação") autorizava o par —
+/// e, como a cabeça de A é `X2` e as duas revisões são conhecidas, a R1 sobrescreveria `X2` com um
+/// estado que a ação nunca viu. Agora o par só vale se for a aresta da própria ação (`{X0, X1}`) ou
+/// as cabeças das duas ações participantes. `{X1, X2}` não é nenhum dos dois.
+#[test]
+fn h28_par_auxiliar_fora_da_acao_nao_sobrescreve() {
+    let (a, b, capitulo, chave) = conflito_de_exclusao();
+    let posicao = sync_codec::posicao::posicao_do_item("chapter").expect("tipo da posição");
+
+    // A reordena os capítulos do livro: a posição do capítulo disputado anda para uma revisão nova,
+    // que nenhuma das duas ações do conflito conhece.
+    let livro: String = a
+        .banco
+        .connection()
+        .query_row(
+            "SELECT book_id FROM chapters WHERE id = ?1",
+            [&capitulo],
+            |row| row.get(0),
+        )
+        .expect("livro do capítulo");
+    let outro = crate::application::manuscript_service::create_chapter(
+        &a.banco.database,
+        &a.eu,
+        &livro,
+        "Outro capítulo",
+    )
+    .expect("segundo capítulo")
+    .id;
+    crate::application::manuscript_service::reorder_chapters(
+        &a.banco.database,
+        &a.eu,
+        &livro,
+        &[outro.clone(), capitulo.clone()],
+    )
+    .expect("reordenar");
+    let x2 = a
+        .revisao(posicao, &capitulo)
+        .expect("a posição em A andou para uma revisão nova");
+
+    // B restaura: a decisão real traz a posição como auxiliar, com a aresta da ação dele — {X0, X1}.
+    b.resolver(&chave, Acao::Restaurar).expect("restaurar");
+    let decisao = grupo_da_decisao(&b, &a);
+    let (indice, efeito_da_posicao) = decisao
+        .iter()
+        .enumerate()
+        .find(|(_, membro)| membro.aggregate_type == posicao)
+        .map(|(indice, membro)| (indice, membro.clone()))
+        .expect("a decisão tinha de trazer a posição como efeito auxiliar");
+    let x1 = efeito_da_posicao.base_rev.clone();
+
+    // O certificado forjado troca o par do auxiliar para {X1, X2}: X1 é da ação, X2 é a cabeça
+    // nova de A. É exatamente o par que a prova fraca autorizaria.
+    let mut forjado = decisao.clone();
+    let mut certificado = Certificado::ler(&forjado[0].payload).expect("certificado");
+    for resultado in certificado.results.iter_mut() {
+        if resultado.aggregate_type == posicao {
+            resultado.other_rev = x2.clone();
+        }
+    }
+    forjado[0].payload = certificado.canonico().expect("json");
+    forjado[0].new_rev = compute_revision(
+        "",
+        &AggregateRef::new(&forjado[0].aggregate_type, &forjado[0].aggregate_id),
+        Operation::Upsert,
+        &forjado[0].payload,
+    );
+    // A decisão é de B: quem reassina é B. Assinar com a chave errada faria o receptor descartar
+    // os eventos antes de chegar à autorização — e o gate passaria sem provar nada.
+    for membro in forjado.iter_mut() {
+        membro.signature = b.eu.sign(membro);
+    }
+    assert_eq!(
+        forjado[indice].base_rev, x1,
+        "o efeito auxiliar tinha de continuar partindo da revisão da ação"
+    );
+
+    let _ = receber(&a, &forjado);
+    assert_eq!(
+        a.revisao(posicao, &capitulo).as_deref(),
+        Some(x2.as_str()),
+        "a posição nova de A foi sobrescrita por um par que a ação não prova"
+    );
+    assert!(
+        !a.abertas().is_empty() || a.pendentes() > 0,
+        "sem sobrescrever, a decisão que não coube precisa virar pergunta ou espera"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Hardening transversal: a matriz dos estados perigosos, as permutações de
 // entrega e as duas regressões (blob e bootstrap).

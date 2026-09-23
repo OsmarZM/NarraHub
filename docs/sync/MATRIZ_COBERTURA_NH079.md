@@ -914,8 +914,29 @@ parent_deletion_blocked   os efeitos da exclusão bloqueada (impactos_da_exclusa
 decisão × decisão         os efeitos das duas decisões comparadas (cada uma é um grupo)
 ```
 
-E o par do efeito tem de conter a revisão **exata** daquele membro. Fora disso, o `other_rev` é
-descartado e o efeito segue como evento comum:
+E o que se prova é o **par inteiro**, não uma das pontas. Conhecer uma revisão da ação não diz nada
+sobre a outra:
+
+```text
+ação legítima      X0 → X1
+o receptor andou   X1 → X2
+certificado diz    base = X1, other = X2
+```
+
+Com "base ∈ ação **ou** other ∈ ação", esse par passaria — e a R1 sobrescreveria o X2 do receptor,
+que a ação nunca viu (achado na revisão do PR #73). O par só vale quando é exatamente um destes:
+
+```text
+A  a aresta da própria ação       { membro.baseRev, membro.newRev }
+B  as cabeças das DUAS ações      { membroDeA.newRev, membroDeB.newRev }
+```
+
+A cobre o auxiliar que saiu junto na mesma ação — a posição que a exclusão levou, o descendente da
+exclusão bloqueada. B cobre o agregado que as duas ações concorrentes tocaram: grupo × grupo e
+decisão × decisão. Para isso, `membros_da_acao_de` carrega de cada membro `aggregateType`,
+`aggregateId`, `baseRev`, `newRev` e `operation` — a aresta, não só a revisão final.
+
+Fora disso, o `other_rev` é descartado e o efeito segue como evento comum:
 
 ```text
 Sequential      → aplica
@@ -974,6 +995,7 @@ histórica, e inventar uma seria o oposto do que as etapas F e G construíram.
 | H11 | terceiro aparelho sem índice local não perde edição |
 | H12 · H13 · H14 | mescla de tags, exclusão bloqueada e resolução de grupo não alcançam agregado de fora |
 | H15 | decisão concorrente continua resolvível recursivamente |
+| H28 | par auxiliar fora da ação (`{X1, X2}`, com X2 produzido depois pelo receptor) não sobrescreve: a posição nova fica, e o conflito vira pergunta |
 | H16 | migration 29 de 1→29 e de 28→29, `integrity_check` e `foreign_key_check` limpos |
 | H17 | o import traz a versão antiga já convertida e preserva a linha de origem |
 | H18 | dez arranques, uma pendência; decisão não volta a pendente |

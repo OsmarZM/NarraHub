@@ -286,22 +286,34 @@ pub fn apply_efeito_de_resolucao(
 /// conhecido — usaria a regra de dois pais para sobrescrever uma edição concorrente num agregado
 /// que nada tem a ver com o conflito.
 ///
-/// O conjunto legítimo de auxiliares é derivado AQUI, do que este aparelho sabe, e não do
-/// certificado: são os membros da ação original de cada participante — mesma origem, mesmo
-/// `mutation_id` do evento que produziu a revisão participante. Isso cobre, com uma regra só:
+/// O conjunto legítimo é derivado AQUI, do que este aparelho sabe, e não do certificado: são os
+/// membros da ação original de cada participante — mesma origem, mesmo `mutation_id` do evento que
+/// produziu a revisão participante.
+///
+/// **E o que se prova é o PAR INTEIRO, não uma das pontas.** Conhecer uma revisão da ação não diz
+/// nada sobre a outra:
 ///
 /// ```text
-/// grupo × grupo                os membros reais das duas ações
-/// upsert × delete              a posição do item, que saiu na mesma ação da exclusão
-/// parent_deletion_blocked      os efeitos da exclusão bloqueada (impactos_da_exclusao)
-/// decisão × decisão            os efeitos das duas decisões comparadas (cada uma é um grupo)
+/// ação legítima      X0 → X1
+/// o receptor andou   X1 → X2
+/// certificado diz    base = X1, other = X2
 /// ```
 ///
-/// E o par do efeito tem de conter a revisão EXATA daquele membro. Fora disso, o `other_rev` é
-/// descartado e o efeito segue como evento comum: sequencial aplica, concorrente vira decisão
-/// explícita (o grupo inteiro), desconhecido espera. Um terceiro aparelho sem os eventos da ação
-/// também cai aqui — sem prova, sem junção especial; nunca sobrescrita. Isto não recusa o
-/// certificado: certificado inválido é o que `validar_grupo` recusa; aqui é falta de prova local.
+/// Com "base ∈ ação **ou** other ∈ ação", esse par passaria — e a R1 sobrescreveria o X2 do
+/// receptor, que a ação nunca viu. Por isso o par só vale quando é exatamente um destes:
+///
+/// ```text
+/// A  a aresta da própria ação          { membro.base_rev, membro.new_rev }
+/// B  as cabeças das DUAS ações         { membroDeA.new_rev, membroDeB.new_rev }
+/// ```
+///
+/// A cobre o auxiliar que saiu junto na mesma ação — a posição que a exclusão levou, o descendente
+/// da exclusão bloqueada. B cobre o agregado que as duas ações concorrentes tocaram, e é o caso do
+/// grupo × grupo e do decisão × decisão. Fora disso o `other_rev` é descartado e o efeito segue como
+/// evento comum: sequencial aplica, concorrente vira decisão explícita (o grupo inteiro), desconhecido
+/// espera. Um terceiro aparelho sem os eventos da ação também cai aqui — sem prova, sem junção
+/// especial; nunca sobrescrita. Isto não recusa o certificado: certificado inválido é o que
+/// `validar_grupo` recusa; aqui é falta de prova local.
 pub fn autorizar_efeitos_auxiliares(
     tx: &Transaction<'_>,
     membros: &[EventEnvelope],
@@ -312,30 +324,74 @@ pub fn autorizar_efeitos_auxiliares(
     };
     let certificado = sync_codec::resolucao::Certificado::ler(&primeiro.payload)
         .map_err(DatabaseCommandError::storage)?;
-    let mut autorizadas: std::collections::BTreeMap<
-        (String, String),
-        std::collections::BTreeSet<String>,
-    > = std::collections::BTreeMap::new();
-    for participante in [&certificado.participant_a, &certificado.participant_b] {
-        for (tipo, id, rev) in membros_da_acao_de(tx, participante)? {
-            autorizadas.entry((tipo, id)).or_default().insert(rev);
-        }
-    }
+    let acao_de_a = membros_da_acao_de(tx, &certificado.participant_a)?;
+    let acao_de_b = membros_da_acao_de(tx, &certificado.participant_b)?;
+
     for (membro, par) in membros.iter().skip(1).zip(pares.iter_mut()) {
         if par.de_participante || par.outra.is_empty() {
             continue;
         }
-        let ligado = autorizadas
-            .get(&(membro.aggregate_type.clone(), membro.aggregate_id.clone()))
-            .is_some_and(|revs| revs.contains(&membro.base_rev) || revs.contains(&par.outra));
-        if !ligado {
+        let par_do_efeito = ParDeRevisoes::novo(&membro.base_rev, &par.outra);
+        let do_agregado = |acao: &'_ [MembroDaAcao]| -> Vec<MembroDaAcao> {
+            acao.iter()
+                .filter(|m| {
+                    m.aggregate_type == membro.aggregate_type
+                        && m.aggregate_id == membro.aggregate_id
+                })
+                .cloned()
+                .collect()
+        };
+        let de_a = do_agregado(&acao_de_a);
+        let de_b = do_agregado(&acao_de_b);
+
+        // A — a aresta que a própria ação produziu neste agregado.
+        let aresta_da_acao = de_a
+            .iter()
+            .chain(de_b.iter())
+            .any(|m| ParDeRevisoes::novo(&m.base_rev, &m.new_rev) == par_do_efeito);
+        // B — as cabeças que as duas ações participantes produziram neste agregado.
+        let cabecas_das_duas = de_a.iter().any(|ma| {
+            de_b.iter()
+                .any(|mb| ParDeRevisoes::novo(&ma.new_rev, &mb.new_rev) == par_do_efeito)
+        });
+
+        if !(aresta_da_acao || cabecas_das_duas) {
             par.outra.clear();
         }
     }
     Ok(pares)
 }
 
-/// Os membros da ação que produziu a revisão de um participante: `(tipo, id, new_rev)`.
+/// Um par de revisões sem lado: `{base, other}` do efeito é o mesmo conjunto que `{X0, X1}` da ação,
+/// venha em que ordem vier. Par com as duas pontas iguais nunca casa com nada — e não deveria.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParDeRevisoes(String, String);
+
+impl ParDeRevisoes {
+    fn novo(uma: &str, outra: &str) -> Self {
+        if uma <= outra {
+            Self(uma.to_string(), outra.to_string())
+        } else {
+            Self(outra.to_string(), uma.to_string())
+        }
+    }
+}
+
+/// Um membro da ação original, com a aresta que ele produziu.
+///
+/// `base_rev` e `new_rev` são o que permite provar o par inteiro; sem eles, sobra "conheço uma
+/// dessas revisões", que é exatamente a prova fraca que a revisão do PR #73 derrubou.
+#[derive(Debug, Clone)]
+struct MembroDaAcao {
+    aggregate_type: String,
+    aggregate_id: String,
+    base_rev: String,
+    new_rev: String,
+    #[allow(dead_code)]
+    operation: String,
+}
+
+/// Os membros da ação que produziu a revisão de um participante, com a aresta de cada um.
 ///
 /// A ação é identificada pela origem e pelo `mutation_id` do evento, como o grupo de mutação
 /// (B2.2). Um evento isolado é a própria ação. Sem o evento aqui, não há ação conhecida — e não há
@@ -343,40 +399,48 @@ pub fn autorizar_efeitos_auxiliares(
 fn membros_da_acao_de(
     tx: &Transaction<'_>,
     participante: &sync_codec::resolucao::ParticipanteCanonico,
-) -> DatabaseCommandResult<Vec<(String, String, String)>> {
+) -> DatabaseCommandResult<Vec<MembroDaAcao>> {
     let erro = |error: rusqlite::Error| DatabaseCommandError::storage(error.to_string());
-    let evento: Option<(String, String)> = tx
+    let evento: Option<(String, String, String, String)> = tx
         .query_row(
-            "SELECT device_id, mutation_id FROM sync_events
+            "SELECT device_id, mutation_id, base_rev, operation FROM sync_events
               WHERE aggregate_type = ?1 AND aggregate_id = ?2 AND new_rev = ?3",
             rusqlite::params![
                 &participante.aggregate_type,
                 &participante.aggregate_id,
                 &participante.revision
             ],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()
         .map_err(erro)?;
-    let Some((origem, mutacao)) = evento else {
+    let Some((origem, mutacao, base_do_participante, operacao)) = evento else {
         return Ok(Vec::new());
     };
     if mutacao.is_empty() {
-        return Ok(vec![(
-            participante.aggregate_type.clone(),
-            participante.aggregate_id.clone(),
-            participante.revision.clone(),
-        )]);
+        return Ok(vec![MembroDaAcao {
+            aggregate_type: participante.aggregate_type.clone(),
+            aggregate_id: participante.aggregate_id.clone(),
+            base_rev: base_do_participante,
+            new_rev: participante.revision.clone(),
+            operation: operacao,
+        }]);
     }
     let mut consulta = tx
         .prepare(
-            "SELECT aggregate_type, aggregate_id, new_rev FROM sync_events
+            "SELECT aggregate_type, aggregate_id, base_rev, new_rev, operation FROM sync_events
               WHERE device_id = ?1 AND mutation_id = ?2",
         )
         .map_err(erro)?;
     let linhas = consulta
         .query_map([&origem, &mutacao], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            Ok(MembroDaAcao {
+                aggregate_type: row.get(0)?,
+                aggregate_id: row.get(1)?,
+                base_rev: row.get(2)?,
+                new_rev: row.get(3)?,
+                operation: row.get(4)?,
+            })
         })
         .map_err(erro)?;
     linhas.collect::<Result<_, _>>().map_err(erro)
