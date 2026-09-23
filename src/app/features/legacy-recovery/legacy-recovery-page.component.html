@@ -1,0 +1,103 @@
+<section class="recovery-page" data-testid="recovery-page">
+  <header class="recovery-head">
+    <a class="secondary-button back-link" routerLink="/settings">← Configurações</a>
+    <div>
+      <h1>Versões antigas para recuperar</h1>
+      <p class="recovery-sub">
+        @if (store.pending() === 1) { 1 versão antiga de capítulo ainda está guardada só neste aparelho. }
+        @else if (store.pending() > 1) { {{ store.pending() }} versões antigas de capítulos ainda estão guardadas só neste aparelho. }
+        @else { Nenhuma versão antiga esperando decisão. }
+      </p>
+    </div>
+  </header>
+
+  @if (store.info()) { <p class="recovery-info" role="status">{{ store.info() }}</p> }
+  @if (store.error()) { <p class="recovery-error" role="alert">{{ store.error() }}</p> }
+
+  <div class="recovery-body" [class.com-detalhe]="store.selected()">
+    <ul class="recovery-list" aria-label="Versões antigas">
+      @for (item of store.items(); track item.id) {
+        <li>
+          <button type="button" class="recovery-item surface-card"
+                  [class.ativo]="store.selected()?.id === item.id"
+                  (click)="abrir(item)" data-testid="versao-antiga">
+            <strong>{{ item.tituloAtual || 'Capítulo que não existe mais aqui' }}</strong>
+            <small>Guardada em {{ item.registradoEm || 'data desconhecida' }}</small>
+            <span class="status-badge" [class.online]="item.status === 'preserved'">
+              {{ rotuloDoEstado(item.status) }}
+            </span>
+          </button>
+        </li>
+      } @empty {
+        @if (!store.loading()) { <li class="recovery-empty">Nada guardado por aqui.</li> }
+      }
+    </ul>
+
+    @if (store.selected(); as item) {
+      <article class="recovery-detail surface-card" data-testid="versao-detalhe">
+        <div class="detail-head">
+          <div>
+            <h2>{{ item.tituloAtual || 'Capítulo que não existe mais aqui' }}</h2>
+            <p>Esta versão veio do outro aparelho na sincronização anterior e nunca foi decidida.</p>
+          </div>
+          <button type="button" class="secondary-button" (click)="fechar()">Fechar</button>
+        </div>
+
+        <div class="versions">
+          <section class="version" data-testid="versao-atual">
+            <h3>No seu texto hoje</h3>
+            @if (item.versaoAtual) { <p>{{ texto(item.versaoAtual) }}</p> }
+            @else { <small>O capítulo original não existe mais neste aparelho.</small> }
+          </section>
+          <section class="version antiga" data-testid="versao-guardada">
+            <h3>A versão guardada</h3>
+            <p>{{ texto(item.versaoAntiga) }}</p>
+          </section>
+        </div>
+
+        @if (item.status === 'pending') {
+          <section class="decision" aria-label="Decisão">
+            <h3>O que fazer com ela</h3>
+            <div class="preserve">
+              <label class="field-label">Livro que vai receber
+                <select [ngModel]="livroEscolhido()" (ngModelChange)="livroEscolhido.set($event)" data-testid="livro-destino">
+                  <option value="">Escolha um livro</option>
+                  @for (destino of store.destinations(); track destino.bookId) {
+                    <option [value]="destino.bookId">
+                      {{ destino.universeName }} · {{ destino.storyName }} · {{ destino.bookName }}{{ destino.eOLivroOriginal ? ' (o livro original)' : '' }}
+                    </option>
+                  }
+                </select>
+              </label>
+              <label class="field-label">Título do capítulo
+                <input [ngModel]="titulo()" (ngModelChange)="titulo.set($event)" maxlength="120" data-testid="titulo-recuperado" />
+              </label>
+              <button type="button" class="primary-button" [disabled]="store.busy()"
+                      (click)="preservar()" data-testid="acao-preservar">
+                Preservar como novo capítulo
+              </button>
+              <small>Ela vira um capítulo novo e passa a sincronizar como qualquer conteúdo seu.</small>
+            </div>
+
+            <div class="discard">
+              @if (confirmandoDescarte()) {
+                <p class="discard-warning" data-testid="confirmacao-descarte">
+                  Esta versão antiga deixará de aparecer como pendente. O registro histórico original
+                  continuará preservado no banco.
+                </p>
+              }
+              <button type="button" class="secondary-button danger-outline" [disabled]="store.busy()"
+                      (click)="descartar()" data-testid="acao-descartar">
+                {{ confirmandoDescarte() ? 'Confirmar o descarte' : 'Descartar versão antiga' }}
+              </button>
+            </div>
+          </section>
+        } @else if (item.status === 'preserved') {
+          <p class="detail-note">Esta versão já foi preservada como capítulo novo.</p>
+        } @else {
+          <p class="detail-note">Esta versão foi descartada. O registro histórico continua no banco.</p>
+        }
+      </article>
+    }
+  </div>
+</section>

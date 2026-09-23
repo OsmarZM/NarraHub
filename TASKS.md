@@ -18,6 +18,33 @@ Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 
 ## ACTIVE
 
+### NH-082 — Sync V2, etapa H: hardening final (H-R1, H-R2, H-R3)
+
+```text
+Owner:  Claude
+Status: REVIEW
+Fase:   4 — Sync V2
+Branch: sync-h-hardening (base: mobile-shell)
+```
+
+A etapa que prova o que os casos extremos **não** conseguem: ressuscitar dado apagado, sobrescrever
+edição concorrente, usar `resolution` para escrever agregado alheio, perder conteúdo legado em
+silêncio ou deixar estado pela metade depois de uma queda. A prioridade é uma: **perda silenciosa é
+proibida**; conflito a mais, espera e fail closed são respostas aceitáveis.
+
+- **H-R1**: R2 com prova positiva; remoção de tombstone centralizada com motivo; GC físico continua
+  não existindo.
+- **H-R2**: `other_rev` deixou de ser autoridade; auxiliar só se junta quando pertence à ação
+  original, provado localmente.
+- **H-R3**: migration 29 (`legacy_recovery_items`), import pré-`Ready` e a tela "Versões antigas
+  para recuperar".
+
+Gates H1–H27 (`application/hardening_testes.rs`, `application/legado_testes.rs`,
+`database/legado_v1.rs`) e mutações HM1–HM8. Detalhe em `docs/sync/MATRIZ_COBERTURA_NH079.md` §5.3
+e no handoff da etapa H.
+
+---
+
 ### NH-081 — Sync V2, etapa G: remoção definitiva do Sync V1
 
 ```text
@@ -211,11 +238,18 @@ de ser esta tarefa.
 ### H-R1 — Resolução antiga depois de o GC coletar o tombstone participante
 
 ```text
-Owner:  não atribuída
-Status: BACKLOG
+Owner:  Claude
+Status: CLOSED na etapa H (gates H1–H6, mutação HM1)
 Fase:   Hardening pré-release estável
-        Não bloqueia G · Não reabre F
 ```
+
+**Fechado assim:** a regra R2 passou a exigir prova positiva de "nunca materializou aqui" —
+história vazia com o evento-base exato pendente, ou história feita só de decisões registradas
+(conflito de nome de tag, exclusão bloqueada, decisão de grupo). Ausência deixou de ser prova.
+Toda remoção de tombstone passa por `sync_repository::remover_tombstone`, com motivo declarado, e
+não existe variante de coleta: um GC futuro terá de acrescentar a própria e passar por H1–H6.
+
+O problema original:
 
 Uma decisão de `conflict_resolution` que chega tarde, depois de o GC ter podado o tombstone de
 um participante, encontra o agregado sem cabeça local. A regra R2 da etapa F ("nunca
@@ -232,11 +266,20 @@ só então entrega a resolução antiga, e prova que não há ressurreição nem
 ### H-R2 — Legitimidade semântica dos efeitos irmãos/meta em grupos `resolution`
 
 ```text
-Owner:  não atribuída
-Status: BACKLOG
+Owner:  Claude
+Status: CLOSED na etapa H (gates H7–H15, mutações HM2–HM4)
 Fase:   Hardening pré-release estável
-        Não bloqueia G · Não reabre F
 ```
+
+**Fechado assim:** `other_rev` deixou de ser autoridade. Um efeito sobre agregado que não é
+participante só ganha a junção de dois pais quando ESTE aparelho prova que ele pertence à ação
+original do conflito — mesma origem e mesmo `mutation_id` do evento que produziu a revisão
+participante — e o par contém a revisão exata daquele membro. Sem prova, o `other_rev` é
+descartado e o efeito segue pelo classificador comum: sequencial aplica, concorrente vira
+pergunta, desconhecido espera. Certificado inválido continua sendo recusa do grupo inteiro; falta
+de prova local, não.
+
+O problema original:
 
 `results[]` garante coerência **estrutural** entre o certificado e o grupo: mesma contagem, mesmos
 agregados, operação, base e `resultRev` recomputável. Mas para efeitos sobre agregados que não são
@@ -253,11 +296,21 @@ arbitrários (agregado sem relação com o conflito, operação que a escolha n�
 ### H-R3 — Conflito V1 legado no bootstrap
 
 ```text
-Owner:  não atribuída
-Status: HARDENING — obrigatório antes da release estável
-Fase:   Etapa H (sync-h-hardening), junto com H-R1 e H-R2
-        Não reabre G · Não bloqueia o desenvolvimento da H · Bloqueia a release estável enquanto aberto
+Owner:  Claude
+Status: CLOSED na etapa H (migration 29, gates H16–H27, mutações HM5–HM8)
+Fase:   Etapa H (sync-h-hardening)
 ```
+
+**Fechado assim:** a migration 29 cria `legacy_recovery_items`, uma tabela local e não causal. O
+import roda no arranque, depois da conversão de mídia do ADR 0010 e antes de `Ready` — então o que
+entra já está convertido, e depois de `Ready` ninguém lê `sync_conflicts` (a garantia da G segue
+provada pelo autorizador do SQLite). É idempotente por `source_conflict_id`, e item decidido nunca
+volta a pendente. Em Configurações, o aviso não pode ser silenciado enquanto houver pendência; na
+tela "Versões antigas para recuperar", o escritor preserva (vira capítulo novo, por `Mutacao`
+normal, que sincroniza como qualquer conteúdo) ou descarta com confirmação explícita. Nada é
+automático, e `sync_conflicts` continua imutável.
+
+O problema original:
 
 **Cenário.** `sync_conflicts` pode guardar uma alternativa histórica (`remote_value`) que não faz
 parte do conteúdo materializado e não viaja no bootstrap V2.

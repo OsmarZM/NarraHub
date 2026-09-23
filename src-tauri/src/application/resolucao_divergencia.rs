@@ -1304,12 +1304,12 @@ fn adotar_revisao(
             rusqlite::params![&agregado.aggregate_type, &agregado.aggregate_id, rev],
         )
         .map_err(erro)?;
-    m.tx()
-        .execute(
-            "DELETE FROM sync_tombstones WHERE aggregate_type = ?1 AND aggregate_id = ?2",
-            [&agregado.aggregate_type, &agregado.aggregate_id],
-        )
-        .map_err(erro)?;
+    crate::infrastructure::sqlite::sync_repository::remover_tombstone(
+        m.tx(),
+        agregado,
+        crate::infrastructure::sqlite::sync_repository::RemocaoDeTombstone::RestauracaoDecidida,
+    )
+    .map_err(erro)?;
     Ok(())
 }
 

@@ -39,6 +39,8 @@ const featureFiles = [
   '../src/app/features/knowledge/tags-modal/tags-modal.component.ts',
   '../src/app/features/conflicts/conflicts-page.component.ts',
   '../src/app/features/conflicts/state/conflicts.store.ts',
+  '../src/app/features/legacy-recovery/legacy-recovery-page.component.ts',
+  '../src/app/features/legacy-recovery/state/legacy-recovery.store.ts',
 ];
 
 test('features extraídas não conhecem SQL nem o serviço legado', () => {

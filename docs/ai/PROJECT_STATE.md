@@ -135,6 +135,21 @@ diretório não o pegaria; o gate contra **colocação** pega.
 > `sync_sessao::g_o_fluxo_do_v2_nao_le_nem_escreve_o_legado_do_v1` (G4–G6, G10, G11) e os
 > testes `ETAPA G` de `tests/rust-core-contract.test.mjs`.
 >
+> **Etapa H — hardening final do Sync V2.** Três riscos fechados, com a mesma prioridade: perda
+> silenciosa é proibida; conflito a mais, espera e fail closed são respostas aceitáveis.
+> **H-R1**: a regra R2 ("nunca materializou aqui") passou a exigir prova positiva — história vazia
+> com o evento-base pendente, ou história feita só de decisões registradas. Ausência não é prova, e
+> um tombstone coletado por um GC futuro não ressuscita mais nada. Toda remoção de tombstone passa
+> por `sync_repository::remover_tombstone`, com motivo declarado; o GC físico continua não existindo.
+> **H-R2**: `other_rev` deixou de ser autoridade. Um efeito sobre agregado que não é participante só
+> ganha a junção de dois pais quando este aparelho prova que ele pertence à ação original do
+> conflito (mesma origem, mesmo `mutation_id`) e o par contém a revisão exata daquele membro. Sem
+> prova, o efeito segue como evento comum: sequencial aplica, concorrente vira pergunta.
+> **H-R3**: `legacy_recovery_items` (migration 29) inventaria o que o Sync V1 deixou pendente neste
+> aparelho. O import roda no arranque, depois da conversão de mídia e antes de `Ready`; depois
+> disso ninguém lê `sync_conflicts`. O escritor preserva (vira capítulo novo, que sincroniza) ou
+> descarta com confirmação. Gates H1–H27 em `application/{hardening,legado}_testes.rs`.
+>
 > Reconciliação fina de capítulo por bloco depende da **NH-045** e não faz parte das 14
 > etapas. O Sync V2 pode fechar com conflito seguro de capítulo inteiro.
 
@@ -182,7 +197,7 @@ migration — não pegar a versão mais recente:
 | 0.9.0 e 0.9.1 | 15 |
 | 0.9.2 (publicada) | 15 |
 | 0.10.0-beta.1 e beta.2 (pré-releases Android) | 20 — Sync V2 anterior ao `Hello`; o upgrade gira a época causal (E0-beta, `fixtures/beta2`) |
-| `main` hoje | **28** — resolução de conflito como fato causal (etapa F): `conflict_resolutions` e `sync_divergences.resolution_rev` |
+| `main` hoje | **29** — caixa de recuperação do legado (etapa H, H-R3): `legacy_recovery_items` |
 
 Consequência prática, e ela **mudou** com a migration 16: a próxima versão publicada será a
 primeira desde a 0.9.2 a carregar migration de verdade. O par `0.9.2 → próxima` deixa de ser

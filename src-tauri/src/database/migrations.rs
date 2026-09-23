@@ -1,7 +1,7 @@
 //! NarraHub — Database Migrations
 //! Cria todas as tabelas na primeira execução.
 
-pub const LATEST_SCHEMA_VERSION: i64 = 28;
+pub const LATEST_SCHEMA_VERSION: i64 = 29;
 
 pub fn sql_for_version(version: i64) -> Option<&'static str> {
     match version {
@@ -33,6 +33,7 @@ pub fn sql_for_version(version: i64) -> Option<&'static str> {
         26 => Some(MIGRATION_V26),
         27 => Some(MIGRATION_V27),
         28 => Some(MIGRATION_V28),
+        29 => Some(MIGRATION_V29),
         _ => None,
     }
 }
@@ -1909,6 +1910,58 @@ CREATE TABLE IF NOT EXISTS conflict_resolutions (
 ALTER TABLE sync_divergences ADD COLUMN resolution_rev TEXT NOT NULL DEFAULT '';
 "#;
 
+pub const MIGRATION_V29: &str = r#"
+-- ============================================
+-- NarraHub Database Schema v29
+-- Etapa H (H-R3) - caixa de recuperacao do legado
+-- ============================================
+--
+-- O Sync V1 saiu do runtime na etapa G, e `sync_conflicts` ficou como auditoria
+-- historica. So que uma linha aberta dela guarda uma VERSAO que nao esta no
+-- conteudo materializado e nao viaja no bootstrap:
+--
+--   conteudo materializado = A
+--   local_value            = A
+--   remote_value           = B   <- so existe naquela linha, naquele aparelho
+--
+-- Se o ultimo aparelho que a guarda for aposentado, perdido ou descartado, B
+-- some sem ninguem ter decidido isso. Esta tabela e o inventario dessa divida:
+-- o que ainda precisa de decisao do escritor, e o que ja foi decidido.
+--
+-- Ela e LOCAL e NAO CAUSAL: nao vira agregado, nao entra em evento, nao viaja
+-- no bundle e nao tem FK para conteudo vivo. A evidencia precisa sobreviver
+-- mesmo que o capitulo original ja nao exista. `sync_conflicts` continua
+-- intocada: o import copia, nunca altera.
+--
+-- O que o escritor decide:
+--
+--   preservar   B vira um capitulo NOVO, por Mutacao normal -> evento V2 ->
+--               sincroniza como qualquer conteudo
+--   descartar   a pendencia sai da caixa; a linha historica fica onde esta
+CREATE TABLE IF NOT EXISTS legacy_recovery_items (
+    id TEXT PRIMARY KEY NOT NULL,
+    -- `sync_conflicts.id` de origem. UNIQUE e o que faz o import ser idempotente:
+    -- reiniciar o aplicativo dez vezes nao cria dez pendencias.
+    source_conflict_id TEXT NOT NULL UNIQUE,
+    aggregate_type TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
+    field TEXT NOT NULL,
+    local_value TEXT NOT NULL,
+    remote_value TEXT NOT NULL,
+    source_created_at TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'preserved', 'discarded')),
+    resolved_at TEXT NOT NULL DEFAULT '',
+    -- O capitulo criado pela preservacao, quando houve. Sem FK: se o escritor
+    -- apagar o capitulo depois, a evidencia de que ele foi criado permanece.
+    preserved_chapter_id TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_legacy_recovery_pendentes
+    ON legacy_recovery_items(status)
+    WHERE status = 'pending';
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1931,6 +1984,7 @@ mod tests {
     const NATIVE_SCHEMA_V26_FIXTURE: &str = include_str!("../../fixtures/schema26_native.sql");
     const NATIVE_SCHEMA_V27_FIXTURE: &str = include_str!("../../fixtures/schema27_native.sql");
     const NATIVE_SCHEMA_V28_FIXTURE: &str = include_str!("../../fixtures/schema28_native.sql");
+    const NATIVE_SCHEMA_V29_FIXTURE: &str = include_str!("../../fixtures/schema29_native.sql");
 
     fn apply_migrations(connection: &Connection, first: i64, last: i64) {
         for version in first..=last {
@@ -3567,6 +3621,82 @@ mod tests {
                 .is_err(),
             "o banco aceitou duas decisões para o mesmo conflito"
         );
+    }
+
+    /// **Schema 29 — a caixa de recuperação do legado.** Um item por conflito de origem, três
+    /// estados, e evidência que sobrevive ao capítulo original.
+    #[test]
+    fn schema29_guarda_um_item_por_conflito_de_origem() {
+        let connection = Connection::open_in_memory().expect("banco");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("fk");
+        apply_migrations(&connection, 1, LATEST_SCHEMA_VERSION);
+        connection
+            .execute_batch(NATIVE_SCHEMA_V29_FIXTURE)
+            .expect("carregar a fixture nativa de schema 29");
+
+        let pendentes: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM legacy_recovery_items WHERE status = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert_eq!(pendentes, 1);
+        let preservado: String = connection
+            .query_row(
+                "SELECT preserved_chapter_id FROM legacy_recovery_items WHERE status = 'preserved'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("item preservado");
+        assert_eq!(preservado, "fx29-cap-recuperado");
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO legacy_recovery_items
+                        (id, source_conflict_id, aggregate_type, aggregate_id, field,
+                         local_value, remote_value)
+                     VALUES ('outro', 'fx29-conflito-1', 'chapter', 'x', 'content', '', '')",
+                    [],
+                )
+                .is_err(),
+            "o banco aceitou dois itens para o mesmo conflito de origem"
+        );
+        assert!(
+            connection
+                .execute(
+                    "UPDATE legacy_recovery_items SET status = 'inventado' WHERE id = 'fx29-item-pendente'",
+                    [],
+                )
+                .is_err(),
+            "o banco aceitou um estado fora de pending/preserved/discarded"
+        );
+    }
+
+    /// Um banco que chega ao 29 por migração nasce com a caixa vazia: o import é do arranque, não
+    /// da migration.
+    #[test]
+    fn migration29_nao_inventa_pendencia() {
+        let connection = Connection::open_in_memory().expect("banco");
+        apply_migrations(&connection, 1, 28);
+        connection
+            .execute(
+                "INSERT INTO sync_conflicts (id, aggregate_type, aggregate_id, field, local_value, remote_value)
+                 VALUES ('c-1', 'chapter', 'cap', 'content', 'A', 'B')",
+                [],
+            )
+            .expect("conflito V1 aberto");
+        connection
+            .execute_batch(sql_for_version(29).expect("migration 29"))
+            .expect("migrar");
+        let itens: i64 = connection
+            .query_row("SELECT COUNT(*) FROM legacy_recovery_items", [], |row| {
+                row.get(0)
+            })
+            .expect("contar");
+        assert_eq!(itens, 0);
     }
 
     /// Um banco que chega ao 28 por migração não tem decisão nenhuma, e as divergências antigas
