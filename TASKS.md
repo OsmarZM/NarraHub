@@ -267,7 +267,7 @@ só então entrega a resolução antiga, e prova que não há ressurreição nem
 
 ```text
 Owner:  Claude
-Status: CLOSED na etapa H (gates H7–H15 e H28, mutações HM2–HM4 e HM9)
+Status: CLOSED na etapa H (gates H7–H15, H28 e H29; mutações HM2–HM4, HM9 e HM10)
 Fase:   Hardening pré-release estável
 ```
 

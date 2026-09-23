@@ -355,10 +355,26 @@ fn forjar_efeito_auxiliar(
 ) -> Vec<EventEnvelope> {
     let mut grupo = grupo.to_vec();
     let ultimo = grupo.last().expect("grupo").clone();
+    // A seq tem de estar LIVRE no log de quem emitiu. Caindo sobre uma ocupada, o receptor guarda o
+    // evento que já tinha (o índice é `(device_id, seq)`), devolve `JaAplicado`, e o gate passa sem
+    // nunca ter entregado o efeito forjado — foi assim que o H13 ficou vazio.
+    let seq_livre: i64 = a
+        .banco
+        .connection()
+        .query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM sync_events WHERE device_id = ?1",
+            [&ultimo.device_id],
+            |row| row.get(0),
+        )
+        .expect("próxima seq livre");
+    assert!(
+        seq_livre > ultimo.seq,
+        "a seq forjada tem de vir depois do grupo"
+    );
     let mut extra = EventEnvelope {
         event_id: uuid::Uuid::new_v4().to_string(),
         device_id: ultimo.device_id.clone(),
-        seq: ultimo.seq + 1,
+        seq: seq_livre,
         universe_id: universo.to_string(),
         aggregate_type: alvo.aggregate_type.clone(),
         aggregate_id: alvo.aggregate_id.clone(),
@@ -397,24 +413,59 @@ fn forjar_efeito_auxiliar(
     grupo
 }
 
-/// Um capítulo de A que B conhece, editado dos dois lados depois: a cabeça de B é concorrente.
+/// Um capítulo **alheio ao conflito**: os dois aparelhos conhecem, e só o aparelho que vai receber
+/// a decisão editou depois.
+///
+/// Ele não pode ter conflito próprio. Com um, o grupo forjado é recusado por causa dele — e o gate
+/// passaria sem nunca chegar à autorização do auxiliar, que é o que ele diz provar. Foi assim que a
+/// revisão do PR #73 pegou o H13 vazio.
 fn alvo_alheio(
-    a: &Aparelho,
-    b: &Aparelho,
+    dono: &Aparelho,
+    outro: &Aparelho,
+    receptor: &Aparelho,
     universo: &str,
 ) -> (AggregateRef, String, String, String) {
-    let capitulo = a.capitulo_novo(universo);
-    a.escrever(&capitulo, "<p>original</p>");
-    sincronizar(a, b);
-    let agregado = AggregateRef::new("chapter", &capitulo);
-    let base = a.revisao("chapter", &capitulo).expect("revisão comum");
-    a.escrever(
-        &capitulo,
-        "<p>versão de A, que a decisão tentaria impor</p>",
-    );
-    let rev_de_a = a.revisao("chapter", &capitulo).expect("revisão de A");
-    b.escrever(&capitulo, "<p>versão de B, que não pode sumir</p>");
-    (agregado, base, rev_de_a, capitulo)
+    let capitulo = dono.capitulo_novo(universo);
+    dono.escrever(&capitulo, "<p>original</p>");
+    sincronizar(dono, outro);
+    let base = dono.revisao("chapter", &capitulo).expect("revisão comum");
+    receptor.escrever(&capitulo, "<p>o trabalho local que não pode sumir</p>");
+    let cabeca = receptor
+        .revisao("chapter", &capitulo)
+        .expect("cabeça do receptor");
+    (
+        AggregateRef::new("chapter", &capitulo),
+        base,
+        cabeca,
+        capitulo,
+    )
+}
+
+/// O efeito forjado chegou mesmo a ser entregue e processado?
+///
+/// Sem isto, um gate passa porque o evento nunca entrou (seq ocupada, assinatura errada) ou porque
+/// o grupo foi recusado por outro motivo — e aí ele não prova nada sobre a autorização do auxiliar.
+fn o_forjado_foi_processado(receptor: &Aparelho, forjado: &[EventEnvelope]) -> bool {
+    let extra = forjado.last().expect("o membro forjado é o último");
+    let connection = receptor.banco.connection();
+    let guardado: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_events WHERE event_id = ?1)",
+            [&extra.event_id],
+            |row| row.get(0),
+        )
+        .expect("consultar o log");
+    let conhecido: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_events e
+                            WHERE e.event_id = ?1
+                              AND (EXISTS(SELECT 1 FROM sync_applied_events a WHERE a.event_id = e.event_id)
+                                   OR EXISTS(SELECT 1 FROM sync_divergences d WHERE d.remote_event_id = e.event_id)))",
+            [&extra.event_id],
+            |row| row.get(0),
+        )
+        .expect("consultar o destino do evento");
+    guardado && (conhecido || receptor.pendentes() > 0)
 }
 
 /// **H7 — o efeito sobre um participante continua ganhando a junção de dois pais.**
@@ -433,17 +484,19 @@ fn h7_efeito_participante_continua_com_dois_pais() {
 fn h8_efeito_auxiliar_alheio_nao_sobrescreve() {
     let (a, b, _capitulo, chave) = conflito_de_edicao();
     let universo = a.universo();
-    let (alvo, base, _rev_de_a, id) = alvo_alheio(&a, &b, &universo);
+    let (alvo, base, cabeca_de_b, id) = alvo_alheio(&a, &b, &b, &universo);
     let conteudo_de_b = b.conteudo(&id);
-    let cabeca_de_b = b.revisao("chapter", &id).expect("cabeça de B");
+    // O payload do efeito forjado sai do estado do EMISSOR agora, antes de qualquer entrega. Lido
+    // depois, ele pode já ser o estado do próprio receptor — e aí o efeito chega como
+    // `AlreadyPresent`, nunca alcança a regra de dois pais, e o gate não prova nada.
+    let payload = sync_codec::ler_canonico(&a.banco.connection(), &alvo)
+        .expect("ler")
+        .expect("estado do emissor")
+        .payload;
 
     let acao = a.ficar_com(&chave, true);
     a.resolver(&chave, acao).expect("A resolve");
     let decisao = grupo_da_decisao(&a, &b);
-    let payload = sync_codec::ler_canonico(&a.banco.connection(), &alvo)
-        .expect("ler")
-        .expect("estado de A")
-        .payload;
     let forjado = forjar_efeito_auxiliar(
         &a,
         &decisao,
@@ -455,10 +508,19 @@ fn h8_efeito_auxiliar_alheio_nao_sobrescreve() {
     );
 
     let _ = receber(&b, &forjado);
+    assert!(
+        o_forjado_foi_processado(&b, &forjado),
+        "o grupo forjado nem chegou a ser processado: o gate não provaria nada"
+    );
     assert_eq!(
         b.conteudo(&id),
         conteudo_de_b,
         "um efeito auxiliar alheio sobrescreveu a edição de B"
+    );
+    assert_eq!(
+        b.revisao("chapter", &id).as_deref(),
+        Some(cabeca_de_b.as_str()),
+        "o conteúdo ficou igual, mas a cabeça de B andou"
     );
 }
 
@@ -467,16 +529,18 @@ fn h8_efeito_auxiliar_alheio_nao_sobrescreve() {
 fn h9_efeito_auxiliar_alheio_vira_divergencia() {
     let (a, b, _capitulo, chave) = conflito_de_edicao();
     let universo = a.universo();
-    let (alvo, base, _rev_de_a, id) = alvo_alheio(&a, &b, &universo);
+    let (alvo, base, cabeca_de_b, id) = alvo_alheio(&a, &b, &b, &universo);
     let conteudo_de_b = b.conteudo(&id);
-    let cabeca_de_b = b.revisao("chapter", &id).expect("cabeça de B");
+    // O payload do efeito forjado sai do estado do EMISSOR agora, antes de qualquer entrega. Lido
+    // depois, ele pode já ser o estado do próprio receptor — e aí o efeito chega como
+    // `AlreadyPresent`, nunca alcança a regra de dois pais, e o gate não prova nada.
+    let payload = sync_codec::ler_canonico(&a.banco.connection(), &alvo)
+        .expect("ler")
+        .expect("estado do emissor")
+        .payload;
     let acao = a.ficar_com(&chave, true);
     a.resolver(&chave, acao).expect("A resolve");
     let decisao = grupo_da_decisao(&a, &b);
-    let payload = sync_codec::ler_canonico(&a.banco.connection(), &alvo)
-        .expect("ler")
-        .expect("estado de A")
-        .payload;
     let forjado = forjar_efeito_auxiliar(
         &a,
         &decisao,
@@ -629,9 +693,15 @@ fn h13_exclusao_bloqueada_nao_alcanca_agregado_de_fora() {
     let universo = a.universo();
     let capitulo = a.capitulo_novo(&universo);
     sincronizar(&a, &b);
-    let (alvo, base, _rev, id) = alvo_alheio(&a, &b, &universo);
-    let conteudo_de_b = b.conteudo(&id);
-    let cabeca_de_b = b.revisao("chapter", &id).expect("cabeça de B");
+    // O alvo do ataque é A: é o estado DELE que não pode mudar, então é a cabeça dele que entra no
+    // par forjado — com a cabeça de B, o efeito nem chegaria à regra de dois pais em A.
+    let (alvo, base, cabeca_de_a, id) = alvo_alheio(&a, &b, &a, &universo);
+    let conteudo_de_a = a.conteudo(&id);
+    // Idem: o estado do emissor AGORA, antes das entregas.
+    let payload = sync_codec::ler_canonico(&b.banco.connection(), &alvo)
+        .expect("ler")
+        .expect("estado do emissor")
+        .payload;
 
     // A exclui o livro inteiro; B editou um capítulo dele: a exclusão fica bloqueada em B.
     let livro: String = a
@@ -658,43 +728,6 @@ fn h13_exclusao_bloqueada_nao_alcanca_agregado_de_fora() {
     b.resolver(&chave, Acao::ManterLocal)
         .expect("manter o local");
     let decisao = grupo_da_decisao(&b, &a);
-    let payload = sync_codec::ler_canonico(&b.banco.connection(), &alvo)
-        .expect("ler")
-        .expect("estado")
-        .payload;
-    let forjado = forjar_efeito_auxiliar(
-        &b,
-        &decisao,
-        &alvo,
-        &base,
-        &cabeca_de_b,
-        &payload,
-        &universo,
-    );
-
-    let _ = receber(&a, &forjado);
-    assert_eq!(
-        b.conteudo(&id),
-        conteudo_de_b,
-        "a decisão de exclusão bloqueada alcançou um capítulo de fora da ação"
-    );
-}
-
-/// **H14 — a resolução de um grupo não aceita membro de fora da ação original.**
-#[test]
-fn h14_resolucao_de_grupo_nao_aceita_membro_externo() {
-    let (a, b, capitulo, chave) = conflito_de_exclusao();
-    let universo = a.universo();
-    let (alvo, base, _rev, id) = alvo_alheio(&a, &b, &universo);
-    let conteudo_de_a = a.conteudo(&id);
-    let cabeca_de_a = a.revisao("chapter", &id).expect("cabeça de A");
-
-    b.resolver(&chave, Acao::Restaurar).expect("restaurar");
-    let decisao = grupo_da_decisao(&b, &a);
-    let payload = sync_codec::ler_canonico(&b.banco.connection(), &alvo)
-        .expect("ler")
-        .expect("estado")
-        .payload;
     let forjado = forjar_efeito_auxiliar(
         &b,
         &decisao,
@@ -706,10 +739,61 @@ fn h14_resolucao_de_grupo_nao_aceita_membro_externo() {
     );
 
     let _ = receber(&a, &forjado);
+    assert!(
+        o_forjado_foi_processado(&a, &forjado),
+        "o grupo forjado nem chegou a ser processado: o gate não provaria nada"
+    );
+    assert_eq!(
+        a.conteudo(&id),
+        conteudo_de_a,
+        "a decisão de exclusão bloqueada alcançou um capítulo de fora da ação"
+    );
+    assert_eq!(
+        a.revisao("chapter", &id).as_deref(),
+        Some(cabeca_de_a.as_str()),
+        "o conteúdo ficou igual, mas a cabeça de A andou por causa de um efeito de fora da ação"
+    );
+}
+
+/// **H14 — a resolução de um grupo não aceita membro de fora da ação original.**
+#[test]
+fn h14_resolucao_de_grupo_nao_aceita_membro_externo() {
+    let (a, b, capitulo, chave) = conflito_de_exclusao();
+    let universo = a.universo();
+    let (alvo, base, cabeca_de_a, id) = alvo_alheio(&a, &b, &a, &universo);
+    let conteudo_de_a = a.conteudo(&id);
+    // Idem: o estado do emissor AGORA, antes das entregas.
+    let payload = sync_codec::ler_canonico(&b.banco.connection(), &alvo)
+        .expect("ler")
+        .expect("estado do emissor")
+        .payload;
+
+    b.resolver(&chave, Acao::Restaurar).expect("restaurar");
+    let decisao = grupo_da_decisao(&b, &a);
+    let forjado = forjar_efeito_auxiliar(
+        &b,
+        &decisao,
+        &alvo,
+        &base,
+        &cabeca_de_a,
+        &payload,
+        &universo,
+    );
+
+    let _ = receber(&a, &forjado);
+    assert!(
+        o_forjado_foi_processado(&a, &forjado),
+        "o grupo forjado nem chegou a ser processado: o gate não provaria nada"
+    );
     assert_eq!(
         a.conteudo(&id),
         conteudo_de_a,
         "um membro externo entrou na resolução do grupo e sobrescreveu A"
+    );
+    assert_eq!(
+        a.revisao("chapter", &id).as_deref(),
+        Some(cabeca_de_a.as_str()),
+        "o conteúdo ficou igual, mas a cabeça de A andou"
     );
     assert!(
         a.conteudo(&capitulo).is_some() || !a.abertas().is_empty(),
@@ -840,6 +924,181 @@ fn h28_par_auxiliar_fora_da_acao_nao_sobrescreve() {
     assert!(
         !a.abertas().is_empty() || a.pendentes() > 0,
         "sem sobrescrever, a decisão que não coube precisa virar pergunta ou espera"
+    );
+}
+
+/// **H29 — revisão igual não identifica a ação.**
+///
+/// `new_rev` é determinístico, e `sync_events` não tem `UNIQUE` por revisão: a mesma revisão R pode
+/// estar em dois envelopes, de duas mutações diferentes.
+///
+/// ```text
+/// E1  R na mutação G1, que traz o auxiliar X
+/// E2  R na mutação G2, sem X       ← é este que a história deste aparelho registra
+/// ```
+///
+/// Autorizar X porque "algum evento com `new_rev = R` pertence a uma ação que tem X" é sorte, não
+/// prova. A âncora é o `event_id` da história local; com ele apontando para E2, o auxiliar não ganha
+/// junção nenhuma. Apontando para E1, ele volta a ser reconhecido — a prova positiva do outro lado.
+#[test]
+fn h29_revisao_igual_nao_identifica_a_acao() {
+    use crate::domain::sync::{GrupoDeMutacao, ROOT_REVISION};
+    use crate::infrastructure::sqlite::sync_apply::{
+        autorizar_efeitos_auxiliares, envelope_de_origem,
+    };
+    use crate::infrastructure::sqlite::sync_codec::resolucao::{
+        Certificado, EfeitoCanonico, ParDoEfeito, ParticipanteCanonico,
+    };
+    use crate::infrastructure::sqlite::sync_repository::gravar_envelope;
+    use crate::infrastructure::sqlite::test_support::{seed_universe, TemporaryDatabase};
+    use rusqlite::TransactionBehavior;
+
+    const ORIGEM: &str = "dev-remoto";
+    let participante = AggregateRef::new("chapter", "cap-1");
+    let auxiliar = AggregateRef::new("chapter_position", "cap-1");
+    let payload_do_capitulo = "{\"id\":\"cap-1\",\"bookId\":\"b1\",\"title\":\"Um\",\"content\":\"<p>x</p>\",\"summary\":\"\",\"sceneOrigin\":\"\",\"sceneDestination\":\"\",\"status\":\"rascunho\",\"canonStatus\":\"canon\",\"customFields\":[]}";
+    let payload_da_posicao = "{\"id\":\"cap-1\",\"bookId\":\"b1\",\"sortOrder\":1}";
+
+    // Os dois envelopes que produzem a MESMA revisão do participante, em ações diferentes.
+    let grupo = |mutation_id: &str, index: i64, count: i64| GrupoDeMutacao {
+        mutation_id: mutation_id.to_string(),
+        index,
+        count,
+        kind: String::new(),
+        root_type: String::new(),
+        root_id: String::new(),
+    };
+    let mut e1 = envelope_de_origem(
+        ORIGEM,
+        1,
+        "u1",
+        &participante,
+        Operation::Upsert,
+        payload_do_capitulo,
+        ROOT_REVISION,
+    );
+    e1.grupo = grupo("G1", 0, 2);
+    let mut x_da_acao = envelope_de_origem(
+        ORIGEM,
+        2,
+        "u1",
+        &auxiliar,
+        Operation::Upsert,
+        payload_da_posicao,
+        "x0",
+    );
+    x_da_acao.grupo = grupo("G1", 1, 2);
+    let mut e2 = envelope_de_origem(
+        ORIGEM,
+        3,
+        "u1",
+        &participante,
+        Operation::Upsert,
+        payload_do_capitulo,
+        ROOT_REVISION,
+    );
+    e2.grupo = grupo("G2", 0, 1);
+    assert_eq!(
+        e1.new_rev, e2.new_rev,
+        "o cenário exige duas ações produzindo a MESMA revisão"
+    );
+    assert_ne!(e1.event_id, e2.event_id);
+
+    // O certificado: o participante é essa revisão, e o efeito auxiliar é a aresta que G1 produziu.
+    let revisao = e1.new_rev.clone();
+    let certificado = Certificado {
+        conflict_key: "k".into(),
+        kind: "concurrent".into(),
+        participant_a: ParticipanteCanonico {
+            aggregate_type: "chapter".into(),
+            aggregate_id: "cap-1".into(),
+            revision: revisao.clone(),
+            operation: "upsert".into(),
+        },
+        participant_b: ParticipanteCanonico {
+            aggregate_type: "chapter".into(),
+            aggregate_id: "cap-1".into(),
+            revision: "outra-revisao".into(),
+            operation: "upsert".into(),
+        },
+        choice: "a".into(),
+        results: vec![EfeitoCanonico {
+            aggregate_type: "chapter_position".into(),
+            aggregate_id: "cap-1".into(),
+            operation: "upsert".into(),
+            base_rev: "x0".into(),
+            other_rev: x_da_acao.new_rev.clone(),
+            result_rev: "resultado".into(),
+        }],
+    };
+    let mut cabeca = envelope_de_origem(
+        ORIGEM,
+        4,
+        "u1",
+        &AggregateRef::new("conflict_resolution", "k"),
+        Operation::Upsert,
+        &certificado.canonico().expect("json"),
+        "",
+    );
+    cabeca.grupo = grupo("G3", 0, 2);
+    let mut efeito = envelope_de_origem(
+        ORIGEM,
+        5,
+        "u1",
+        &auxiliar,
+        Operation::Upsert,
+        payload_da_posicao,
+        "x0",
+    );
+    efeito.grupo = grupo("G3", 1, 2);
+
+    let autorizou = |apontar_para: &str| -> bool {
+        let banco = TemporaryDatabase::new();
+        let mut connection = banco.database.write().expect("escrita");
+        seed_universe(&connection, "u1");
+        connection
+            .execute_batch(
+                "INSERT INTO stories (id, universe_id, name) VALUES ('s1', 'u1', 'Historia');
+                 INSERT INTO books (id, story_id, name) VALUES ('b1', 's1', 'Livro');
+                 INSERT INTO sync_devices (device_id, name, ed25519_public, is_self)
+                   VALUES ('dev-remoto', 'Remoto', 'CHAVE', 0);",
+            )
+            .expect("semear");
+        for envelope in [&e1, &x_da_acao, &e2] {
+            gravar_envelope(&connection, envelope, true).expect("guardar envelope");
+        }
+        // A história local do participante aponta para UM evento — e é ele que identifica a ação.
+        connection
+            .execute(
+                "INSERT INTO sync_revision_history (aggregate_type, aggregate_id, rev, base_rev, event_id)
+                 VALUES ('chapter', 'cap-1', ?1, '', ?2)",
+                rusqlite::params![&revisao, apontar_para],
+            )
+            .expect("história");
+
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("transação");
+        let pares = autorizar_efeitos_auxiliares(
+            &tx,
+            &[cabeca.clone(), efeito.clone()],
+            vec![ParDoEfeito {
+                outra: x_da_acao.new_rev.clone(),
+                de_participante: false,
+            }],
+        )
+        .expect("autorizar");
+        tx.commit().expect("commit");
+        !pares[0].outra.is_empty()
+    };
+
+    assert!(
+        !autorizou(&e2.event_id),
+        "a ação foi identificada por revisão igual: E2 não tem o auxiliar, e ele foi autorizado"
+    );
+    assert!(
+        autorizou(&e1.event_id),
+        "com a história apontando para o evento certo, o auxiliar legítimo tem de continuar valendo"
     );
 }
 

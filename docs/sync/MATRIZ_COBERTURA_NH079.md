@@ -936,6 +936,18 @@ exclusão bloqueada. B cobre o agregado que as duas ações concorrentes tocaram
 decisão × decisão. Para isso, `membros_da_acao_de` carrega de cada membro `aggregateType`,
 `aggregateId`, `baseRev`, `newRev` e `operation` — a aresta, não só a revisão final.
 
+**E a ação é identificada pelo `event_id`, não pela revisão.** `new_rev` é determinístico e
+`sync_events` não tem `UNIQUE` por revisão: a mesma revisão R pode estar em dois envelopes, de
+mutações diferentes — uma com o auxiliar X, outra sem. Procurar por `new_rev = R` autorizaria X por
+sorte. A cadeia é:
+
+```text
+sync_revision_history.event_id  →  sync_events.event_id  →  device_id + mutation_id  →  membros
+```
+
+História sem `event_id`, envelope ausente aqui, ou revisão que este aparelho nunca registrou: **sem
+prova**, e sem prova não há junção especial.
+
 Fora disso, o `other_rev` é descartado e o efeito segue como evento comum:
 
 ```text
@@ -996,6 +1008,7 @@ histórica, e inventar uma seria o oposto do que as etapas F e G construíram.
 | H12 · H13 · H14 | mescla de tags, exclusão bloqueada e resolução de grupo não alcançam agregado de fora |
 | H15 | decisão concorrente continua resolvível recursivamente |
 | H28 | par auxiliar fora da ação (`{X1, X2}`, com X2 produzido depois pelo receptor) não sobrescreve: a posição nova fica, e o conflito vira pergunta |
+| H29 | duas ações produzindo a MESMA revisão: a ação é a que a história local aponta pelo `event_id`, e o auxiliar da outra não ganha junção (com a prova positiva inversa) |
 | H16 | migration 29 de 1→29 e de 28→29, `integrity_check` e `foreign_key_check` limpos |
 | H17 | o import traz a versão antiga já convertida e preserva a linha de origem |
 | H18 | dez arranques, uma pendência; decisão não volta a pendente |

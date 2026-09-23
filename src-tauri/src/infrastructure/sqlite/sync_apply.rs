@@ -393,23 +393,52 @@ struct MembroDaAcao {
 
 /// Os membros da ação que produziu a revisão de um participante, com a aresta de cada um.
 ///
-/// A ação é identificada pela origem e pelo `mutation_id` do evento, como o grupo de mutação
-/// (B2.2). Um evento isolado é a própria ação. Sem o evento aqui, não há ação conhecida — e não há
-/// auxiliar autorizado por ela.
+/// **A âncora é o `event_id`, não a revisão** (etapa H, H29). `new_rev` é determinístico: a mesma
+/// base com o mesmo payload e a mesma operação produz a mesma revisão, e `sync_events` não tem
+/// `UNIQUE` por revisão. Dois envelopes diferentes podem, portanto, carregar a mesma revisão R:
+///
+/// ```text
+/// E1  R dentro da mutação G1, que traz o auxiliar X
+/// E2  R dentro da mutação G2, que NÃO traz X
+/// ```
+///
+/// Procurar por `new_rev = R` acharia qualquer um dos dois, e o azar autorizaria X por causa de uma
+/// ação que nada tem a ver com a revisão que este aparelho realmente aplicou. A cadeia correta sai
+/// da história local:
+///
+/// ```text
+/// sync_revision_history.event_id  →  sync_events.event_id  →  device_id + mutation_id  →  membros
+/// ```
+///
+/// História sem `event_id` (bancos antigos), envelope que não está aqui, ou revisão que este
+/// aparelho nunca registrou: **não há prova**, e sem prova não há junção especial — o efeito cai no
+/// classificador causal comum.
 fn membros_da_acao_de(
     tx: &Transaction<'_>,
     participante: &sync_codec::resolucao::ParticipanteCanonico,
 ) -> DatabaseCommandResult<Vec<MembroDaAcao>> {
     let erro = |error: rusqlite::Error| DatabaseCommandError::storage(error.to_string());
-    let evento: Option<(String, String, String, String)> = tx
+    let evento_da_historia: Option<String> = tx
         .query_row(
-            "SELECT device_id, mutation_id, base_rev, operation FROM sync_events
-              WHERE aggregate_type = ?1 AND aggregate_id = ?2 AND new_rev = ?3",
+            "SELECT event_id FROM sync_revision_history
+              WHERE aggregate_type = ?1 AND aggregate_id = ?2 AND rev = ?3",
             rusqlite::params![
                 &participante.aggregate_type,
                 &participante.aggregate_id,
                 &participante.revision
             ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(erro)?;
+    let Some(event_id) = evento_da_historia.filter(|id| !id.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let evento: Option<(String, String, String, String)> = tx
+        .query_row(
+            "SELECT device_id, mutation_id, base_rev, operation FROM sync_events
+              WHERE event_id = ?1",
+            [&event_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()

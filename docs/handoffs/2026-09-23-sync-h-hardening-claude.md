@@ -57,7 +57,23 @@ A etapa que prova o que os casos extremos **não** conseguem. A prioridade acima
   que o tempo de cada rodada virou filtro estreito, e o script passou a imprimir a conferência do
   `git status` depois de cada restauração.
 
-## O que a revisão do PR #73 pegou
+## O que a segunda revisão do PR #73 pegou
+
+Duas coisas, e as duas eram reais:
+
+1. **A ação era identificada por revisão igual.** `new_rev` é determinístico e `sync_events` não tem
+   `UNIQUE` por revisão, então a mesma revisão pode estar em duas mutações — uma com o auxiliar X,
+   outra sem. Agora a âncora é o `event_id` da história local (H29, mutação HM10).
+2. **O H13 era vácuo**, e por três motivos empilhados: ele conferia B depois de entregar em A; o
+   capítulo alheio tinha conflito próprio, o que fazia o grupo ser recusado antes do auxiliar; a seq
+   forjada caía sobre uma ocupada, e o receptor devolvia `JaAplicado`; e o payload forjado era lido
+   do emissor **depois** das entregas, quando já era o estado do próprio receptor. Corrigidos os
+   quatro, a HM2 (auxiliar sempre autorizado) passou a derrubar H8, H9, H12, H13, H14, H28 e H29.
+
+Ficou uma lição para os gates de adulteração: além de afirmar o que não pode acontecer, eles têm de
+provar que o evento forjado **chegou a ser processado** — hoje isso é `o_forjado_foi_processado`.
+
+## O que a primeira revisão do PR #73 pegou
 
 A prova do par auxiliar era fraca: bastava uma das pontas pertencer à ação. O ataque é uma ação
 legítima `X0 → X1`, o receptor andando para `X2`, e um certificado dizendo `base = X1, other = X2`.
