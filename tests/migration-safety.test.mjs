@@ -36,3 +36,20 @@ test('os três comandos da migration segura estão registrados', () => {
     assert.ok(lib.includes(`database::upgrade::${comando}`), `${comando} fora do invoke_handler`);
   }
 });
+
+// I-BUG-02 (Etapa I): o merge de configuração do Tauri SUBSTITUI arrays. Um perfil que declara
+// `app.windows` só para trocar o título apaga decorations/maximized/tamanhos da janela base — e a
+// janela abre com a barra do Windows por cima da do app e estreita demais para as ações do topo.
+test('perfis que sobrescrevem a janela repetem a entrada base inteira, mudando só o título', () => {
+  const base = JSON.parse(ler('../src-tauri/tauri.conf.json')).app.windows;
+  for (const perfil of ['tauri.qualification.conf.json', 'tauri.production.conf.json']) {
+    const janelas = JSON.parse(ler(`../src-tauri/${perfil}`)).app?.windows;
+    if (!janelas) continue;
+    assert.equal(janelas.length, base.length, perfil);
+    janelas.forEach((janela, i) => {
+      const { title: _t1, ...resto } = janela;
+      const { title: _t2, ...restoBase } = base[i];
+      assert.deepEqual(resto, restoBase, `${perfil}: janela ${i} difere da base além do título`);
+    });
+  }
+});
