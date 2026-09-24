@@ -233,6 +233,19 @@ material que o PIN já transporta — endpoint, identidade pública, informaçã
 a descoberta substitui a digitação do endereço. Se alterar mensagem, handshake ou ordem, deixou
 de ser esta tarefa.
 
+**Reforço da Etapa I (2026-09-24), pedido do usuário depois do teste físico:** entra logo **depois
+de fechar a I**, nunca durante, porque a I qualifica o fluxo atual. Evidência de que é necessário: no
+Samsung S23 o usuário não achou o código de pareamento (só aparece depois de "Escutar nesta rede",
+I-UX-01) e precisou digitar IP e porta à mão. Escopo:
+
+- **QR**: o aparelho que escuta mostra o QR; o celular lê pela câmera e preenche endereço + PIN.
+  Exige permissão de câmera e plugin de leitura no Android (muda manifest e o pedido ao usuário).
+- **Lista de aparelhos por perto** (como Bluetooth): mDNS anuncia só nome e endereço de quem está
+  escutando. **Descoberta nunca é confiança** — quem autoriza continua sendo o PIN/roster; um anúncio
+  falso só leva a um PIN que o impostor não tem.
+- Digitar o endereço continua existindo: rede "Pública" do Windows e roteadores com isolamento
+  bloqueiam multicast.
+
 ---
 
 ### H-R1 — Resolução antiga depois de o GC coletar o tombstone participante
