@@ -1,4 +1,11 @@
-:host { display: block; }
+:host {
+  /* I-BUG-05: o .content-stage da rota tem altura fixa e overflow oculto; a página rola por conta própria,
+     como Configurações. Sem isto, o que passa da janela (inclusive os botões de decisão) some. */
+  display: block;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+}
 
 .conflicts-page {
   display: flex;
@@ -60,15 +67,37 @@
 .detail-head p { margin: 0; color: var(--muted); }
 .detail-note { color: var(--muted); font-size: 0.9rem; }
 
-.versions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
-@media (min-width: 700px) { .versions { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.version { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: var(--surface-2); min-width: 0; }
-.version h3 { margin: 0 0 8px; font-size: 1rem; }
-.version dl { margin: 0; display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: 4px 12px; }
-.version dt { color: var(--muted); font-size: 0.85rem; }
-.version dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.version.deleted { border-color: var(--nh-danger); }
+.conflito-versoes { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+@media (min-width: 700px) { .conflito-versoes { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* Nome próprio de propósito (I-BUG-05): `.version` colidia com uma regra global de 9px. */
+.conflito-versao {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px;
+  background: var(--surface-2);
+  min-width: 0;
+  font-size: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.versao-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.versao-head h3 { margin: 0; font-size: 1rem; }
+.versao-texto { display: flex; flex-direction: column; gap: 8px; line-height: 1.6; user-select: text; }
+.versao-texto p { margin: 0; padding: 4px 8px; border-left: 3px solid transparent; border-radius: 4px; overflow-wrap: anywhere; }
+.versao-texto p.difere { border-left-color: var(--brand); background: var(--brand-soft); }
+.conflito-versao:nth-child(2) .versao-texto p.difere { border-left-color: var(--nh-ochre); background: var(--surface); }
+.versao-campos { margin: 0; display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: 6px 12px; font-size: 0.95rem; }
+.versao-campos dt { color: var(--muted); }
+.versao-campos dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+.versao-iguais summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; min-height: var(--nh-touch-target, 36px); display: flex; align-items: center; }
+.versao-iguais .versao-campos { margin-top: 6px; }
+.conflito-versao.deleted { border-color: var(--nh-danger); }
 .deleted-mark { margin: 8px 0; font-weight: 700; letter-spacing: 0.1em; color: var(--nh-danger); font-size: 1.2rem; }
+
+/* O lado a lado já destaca o que difere; a lista em sequência é para a tela estreita. */
+@media (min-width: 700px) { .text-diff { display: none; } }
+.diff-resumo { font-style: italic; font-size: 0.9rem; }
 
 .text-diff h3, .field-diff h3, .decision h3 { margin: 0 0 8px; font-size: 1rem; }
 .text-diff p { margin: 0; padding: 6px 10px; border-left: 3px solid transparent; overflow-wrap: anywhere; }

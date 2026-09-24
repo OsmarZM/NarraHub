@@ -1,7 +1,15 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
-import { ConflictAction, ConflictSummary } from '../../core/native/sync-conflicts.service';
+import { Router, RouterLink } from '@angular/router';
+import {
+  ConflictAction,
+  ConflictDetail,
+  ConflictDiffLine,
+  ConflictField,
+  ConflictSide,
+  ConflictSummary,
+} from '../../core/native/sync-conflicts.service';
+import { ShellState } from '../../shell/state/shell.state';
 import { ConflictsStore } from './state/conflicts.store';
 
 /**
@@ -18,6 +26,8 @@ import { ConflictsStore } from './state/conflicts.store';
 })
 export class ConflictsPageComponent implements OnInit {
   readonly store = inject(ConflictsStore);
+  private readonly router = inject(Router);
+  private readonly shell = inject(ShellState);
 
   /** O nome digitado para a ação de renomear, por tag. */
   readonly novoNome = signal<Record<string, string>>({});
@@ -54,6 +64,78 @@ export class ConflictsPageComponent implements OnInit {
     void this.store.resolve(acao.acao, acao.tagId, this.nomeDe(acao.tagId).trim());
   }
 
+  /**
+   * "Escolher e editar" (I-BUG-05, pedido do operador na Etapa I): a resolução continua sendo escolher uma
+   * das versões — o formato congelado não carrega texto novo —, e a edição depois é um evento comum.
+   */
+  permiteEditar(detalhe: ConflictDetail, acao: ConflictAction): boolean {
+    return detalhe.resumo.aggregateType === 'chapter'
+      && ['ficarComA', 'ficarComB', 'manterLocal', 'restaurar'].includes(acao.acao);
+  }
+
+  async decidirEEditar(acao: ConflictAction): Promise<void> {
+    const resumo = this.store.selected()?.resumo;
+    if (!resumo) return;
+    if (!await this.store.resolve(acao.acao, acao.tagId, '')) return;
+    await this.router.navigate(['/workspace', resumo.universeId, 'writing', resumo.aggregateId]);
+  }
+
+  async copiar(lado: ConflictSide): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(this.textoDe(lado));
+      this.shell.showInfo(`Texto ${lado.desteAparelho ? 'deste aparelho' : 'do outro aparelho'} copiado.`);
+    } catch {
+      this.shell.showError('Não foi possível copiar. Selecione o texto e copie manualmente.');
+    }
+  }
+
+  /** O texto do capítulo daquele lado, sem HTML. Vazio quando o item não tem texto. */
+  textoDe(lado: ConflictSide): string {
+    const campo = lado.campos.find((c) => c.campo === 'content');
+    const texto = typeof campo?.valor === 'string' ? this.textoSimples(campo.valor) : '';
+    return texto === '—' ? '' : texto;
+  }
+
+  /** Parágrafos do texto de um lado, marcando os que não existem do outro lado. */
+  paragrafos(detalhe: ConflictDetail, lado: ConflictSide): Array<{ texto: string; difere: boolean }> {
+    const outro = lado === detalhe.desteAparelho ? detalhe.doOutro : detalhe.desteAparelho;
+    const doOutro = new Set(this.partes(this.textoDe(outro)));
+    return this.partes(this.textoDe(lado)).map((texto) => ({ texto, difere: !doOutro.has(texto) }));
+  }
+
+  /** As linhas que mudaram, com as iguais colapsadas em "… N parágrafos iguais …". */
+  linhasQueMudaram(detalhe: ConflictDetail): ConflictDiffLine[] {
+    const saida: ConflictDiffLine[] = [];
+    let iguais = 0;
+    const fechar = () => {
+      if (!iguais) return;
+      saida.push({ tipo: 'igual', texto: `… ${iguais} ${iguais === 1 ? 'parágrafo igual' : 'parágrafos iguais'} …` });
+      iguais = 0;
+    };
+    for (const linha of detalhe.diffDeTexto) {
+      if (linha.tipo === 'igual') { iguais += 1; continue; }
+      fechar();
+      saida.push(linha);
+    }
+    if (saida.length) fechar();
+    return saida;
+  }
+
+  /** Campos daquele lado que diferem do outro — fora o texto (mostrado acima) e os identificadores. */
+  camposQueDiferem(detalhe: ConflictDetail, lado: ConflictSide): ConflictField[] {
+    const diferentes = new Set(detalhe.diferencas.map((d) => d.campo));
+    return lado.campos.filter((c) => this.visivel(c) && diferentes.has(c.campo));
+  }
+
+  camposIguais(detalhe: ConflictDetail, lado: ConflictSide): ConflictField[] {
+    const diferentes = new Set(detalhe.diferencas.map((d) => d.campo));
+    return lado.campos.filter((c) => this.visivel(c) && !diferentes.has(c.campo));
+  }
+
+  diferencasForaDoTexto(detalhe: ConflictDetail): ConflictDetail['diferencas'] {
+    return detalhe.diferencas.filter((d) => d.campo !== 'content' && !this.eIdentificador(d.campo));
+  }
+
   rotuloDoKind(kind: string): string {
     switch (kind) {
       case 'parent_deletion_blocked': return 'Exclusão bloqueada';
@@ -69,6 +151,19 @@ export class ConflictsPageComponent implements OnInit {
     if (typeof valor === 'number' || typeof valor === 'boolean') return String(valor);
     if (Array.isArray(valor) && valor.length === 0) return '—';
     return JSON.stringify(valor, null, 1);
+  }
+
+  private visivel(campo: ConflictField): boolean {
+    return campo.campo !== 'content' && !this.eIdentificador(campo.campo);
+  }
+
+  /** `id`, `bookId`, `universeId`…: referência interna, não informação para o escritor. */
+  private eIdentificador(campo: string): boolean {
+    return campo === 'id' || /Id$/u.test(campo);
+  }
+
+  private partes(texto: string): string[] {
+    return texto.split('\n').map((p) => p.trim()).filter(Boolean);
   }
 
   private textoSimples(valor: string): string {
