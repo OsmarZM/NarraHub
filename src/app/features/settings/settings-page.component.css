@@ -83,6 +83,9 @@ app-settings-page .ai-fields { margin-top: 0; }
 app-settings-page .pairing-panel { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px 15px; margin: 16px 0; padding: 14px; border: 1px solid color-mix(in srgb, var(--brand) 20%, var(--line)); border-radius: 11px; background: var(--brand-soft); }
 app-settings-page .pairing-panel small { color: var(--muted); font-size: 8px; }
 app-settings-page .pairing-panel strong { font-size: 11px; }
+/* I-BUG-04: a situação do código ocupa a linha inteira e se lê sem lupa. */
+app-settings-page .pairing-panel .pin-vencido, app-settings-page .pairing-panel .pin-validade { grid-column: 1 / -1; font-size: 12px; }
+app-settings-page .pairing-panel .pin-vencido { color: var(--nh-danger); }
 app-settings-page .pairing-panel b { color: var(--brand); font-size: 22px; letter-spacing: .16em; }
 
 app-settings-page .share-session-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; margin: 16px 0 12px; padding: 13px; border: 1px solid color-mix(in srgb, var(--green) 28%, var(--line)); border-radius: 11px; background: color-mix(in srgb, var(--green) 6%, var(--surface-2)); }

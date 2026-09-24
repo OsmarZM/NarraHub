@@ -62,3 +62,24 @@ test('quem inicia o pareamento também vê o resultado e a biblioteca relida', a
   await expect(page.locator('.toast')).toContainText('Sincronizado com Celular de teste');
   await expect.poll(() => page.evaluate(() => window.__recargas)).toBe(1);
 });
+
+// I-BUG-04: a tela da escuta mostrava como válido um código que já tinha vencido no Rust.
+test('código vencido aparece como vencido e a escuta relê o estado sozinha', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('narrahub.mobileNavigationHintSeen', '1'));
+  await page.goto('/settings');
+  await page.waitForFunction(() => Boolean(window.ng && document.querySelector('app-settings-page')));
+  await page.getByRole('button', { name: /Dispositivos/u }).click();
+  await page.evaluate(() => {
+    const pagina = window.ng.getComponent(document.querySelector('app-settings-page'));
+    window.__releituras = 0;
+    const base = { escutando: true, porta: 45870, enderecos: ['192.168.1.145:45870'], ultimoResultado: null, ultimoErro: null };
+    pagina.store.syncV2State.set({ ...base, pin: '1234 5678' });
+    // O Rust venceu o código: a próxima leitura já vem sem ele.
+    pagina.store.refreshSyncStatus = async () => { window.__releituras += 1; pagina.store.syncV2State.set({ ...base, pin: null }); };
+  });
+  await expect(page.locator('.pairing-panel')).toContainText('1234 5678');
+  await expect(page.getByTestId('pin-vencido')).toHaveCount(0);
+  await expect(page.getByTestId('pin-vencido')).toBeVisible({ timeout: 8000 });
+  await expect(page.getByTestId('pin-vencido')).toContainText('Novo código');
+  expect(await page.evaluate(() => window.__releituras)).toBeGreaterThan(0);
+});

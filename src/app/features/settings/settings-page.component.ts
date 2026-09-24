@@ -1,4 +1,4 @@
-import { Component, OnInit, ViewEncapsulation, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, ViewEncapsulation, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { AiMode, AiModelProfile, AiService } from '../../core/native/ai.service';
 import { BackupManifest } from '../../core/native/backup.service';
@@ -25,7 +25,7 @@ type RestoreModal = 'restore-backup' | null;
   styleUrl: './settings-page.component.css',
   encapsulation: ViewEncapsulation.None,
 })
-export class SettingsPageComponent implements OnInit {
+export class SettingsPageComponent implements OnInit, OnDestroy {
   readonly store = inject(SettingsStore);
   /** Etapa F: o contador de conflitos e o aviso da atualização da sincronização. */
   readonly conflicts = inject(ConflictsStore);
@@ -57,7 +57,21 @@ export class SettingsPageComponent implements OnInit {
   v2Pin = '';
   restoreConfirmation = '';
 
+  /**
+   * I-BUG-04: o código vence no Rust (três minutos) sem ninguém avisar a tela. Enquanto a escuta está
+   * aberta, relê o estado de tempos em tempos para não mostrar como válido um código que já venceu.
+   */
+  private syncStatusTimer: ReturnType<typeof setInterval> | null = null;
+
+  ngOnDestroy(): void {
+    if (this.syncStatusTimer) clearInterval(this.syncStatusTimer);
+    this.syncStatusTimer = null;
+  }
+
   ngOnInit(): void {
+    this.syncStatusTimer = setInterval(() => {
+      if (this.store.syncV2State().escutando) void this.store.refreshSyncStatus();
+    }, 5000);
     this.aiSelectedProfile = (this.ai.localStatus().installedProfile as AiModelProfile['id']) || this.ai.localStatus().recommended.id;
     void this.store.refreshSyncStatus();
     void this.store.refreshBackupStatus();
