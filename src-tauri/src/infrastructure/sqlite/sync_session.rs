@@ -476,14 +476,19 @@ fn aplicar_grupo(
     // confiável, e a sessão falha fechada, sem guardar nada — como um grupo de forma inválida.
     let pares = if grupo.kind == crate::infrastructure::sqlite::sync_codec::resolucao::KIND_DO_GRUPO
     {
+        let pares = crate::infrastructure::sqlite::sync_codec::resolucao::validar_grupo(&membros)
+            .map_err(|motivo| {
+                DatabaseCommandError::storage(format!(
+                    "O evento {} da origem {origem} traz uma resolução de conflito que não se sustenta: {motivo}. Nada foi aplicado.",
+                    primeiro.seq
+                ))
+            })?;
+        // H-R2: o certificado é coerente; agora, o que ESTE aparelho consegue provar sobre os
+        // auxiliares. Sem prova, o efeito perde a junção especial — não o grupo.
         Some(
-            crate::infrastructure::sqlite::sync_codec::resolucao::validar_grupo(&membros)
-                .map_err(|motivo| {
-                    DatabaseCommandError::storage(format!(
-                        "O evento {} da origem {origem} traz uma resolução de conflito que não se sustenta: {motivo}. Nada foi aplicado.",
-                        primeiro.seq
-                    ))
-                })?,
+            crate::infrastructure::sqlite::sync_apply::autorizar_efeitos_auxiliares(
+                tx, &membros, pares,
+            )?,
         )
     } else {
         None

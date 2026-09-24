@@ -22,7 +22,12 @@ pub mod epoca;
 #[cfg(test)]
 mod epoca_testes;
 pub mod genese;
+#[cfg(test)]
+mod hardening_testes;
 pub mod knowledge_service;
+pub mod legado_recuperacao;
+#[cfg(test)]
+mod legado_testes;
 pub mod manuscript_service;
 pub mod mutacao;
 pub mod planning_service;

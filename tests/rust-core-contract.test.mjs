@@ -144,6 +144,9 @@ test('só as portas nativas falam com o Tauri', () => {
     // lê é sobre a sincronização DESTE APARELHO. Ela recebe DTOs prontos -- nunca tabela de
     // sincronização, envelope nem revisão crua -- e a decisão viaja como ação portátil.
     'core/native/sync-conflicts.service.ts',
+    // A caixa de versões antigas (etapa H, H-R3). É plataforma pelo mesmo motivo: o que ela lê é o
+    // passado DESTE aparelho, e a tela nunca vê a tabela de origem.
+    'core/native/legacy-recovery.service.ts',
   ];
 
   const infratores = [];
@@ -849,4 +852,56 @@ test('os quatro comandos dos conflitos estao registrados e a porta chama cada um
     assert.ok(lista.includes(`conflitos_commands::${comando}`), `\`${comando}\` nao esta no invoke_handler.`);
     assert.ok(ts.includes(`'${comando}'`), `a porta do frontend nao chama \`${comando}\`.`);
   }
+});
+
+test('ETAPA H — os comandos da recuperacao do legado estao registrados e a porta chama cada um', () => {
+  const lib = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+  const inicio = lib.indexOf('invoke_handler');
+  const lista = lib.slice(inicio, lib.indexOf('])', inicio));
+  const ts = readFileSync(new URL('../src/app/core/native/legacy-recovery.service.ts', import.meta.url), 'utf8');
+  for (const comando of ['legado_pendentes', 'legado_listar', 'legado_destinos', 'legado_preservar', 'legado_descartar']) {
+    assert.ok(lista.includes(`legado_commands::${comando}`), `\`${comando}\` nao esta no invoke_handler.`);
+    assert.ok(ts.includes(`'${comando}'`), `a porta do frontend nao chama \`${comando}\`.`);
+  }
+});
+
+test('ETAPA H — os DTOs da recuperacao do legado tem os mesmos campos no Rust e no TypeScript', () => {
+  const ler = (relativo) => readFileSync(new URL(relativo, import.meta.url), 'utf8');
+  const ts = ler('../src/app/core/native/legacy-recovery.service.ts');
+  const camposRust = (fonte, nome) => {
+    const inicio = fonte.indexOf(`pub struct ${nome} {`);
+    assert.ok(inicio >= 0, `nao achei o struct ${nome}; a varredura quebrou`);
+    const corpo = fonte.slice(inicio, fonte.indexOf('\n}', inicio));
+    return [...corpo.matchAll(/^\s{4}pub ([a-z0-9_]+):/gmu)].map((m) => m[1]);
+  };
+  const camposTs = (nome) => {
+    const inicio = ts.indexOf(`export interface ${nome} {`);
+    assert.ok(inicio >= 0, `nao achei a interface ${nome}; a varredura quebrou`);
+    const corpo = ts.slice(inicio, ts.indexOf('\n}', inicio));
+    return [...corpo.matchAll(/^\s{2}([A-Za-z0-9_]+)\??:/gmu)].map((m) => m[1]);
+  };
+  const camel = (snake) => snake.replace(/_([a-z0-9])/gu, (_, c) => c.toUpperCase());
+  const rust = ler('../src-tauri/src/application/legado_recuperacao.rs');
+  for (const [nomeRust, nomeTs] of [
+    ['ItemDeRecuperacao', 'LegacyRecoveryItem'],
+    ['DestinoPossivel', 'RecoveryDestination'],
+    ['PedidoDePreservacao', 'PreserveRequest'],
+  ]) {
+    const esperados = camposRust(rust, nomeRust).map(camel).sort();
+    assert.ok(esperados.length >= 3, `${nomeRust}: a varredura achou campos de menos`);
+    assert.deepStrictEqual(camposTs(nomeTs).sort(), esperados, `${nomeRust} (Rust) e ${nomeTs} (TypeScript) divergiram.`);
+  }
+});
+
+test('ETAPA H — o aviso das versoes antigas nao pode ser silenciado enquanto houver pendencia', () => {
+  // A diferenca para o aviso de epoca (E0) e proposital: aquele e informativo e tem "Entendi";
+  // este e sobre texto do escritor que so existe neste aparelho, entao ele volta a cada abertura.
+  const html = readFileSync(new URL('../src/app/features/settings/settings-page.component.html', import.meta.url), 'utf8');
+  const inicio = html.indexOf('legacy-recovery-notice');
+  assert.ok(inicio > 0, 'o aviso das versoes antigas sumiu de Configuracoes');
+  const bloco = html.slice(html.lastIndexOf('@if', inicio), html.indexOf('</div>', inicio));
+  assert.match(bloco, /legacyRecovery\.pending\(\) > 0/u, 'o aviso precisa depender so da pendencia');
+  assert.doesNotMatch(bloco, /localStorage|dismiss|Entendi/u, 'o aviso ganhou um jeito de ser silenciado');
+  const componente = readFileSync(new URL('../src/app/features/settings/settings-page.component.ts', import.meta.url), 'utf8');
+  assert.match(componente, /legacyRecovery\.refreshPending\(\)/u, 'a contagem precisa ser relida a cada abertura');
 });

@@ -22,10 +22,10 @@ use crate::infrastructure::sqlite::sync_exchange::{eventos_para, vetor_local};
 use crate::infrastructure::sqlite::sync_session::{receber_eventos, Relatorio};
 use crate::infrastructure::sqlite::test_support::TemporaryDatabase;
 
-struct Aparelho {
-    banco: TemporaryDatabase,
-    eu: DeviceIdentity,
-    store: BlobStore,
+pub(crate) struct Aparelho {
+    pub(crate) banco: TemporaryDatabase,
+    pub(crate) eu: DeviceIdentity,
+    pub(crate) store: BlobStore,
     dados: std::path::PathBuf,
 }
 
@@ -36,7 +36,7 @@ impl Drop for Aparelho {
 }
 
 impl Aparelho {
-    fn novo() -> Self {
+    pub(crate) fn novo() -> Self {
         let banco = TemporaryDatabase::new();
         let dados = std::env::temp_dir().join(format!("narrahub-f-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dados).expect("dados");
@@ -49,13 +49,13 @@ impl Aparelho {
         }
     }
 
-    fn universo(&self) -> String {
+    pub(crate) fn universo(&self) -> String {
         universe_service::create(&self.banco.database, &self.store, &self.eu, "Terra", "", "")
             .expect("universo")
             .id
     }
 
-    fn capitulo_novo(&self, universo: &str) -> String {
+    pub(crate) fn capitulo_novo(&self, universo: &str) -> String {
         let historia =
             manuscript_service::create_story(&self.banco.database, &self.eu, universo, "Saga")
                 .expect("história");
@@ -67,7 +67,7 @@ impl Aparelho {
             .id
     }
 
-    fn escrever(&self, capitulo: &str, texto: &str) {
+    pub(crate) fn escrever(&self, capitulo: &str, texto: &str) {
         manuscript_service::update_chapter(
             &self.banco.database,
             &self.eu,
@@ -81,12 +81,12 @@ impl Aparelho {
         .expect("escrever");
     }
 
-    fn apagar_capitulo(&self, capitulo: &str) {
+    pub(crate) fn apagar_capitulo(&self, capitulo: &str) {
         manuscript_service::delete_chapter(&self.banco.database, &self.eu, capitulo)
             .expect("apagar capítulo");
     }
 
-    fn conteudo(&self, capitulo: &str) -> Option<String> {
+    pub(crate) fn conteudo(&self, capitulo: &str) -> Option<String> {
         self.banco
             .connection()
             .query_row(
@@ -97,12 +97,12 @@ impl Aparelho {
             .ok()
     }
 
-    fn revisao(&self, tipo: &str, id: &str) -> Option<String> {
+    pub(crate) fn revisao(&self, tipo: &str, id: &str) -> Option<String> {
         sync_codec::revisao_corrente(&self.banco.connection(), &AggregateRef::new(tipo, id))
             .expect("revisão")
     }
 
-    fn tombstone(&self, tipo: &str, id: &str) -> Option<String> {
+    pub(crate) fn tombstone(&self, tipo: &str, id: &str) -> Option<String> {
         self.banco
             .connection()
             .query_row(
@@ -114,7 +114,7 @@ impl Aparelho {
     }
 
     /// `(conflict_key, kind, aggregate_type)` das divergências abertas.
-    fn abertas(&self) -> Vec<(String, String, String)> {
+    pub(crate) fn abertas(&self) -> Vec<(String, String, String)> {
         let connection = self.banco.connection();
         let mut consulta = connection
             .prepare(
@@ -128,13 +128,13 @@ impl Aparelho {
         linhas.collect::<Result<_, _>>().expect("ler")
     }
 
-    fn uma_aberta(&self) -> String {
+    pub(crate) fn uma_aberta(&self) -> String {
         let abertas = self.abertas();
         assert_eq!(abertas.len(), 1, "{abertas:?}");
         abertas[0].0.clone()
     }
 
-    fn decisoes(&self) -> BTreeMap<String, String> {
+    pub(crate) fn decisoes(&self) -> BTreeMap<String, String> {
         let connection = self.banco.connection();
         let mut consulta = connection
             .prepare("SELECT conflict_key, certificate FROM conflict_resolutions")
@@ -145,7 +145,7 @@ impl Aparelho {
         linhas.collect::<Result<_, _>>().expect("ler")
     }
 
-    fn pendentes(&self) -> i64 {
+    pub(crate) fn pendentes(&self) -> i64 {
         self.banco
             .connection()
             .query_row(
@@ -158,7 +158,7 @@ impl Aparelho {
     }
 
     /// A ação que fica com a versão DESTE aparelho (`local = true`) ou com a do outro.
-    fn ficar_com(&self, chave: &str, local: bool) -> Acao {
+    pub(crate) fn ficar_com(&self, chave: &str, local: bool) -> Acao {
         let divergencia = ler_aberta(&self.banco.connection(), chave).expect("aberta");
         let a_e_daqui = divergencia.local() == &divergencia.a;
         if a_e_daqui == local {
@@ -168,18 +168,18 @@ impl Aparelho {
         }
     }
 
-    fn resolver(&self, chave: &str, acao: Acao) -> DatabaseCommandResult<String> {
+    pub(crate) fn resolver(&self, chave: &str, acao: Acao) -> DatabaseCommandResult<String> {
         resolver_conflito(&self.banco.database, &self.eu, chave, &acao)
             .map(|resultado| resultado.resolution_rev)
     }
 
-    fn eventos_para(&self, outro: &Aparelho) -> Vec<EventEnvelope> {
+    pub(crate) fn eventos_para(&self, outro: &Aparelho) -> Vec<EventEnvelope> {
         let vetor = vetor_local(&outro.banco.connection()).expect("vetor");
         eventos_para(&self.banco.connection(), &vetor).expect("eventos")
     }
 }
 
-fn apresentar(fonte: &Aparelho, destino: &Aparelho) {
+pub(crate) fn apresentar(fonte: &Aparelho, destino: &Aparelho) {
     let conhecidas: Vec<(String, String)> = {
         let connection = fonte.banco.connection();
         let mut consulta = connection
@@ -216,14 +216,14 @@ fn apresentar(fonte: &Aparelho, destino: &Aparelho) {
 
 /// Entrega a `para` o lote dado, como a sessão faz: drenagem com a conferência de blob, e depois as
 /// resoluções automáticas.
-fn receber(para: &Aparelho, lote: &[EventEnvelope]) -> DatabaseCommandResult<Relatorio> {
+pub(crate) fn receber(para: &Aparelho, lote: &[EventEnvelope]) -> DatabaseCommandResult<Relatorio> {
     let relatorio = receber_eventos(&mut para.banco.connection(), lote, &para.store)?;
     resolver_automaticas(&para.banco.database, &para.eu)?;
     Ok(relatorio)
 }
 
 /// `para` recebe tudo o que `de` tem e ele não.
-fn entregar(de: &Aparelho, para: &Aparelho) -> Relatorio {
+pub(crate) fn entregar(de: &Aparelho, para: &Aparelho) -> Relatorio {
     apresentar(de, para);
     apresentar(para, de);
     receber(para, &de.eventos_para(para)).expect("receber")
@@ -231,7 +231,7 @@ fn entregar(de: &Aparelho, para: &Aparelho) -> Relatorio {
 
 /// Duas voltas nos dois sentidos: a segunda leva o que a primeira produziu (inclusive resoluções
 /// automáticas).
-fn sincronizar(a: &Aparelho, b: &Aparelho) {
+pub(crate) fn sincronizar(a: &Aparelho, b: &Aparelho) {
     for _ in 0..2 {
         entregar(a, b);
         entregar(b, a);
@@ -239,7 +239,7 @@ fn sincronizar(a: &Aparelho, b: &Aparelho) {
 }
 
 /// Dois aparelhos com o mesmo capítulo, e cada um o editou do seu jeito: um conflito aberto nos dois.
-fn conflito_de_edicao() -> (Aparelho, Aparelho, String, String) {
+pub(crate) fn conflito_de_edicao() -> (Aparelho, Aparelho, String, String) {
     let a = Aparelho::novo();
     let b = Aparelho::novo();
     let universo = a.universo();
@@ -260,7 +260,7 @@ fn conflito_de_edicao() -> (Aparelho, Aparelho, String, String) {
 
 /// Os dois convergiram: mesmo conteúdo, mesma cabeça causal, nenhum conflito aberto, as mesmas
 /// decisões.
-fn convergiram(a: &Aparelho, b: &Aparelho, capitulo: &str) {
+pub(crate) fn convergiram(a: &Aparelho, b: &Aparelho, capitulo: &str) {
     assert_eq!(
         a.conteudo(capitulo),
         b.conteudo(capitulo),
@@ -309,7 +309,7 @@ fn f2_upsert_upsert_fica_a_remota() {
 }
 
 /// Edição num aparelho, exclusão no outro: o conflito aberto nos dois.
-fn conflito_de_exclusao() -> (Aparelho, Aparelho, String, String) {
+pub(crate) fn conflito_de_exclusao() -> (Aparelho, Aparelho, String, String) {
     let a = Aparelho::novo();
     let b = Aparelho::novo();
     let universo = a.universo();
@@ -775,7 +775,7 @@ fn f14_queda_durante_a_resolucao_nao_deixa_nada() {
 }
 
 /// A decisão de `a`, como ela viaja: o grupo `resolution` inteiro.
-fn grupo_da_decisao(a: &Aparelho, para: &Aparelho) -> Vec<EventEnvelope> {
+pub(crate) fn grupo_da_decisao(a: &Aparelho, para: &Aparelho) -> Vec<EventEnvelope> {
     let lote = a.eventos_para(para);
     let grupo: Vec<EventEnvelope> = lote
         .into_iter()

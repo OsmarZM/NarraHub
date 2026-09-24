@@ -9,6 +9,7 @@ import { CollaborationStore } from '../collaboration/state/collaboration.store';
 import { ProductionReplicaComponent } from '../production-replica/production-replica.component';
 import { SettingsStore } from './state/settings.store';
 import { ConflictsStore } from '../conflicts/state/conflicts.store';
+import { LegacyRecoveryStore } from '../legacy-recovery/state/legacy-recovery.store';
 import { RouterLink } from '@angular/router';
 
 export type SettingsSection = 'general' | 'ai' | 'sync' | 'share' | 'updates';
@@ -27,6 +28,8 @@ export class SettingsPageComponent implements OnInit {
   readonly store = inject(SettingsStore);
   /** Etapa F: o contador de conflitos e o aviso da atualização da sincronização. */
   readonly conflicts = inject(ConflictsStore);
+  /** Etapa H (H-R3): as versões antigas que só existem neste aparelho. */
+  readonly legacyRecovery = inject(LegacyRecoveryStore);
   readonly epochNoticeDismissed = signal(false);
   readonly collaboration = inject(CollaborationStore);
   readonly ai = inject(AiService);
@@ -58,6 +61,7 @@ export class SettingsPageComponent implements OnInit {
     void this.store.refreshBackupStatus();
     void this.store.primeCurrentVersion();
     void this.conflicts.refreshOpenCount();
+    void this.legacyRecovery.refreshPending();
     void this.conflicts.loadEpochNotice().then(() => {
       const aviso = this.conflicts.epochNotice();
       this.epochNoticeDismissed.set(Boolean(aviso && this.readDismissed() === aviso.iniciadaEm));

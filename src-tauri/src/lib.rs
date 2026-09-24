@@ -10,8 +10,8 @@ use database::migrations::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V14,
     MIGRATION_V15, MIGRATION_V16, MIGRATION_V17, MIGRATION_V18, MIGRATION_V19, MIGRATION_V2,
     MIGRATION_V20, MIGRATION_V21, MIGRATION_V22, MIGRATION_V23, MIGRATION_V24, MIGRATION_V25,
-    MIGRATION_V26, MIGRATION_V27, MIGRATION_V28, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5,
-    MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9,
+    MIGRATION_V26, MIGRATION_V27, MIGRATION_V28, MIGRATION_V29, MIGRATION_V3, MIGRATION_V4,
+    MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9,
 };
 use tauri_plugin_sql::{Migration, MigrationKind};
 
@@ -244,6 +244,12 @@ pub fn run() {
                             sql: MIGRATION_V28,
                             kind: MigrationKind::Up,
                         },
+                        Migration {
+                            version: 29,
+                            description: "Legacy recovery inbox",
+                            sql: MIGRATION_V29,
+                            kind: MigrationKind::Up,
+                        },
                     ],
                 )
                 .build(),
@@ -293,6 +299,11 @@ pub fn run() {
             interface::tauri::conflitos_commands::sync_conflito_inspecionar,
             interface::tauri::conflitos_commands::sync_conflito_resolver,
             interface::tauri::conflitos_commands::sync_v2_aviso_de_epoca,
+            interface::tauri::legado_commands::legado_pendentes,
+            interface::tauri::legado_commands::legado_listar,
+            interface::tauri::legado_commands::legado_destinos,
+            interface::tauri::legado_commands::legado_preservar,
+            interface::tauri::legado_commands::legado_descartar,
             interface::tauri::sync_v2_commands::sync_v2_estado,
             interface::tauri::sync_v2_commands::sync_v2_escuta_iniciar,
             interface::tauri::sync_v2_commands::sync_v2_escuta_parar,

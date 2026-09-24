@@ -12,6 +12,7 @@ pub mod collaboration_commands;
 pub mod conflitos_commands;
 pub mod entity_commands;
 pub mod knowledge_commands;
+pub mod legado_commands;
 pub mod manuscript_commands;
 pub mod planning_commands;
 pub mod sync_v2_commands;

@@ -138,6 +138,10 @@ pub const CATALOGO: &[(&str, Categoria)] = &[
     // A tabela não viaja: a pendência é sobre os bytes DESTE aparelho, e o
     // aparelho novo vai descobrir as próprias ao rodar o backfill.
     ("blob_migration_issues", BloqueiaBootstrap),
+    // A caixa de recuperação do legado (etapa H, H-R3): inventário local do que ainda precisa de
+    // decisão do escritor sobre o legado DESTE aparelho. Não é acervo e não é causalidade — o que
+    // o escritor decide preservar vira capítulo, e o capítulo, sim, viaja como conteúdo V2.
+    ("legacy_recovery_items", LocalNaoTransferida),
     // ── legado do Sync V1: schema histórico, sem leitor nem escritor (etapa G) ──
     // O V1 saiu do runtime. As tabelas ficam só para o upgrade de bancos antigos e para
     // auditoria: nada as lê, nada as escreve, e elas não tiram a virgindade de ninguém. Um

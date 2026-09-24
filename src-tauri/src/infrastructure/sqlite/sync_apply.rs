@@ -241,13 +241,27 @@ pub fn apply_efeito_de_resolucao(
         && cabeca
             .as_deref()
             .is_some_and(|cabeca| cabeca == envelope.base_rev || cabeca == par.outra);
-    let nunca_aqui = cabeca.is_none() && {
-        if !historia.knows(&envelope.base_rev) {
-            superar_pendente(tx, &agregado, &envelope.base_rev)?;
-            historia = aggregate_history(tx, &agregado)?;
-        }
-        historia.knows(&envelope.base_rev)
-    };
+    // R2 — "nunca materializou aqui" — só com PROVA POSITIVA (etapa H, H-R1).
+    //
+    // Ausência não é prova de "nunca existiu": sem cabeça e sem tombstone também é o que sobra de
+    // uma exclusão cujo tombstone foi coletado, e a resolução antiga ressuscitaria o agregado.
+    // Com o estado atual, "nunca materializou" se prova de dois jeitos, e só destes:
+    //
+    //   1. a história deste agregado está VAZIA e o evento-base exato está guardado como
+    //      pendente, nunca aplicado — a resolução o substitui no mesmo grupo atômico;
+    //   2. TODA revisão conhecida dele entrou por uma DECISÃO registrada aqui (conflito de nome de
+    //      tag, exclusão bloqueada, decisão de grupo), que guarda a revisão sem tocar o domínio —
+    //      e a base é uma delas.
+    //
+    // Uma exclusão cujo tombstone sumiu deixa na história revisões materializadas (a criação, a
+    // própria exclusão), que nenhuma decisão explica: a R2 fica proibida e o efeito cai no
+    // classificador comum, que espera ou abre concorrência. Nunca ressuscita em silêncio.
+    let nunca_aqui = cabeca.is_none()
+        && historia.deleted_rev.is_none()
+        && historia_so_de_decisoes(tx, &agregado)?
+        && (historia.knows(&envelope.base_rev) && !historia.known_revs.is_empty()
+            || historia.known_revs.is_empty()
+                && superar_pendente(tx, &agregado, &envelope.base_rev)?);
     if dois_pais || nunca_aqui {
         // A cabeça passa a ser a base do efeito: é dela que ele descende, e o caminho sequencial
         // confere o resto (preflight da exclusão, dependências, materialização).
@@ -262,6 +276,234 @@ pub fn apply_efeito_de_resolucao(
         return aplicar_como_sequencial(tx, envelope, &historia);
     }
     apply_remote_event(tx, envelope)
+}
+
+/// **H-R2 — `other_rev` não é autoridade** (etapa H).
+///
+/// O certificado prova que a decisão é coerente consigo mesma (`validar_grupo`); ele não prova que
+/// um efeito sobre um agregado que NÃO é participante tem o direito de unir duas cabeças. Sem isto,
+/// um efeito auxiliar qualquer — de um tipo plausível, com revisões válidas e um `other_rev`
+/// conhecido — usaria a regra de dois pais para sobrescrever uma edição concorrente num agregado
+/// que nada tem a ver com o conflito.
+///
+/// O conjunto legítimo é derivado AQUI, do que este aparelho sabe, e não do certificado: são os
+/// membros da ação original de cada participante — mesma origem, mesmo `mutation_id` do evento que
+/// produziu a revisão participante.
+///
+/// **E o que se prova é o PAR INTEIRO, não uma das pontas.** Conhecer uma revisão da ação não diz
+/// nada sobre a outra:
+///
+/// ```text
+/// ação legítima      X0 → X1
+/// o receptor andou   X1 → X2
+/// certificado diz    base = X1, other = X2
+/// ```
+///
+/// Com "base ∈ ação **ou** other ∈ ação", esse par passaria — e a R1 sobrescreveria o X2 do
+/// receptor, que a ação nunca viu. Por isso o par só vale quando é exatamente um destes:
+///
+/// ```text
+/// A  a aresta da própria ação          { membro.base_rev, membro.new_rev }
+/// B  as cabeças das DUAS ações         { membroDeA.new_rev, membroDeB.new_rev }
+/// ```
+///
+/// A cobre o auxiliar que saiu junto na mesma ação — a posição que a exclusão levou, o descendente
+/// da exclusão bloqueada. B cobre o agregado que as duas ações concorrentes tocaram, e é o caso do
+/// grupo × grupo e do decisão × decisão. Fora disso o `other_rev` é descartado e o efeito segue como
+/// evento comum: sequencial aplica, concorrente vira decisão explícita (o grupo inteiro), desconhecido
+/// espera. Um terceiro aparelho sem os eventos da ação também cai aqui — sem prova, sem junção
+/// especial; nunca sobrescrita. Isto não recusa o certificado: certificado inválido é o que
+/// `validar_grupo` recusa; aqui é falta de prova local.
+pub fn autorizar_efeitos_auxiliares(
+    tx: &Transaction<'_>,
+    membros: &[EventEnvelope],
+    mut pares: Vec<sync_codec::resolucao::ParDoEfeito>,
+) -> DatabaseCommandResult<Vec<sync_codec::resolucao::ParDoEfeito>> {
+    let Some(primeiro) = membros.first() else {
+        return Ok(pares);
+    };
+    let certificado = sync_codec::resolucao::Certificado::ler(&primeiro.payload)
+        .map_err(DatabaseCommandError::storage)?;
+    let acao_de_a = membros_da_acao_de(tx, &certificado.participant_a)?;
+    let acao_de_b = membros_da_acao_de(tx, &certificado.participant_b)?;
+
+    for (membro, par) in membros.iter().skip(1).zip(pares.iter_mut()) {
+        if par.de_participante || par.outra.is_empty() {
+            continue;
+        }
+        let par_do_efeito = ParDeRevisoes::novo(&membro.base_rev, &par.outra);
+        let do_agregado = |acao: &'_ [MembroDaAcao]| -> Vec<MembroDaAcao> {
+            acao.iter()
+                .filter(|m| {
+                    m.aggregate_type == membro.aggregate_type
+                        && m.aggregate_id == membro.aggregate_id
+                })
+                .cloned()
+                .collect()
+        };
+        let de_a = do_agregado(&acao_de_a);
+        let de_b = do_agregado(&acao_de_b);
+
+        // A — a aresta que a própria ação produziu neste agregado.
+        let aresta_da_acao = de_a
+            .iter()
+            .chain(de_b.iter())
+            .any(|m| ParDeRevisoes::novo(&m.base_rev, &m.new_rev) == par_do_efeito);
+        // B — as cabeças que as duas ações participantes produziram neste agregado.
+        let cabecas_das_duas = de_a.iter().any(|ma| {
+            de_b.iter()
+                .any(|mb| ParDeRevisoes::novo(&ma.new_rev, &mb.new_rev) == par_do_efeito)
+        });
+
+        if !(aresta_da_acao || cabecas_das_duas) {
+            par.outra.clear();
+        }
+    }
+    Ok(pares)
+}
+
+/// Um par de revisões sem lado: `{base, other}` do efeito é o mesmo conjunto que `{X0, X1}` da ação,
+/// venha em que ordem vier. Par com as duas pontas iguais nunca casa com nada — e não deveria.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParDeRevisoes(String, String);
+
+impl ParDeRevisoes {
+    fn novo(uma: &str, outra: &str) -> Self {
+        if uma <= outra {
+            Self(uma.to_string(), outra.to_string())
+        } else {
+            Self(outra.to_string(), uma.to_string())
+        }
+    }
+}
+
+/// Um membro da ação original, com a aresta que ele produziu.
+///
+/// `base_rev` e `new_rev` são o que permite provar o par inteiro; sem eles, sobra "conheço uma
+/// dessas revisões", que é exatamente a prova fraca que a revisão do PR #73 derrubou.
+#[derive(Debug, Clone)]
+struct MembroDaAcao {
+    aggregate_type: String,
+    aggregate_id: String,
+    base_rev: String,
+    new_rev: String,
+    #[allow(dead_code)]
+    operation: String,
+}
+
+/// Os membros da ação que produziu a revisão de um participante, com a aresta de cada um.
+///
+/// **A âncora é o `event_id`, não a revisão** (etapa H, H29). `new_rev` é determinístico: a mesma
+/// base com o mesmo payload e a mesma operação produz a mesma revisão, e `sync_events` não tem
+/// `UNIQUE` por revisão. Dois envelopes diferentes podem, portanto, carregar a mesma revisão R:
+///
+/// ```text
+/// E1  R dentro da mutação G1, que traz o auxiliar X
+/// E2  R dentro da mutação G2, que NÃO traz X
+/// ```
+///
+/// Procurar por `new_rev = R` acharia qualquer um dos dois, e o azar autorizaria X por causa de uma
+/// ação que nada tem a ver com a revisão que este aparelho realmente aplicou. A cadeia correta sai
+/// da história local:
+///
+/// ```text
+/// sync_revision_history.event_id  →  sync_events.event_id  →  device_id + mutation_id  →  membros
+/// ```
+///
+/// História sem `event_id` (bancos antigos), envelope que não está aqui, ou revisão que este
+/// aparelho nunca registrou: **não há prova**, e sem prova não há junção especial — o efeito cai no
+/// classificador causal comum.
+fn membros_da_acao_de(
+    tx: &Transaction<'_>,
+    participante: &sync_codec::resolucao::ParticipanteCanonico,
+) -> DatabaseCommandResult<Vec<MembroDaAcao>> {
+    let erro = |error: rusqlite::Error| DatabaseCommandError::storage(error.to_string());
+    let evento_da_historia: Option<String> = tx
+        .query_row(
+            "SELECT event_id FROM sync_revision_history
+              WHERE aggregate_type = ?1 AND aggregate_id = ?2 AND rev = ?3",
+            rusqlite::params![
+                &participante.aggregate_type,
+                &participante.aggregate_id,
+                &participante.revision
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(erro)?;
+    let Some(event_id) = evento_da_historia.filter(|id| !id.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let evento: Option<(String, String, String, String)> = tx
+        .query_row(
+            "SELECT device_id, mutation_id, base_rev, operation FROM sync_events
+              WHERE event_id = ?1",
+            [&event_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()
+        .map_err(erro)?;
+    let Some((origem, mutacao, base_do_participante, operacao)) = evento else {
+        return Ok(Vec::new());
+    };
+    if mutacao.is_empty() {
+        return Ok(vec![MembroDaAcao {
+            aggregate_type: participante.aggregate_type.clone(),
+            aggregate_id: participante.aggregate_id.clone(),
+            base_rev: base_do_participante,
+            new_rev: participante.revision.clone(),
+            operation: operacao,
+        }]);
+    }
+    let mut consulta = tx
+        .prepare(
+            "SELECT aggregate_type, aggregate_id, base_rev, new_rev, operation FROM sync_events
+              WHERE device_id = ?1 AND mutation_id = ?2",
+        )
+        .map_err(erro)?;
+    let linhas = consulta
+        .query_map([&origem, &mutacao], |row| {
+            Ok(MembroDaAcao {
+                aggregate_type: row.get(0)?,
+                aggregate_id: row.get(1)?,
+                base_rev: row.get(2)?,
+                new_rev: row.get(3)?,
+                operation: row.get(4)?,
+            })
+        })
+        .map_err(erro)?;
+    linhas.collect::<Result<_, _>>().map_err(erro)
+}
+
+/// **Toda revisão conhecida deste agregado entrou por uma decisão, e nenhuma materializou?**
+///
+/// Uma decisão registrada (conflito de nome de tag, exclusão bloqueada, decisão de grupo) põe a
+/// revisão na história e marca o evento aplicado **sem tocar o domínio**. A prova liga cada revisão
+/// ao evento que a trouxe e esse evento a uma divergência daqui: ou é o evento remoto dela, ou é
+/// membro do MESMO grupo (mesma origem, mesmo `mutation_id`) da âncora dela. História vazia também
+/// responde sim — o outro ramo da R2 exige, então, o pendente exato.
+fn historia_so_de_decisoes(
+    tx: &Transaction<'_>,
+    agregado: &AggregateRef,
+) -> DatabaseCommandResult<bool> {
+    let sem_prova: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM sync_revision_history h
+              WHERE h.aggregate_type = ?1 AND h.aggregate_id = ?2
+                AND NOT EXISTS (
+                    SELECT 1 FROM sync_divergences d
+                     WHERE d.remote_event_id = h.event_id
+                        OR (d.mutation_id <> '' AND EXISTS (
+                              SELECT 1 FROM sync_events e
+                                JOIN sync_events ancora ON ancora.event_id = d.remote_event_id
+                               WHERE e.event_id = h.event_id
+                                 AND e.mutation_id = d.mutation_id
+                                 AND e.device_id = ancora.device_id)))",
+            rusqlite::params![&agregado.aggregate_type, &agregado.aggregate_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Ok(sem_prova == 0)
 }
 
 /// O evento pendente (guardado, não aplicado) deste agregado que produziu `rev` passa a ser
@@ -282,7 +524,7 @@ fn superar_pendente(
     tx: &Transaction<'_>,
     agregado: &AggregateRef,
     rev: &str,
-) -> DatabaseCommandResult<()> {
+) -> DatabaseCommandResult<bool> {
     let pendente = tx
         .query_row(
             &format!(
@@ -296,11 +538,12 @@ fn superar_pendente(
         )
         .optional()
         .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    if let Some(pendente) = pendente {
-        registrar_revisao(tx, &pendente)?;
-        marcar_aplicado(tx, &pendente.event_id)?;
-    }
-    Ok(())
+    let Some(pendente) = pendente else {
+        return Ok(false);
+    };
+    registrar_revisao(tx, &pendente)?;
+    marcar_aplicado(tx, &pendente.event_id)?;
+    Ok(true)
 }
 
 /// Por que a exclusão remota não pode rodar agora, ou `None`.
@@ -620,9 +863,10 @@ fn aplicar_com_estado_causal(
                 rusqlite::params![tipo, id, &envelope.new_rev],
             )
             .and_then(|_| {
-                tx.execute(
-                    "DELETE FROM sync_tombstones WHERE aggregate_type = ?1 AND aggregate_id = ?2",
-                    [tipo, id],
+                sync_repository::remover_tombstone(
+                    tx,
+                    &AggregateRef::new(tipo, id),
+                    sync_repository::RemocaoDeTombstone::SucessorCausalAplicado,
                 )
             }),
         Operation::Delete => tx

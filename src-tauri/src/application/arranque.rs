@@ -83,6 +83,11 @@ pub fn preparar_acervo(
         }
     };
 
+    // **A caixa de recuperação do legado** (etapa H, H-R3): depois da conversão de mídia, para o
+    // que entra já estar no contrato do ADR 0010, e ainda antes de `Ready` — depois daqui,
+    // `sync_conflicts` não é lida por ninguém (G11). É idempotente: item decidido não volta.
+    crate::application::legado_recuperacao::importar(database)?;
+
     estado.definir(FaseDoBanco::Adopting);
 
     // **A época do protocolo 1** (etapa E): passado pré-Hello gira a identidade, arquiva e refaz a

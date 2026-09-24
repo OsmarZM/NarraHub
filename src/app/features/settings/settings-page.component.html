@@ -143,6 +143,16 @@
             <button type="button" class="secondary-button" (click)="dismissEpochNotice()">Entendi</button>
           </div>
         }
+        @if (legacyRecovery.pending() > 0) {
+          <div class="legacy-recovery-notice" role="status" data-testid="aviso-versoes-antigas">
+            <strong>
+              @if (legacyRecovery.pending() === 1) { Este aparelho guarda 1 versão antiga de capítulo }
+              @else { Este aparelho guarda {{ legacyRecovery.pending() }} versões antigas de capítulos }
+            </strong>
+            <span>Elas vieram da sincronização anterior, ainda não foram preservadas e só existem aqui.</span>
+            <a class="primary-button" routerLink="/settings/recuperacao-sync-antigo" data-testid="link-versoes-antigas">Ver versões antigas</a>
+          </div>
+        }
         <a class="sync-conflicts-link" routerLink="/settings/conflitos" data-testid="link-conflitos"
            [class.attention]="conflicts.openCount() > 0">
           @if (conflicts.openCount() === 1) { 1 conflito precisa de atenção }

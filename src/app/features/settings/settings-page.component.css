@@ -201,3 +201,18 @@ html.nh-mobile app-settings-page .surface-card p { font-size: 14px; line-height:
   overflow-wrap: anywhere;
 }
 .sync-conflicts-link.attention { color: var(--nh-danger); font-weight: 600; }
+
+/* Etapa H (H-R3): o aviso das versões antigas. Enquanto houver pendência ele volta a cada
+   abertura — não existe "não mostrar mais", porque o que está em jogo é texto que só existe aqui. */
+app-settings-page .legacy-recovery-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--nh-danger);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+app-settings-page .legacy-recovery-notice span { color: var(--muted); }
+app-settings-page .legacy-recovery-notice a { align-self: flex-start; text-decoration: none; }

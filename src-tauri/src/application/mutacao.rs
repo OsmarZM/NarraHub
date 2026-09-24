@@ -696,15 +696,12 @@ impl<'t, 'c> Mutacao<'t, 'c> {
                         ],
                     )
                     .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-                self.tx
-                    .execute(
-                        "DELETE FROM sync_tombstones WHERE aggregate_type = ?1 AND aggregate_id = ?2",
-                        [
-                            &pendente.agregado.aggregate_type,
-                            &pendente.agregado.aggregate_id,
-                        ],
-                    )
-                    .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+                crate::infrastructure::sqlite::sync_repository::remover_tombstone(
+                    self.tx,
+                    &pendente.agregado,
+                    crate::infrastructure::sqlite::sync_repository::RemocaoDeTombstone::EfeitoDeResolucao,
+                )
+                .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
             }
             let envelope = append_event_in_transaction(
                 self.tx,

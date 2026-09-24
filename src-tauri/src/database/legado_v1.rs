@@ -16,8 +16,10 @@
 //! ```
 //!
 //! Nenhuma das três é lida ou escrita por caminho de produção: nem sessão, nem bootstrap, nem
-//! panorama, nem resolução de conflito. O único acesso restante é o upgrade histórico — as
-//! migrations e a conversão de mídia no arranque, antes de o banco ficar `Ready`.
+//! panorama, nem resolução de conflito. O único acesso restante é o upgrade histórico, todo ele
+//! antes de o banco ficar `Ready`: as migrations, a conversão de mídia do arranque e — desde a
+//! etapa H (H-R3) — o importador que copia os conflitos V1 ainda abertos para
+//! `legacy_recovery_items`, sem alterar uma linha sequer da origem.
 //!
 //! **Não há `DROP`**: remover as tabelas exigiria uma migration nova só para apagar bytes
 //! históricos, e `sync_conflicts` é a única cópia da versão perdedora de um conflito V1. Os
@@ -139,6 +141,11 @@ mod tests {
     /// consulta. Só as migrations escrevem SQL sobre elas.
     const QUEM_PODE_CITAR: &[(&str, bool, &str)] = &[
         ("database/migrations.rs", true, "migrations históricas"),
+        (
+            "application/legado_recuperacao.rs",
+            true,
+            "o importador da caixa de recuperação (H-R3): lê os conflitos V1 abertos no arranque, antes de `Ready`",
+        ),
         ("database/legado_v1.rs", false, "este catálogo"),
         (
             "infrastructure/sqlite/blob_surfaces.rs",

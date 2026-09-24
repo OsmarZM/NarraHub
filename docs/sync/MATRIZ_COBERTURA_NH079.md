@@ -784,6 +784,15 @@ estável*; não bloqueiam a G e não reabrem a F — ver `TASKS.md`):
 | --- | --- | --- |
 | H-R1 | resolução antiga chegando depois de o GC coletar o tombstone participante: sem cabeça local, a R2 pode tratar como primeira materialização | gate que prove que não há ressurreição nem sobrescrita silenciosa |
 | H-R2 | efeitos irmãos/meta de um grupo `resolution`: `results[]` garante coerência estrutural, mas a regra de par desses efeitos não é amarrada à chave | restringir o que cada `(kind, choice)` pode tocar, ou provar que um certificado válido não autoriza efeitos semanticamente arbitrários |
+| H-R3 | conflito V1 legado: `sync_conflicts.remote_value` guarda uma alternativa (B) que não está no conteúdo materializado (A) e não viaja no bootstrap V2 — se o último aparelho com o legado sair de uso, B some sem decisão do usuário | banco legado com conflito A/B → upgrade → bootstrap → saída do último aparelho com o legado resulta em **B preservado em artefato/histórico transferível** ou em **aviso explícito aceito pelo usuário**; nunca perda silenciosa |
+
+**H-R3 em detalhe.** Registrado na abertura da etapa H, depois de a G (§5.2) tirar a trava que
+recusava o bootstrap com conflito V1 aberto. Status: **hardening, obrigatório antes da release
+estável**; não reabre a G, não bloqueia o desenvolvimento da H, bloqueia a release estável enquanto
+aberto. Restrições: **não** reintroduzir o Sync V1; **não** converter automaticamente
+`sync_conflicts` em `sync_divergences` V2; **não** inventar payload canônico completo a partir de
+um conflito por campo; preservar a compatibilidade de upgrade. A etapa H trata H-R1, H-R2 e H-R3
+em conjunto.
 
 ## 5.2 Remoção do Sync V1 (etapa G)
 
@@ -852,6 +861,178 @@ mais doa o acervo. A linha continua no banco do doador, intacta; ela só não vi
 | ADRs, levantamentos, plano de evolução | `docs/ADR/0008`, `0009`, `0010`, `docs/ETAPA_14_LEVANTAMENTO.md`, `docs/ARCHITECTURE_EVOLUTION_PLAN.md`, `docs/sync/*` | documentação histórica |
 
 Nenhuma ocorrência em caminho de produção que leia, escreva ou chame o V1.
+
+## 5.3 Hardening final (etapa H)
+
+A–G provaram que a sincronização funciona. A H prova o que os casos extremos **não** conseguem, com
+uma prioridade acima de todas: **perda silenciosa é proibida**. Conflito explícito a mais, espera e
+fail closed são respostas aceitáveis; convergência que engole edição, não.
+
+### H-R1 — ausência não é prova de "nunca existiu"
+
+O tombstone é o que separa "foi apagado" de "nunca existiu" (`AggregateHistory::deleted_rev`). Se um
+GC futuro coletasse o tombstone e deixasse a história, a regra R2 leria o agregado como nunca
+materializado e uma resolução antiga o ressuscitaria. A R2 agora exige **prova positiva**, e só
+estas duas valem:
+
+```text
+1  história VAZIA e o evento-base exato guardado como pendente, nunca aplicado
+   → a resolução o substitui no mesmo grupo atômico
+
+2  TODA revisão conhecida entrou por uma DECISÃO registrada aqui
+   (conflito de nome de tag, exclusão bloqueada, decisão de grupo)
+   → a revisão está na história e o domínio nunca foi tocado
+```
+
+A prova do caso 2 liga cada revisão ao evento que a trouxe, e esse evento a uma divergência daqui:
+ou é o `remote_event_id` dela, ou é membro do mesmo grupo (mesma origem, mesmo `mutation_id`) da
+âncora. Uma exclusão cujo tombstone sumiu deixa revisões materializadas que nenhuma decisão explica
+— R2 proibida, classificador comum, espera ou concorrência.
+
+**A barreira contra o GC futuro:** toda remoção de `sync_tombstones` passa por
+`sync_repository::remover_tombstone(_, _, RemocaoDeTombstone)`, com três motivos e nenhum de coleta:
+`SucessorCausalAplicado`, `EfeitoDeResolucao`, `RestauracaoDecidida`. O GC físico **não foi
+implementado** nesta etapa: `sync_gc::tombstones_coletaveis` continua sendo só a prova de
+coletabilidade, sem chamador de produção. Quem o implementar terá de acrescentar a variante, de
+propósito, e passar por H1–H6.
+
+### H-R2 — `other_rev` não é autoridade
+
+`validar_grupo` prova que o certificado é coerente **consigo mesmo**. Ele não prova que um efeito
+sobre um agregado que não é participante tem o direito de unir duas cabeças. Sem isso, um efeito
+auxiliar qualquer — tipo plausível, revisões válidas, `other_rev` conhecido — usaria a regra de dois
+pais para sobrescrever uma edição concorrente num agregado alheio ao conflito.
+
+O conjunto legítimo é derivado **no receptor**, do que ele sabe, e não do certificado: são os
+membros da ação original de cada participante — mesma origem, mesmo `mutation_id` do evento que
+produziu a revisão participante. Uma regra só cobre os quatro casos:
+
+```text
+grupo × grupo             os membros reais das duas ações
+upsert × delete           a posição do item, que saiu na mesma ação da exclusão
+parent_deletion_blocked   os efeitos da exclusão bloqueada (impactos_da_exclusao)
+decisão × decisão         os efeitos das duas decisões comparadas (cada uma é um grupo)
+```
+
+E o que se prova é o **par inteiro**, não uma das pontas. Conhecer uma revisão da ação não diz nada
+sobre a outra:
+
+```text
+ação legítima      X0 → X1
+o receptor andou   X1 → X2
+certificado diz    base = X1, other = X2
+```
+
+Com "base ∈ ação **ou** other ∈ ação", esse par passaria — e a R1 sobrescreveria o X2 do receptor,
+que a ação nunca viu (achado na revisão do PR #73). O par só vale quando é exatamente um destes:
+
+```text
+A  a aresta da própria ação       { membro.baseRev, membro.newRev }
+B  as cabeças das DUAS ações      { membroDeA.newRev, membroDeB.newRev }
+```
+
+A cobre o auxiliar que saiu junto na mesma ação — a posição que a exclusão levou, o descendente da
+exclusão bloqueada. B cobre o agregado que as duas ações concorrentes tocaram: grupo × grupo e
+decisão × decisão. Para isso, `membros_da_acao_de` carrega de cada membro `aggregateType`,
+`aggregateId`, `baseRev`, `newRev` e `operation` — a aresta, não só a revisão final.
+
+**E a ação é identificada pelo `event_id`, não pela revisão.** `new_rev` é determinístico e
+`sync_events` não tem `UNIQUE` por revisão: a mesma revisão R pode estar em dois envelopes, de
+mutações diferentes — uma com o auxiliar X, outra sem. Procurar por `new_rev = R` autorizaria X por
+sorte. A cadeia é:
+
+```text
+sync_revision_history.event_id  →  sync_events.event_id  →  device_id + mutation_id  →  membros
+```
+
+História sem `event_id`, envelope ausente aqui, ou revisão que este aparelho nunca registrou: **sem
+prova**, e sem prova não há junção especial.
+
+Fora disso, o `other_rev` é descartado e o efeito segue como evento comum:
+
+```text
+Sequential      → aplica
+AlreadyPresent  → idempotente
+Concurrent      → nova divergência (o grupo inteiro vira decisão)
+Unknown         → espera
+```
+
+Um terceiro aparelho sem os eventos da ação cai aqui: sem prova, sem junção especial. **Isto não
+recusa o certificado** — certificado inválido é o que `validar_grupo` recusa; aqui é falta de prova
+local, e a diferença importa justamente para o terceiro aparelho. O formato do certificado não
+mudou: `FORMATO_CANONICO_ATUAL` continua 2 e o protocolo continua 1.
+
+### H-R3 — a caixa de recuperação do legado (migration 29)
+
+`sync_conflicts` guarda uma alternativa (`remote_value`) que não está no conteúdo materializado e
+não viaja no bootstrap. A migration 29 cria `legacy_recovery_items`, **local e não causal**, com o
+inventário do que ainda precisa de decisão:
+
+```text
+migrations
+   ↓
+conversão de mídia do legado (ADR 0010)    ← a versão antiga ganha as referências de blob
+   ↓
+importar()                                  ← pré-`Ready`, idempotente por source_conflict_id
+   ↓
+Ready                                       ← depois daqui ninguém lê sync_conflicts (G11)
+```
+
+O import copia só os conflitos ainda abertos e **nunca altera** `sync_conflicts`; `ON CONFLICT DO
+NOTHING`, nunca `REPLACE`, então um item preservado ou descartado não volta a pendente. Em
+Configurações, o aviso aparece enquanto houver pendência e **não pode ser silenciado**. Na tela
+`/settings/recuperacao-sync-antigo` ("Versões antigas para recuperar" — o escritor não precisa saber
+o que era "Sync V1"), cada item tem duas saídas e nenhuma automática:
+
+| ação | o que acontece |
+| --- | --- |
+| preservar | vira um capítulo **novo** (id novo, livro confirmado pelo escritor) por `Mutacao` normal — revisão, evento, outbox, Sync V2. Criar o capítulo e marcar `preserved` é a mesma transação: ou tudo, ou nada |
+| descartar | sai da caixa, com confirmação explícita na tela; a linha histórica do V1 continua intacta |
+
+Substituir o capítulo atual **não** é oferecido: não existe causalidade V2 para uma decisão
+histórica, e inventar uma seria o oposto do que as etapas F e G construíram.
+
+### Gates
+
+| gate | prova |
+| --- | --- |
+| H1 · H2 | exclusão + tombstone coletado + resolução antiga: sem ressurreição, sem sobrescrita |
+| H3 | o caso legítimo da R2 (pendente nunca materializado) continua funcionando |
+| H4 | sem cabeça e sem tombstone, mas com história antiga: R2 proibida |
+| H5 | restauração decidida continua removendo o tombstone |
+| H6 | nenhum caminho de produção coleta tombstone; os motivos são exatamente três |
+| H7 | efeito sobre participante mantém a junção de dois pais |
+| H8 · H9 | efeito auxiliar alheio não sobrescreve, e o conflito fica explícito |
+| H10 | auxiliar ligado à ação original (a posição do item) mantém a junção |
+| H11 | terceiro aparelho sem índice local não perde edição |
+| H12 · H13 · H14 | mescla de tags, exclusão bloqueada e resolução de grupo não alcançam agregado de fora |
+| H15 | decisão concorrente continua resolvível recursivamente |
+| H28 | par auxiliar fora da ação (`{X1, X2}`, com X2 produzido depois pelo receptor) não sobrescreve: a posição nova fica, e o conflito vira pergunta |
+| H29 | duas ações produzindo a MESMA revisão: a ação é a que a história local aponta pelo `event_id`, e o auxiliar da outra não ganha junção (com a prova positiva inversa) |
+| H16 | migration 29 de 1→29 e de 28→29, `integrity_check` e `foreign_key_check` limpos |
+| H17 | o import traz a versão antiga já convertida e preserva a linha de origem |
+| H18 | dez arranques, uma pendência; decisão não volta a pendente |
+| H19 | conflito V1 já resolvido não vira pendência |
+| H20 | o aviso aparece e reaparece enquanto houver pendência (E2E) |
+| H21 | preservar cria capítulo novo que chega ao outro aparelho pelo Sync V2 |
+| H22 | queda em qualquer ponto da preservação: nem capítulo órfão, nem status falso |
+| H23 | preservar duas vezes não duplica |
+| H24 | descartar exige confirmação (E2E) e não toca no legado V1 |
+| H25 | backup e restauração preservam a caixa com os estados |
+| H26 | banco novo ou sem legado não ganha pendência nenhuma |
+| H27 | depois de `Ready`, nada lê nem escreve `sync_conflicts` (autorizador do SQLite) |
+
+Além deles: a **matriz determinística dos estados perigosos** (cabeça ausente/escolhida/outra/
+terceira, tombstone presente/ausente/coletado, história vazia/antiga, efeito com e sem par), as
+**permutações de entrega** (tudo de uma vez, decisão repetida, decisão antes dos participantes) e
+duas regressões — blob ausente segura o grupo inteiro (D12), e o legado V1 não bloqueia o bootstrap
+enquanto a divergência V2 aberta continua bloqueando.
+
+### O que a etapa H não fez, de propósito
+
+GC de tombstones, reintrodução do Sync V1, conversão automática de `sync_conflicts` em
+`sync_divergences`, resolução automática do legado, qualquer uso de relógio para causalidade,
+mudança no Noise/Hello/protocolo e aumento do formato canônico.
 
 ## 6. Legado e conversões
 

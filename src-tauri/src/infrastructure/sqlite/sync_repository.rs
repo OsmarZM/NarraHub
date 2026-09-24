@@ -416,6 +416,40 @@ pub fn append_event_in_transaction(
 }
 
 /// A história local de um agregado, para a classificação da seção 11.
+/// Por que um tombstone sai (etapa H, H-R1).
+///
+/// O tombstone é o que separa "foi apagado" de "nunca existiu" (`AggregateHistory::deleted_rev`).
+/// Apagá-lo sem motivo causal transforma uma exclusão em ausência, e ausência não prova nada: uma
+/// resolução antiga chegando depois poderia ressuscitar o agregado. Por isso **toda** remoção de
+/// `sync_tombstones` passa por [`remover_tombstone`], com um destes motivos — e um gate de
+/// arquitetura recusa `DELETE FROM sync_tombstones` em qualquer outro lugar do código de produção.
+///
+/// Não há variante de coleta: o GC físico de tombstones não existe (`sync_gc::tombstones_coletaveis`
+/// é só a prova de coletabilidade). Quem o implementar terá de acrescentar a variante aqui, de
+/// propósito, e passar pelos gates H1–H6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemocaoDeTombstone {
+    /// Um upsert sequencial que descende da exclusão chegou e foi aplicado: a cabeça nova existe.
+    SucessorCausalAplicado,
+    /// Um efeito de resolução (etapa F) parte de uma revisão participante e vira a cabeça nova.
+    EfeitoDeResolucao,
+    /// O escritor decidiu restaurar ("manter o meu" contra uma exclusão), e a revisão restaurada
+    /// passa a ser a corrente.
+    RestauracaoDecidida,
+}
+
+/// Remove o tombstone de um agregado. O único ponto do código de produção que faz isso.
+pub fn remover_tombstone(
+    connection: &Connection,
+    agregado: &AggregateRef,
+    _motivo: RemocaoDeTombstone,
+) -> rusqlite::Result<usize> {
+    connection.execute(
+        "DELETE FROM sync_tombstones WHERE aggregate_type = ?1 AND aggregate_id = ?2",
+        [&agregado.aggregate_type, &agregado.aggregate_id],
+    )
+}
+
 pub fn aggregate_history(
     connection: &Connection,
     aggregate: &AggregateRef,
