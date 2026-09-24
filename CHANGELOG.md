@@ -2,6 +2,17 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.3 — 2026-09-24 (pré-release)
+
+Pré-release só Android, para a qualificação física do Sync V2 (Etapa I). Instala por cima da 0.10.0-beta.2.
+
+### Sincronização V2
+
+- Sincronização por eventos assinados entre aparelhos pareados, com semeadura inicial de aparelho novo,
+  encaminhamento por um aparelho intermediário e conflitos que nunca apagam uma versão.
+- Resolução de conflitos propagada como decisão; decisões concorrentes viram novo conflito.
+- O Sync V1 saiu do runtime; conflitos antigos ficam numa caixa de versões antigas para recuperação.
+
 ## 0.10.0-beta.2 — 2026-09-15 (pré-release)
 
 Pré-release só Android, para teste. Instala por cima da 0.10.0-beta.1 e pode ser recebida pela atualização do
