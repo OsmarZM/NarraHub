@@ -11,6 +11,7 @@ import { SettingsStore } from './state/settings.store';
 import { ConflictsStore } from '../conflicts/state/conflicts.store';
 import { LegacyRecoveryStore } from '../legacy-recovery/state/legacy-recovery.store';
 import { RouterLink } from '@angular/router';
+import { SyncSessionFeedbackService } from '../../application/sync-session-feedback.service';
 
 export type SettingsSection = 'general' | 'ai' | 'sync' | 'share' | 'updates';
 
@@ -28,6 +29,7 @@ export class SettingsPageComponent implements OnInit {
   readonly store = inject(SettingsStore);
   /** Etapa F: o contador de conflitos e o aviso da atualização da sincronização. */
   readonly conflicts = inject(ConflictsStore);
+  private readonly syncFeedback = inject(SyncSessionFeedbackService);
   /** Etapa H (H-R3): as versões antigas que só existem neste aparelho. */
   readonly legacyRecovery = inject(LegacyRecoveryStore);
   readonly epochNoticeDismissed = signal(false);
@@ -286,25 +288,13 @@ export class SettingsPageComponent implements OnInit {
   async pairSyncV2(): Promise<void> {
     const result = await this.store.pairSyncV2(this.v2Address, this.v2Pin, this.deviceName);
     if (!result.ok) { if (result.error) this.showError(result.error); return; }
-    if (result.result) this.showInfo(this.describeSyncV2(result.result));
-    void this.conflicts.refreshOpenCount();
+    if (result.result) await this.syncFeedback.applied(result.result);
   }
 
   async syncNowV2(): Promise<void> {
     const result = await this.store.syncNowV2(this.v2Address, this.deviceName);
     if (!result.ok) { if (result.error) this.showError(result.error); void this.conflicts.refreshOpenCount(); return; }
-    if (result.result) this.showInfo(this.describeSyncV2(result.result));
-    void this.conflicts.refreshOpenCount();
-  }
-
-  private describeSyncV2(r: import('../../core/native/sync-v2.service').SyncSessionResult): string {
-    const papel = r.papel === 'receptor' ? 'Acervo recebido de' : r.papel === 'doador' ? 'Acervo enviado para' : 'Sincronizado com';
-    const contar = (n: number, um: string, varios: string) => `${n} ${n === 1 ? um : varios}`;
-    return `${papel} ${r.parceiro.nome}: `
-      + `${contar(r.eventosAplicados, 'alteração recebida', 'alterações recebidas')}, `
-      + `${contar(r.eventosEnviados, 'alteração enviada', 'alterações enviadas')}, `
-      + `${contar(r.blobsRecebidos, 'imagem recebida', 'imagens recebidas')}.`
-      + (r.eventosPendentes ? ` ${contar(r.eventosPendentes, 'alteração aguarda', 'alterações aguardam')} a próxima sessão.` : '');
+    if (result.result) await this.syncFeedback.applied(result.result);
   }
 
   // ── Compartilhamento e colaboração ───────────────────────
