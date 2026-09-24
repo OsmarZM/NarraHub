@@ -2,6 +2,16 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.5 — 2026-09-24 (pré-release)
+
+Pré-release só Android, correções achadas na qualificação física do Sync V2. Instala por cima da 0.10.0-beta.4.
+
+- **Conflitos legíveis**: a tela rola, o texto aparece lado a lado no computador e, no celular, só as linhas
+  que mudaram, uma seguida da outra. Sem identificadores internos à mostra. "Copiar texto" e "… e abrir para
+  editar": escolha a versão mais próxima e ajuste no editor.
+- **Pareamento mais claro**: a tela avisa quando o código venceu, e um código vencido ou errado mostra o que
+  fazer em vez de uma mensagem técnica.
+
 ## 0.10.0-beta.4 — 2026-09-24 (pré-release)
 
 Pré-release só Android, correção achada na qualificação física do Sync V2. Instala por cima da 0.10.0-beta.3.

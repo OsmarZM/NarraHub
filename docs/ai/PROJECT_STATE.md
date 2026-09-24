@@ -9,7 +9,7 @@ Atualizado em: 2026-09-09
 
 | Item | Valor |
 | --- | --- |
-| Versão corrente | **0.10.0-beta.4** |
+| Versão corrente | **0.10.0-beta.5** |
 | Última tag publicada | `app-v0.9.2`, em 2026-09-01 |
 | `origin/main` | 0.9.2 — canônica e **default** do repositório |
 | Manifests, README e CHANGELOG | 0.9.2, sob teste no CI |
