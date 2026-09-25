@@ -55,6 +55,8 @@ export class SettingsStore {
   readonly updateChannel = signal<'desktop' | 'android'>('desktop');
 
   // Sync V2: o único protocolo de sincronização (o V1 saiu na etapa G).
+  /** Conteúdo do QR da escuta aberta (NH-084): opaco, só para virar imagem; `null` sem código válido. */
+  readonly syncV2Qr = signal<string | null>(null);
   readonly syncV2State = signal<SyncV2ListenState>({
     escutando: false,
     porta: null,
@@ -352,25 +354,45 @@ export class SettingsStore {
 
   async refreshSyncStatus(): Promise<void> {
     const v2 = await this.syncV2.listenState();
-    if (v2) this.syncV2State.set(v2);
+    if (v2) await this.aplicarEstadoDaEscuta(v2);
   }
 
   async startSyncV2(deviceName: string): Promise<SettingsActionResult> {
     return this.runSyncV2(async () => {
-      this.syncV2State.set(await this.syncV2.startListening(this.syncV2Port, deviceName));
+      await this.aplicarEstadoDaEscuta(await this.syncV2.startListening(this.syncV2Port, deviceName));
     });
   }
 
   async stopSyncV2(): Promise<SettingsActionResult> {
     return this.runSyncV2(async () => {
-      this.syncV2State.set(await this.syncV2.stopListening());
+      await this.aplicarEstadoDaEscuta(await this.syncV2.stopListening());
     });
   }
 
   async newSyncV2Pin(): Promise<SettingsActionResult> {
     return this.runSyncV2(async () => {
-      this.syncV2State.set(await this.syncV2.newPin());
+      await this.aplicarEstadoDaEscuta(await this.syncV2.newPin());
     });
+  }
+
+  /** Pareia pelo texto cru lido no QR. Nada é interpretado aqui: o Rust valida e recusa. */
+  async pairSyncV2ByQr(conteudo: string, deviceName: string): Promise<{ ok: boolean; result?: SyncSessionResult; error?: string; endereco?: string }> {
+    let endereco = '';
+    const resultado = await this.sessionSyncV2(async () => {
+      const pareado = await this.syncV2.pairByQr(conteudo, deviceName);
+      endereco = pareado.endereco;
+      return pareado.resultado;
+    });
+    return resultado.ok ? { ...resultado, endereco } : resultado;
+  }
+
+  /**
+   * O estado da escuta e o QR andam juntos: o QR só existe enquanto há código válido, e quem diz se
+   * há é a escuta (NH-084). Falha ao gerar o QR não derruba nada — o código digitado continua.
+   */
+  private async aplicarEstadoDaEscuta(estado: SyncV2ListenState): Promise<void> {
+    this.syncV2State.set(estado);
+    this.syncV2Qr.set(estado.escutando && estado.pin ? await this.syncV2.qrContent().catch(() => null) : null);
   }
 
   async pairSyncV2(address: string, pin: string, deviceName: string): Promise<{ ok: boolean; result?: SyncSessionResult; error?: string }> {
@@ -410,7 +432,7 @@ export class SettingsStore {
     } finally {
       this.syncV2Busy.set(false);
       const v2 = await this.syncV2.listenState().catch(() => null);
-      if (v2) this.syncV2State.set(v2);
+      if (v2) await this.aplicarEstadoDaEscuta(v2);
     }
   }
 

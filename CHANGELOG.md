@@ -2,6 +2,34 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.12 — 2026-09-25 (pré-release)
+
+Pré-release só Android, com os ajustes do teste físico da beta.11. Instala por cima da 0.10.0-beta.11.
+
+- **Dá para sair da leitura do QR**: a câmera agora tem mira e o botão "Cancelar", e o "voltar" do Android
+  também cancela — antes era preciso fechar o app.
+- **Câmera negada tem saída**: depois de negar, o Android não pergunta de novo; a tela oferece "Abrir
+  permissões do app" para liberar a câmera. Digitar endereço e código continua funcionando.
+
+## 0.10.0-beta.11 — 2026-09-25 (pré-release)
+
+Pré-release só Android, com os ajustes do teste físico da beta.10. Instala por cima da 0.10.0-beta.10.
+
+- **Depois do QR, dá para sincronizar**: o endereço lido fica preenchido (e lembrado para a próxima vez), então
+  "Sincronizar pareado" não fica mais cinza.
+- **Aviso durante a sessão**: enquanto os aparelhos conversam, a tela diz "Conectando e sincronizando…" em vez
+  de só apagar os botões.
+- **QR só quando pedido**: o QR não abre sozinho; o botão "Mostrar QR" abre uma janela maior (no celular, por
+  baixo), com endereço e código, que fecha quando o código é usado ou vence.
+
+## 0.10.0-beta.10 — 2026-09-25 (pré-release)
+
+Pré-release só Android, para testar o pareamento por QR (Fase 4.5). Instala por cima da 0.10.0-beta.9.
+
+- **Parear pelo QR**: o aparelho que escuta mostra um QR junto do código; no celular, "Escanear QR" lê
+  endereço e código pela câmera e pareia sem digitar nada. É o mesmo pareamento por código de antes —
+  vale três minutos, três tentativas e uma vez só. Sem câmera ou sem permissão, digitar continua funcionando.
+
 ## 0.10.0-beta.9 — 2026-09-25 (pré-release)
 
 Pré-release só Android, sem mudança de funcionamento. Existe para provar em aparelho real que a atualização

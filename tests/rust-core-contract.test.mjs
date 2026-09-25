@@ -147,6 +147,9 @@ test('só as portas nativas falam com o Tauri', () => {
     // A caixa de versões antigas (etapa H, H-R3). É plataforma pelo mesmo motivo: o que ela lê é o
     // passado DESTE aparelho, e a tela nunca vê a tabela de origem.
     'core/native/legacy-recovery.service.ts',
+    // A câmera do celular lendo QR (NH-084, PR B). É plataforma: aciona um recurso do aparelho e
+    // devolve texto cru; quem interpreta o conteúdo é o Rust, nunca esta porta.
+    'core/native/qr-scanner.service.ts',
   ];
 
   const infratores = [];
@@ -697,6 +700,8 @@ test('ETAPA G — G4/G5: todo comando de sincronizacao chamado pelo app e do V2'
   const PERMITIDOS = new Set([
     'sync_v2_panorama', 'sync_v2_estado', 'sync_v2_escuta_iniciar', 'sync_v2_escuta_parar',
     'sync_v2_pin_novo', 'sync_v2_parear', 'sync_v2_sincronizar', 'sync_v2_aviso_de_epoca',
+    // NH-084: o QR é açúcar sobre o mesmo pareamento por PIN do V2.
+    'sync_v2_qr', 'sync_v2_parear_por_qr',
     'sync_conflitos_listar', 'sync_conflito_inspecionar', 'sync_conflito_resolver',
   ]);
   const chamados = new Set();
@@ -922,4 +927,51 @@ test('a sessão atendida pela escuta chega à tela: o Rust emite e o arranque es
 
   const arranque = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
   assert.match(arranque, /await this\.syncFeedback\.start\(\);/u, 'ninguém escuta a sessão atendida desde o arranque');
+});
+
+// NH-084, PR B — pareamento por PIN assistido por QR. O formato do conteúdo mora só no Rust
+// (`application/sync_qr_pin.rs`): o frontend desenha o texto opaco e devolve a leitura crua. Um parser
+// em TypeScript seria uma segunda verdade, e o primeiro lugar onde "aceitar do jeito possível" nasce.
+test('o formato do QR de pareamento só existe no Rust', () => {
+  const ofensores = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const caminho = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(caminho); continue; }
+      if (!entry.name.endsWith('.ts')) continue;
+      const fonte = readFileSync(caminho, 'utf8');
+      if (fonte.includes('narrahub-pair')) ofensores.push(caminho.split('\\').join('/'));
+    }
+  };
+  walk(fileURLToPath(new URL('../src/app/', import.meta.url)));
+  assert.deepEqual(ofensores, [], `formato do QR fora do Rust: ${ofensores.join(', ')}`);
+
+  const rust = readFileSync(new URL('../src-tauri/src/application/sync_qr_pin.rs', import.meta.url), 'utf8');
+  assert.match(rust, /pub const PREFIXO: &str = "narrahub-pair-pin";/u);
+  // O QR criptográfico da §6.1 não é reaproveitado por este caminho.
+  assert.doesNotMatch(rust.slice(0, rust.indexOf('#[cfg(test)]')), /use crate::infrastructure::sync_pairing/u);
+});
+
+test('o leitor de QR só é acionado pela porta nativa e só no celular', () => {
+  const porta = readFileSync(new URL('../src/app/core/native/qr-scanner.service.ts', import.meta.url), 'utf8');
+  assert.match(porta, /@tauri-apps\/plugin-barcode-scanner/u);
+  // Nada da leitura vai para log: o conteúdo carrega o PIN.
+  assert.doesNotMatch(porta, /console\.(log|info|debug|warn|error)/u);
+  // Teste físico da beta.11: em tela cheia o plugin não tinha como sair da leitura. A câmera fica por
+  // baixo (a página desenha "Cancelar") e o "voltar" do Android cancela.
+  assert.match(porta, /windowed:\s*true/u);
+  assert.doesNotMatch(porta, /windowed:\s*false/u);
+  assert.match(porta, /onBackButtonPress\(\(\) => \{ void plugin\.cancel\(\); \}\)/u);
+  const cargo = readFileSync(new URL('../src-tauri/Cargo.toml', import.meta.url), 'utf8');
+  const bloco = cargo.slice(cargo.indexOf('target_os = "android", target_os = "ios"'));
+  assert.match(bloco.slice(0, 200), /tauri-plugin-barcode-scanner/u, 'o plugin precisa ser dependência só de mobile');
+  const capability = JSON.parse(readFileSync(new URL('../src-tauri/capabilities/mobile-qr-scanner.json', import.meta.url), 'utf8'));
+  assert.deepEqual(capability.platforms, ['android', 'iOS']);
+  assert.deepEqual(capability.permissions.sort(), [
+    'barcode-scanner:allow-cancel',
+    'barcode-scanner:allow-check-permissions',
+    'barcode-scanner:allow-open-app-settings',
+    'barcode-scanner:allow-request-permissions',
+    'barcode-scanner:allow-scan',
+  ]);
 });

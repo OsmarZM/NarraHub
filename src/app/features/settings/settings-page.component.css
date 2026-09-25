@@ -88,6 +88,22 @@ app-settings-page .pairing-panel .pin-vencido, app-settings-page .pairing-panel 
 app-settings-page .pairing-panel .pin-vencido { color: var(--nh-danger); }
 /* I-BUG-08: o aviso de que a escuta depende do app na tela ocupa a linha inteira. */
 app-settings-page .pairing-panel .escuta-na-tela { grid-column: 1 / -1; font-size: 12px; }
+/* NH-084: o QR ocupa a linha inteira do painel, centrado. */
+app-settings-page .sync-busy { display: flex; align-items: center; gap: 8px; margin: 8px 0; padding: 9px 12px; border-radius: 9px; font-size: 12px; color: var(--text); background: color-mix(in srgb, var(--brand) 10%, var(--surface)); }
+app-settings-page .sync-busy-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--brand); animation: sync-busy-pulse 1s ease-in-out infinite; }
+@keyframes sync-busy-pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { app-settings-page .sync-busy-dot { animation: none; } }
+app-settings-page .pairing-qr-code { display: grid; place-items: center; }
+app-settings-page .pairing-qr-dialog .modal-guidance { margin: 14px 0 10px; font-size: 12px; }
+app-settings-page .pairing-qr-dados { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 10px; }
+app-settings-page .pairing-qr-dados dt { color: var(--muted); font-size: 11px; }
+app-settings-page .pairing-qr-dados dd { margin: 2px 0 0; font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }
+app-settings-page .pairing-qr-validade { display: block; color: var(--muted); font-size: 11px; }
+@media (max-width: 640px) {
+  app-settings-page .pairing-qr-backdrop { place-items: end center; padding: 0; }
+  app-settings-page .pairing-qr-dialog { width: 100%; border-radius: 17px 17px 0 0; padding-bottom: calc(22px + env(safe-area-inset-bottom)); }
+}
+app-settings-page .qr-scan-message { display: block; margin: 6px 0; font-size: 12px; }
 app-settings-page .pairing-panel b { color: var(--brand); font-size: 22px; letter-spacing: .16em; }
 
 app-settings-page .share-session-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; margin: 16px 0 12px; padding: 13px; border: 1px solid color-mix(in srgb, var(--green) 28%, var(--line)); border-radius: 11px; background: color-mix(in srgb, var(--green) 6%, var(--surface-2)); }
@@ -221,3 +237,11 @@ app-settings-page .legacy-recovery-notice {
 }
 app-settings-page .legacy-recovery-notice span { color: var(--muted); }
 app-settings-page .legacy-recovery-notice a { align-self: flex-start; text-decoration: none; }
+
+/* NH-084: durante a leitura a câmera fica por baixo da WebView; tudo some, menos a camada da leitura. */
+html.nh-lendo-qr, html.nh-lendo-qr body { background: transparent !important; transition: none !important; }
+html.nh-lendo-qr body { visibility: hidden; }
+app-settings-page .qr-leitura { visibility: visible; position: fixed; z-index: 2000; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: calc(24px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom)); color: #fff; }
+app-settings-page .qr-leitura p { margin: 0; padding: 10px 14px; border-radius: 10px; background: rgba(0, 0, 0, .6); font-size: 14px; text-align: center; }
+app-settings-page .qr-leitura-mira { width: min(70vw, 280px); aspect-ratio: 1; border: 3px solid rgba(255, 255, 255, .9); border-radius: 18px; box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .35); }
+app-settings-page .qr-leitura button { position: relative; min-width: 180px; min-height: 48px; font-size: 15px; }

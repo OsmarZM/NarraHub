@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit, ViewEncapsulation, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, ViewEncapsulation, effect, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { AiMode, AiModelProfile, AiService } from '../../core/native/ai.service';
 import { BackupManifest } from '../../core/native/backup.service';
@@ -12,6 +12,8 @@ import { ConflictsStore } from '../conflicts/state/conflicts.store';
 import { LegacyRecoveryStore } from '../legacy-recovery/state/legacy-recovery.store';
 import { RouterLink } from '@angular/router';
 import { SyncSessionFeedbackService } from '../../application/sync-session-feedback.service';
+import { QrScanResult, QrScannerService } from '../../core/native/qr-scanner.service';
+import { PairingQrComponent } from './pairing-qr/pairing-qr.component';
 
 export type SettingsSection = 'general' | 'ai' | 'sync' | 'share' | 'updates';
 
@@ -20,7 +22,7 @@ type RestoreModal = 'restore-backup' | null;
 @Component({
   selector: 'app-settings-page',
   standalone: true,
-  imports: [FormsModule, ProductionReplicaComponent, RouterLink],
+  imports: [FormsModule, PairingQrComponent, ProductionReplicaComponent, RouterLink],
   templateUrl: './settings-page.component.html',
   styleUrl: './settings-page.component.css',
   encapsulation: ViewEncapsulation.None,
@@ -30,6 +32,11 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   /** Etapa F: o contador de conflitos e o aviso da atualização da sincronização. */
   readonly conflicts = inject(ConflictsStore);
   private readonly syncFeedback = inject(SyncSessionFeedbackService);
+  private readonly qrScanner = inject(QrScannerService);
+  /** NH-084: há leitor de QR neste aparelho. Sem ele, a tela é a de sempre. */
+  readonly qrScannerAvailable = signal(false);
+  /** O que aconteceu com a última leitura, quando não pareou (permissão, cancelamento). */
+  readonly qrScanMessage = signal('');
   /** Etapa H (H-R3): as versões antigas que só existem neste aparelho. */
   readonly legacyRecovery = inject(LegacyRecoveryStore);
   readonly epochNoticeDismissed = signal(false);
@@ -53,7 +60,17 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   aiInstallError = signal('');
 
   deviceName = localStorage.getItem('narrahub.deviceName') || 'Meu computador';
-  v2Address = '';
+  /** NH-084: o último endereço que pareou ou sincronizou, lembrado entre aberturas. */
+  v2Address = lerUltimoEndereco();
+  /** NH-084: o QR não abre sozinho; o escritor pede. Fecha quando o código deixa de valer. */
+  readonly qrAberto = signal(false);
+  /** NH-084: a câmera está lendo por baixo da tela; a página mostra só a mira e "Cancelar". */
+  readonly lendoQr = signal(false);
+  /** NH-084: o Android não pergunta de novo depois de negar; oferecemos as permissões do app. */
+  readonly cameraNegada = signal(false);
+  private readonly fecharQrSemCodigo = effect(() => {
+    if (!this.store.syncV2Qr() || !this.store.syncV2State().pin) this.qrAberto.set(false);
+  });
   v2Pin = '';
   restoreConfirmation = '';
 
@@ -66,9 +83,12 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     if (this.syncStatusTimer) clearInterval(this.syncStatusTimer);
     this.syncStatusTimer = null;
+    if (this.lendoQr()) void this.qrScanner.cancel();
+    document.documentElement.classList.remove('nh-lendo-qr');
   }
 
   ngOnInit(): void {
+    void this.qrScanner.supported().then((ha) => this.qrScannerAvailable.set(ha));
     this.syncStatusTimer = setInterval(() => {
       if (this.store.syncV2State().escutando) void this.store.refreshSyncStatus();
     }, 5000);
@@ -295,19 +315,72 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   }
 
   async newSyncV2Pin(): Promise<void> {
+    this.qrAberto.set(false);
     const result = await this.store.newSyncV2Pin();
     if (!result.ok && result.error) this.showError(result.error);
+  }
+
+  /**
+   * NH-084: lê o QR do outro aparelho e pareia pelo caminho do PIN. A string lida vai crua para o
+   * Rust. Câmera negada, cancelamento ou leitor ausente nunca tocam nos campos digitados.
+   */
+  async scanPairingQr(): Promise<void> {
+    this.qrScanMessage.set('');
+    this.cameraNegada.set(false);
+    let leitura: QrScanResult;
+    try {
+      leitura = await this.qrScanner.scan(() => this.mostrarLeitura(true));
+    } finally {
+      this.mostrarLeitura(false);
+    }
+    if (leitura.kind === 'negado') {
+      this.cameraNegada.set(true);
+      this.qrScanMessage.set('Sem permissão para a câmera. Libere a câmera nas permissões do NarraHub, ou digite o endereço e o código abaixo.');
+      return;
+    }
+    if (leitura.kind === 'indisponivel') {
+      this.qrScanMessage.set('Leitor de QR indisponível neste aparelho. Digite o endereço e o código abaixo.');
+      return;
+    }
+    if (leitura.kind === 'cancelado') return;
+    this.saveDeviceName();
+    const result = await this.store.pairSyncV2ByQr(leitura.conteudo, this.deviceName);
+    if (!result.ok) { if (result.error) this.showError(result.error); return; }
+    // O endereço vem do Rust, que leu e validou o QR; a tela só o guarda para "Sincronizar pareado".
+    if (result.endereco) this.lembrarEndereco(result.endereco);
+    if (result.result) await this.syncFeedback.applied(result.result);
+  }
+
+  cancelarLeitura(): void {
+    void this.qrScanner.cancel();
+  }
+
+  abrirPermissoesCamera(): void {
+    void this.qrScanner.openSettings();
+  }
+
+  /** Com a câmera por baixo, a tela inteira fica transparente — menos a camada da leitura. */
+  private mostrarLeitura(ativa: boolean): void {
+    this.lendoQr.set(ativa);
+    document.documentElement.classList.toggle('nh-lendo-qr', ativa);
+  }
+
+  private lembrarEndereco(endereco: string): void {
+    this.v2Address = endereco;
+    try { localStorage.setItem(ULTIMO_ENDERECO, endereco); } catch { /* sem armazenamento: vale só nesta abertura */ }
   }
 
   async pairSyncV2(): Promise<void> {
     const result = await this.store.pairSyncV2(this.v2Address, this.v2Pin, this.deviceName);
     if (!result.ok) { if (result.error) this.showError(result.error); return; }
+    this.lembrarEndereco(this.v2Address.trim());
     if (result.result) await this.syncFeedback.applied(result.result);
   }
 
   async syncNowV2(): Promise<void> {
     const result = await this.store.syncNowV2(this.v2Address, this.deviceName);
     if (!result.ok) { if (result.error) this.showError(result.error); void this.conflicts.refreshOpenCount(); return; }
+    this.lembrarEndereco(this.v2Address.trim());
     if (result.result) await this.syncFeedback.applied(result.result);
   }
 
@@ -371,4 +444,11 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   private messageOf(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
+}
+
+/** NH-084: o endereço do último pareamento ou sincronização, para não digitar de novo. */
+const ULTIMO_ENDERECO = 'narrahub.syncV2.lastAddress';
+
+function lerUltimoEndereco(): string {
+  try { return localStorage.getItem(ULTIMO_ENDERECO) ?? ''; } catch { return ''; }
 }
