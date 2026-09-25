@@ -957,6 +957,11 @@ test('o leitor de QR só é acionado pela porta nativa e só no celular', () => 
   assert.match(porta, /@tauri-apps\/plugin-barcode-scanner/u);
   // Nada da leitura vai para log: o conteúdo carrega o PIN.
   assert.doesNotMatch(porta, /console\.(log|info|debug|warn|error)/u);
+  // Teste físico da beta.11: em tela cheia o plugin não tinha como sair da leitura. A câmera fica por
+  // baixo (a página desenha "Cancelar") e o "voltar" do Android cancela.
+  assert.match(porta, /windowed:\s*true/u);
+  assert.doesNotMatch(porta, /windowed:\s*false/u);
+  assert.match(porta, /onBackButtonPress\(\(\) => \{ void plugin\.cancel\(\); \}\)/u);
   const cargo = readFileSync(new URL('../src-tauri/Cargo.toml', import.meta.url), 'utf8');
   const bloco = cargo.slice(cargo.indexOf('target_os = "android", target_os = "ios"'));
   assert.match(bloco.slice(0, 200), /tauri-plugin-barcode-scanner/u, 'o plugin precisa ser dependência só de mobile');
@@ -965,6 +970,7 @@ test('o leitor de QR só é acionado pela porta nativa e só no celular', () => 
   assert.deepEqual(capability.permissions.sort(), [
     'barcode-scanner:allow-cancel',
     'barcode-scanner:allow-check-permissions',
+    'barcode-scanner:allow-open-app-settings',
     'barcode-scanner:allow-request-permissions',
     'barcode-scanner:allow-scan',
   ]);

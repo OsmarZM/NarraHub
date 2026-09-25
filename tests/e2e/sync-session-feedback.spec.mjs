@@ -150,7 +150,13 @@ async function comLeitor(page, leitura) {
     const pagina = window.ng.getComponent(document.querySelector('app-settings-page'));
     window.__pareamentosPorQr = [];
     window.__pareamentosManuais = 0;
-    pagina.qrScanner = { scan: async () => leitura, supported: async () => true, cancel: async () => undefined };
+    window.__permissoesAbertas = 0;
+    pagina.qrScanner = {
+      scan: async () => leitura,
+      supported: async () => true,
+      cancel: async () => undefined,
+      openSettings: async () => { window.__permissoesAbertas += 1; },
+    };
     pagina.qrScannerAvailable.set(true);
     pagina.store.pairSyncV2ByQr = async (conteudo) => {
       window.__pareamentosPorQr.push(conteudo);
@@ -186,6 +192,9 @@ test('câmera negada: nada é pareado e a entrada manual continua utilizável', 
   await page.getByTestId('escanear-qr').click();
   await expect(page.getByTestId('qr-scan-message')).toContainText('Sem permissão para a câmera');
   expect(await page.evaluate(() => window.__pareamentosPorQr)).toEqual([]);
+  // Teste físico da beta.11: depois de negar, o Android não pergunta de novo — a tela leva às permissões.
+  await page.getByTestId('abrir-permissoes-camera').click();
+  expect(await page.evaluate(() => window.__permissoesAbertas)).toBe(1);
   const endereco = page.getByPlaceholder('192.168.0.10:45870');
   await expect(endereco).toBeEditable();
   await endereco.fill('192.168.1.145:45870');
@@ -209,6 +218,32 @@ for (const [nome, leitura, mensagem] of [
     await expect(page.getByRole('button', { name: 'Parear com código' })).toBeVisible();
   });
 }
+
+// Teste físico da beta.11: aberta a leitura, não havia como voltar ao app sem fechá-lo.
+test('durante a leitura há mira e Cancelar, e cancelar devolve a tela inteira', async ({ page }) => {
+  await comLeitor(page, { kind: 'cancelado' });
+  await page.evaluate(() => {
+    const pagina = window.ng.getComponent(document.querySelector('app-settings-page'));
+    window.__cancelamentos = 0;
+    let terminar;
+    pagina.qrScanner.scan = (aoAbrirCamera) => new Promise((resolve) => { terminar = resolve; aoAbrirCamera?.(); });
+    pagina.qrScanner.cancel = async () => { window.__cancelamentos += 1; terminar({ kind: 'cancelado' }); };
+  });
+  await page.getByPlaceholder('192.168.0.10:45870').fill('192.168.1.145:45870');
+  await page.getByTestId('escanear-qr').click();
+  await expect(page.getByTestId('leitura-qr')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.classList.contains('nh-lendo-qr'))).toBe(true);
+  // Nada opaco por cima da câmera: nem o fundo da página, nem no meio de uma transição.
+  expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+  // O resto da tela some para a câmera aparecer por baixo.
+  await expect(page.getByPlaceholder('192.168.0.10:45870')).toBeHidden();
+  await page.getByTestId('cancelar-leitura-qr').click();
+  await expect(page.getByTestId('leitura-qr')).toHaveCount(0);
+  expect(await page.evaluate(() => window.__cancelamentos)).toBe(1);
+  expect(await page.evaluate(() => document.documentElement.classList.contains('nh-lendo-qr'))).toBe(false);
+  await expect(page.getByPlaceholder('192.168.0.10:45870')).toHaveValue('192.168.1.145:45870');
+  await expect(page.getByPlaceholder('192.168.0.10:45870')).toBeEditable();
+});
 
 test('sem leitor de QR, a tela é a de sempre', async ({ page }) => {
   await abrirDispositivos(page);

@@ -82,6 +82,28 @@ Geometria medida nos 5 viewports: folha ocupa a largura toda no celular, sem rol
 1366×768 fica centralizada com 460 px. E2E `sync-session-feedback` 60/60, arquitetura 104/104,
 `sync_qr_pin` 11/11, fmt e clippy limpos.
 
+## Teste físico da beta.11 → ajustes da beta.12
+
+Passaram no aparelho: caminho feliz (QR → pareia sem digitar → endereço preenchido → sincronização), QR
+antigo não volta sozinho, QR já usado recusado, QR alterado recusado ("código que não confere. Nada foi
+gravado"), QR vencido some da tela e pede código novo. Dois bugs:
+
+1. **Não havia como sair da leitura** — o plugin em tela cheia (`windowed: false`) põe a câmera por cima
+   da WebView sem botão, e o "voltar" do Android não cancelava. Agora `windowed: true`: a câmera fica por
+   baixo, a página fica transparente (`html.nh-lendo-qr`) e mostra só mira, instrução e **Cancelar**; o
+   "voltar" do Android cancela (`onBackButtonPress` só enquanto lê).
+2. **Negar a câmera travava** — depois de negar, o Android não pergunta de novo. Agora a tela oferece
+   **Abrir permissões do app** (`openAppSettings`; capability ganhou `allow-open-app-settings`).
+
+| Gate | Mutação vista falhando |
+| --- | --- |
+| mira + Cancelar; cancelar devolve a tela inteira e a página não fica transparente | QF9 Cancelar sem efeito, QF10 transparência não desfeita |
+| câmera negada oferece as permissões do app | QF11 sem o botão |
+| leitura por baixo da tela; "voltar" cancela (contrato da porta) | QC1 tela cheia de novo, QC2 voltar sem cancelar |
+
+Fundo medido transparente nos 5 viewports durante a leitura (a transição de fundo foi desligada; antes a
+câmera apareceria atrás de um véu de 78%).
+
 ## Falta
 
 Teste físico: Windows mostra o QR → S23 escaneia → nenhum IP/PIN digitado → pareia → identidade

@@ -237,3 +237,11 @@ app-settings-page .legacy-recovery-notice {
 }
 app-settings-page .legacy-recovery-notice span { color: var(--muted); }
 app-settings-page .legacy-recovery-notice a { align-self: flex-start; text-decoration: none; }
+
+/* NH-084: durante a leitura a câmera fica por baixo da WebView; tudo some, menos a camada da leitura. */
+html.nh-lendo-qr, html.nh-lendo-qr body { background: transparent !important; transition: none !important; }
+html.nh-lendo-qr body { visibility: hidden; }
+app-settings-page .qr-leitura { visibility: visible; position: fixed; z-index: 2000; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: calc(24px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom)); color: #fff; }
+app-settings-page .qr-leitura p { margin: 0; padding: 10px 14px; border-radius: 10px; background: rgba(0, 0, 0, .6); font-size: 14px; text-align: center; }
+app-settings-page .qr-leitura-mira { width: min(70vw, 280px); aspect-ratio: 1; border: 3px solid rgba(255, 255, 255, .9); border-radius: 18px; box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .35); }
+app-settings-page .qr-leitura button { position: relative; min-width: 180px; min-height: 48px; font-size: 15px; }

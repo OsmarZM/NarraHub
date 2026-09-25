@@ -193,6 +193,7 @@
           <p class="sync-busy" role="status" data-testid="sync-ocupado"><span class="sync-busy-dot" aria-hidden="true"></span>Conectando e sincronizando com o outro aparelho… mantenha os dois abertos.</p>
         }
         @if (qrScanMessage()) { <small class="security-note qr-scan-message" data-testid="qr-scan-message">{{ qrScanMessage() }}</small> }
+        @if (cameraNegada()) { <button type="button" class="secondary-button" (click)="abrirPermissoesCamera()" data-testid="abrir-permissoes-camera">Abrir permissões do app</button> }
         <div class="field-row"><label class="field-label">Endereço do outro aparelho<input [(ngModel)]="v2Address" placeholder="192.168.0.10:45870" /></label><label class="field-label code-field">Código<input [(ngModel)]="v2Pin" inputmode="numeric" maxlength="9" placeholder="0000 0000" /></label></div>
         <div class="field-row">
           <button type="button" class="primary-button" [disabled]="store.syncV2Busy() || !v2Address.trim()" (click)="pairSyncV2()">Parear com código</button>
@@ -299,6 +300,15 @@
     </div>
   </div>
 </section>
+
+@if (lendoQr()) {
+  <!-- NH-084: a câmera lê por baixo da tela; aqui ficam só a mira e a saída. -->
+  <div class="qr-leitura" role="dialog" aria-modal="true" aria-label="Lendo QR" data-testid="leitura-qr">
+    <p>Aponte a câmera para o QR mostrado no outro aparelho.</p>
+    <div class="qr-leitura-mira" aria-hidden="true"></div>
+    <button type="button" class="secondary-button" (click)="cancelarLeitura()" data-testid="cancelar-leitura-qr">Cancelar</button>
+  </div>
+}
 
 @if (qrAberto() && store.syncV2State().pin && store.syncV2Qr(); as conteudoDoQr) {
   <!-- NH-084: açúcar sobre o PIN. Abre só quando pedido; some quando o código é usado ou vence. -->

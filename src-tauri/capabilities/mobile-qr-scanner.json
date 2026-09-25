@@ -1,13 +1,14 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "mobile-qr-scanner",
-  "description": "Leitor de QR para o pareamento por PIN assistido por QR (NH-084, PR B). So no celular: o plugin do leitor e restrito a Android e iOS no Cargo.toml. Capability minima: ler um codigo, cancelar a leitura e consultar/pedir a permissao de camera. O conteudo lido volta cru ao Rust, que interpreta.",
+  "description": "Leitor de QR para o pareamento por PIN assistido por QR (NH-084, PR B). So no celular: o plugin do leitor e restrito a Android e iOS no Cargo.toml. Capability minima: ler um codigo, cancelar a leitura, consultar/pedir a permissao de camera e abrir as permissoes do app (depois de negar, o Android nao pergunta de novo). O conteudo lido volta cru ao Rust, que interpreta.",
   "platforms": ["android", "iOS"],
   "windows": ["main"],
   "permissions": [
     "barcode-scanner:allow-scan",
     "barcode-scanner:allow-cancel",
     "barcode-scanner:allow-check-permissions",
-    "barcode-scanner:allow-request-permissions"
+    "barcode-scanner:allow-request-permissions",
+    "barcode-scanner:allow-open-app-settings"
   ]
 }

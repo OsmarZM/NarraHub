@@ -12,7 +12,7 @@ import { ConflictsStore } from '../conflicts/state/conflicts.store';
 import { LegacyRecoveryStore } from '../legacy-recovery/state/legacy-recovery.store';
 import { RouterLink } from '@angular/router';
 import { SyncSessionFeedbackService } from '../../application/sync-session-feedback.service';
-import { QrScannerService } from '../../core/native/qr-scanner.service';
+import { QrScanResult, QrScannerService } from '../../core/native/qr-scanner.service';
 import { PairingQrComponent } from './pairing-qr/pairing-qr.component';
 
 export type SettingsSection = 'general' | 'ai' | 'sync' | 'share' | 'updates';
@@ -64,6 +64,10 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   v2Address = lerUltimoEndereco();
   /** NH-084: o QR não abre sozinho; o escritor pede. Fecha quando o código deixa de valer. */
   readonly qrAberto = signal(false);
+  /** NH-084: a câmera está lendo por baixo da tela; a página mostra só a mira e "Cancelar". */
+  readonly lendoQr = signal(false);
+  /** NH-084: o Android não pergunta de novo depois de negar; oferecemos as permissões do app. */
+  readonly cameraNegada = signal(false);
   private readonly fecharQrSemCodigo = effect(() => {
     if (!this.store.syncV2Qr() || !this.store.syncV2State().pin) this.qrAberto.set(false);
   });
@@ -79,6 +83,8 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     if (this.syncStatusTimer) clearInterval(this.syncStatusTimer);
     this.syncStatusTimer = null;
+    if (this.lendoQr()) void this.qrScanner.cancel();
+    document.documentElement.classList.remove('nh-lendo-qr');
   }
 
   ngOnInit(): void {
@@ -320,9 +326,16 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
    */
   async scanPairingQr(): Promise<void> {
     this.qrScanMessage.set('');
-    const leitura = await this.qrScanner.scan();
+    this.cameraNegada.set(false);
+    let leitura: QrScanResult;
+    try {
+      leitura = await this.qrScanner.scan(() => this.mostrarLeitura(true));
+    } finally {
+      this.mostrarLeitura(false);
+    }
     if (leitura.kind === 'negado') {
-      this.qrScanMessage.set('Sem permissão para a câmera. Digite o endereço e o código abaixo, ou libere a câmera nas configurações do Android.');
+      this.cameraNegada.set(true);
+      this.qrScanMessage.set('Sem permissão para a câmera. Libere a câmera nas permissões do NarraHub, ou digite o endereço e o código abaixo.');
       return;
     }
     if (leitura.kind === 'indisponivel') {
@@ -336,6 +349,20 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
     // O endereço vem do Rust, que leu e validou o QR; a tela só o guarda para "Sincronizar pareado".
     if (result.endereco) this.lembrarEndereco(result.endereco);
     if (result.result) await this.syncFeedback.applied(result.result);
+  }
+
+  cancelarLeitura(): void {
+    void this.qrScanner.cancel();
+  }
+
+  abrirPermissoesCamera(): void {
+    void this.qrScanner.openSettings();
+  }
+
+  /** Com a câmera por baixo, a tela inteira fica transparente — menos a camada da leitura. */
+  private mostrarLeitura(ativa: boolean): void {
+    this.lendoQr.set(ativa);
+    document.documentElement.classList.toggle('nh-lendo-qr', ativa);
   }
 
   private lembrarEndereco(endereco: string): void {
