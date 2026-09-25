@@ -327,9 +327,27 @@ pub fn conectar(endereco: impl ToSocketAddrs, espera: Duration) -> Result<TcpStr
             Err(erro) => ultimo = Some(erro),
         }
     }
-    Err(ultimo.map(de_io).unwrap_or(FalhaDeFio::Rede {
+    Err(ultimo.map(de_conexao).unwrap_or(FalhaDeFio::Rede {
         motivo: "nenhum endereço para tentar".into(),
     }))
+}
+
+/// A falha ao **abrir** a conexão (I-BUG-08, Etapa I). Diferente da leitura: aqui ninguém aceitou,
+/// então "não respondeu" seria mentira — e "recusou ativamente (os error 10061)" não diz o que fazer.
+fn de_conexao(erro: std::io::Error) -> FalhaDeFio {
+    match erro.kind() {
+        ErrorKind::ConnectionRefused => FalhaDeFio::Rede {
+            motivo: "ninguém está escutando nesse endereço. No outro aparelho, toque em \
+                     \"Escutar nesta rede\" e confira o endereço digitado"
+                .into(),
+        },
+        ErrorKind::TimedOut | ErrorKind::WouldBlock => FalhaDeFio::Rede {
+            motivo: "o outro aparelho não foi encontrado nesse endereço. Confira se os dois estão \
+                     na mesma rede Wi-Fi e se o endereço está certo"
+                .into(),
+        },
+        _ => de_io(erro),
+    }
 }
 
 /// Põe tempo limite nas duas pontas do socket.
@@ -344,6 +362,22 @@ pub fn ajustar_esperas(fluxo: &TcpStream, espera: Duration) -> Result<(), FalhaD
 
 #[cfg(test)]
 mod tests {
+    /// **I-BUG-08 — ninguém escutando não vira "recusou ativamente (os error 10061)", e o aparelho
+    /// que não aparece na rede não vira "não respondeu".** Achado em aparelho físico.
+    #[test]
+    fn falha_ao_abrir_a_conexao_diz_o_que_fazer() {
+        use std::io::{Error, ErrorKind};
+        let recusada = de_conexao(Error::from(ErrorKind::ConnectionRefused)).to_string();
+        assert!(recusada.contains("Escutar nesta rede"), "{recusada}");
+        assert!(!recusada.contains("os error"), "{recusada}");
+        let sumiu = de_conexao(Error::from(ErrorKind::TimedOut)).to_string();
+        assert!(sumiu.contains("mesma rede Wi-Fi"), "{sumiu}");
+        assert!(
+            !sumiu.contains("não respondeu"),
+            "abrir a conexão não é silêncio: {sumiu}"
+        );
+    }
+
     /// **I-BUG-08 — silêncio aponta o celular em segundo plano, não só a rede.** Achado em aparelho
     /// físico: com o NarraHub do Android fora da tela, a porta aceita a conexão e o app congelado não
     /// responde; a mensagem antiga mandava conferir a rede, que estava boa.
