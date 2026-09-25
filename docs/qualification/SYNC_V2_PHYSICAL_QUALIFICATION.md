@@ -64,7 +64,7 @@ primeira escuta dele deve disparar o prompt do Windows — registrar no I2 se o 
 
 | Gate | Essencial | Status | Aparelhos | Direção | Evidência |
 | --- | --- | --- | --- | --- | --- |
-| I1 instalação real | sim | Windows PASS · Android pendente | Windows | — | §I1 |
+| I1 instalação real | sim | **PASS** | Windows + S23 | instalador NSIS e APK assinado da release | §I1 |
 | I2 fresh ↔ fresh | sim | **PASS** | Windows + S23 | PIN: Android → Windows | §I2 |
 | I3 Windows doador → Android novo | sim | **PASS** | Windows + S23 | Windows doador | §I3 |
 | I4 Android doador → Windows novo | sim | **PASS** | S23 + Windows | Android doador | §I4 |
@@ -82,7 +82,7 @@ primeira escuta dele deve disparar o prompt do Windows — registrar no I2 se o 
 | I16 restart após bootstrap | sim | **PASS** | Windows + S23 | depois de I3, I4 e I18 | §I16 |
 | I17 recovery legado | não | **PASS** | Windows → S23 | banco 0.9.2 com conflito V1 | §I17 |
 | I18 dataset maior | não | **PASS** | Windows → S23 | 600 capítulos, 200 entidades, 14 blobs | §I18 |
-| I19 integridade final | sim | pendente | | | |
+| I19 integridade final | sim | **PASS** (Android indireto) | Windows A, Windows C, S23 | bancos finais | §I19 |
 | I20 reinstalação / identidade | sim | **PASS** | S23 | desinstalar → instalar → reparear | §I20 |
 
 ## I1 — Instalação como usuário real
@@ -102,12 +102,18 @@ primeira escuta dele deve disparar o prompt do Windows — registrar no I2 se o 
 - Reabertura: processo vivo, fechamento limpo; mesmo device_id, 29 migrations, nenhuma reaplicada.
 - Banco de produção (`com.narrahub.app`) com o mesmo sha256 da linha de base depois do ciclo.
 
-### Android — pendente
+### Android — PASS
 
-APK: `NarraHub-Android.apk` da pré-release
-[`app-v0.10.0-beta.3`](https://github.com/OsmarZM/NarraHub/releases/tag/app-v0.10.0-beta.3), assinado pela
-workflow de release (a mesma distribuição do usuário), 44 601 618 bytes, sha256 conferido contra o
-`.sha256` publicado. Aguardando o aparelho no `adb`.
+- Artefato: `NarraHub-Android.apk` das pré-releases `app-v0.10.0-beta.3` … `beta.8`, **assinado pela workflow
+  de release** (a mesma distribuição do usuário), SHA-256 de cada APK conferido contra o `.sha256` publicado.
+- Caminho de instalação: o **próprio arquivo publicado** instalado por `adb install` (primeira vez) e
+  `adb install -r` (por cima, dados preservados). O caminho que o usuário usaria — a atualização pelo próprio
+  app — não funcionava no Android (I-BUG-06 e I-BUG-09, corrigidos na beta.8); a oferta automática ponta a
+  ponta está no I-BUG-09.
+- Instala, abre, cria o banco (0 universos numa instalação limpa), fecha (`force-stop`) e reabre com o estado
+  preservado — repetido em todas as etapas. Nenhum dev server nem console envolvido.
+- Instalação limpa depois de uma desinstalação traz o acervo de volta pelo backup do Google (I-BUG-01,
+  comportamento do Android, identidade nova); para "fresh" de verdade foi usado `pm clear`.
 
 ## I2 — Fresh ↔ fresh — PASS
 
@@ -338,6 +344,72 @@ acervo de volta pelo backup do Google** (não apaga): comportamento esperado e d
 Os `pm clear` usados para zerar o Android (I2, I3, I18, I17) também geraram identidades novas (`OF3D7F4N…`,
 `MW2VPXOE…`, `IFBA74ZY…`, `NYES3MLB…`).
 
+## I19 — Integridade final — PASS (Android por evidência indireta)
+
+**Windows** — cópias dos bancos reais feitas **fora** do pacote do agente (I-ENV-01), ao fim da etapa:
+
+| Banco | integrity_check | foreign_key_check | divergências abertas | eventos pendentes | grupos incompletos | universos / capítulos |
+| --- | --- | --- | --- | --- | --- | --- |
+| Windows A (`7GIH6MFP…`) | ok | 0 | 0 | 0 | 0 | 4 / 7 |
+| Windows C (`2CIPYWEA…`) | ok | 0 | 0 | 0 | 0 | 4 / 7 |
+
+A e C, que nunca se falaram, têm o mesmo acervo pela ponte do S23. Cópias em
+`D:\DevTools\NarraHubTmp\etapa-i\i19\`. Nenhum banco do usuário foi modificado para a inspeção.
+
+**Android** — o APK de release não é `debuggable`: o banco não é legível por `run-as` sem modificar o app.
+Evidências usadas, sem tocar no banco:
+- a checagem de saúde do **próprio app no aparelho** ("Backup e integridade") roda `PRAGMA integrity_check`,
+  `PRAGMA foreign_key_check` e as consultas de invariante (`database/health.rs`) e mostrou **"Banco íntegro"**
+  depois das semeaduras do I17/I18 (captura em `i6\i19-banco-integro.png`);
+- toda sessão pareada de fechamento terminou em **0/0** contra o Windows (mesmo vetor causal);
+- a tela de conflitos do Android mostrou "nenhum pendente" ao fim de cada rodada.
+
+## Regressão automatizada final
+
+No head da branch (`5283a07` + documentação), máquina local do operador:
+
+| Verificação | Resultado |
+| --- | --- |
+| `cargo fmt --check` | ok |
+| `cargo clippy --all-targets -- -D warnings` | ok |
+| Rust, suíte completa | **882 passaram**, 0 falharam, 3 ignorados (877 antes da I) |
+| `npm run build` | ok |
+| `test:architecture` | 102/102 |
+| `test:planning` / `test:ai` / `share-api:test` | 4/4 · 5/5 · 4/4 |
+| `test:android-release` | 7/7 |
+| Playwright (5 viewports) | **97 passaram**, 17 pulados, 0 falharam |
+| CI do PR #74 | 4/4 verde em cada beta (beta.4 … beta.8) |
+
+Gates F1–F21, G1–G12 e H1–H29 dentro da suíte Rust completa, todos verdes.
+
+## Limitações reais restantes
+
+- **Escuta em segundo plano no Android**: com o app fora da tela o Android congela o processo; sincronizar
+  exige o NarraHub aberto no celular (I14, I-BUG-08). Resolver pede um serviço em primeiro plano —
+  funcionalidade nova.
+- **Banco do Android não inspecionável diretamente** no APK de release; a integridade vem da checagem do
+  próprio app e do vetor 0/0.
+- **Vazão de imagens** ≈ 0,5 MB/s na LAN: funcional, mas lenta para acervos com muitas imagens.
+- **Descoberta/QR**: pareamento ainda exige digitar endereço e código (NH-078, próximo passo pedido pelo
+  usuário).
+- **Terceiro aparelho físico** não disponível: o I6 usou uma terceira instalação desktop controlada.
+- **Atualização pelo app no Android**: corrigida na beta.8 (I-BUG-06/09); a prova ponta a ponta exige a
+  beta.8 no aparelho e a publicação de uma beta seguinte — ver I-BUG-09.
+- **Reinstalação no Android** pode restaurar o acervo pelo backup do Google (I-BUG-01) — identidade nova,
+  exige reparear; documentado, não é defeito do sync.
+- Rede Wi-Fi com dois SSIDs no mesmo local: o S23 voltou sozinho para a outra rede três vezes durante a I;
+  o sync reagiu com erro limpo, sem gravar nada.
+
+## Recomendação
+
+**Release (pré-release Android e qualificação do Windows): sim.** Todos os gates essenciais passaram em
+aparelho físico real, com transporte Windows ↔ Android real, e nenhum bug encontrado ficou aberto no sync:
+os 9 achados de código (I-BUG-02 … I-BUG-09) e o I-UX-04 foram corrigidos com gate automatizado e repetidos
+fisicamente, exceto a oferta automática da atualização (I-BUG-06/09), que depende de o aparelho receber a
+beta.8 e a seguinte. **Sync V2 architecture = QUALIFIED.** Para uma versão **estável** do Windows, falta
+apenas o que não é do sync: rodar o instalador de produção sobre uma cópia do acervo real (a I usou o perfil
+Qualification por decisão do usuário) e decidir sobre a escuta em segundo plano no Android.
+
 ## Bugs encontrados
 
 ### I-BUG-01 — backup automático do Android restaura o acervo numa instalação nova — **não é defeito de identidade**
@@ -387,7 +459,7 @@ Os `pm clear` usados para zerar o Android (I2, I3, I18, I17) também geraram ide
 - **Gates**: `tests/rust-core-contract.test.mjs` (Rust emite, frontend ouve o mesmo nome, arranque liga o
   ouvinte) e `tests/e2e/sync-session-feedback.spec.mjs` (5 viewports: aviso + releitura na sessão atendida,
   erro sem fingir sucesso, e o lado que inicia). Os dois falham sem a correção.
-- **Repetição física**: pendente com a beta.4.
+- **Repetição física**: feita (beta.4+). No I5 o aviso apareceu sozinho na janela do Windows como anfitrião; no I14 e no I18 o S23, como anfitrião, mostrou "Sincronizado com Windows de qualificação…" sem ninguém tocar.
 
 ### I-BUG-04 — código de pareamento vencido continua na tela, e o erro no visitante é ilegível — **corrigido**
 
@@ -408,7 +480,7 @@ Os `pm clear` usados para zerar o Android (I2, I3, I18, I17) também geraram ide
   repetições), `pin_errado_nao_pareia_e_ninguem_entra_no_roster` agora confere as duas mensagens, e
   `tests/e2e/sync-session-feedback.spec.mjs` "código vencido aparece como vencido…" (falha sem a correção).
 - Contorno antes da correção: "Novo código" e digitar logo em seguida.
-- **Repetição física**: pendente com a beta.5.
+- **Repetição física**: feita (beta.5+). No S23: "O código venceu ou já foi usado…" na escuta, e a sequência errado × 3 → "não confere" / código morto → "não aceitou o código" (I15), com o aviso do anfitrião "digitado errado três vezes".
 
 ### I-BUG-05 — tela de conflitos não rolava, texto em 9 px, campos técnicos à mostra — **corrigido**
 
@@ -430,7 +502,7 @@ Os `pm clear` usados para zerar o Android (I2, I3, I18, I17) também geraram ide
 - **Gates**: dois testes novos em `tests/e2e/sync-conflicts.spec.mjs` (a página rola com a roda, fonte
   ≥ 13 px, sem identificador, parágrafo divergente destacado; "e abrir para editar" resolve e navega), os
   dois vermelhos com a tela antiga; os três testes anteriores continuam verdes nos 5 viewports.
-- **Repetição física**: pendente com a beta.5.
+- **Repetição física**: feita (beta.5). O operador aprovou a tela nos dois aparelhos — lado a lado no Windows (captura `i7\windows-conflito-beta5.png`, fonte 16 px, página rolando) e linhas em sequência no S23 — e resolveu conflitos por ela no I7–I10.
 
 ### I-ENV-01 — o ambiente do operador virtualizava o AppData do Windows — **não é defeito do produto**
 
@@ -454,7 +526,7 @@ Os `pm clear` usados para zerar o Android (I2, I3, I18, I17) também geraram ide
   estava configurado, o que nunca é verdade no Android. O canal do Android só rodava pela tela Configurações.
 - **Correção**: `shouldCheckForUpdatesOnStartup()` aceita o canal do Android. Gate em
   `tests/android-release.test.mjs` (vermelho sem a correção).
-- **Repetição física**: exige duas versões seguidas — instalar a corrigida e ver o app oferecer a próxima.
+- **Repetição física**: a verificação passou a rodar na beta.6 (logcat), e isso revelou o I-BUG-09. A oferta ponta a ponta segue no I-BUG-09.
   A beta.5 foi instalada por `adb install -r` (por cima, dados preservados).
 
 ### I-BUG-07 — conflito entre decisões mostrado como certificado cru — **corrigido**
@@ -466,7 +538,7 @@ Os `pm clear` usados para zerar o Android (I2, I3, I18, I17) também geraram ide
   capítulo. Certificado, formato e protocolo intocados.
 - **Gate**: `resolucao_testes::ibug07_conflito_entre_decisoes_mostra_o_capitulo_que_cada_uma_produz`
   (vermelho sem a correção).
-- **Repetição física**: pendente com a beta.6.
+- **Repetição física**: pendente — os dois aparelhos estão em builds com a correção, mas não houve novo conflito entre decisões depois da beta.6. Coberto pelo gate automatizado.
 
 ### I-UX-04 — a decisão de conflito é definitiva e a tela não avisava — **corrigido**
 
@@ -501,7 +573,7 @@ Os `pm clear` usados para zerar o Android (I2, I3, I18, I17) também geraram ide
 - **Gates**: `atualizacao_android::ibug09_tls_embutido_e_aceito_pelo_reqwest` (o `reqwest` aceita a
   configuração — pega divergência de versão do rustls antes do celular) e contrato em
   `tests/android-release.test.mjs` (o cliente Android usa o TLS embutido; vermelho sem a correção).
-- **Repetição física**: beta.8 instalada; verificação manual e a oferta automática da beta.9 pelo app.
+- **Repetição física**: pendente — a beta.8 foi publicada (CI 4/4, APK conferido), mas o S23 saiu do `adb` antes da instalação. Roteiro: instalar a beta.8 por cima, abrir o app e conferir no `logcat` que o pânico não aparece; publicar uma beta.9 e ver o app oferecer, baixar e instalar sozinho.
 
 ### Observações de UX (sem correção nesta etapa)
 

@@ -18,11 +18,38 @@ Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 
 ## ACTIVE
 
+### NH-083 — Sync V2, etapa I: qualificação física
+
+```text
+Owner:  Claude
+Status: REVIEW (PR #74)
+Fase:   4 — Sync V2
+Branch: sync-i-qualificacao-fisica (base: mobile-shell @ 3d29469)
+```
+
+Instalação real, aparelhos reais (Windows 11 x64 + Samsung Galaxy S23 / Android 16), rede real e
+dados reais/controlados. Arquitetura do Sync V2 congelada: só correções mínimas, cada uma com gate.
+
+- **I1–I20: PASS.** I6 com terceira instalação desktop controlada (transporte Windows ↔ Android
+  físico); I14 com a limitação do segundo plano no Android; I19 no Android por evidência indireta
+  (checagem do próprio app + vetor 0/0).
+- **Achados corrigidos**: I-BUG-02 (janela do perfil Qualification), I-BUG-03 (fim de sessão
+  invisível), I-BUG-04 (código vencido / erros de pareamento), I-BUG-05 (tela de conflitos),
+  I-BUG-06 e I-BUG-09 (atualização pelo app no Android nunca funcionava), I-BUG-07 (conflito entre
+  decisões ilegível), I-BUG-08 (mensagens de conexão), I-UX-04 (decisão com confirmação).
+- **Não eram defeito**: I-BUG-01 (backup do Google restaura o acervo; identidade é nova) e I-ENV-01
+  (AppData virtualizado do agente MSIX).
+- **Pendente físico**: a oferta automática da atualização (beta.8 no aparelho + beta seguinte).
+
+Evidência em `docs/qualification/SYNC_V2_PHYSICAL_QUALIFICATION.md` e no handoff da etapa I.
+
+---
+
 ### NH-082 — Sync V2, etapa H: hardening final (H-R1, H-R2, H-R3)
 
 ```text
 Owner:  Claude
-Status: REVIEW
+Status: DONE (PR #73 → 3d29469, 2026-09-24)
 Fase:   4 — Sync V2
 Branch: sync-h-hardening (base: mobile-shell)
 ```
