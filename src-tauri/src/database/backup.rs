@@ -180,6 +180,9 @@ pub fn create_backup_at(
 
     fs::rename(&staging, &destination)
         .map_err(|error| format!("Não foi possível publicar o backup concluído: {error}"))?;
+    super::duravel::sincronizar_diretorio(backups_root).map_err(|error| {
+        format!("A publicação do backup não pôde ser gravada de forma durável: {error}")
+    })?;
     let validation = validate_backup_at(backups_root, &backup_id)?;
     if !validation.valid {
         return Err(format!(
@@ -214,6 +217,10 @@ fn create_backup_in_staging(
     source
         .backup(DatabaseName::Main, &destination_database, None)
         .map_err(|error| format!("A cópia consistente do SQLite falhou: {error}"))?;
+    // Os bytes do backup no disco, não só no cache: é deste arquivo que um rollback depende depois
+    // de uma queda de energia.
+    super::duravel::sincronizar_arquivo(&destination_database)
+        .map_err(|error| format!("O backup não pôde ser gravado de forma durável: {error}"))?;
 
     let health = inspect_database(&destination_database)?;
     if !health.integrity_result.eq_ignore_ascii_case("ok") {

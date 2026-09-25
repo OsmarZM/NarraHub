@@ -7,13 +7,12 @@
         <span class="total-badge">{{ entities.length }} entidades · {{ store.relations().length }} conexões · {{ store.canvasNodes().length }} elementos</span>
       </div>
     </div>
+    <!-- No celular estas ações vão para o "•••" do shell (mobileActions); o canvas fica com a tela. -->
+    @if (!viewport.isMobile()) {
     <div class="toolbar-right">
       <div class="canvas-add-group" role="group" aria-label="Adicionar ao canvas">
         <button type="button" class="secondary-button" (click)="addTitle()">＋ Título</button>
-        <label class="secondary-button canvas-image-button">
-          ＋ Imagem
-          <input type="file" accept="image/*" hidden (change)="onImageSelected($event)" />
-        </label>
+        <button type="button" class="secondary-button canvas-image-button" (click)="imageInput.click()">＋ Imagem</button>
         <button type="button" class="secondary-button" (click)="addNote()">＋ Nota</button>
       </div>
       @if (store.entityPositions().length) {
@@ -23,6 +22,8 @@
         <span>＋</span> Nova conexão
       </button>
     </div>
+    }
+    <input #imageInput type="file" accept="image/*" hidden (change)="onImageSelected($event)" />
   </header>
 
   @if (entities.length > 0 || store.canvasNodes().length > 0) {
@@ -41,7 +42,16 @@
         (canvasEdgeDeleted)="deleteCanvasEdge($event)"
       />
     </div>
-    @if (store.relations().length || store.canvasEdges().length) {
+    @if ((store.relations().length || store.canvasEdges().length) && !viewport.isMobile()) {
+      <ng-container [ngTemplateOutlet]="relationList" />
+    }
+  } @else {
+    <section class="empty-feature"><span>⌘</span><h2>Conecte seu universo</h2><p>Cadastre entidades e ligue-as, ou monte o diagrama do seu jeito com títulos, imagens e notas.</p><button type="button" class="primary-button" (click)="addTitle()">Começar com um título</button></section>
+  }
+</div>
+
+<!-- As ligações cadastradas. Desktop: gaveta sob o canvas. Celular: folha aberta pelo "•••". -->
+<ng-template #relationList>
       <section class="relation-manager-drawer" aria-label="Ligações cadastradas">
         <header><strong>Ligações ({{ store.relations().length + store.canvasEdges().length }})</strong></header>
         <div class="relation-pills-list">
@@ -63,15 +73,17 @@
           }
         </div>
       </section>
-    }
-  } @else {
-    <section class="empty-feature"><span>⌘</span><h2>Conecte seu universo</h2><p>Cadastre entidades e ligue-as, ou monte o diagrama do seu jeito com títulos, imagens e notas.</p><button type="button" class="primary-button" (click)="addTitle()">Começar com um título</button></section>
-  }
-</div>
+</ng-template>
+
+@if (viewport.isMobile() && mobileRelationsOpen()) {
+  <app-mobile-sheet eyebrow="Conexões" title="Ligações cadastradas" size="tall" (closed)="mobileRelationsOpen.set(false)">
+    <ng-container [ngTemplateOutlet]="relationList" />
+  </app-mobile-sheet>
+}
 
 @if (showNewRelation()) {
-  <div class="modal-backdrop" (mousedown)="closeCreateRelation()">
-    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="modal-backdrop" data-nh-dialog (mousedown)="closeCreateRelation()">
+    <form class="modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       <header><div><span class="eyebrow">CONEXÕES</span><h2>Nova conexão</h2></div><button type="button" (click)="closeCreateRelation()">×</button></header>
       <p class="modal-guidance">Relação entre duas entidades — aparece também na ficha delas.</p>
       <label>Origem<select name="relationSource" [(ngModel)]="newRelationSource"><option value="">Selecione</option>@for (entity of entities; track entity.id) { <option [value]="entity.id">{{ entity.name }} · {{ entity.type }}</option> }</select></label>
@@ -83,8 +95,8 @@
 }
 
 @if (pendingConnection(); as pending) {
-  <div class="modal-backdrop" (mousedown)="pendingConnection.set(null)">
-    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="modal-backdrop" data-nh-dialog (mousedown)="pendingConnection.set(null)">
+    <form class="modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       <header><div><span class="eyebrow">CANVAS</span><h2>Ligar elementos</h2></div><button type="button" (click)="pendingConnection.set(null)">×</button></header>
       <p class="modal-guidance"><strong>{{ pending.source.label }}</strong> → <strong>{{ pending.target.label }}</strong><br />Esta é uma ligação do diagrama. Ela não vira uma relação na ficha da entidade.</p>
       <label>Rótulo (opcional)<input name="connectionLabel" [(ngModel)]="connectionLabel" placeholder="Ex.: inspira, acontece em" autofocus (keydown.enter)="confirmConnection()" /></label>
@@ -94,8 +106,8 @@
 }
 
 @if (editingNode(); as node) {
-  <div class="modal-backdrop" (mousedown)="editingNode.set(null)">
-    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="modal-backdrop" data-nh-dialog (mousedown)="editingNode.set(null)">
+    <form class="modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       <header><div><span class="eyebrow">CANVAS</span><h2>Editar elemento</h2></div><button type="button" (click)="editingNode.set(null)">×</button></header>
       @if (node.image) { <div class="canvas-node-preview" [style.background-image]="'url(' + node.image + ')'"></div> }
       <label>Texto<input name="nodeText" [(ngModel)]="nodeText" autofocus (keydown.enter)="confirmNodeRename()" /></label>
@@ -109,8 +121,8 @@
 }
 
 @if (pendingNodeDelete(); as node) {
-  <div class="modal-backdrop" (mousedown)="pendingNodeDelete.set(null)">
-    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="modal-backdrop" data-nh-dialog (mousedown)="pendingNodeDelete.set(null)">
+    <form class="modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       <header><div><span class="eyebrow danger-copy">EXCLUSÃO LOCAL</span><h2>Excluir elemento?</h2></div><button type="button" (click)="pendingNodeDelete.set(null)">×</button></header>
       <p class="delete-warning"><strong>{{ node.text || 'Elemento sem texto' }}</strong><br />O elemento e as ligações dele no diagrama serão removidos. Entidades e relações do universo não são afetadas.</p>
       <footer><button type="button" class="secondary-button" (click)="pendingNodeDelete.set(null)">Cancelar</button><button type="submit" class="primary-button destructive" (click)="confirmNodeDelete()">Excluir elemento</button></footer>
@@ -119,8 +131,8 @@
 }
 
 @if (pendingDelete(); as item) {
-  <div class="modal-backdrop" (mousedown)="pendingDelete.set(null)">
-    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="modal-backdrop" data-nh-dialog (mousedown)="pendingDelete.set(null)">
+    <form class="modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       <header><div><span class="eyebrow danger-copy">EXCLUSÃO LOCAL</span><h2>Excluir ligação?</h2></div><button type="button" (click)="pendingDelete.set(null)">×</button></header>
       <p class="delete-warning"><strong>{{ item.label }}</strong><br />A ligação será removida. As entidades conectadas serão preservadas. Esta ação não pode ser desfeita.</p>
       <footer><button type="button" class="secondary-button" (click)="pendingDelete.set(null)">Cancelar</button><button type="submit" class="primary-button destructive" (click)="confirmDelete()">Excluir ligação</button></footer>

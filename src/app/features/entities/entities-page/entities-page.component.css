@@ -192,3 +192,18 @@ app-entities-page .entity-modal-error { margin:12px 0 0; color:var(--nh-danger);
 @media (hover:none) {
   app-entities-page .entity-card-rename, app-entities-page .entity-card-delete { opacity:1; }
 }
+
+/* ── celular ─────────────────────────────────────────────────────────────────────
+ * Personagens, lugares e objetos no celular: uma coluna de fichas, abas que rolam por dentro, e as
+ * ações da ficha (renomear, excluir) sempre visíveis — no desktop elas só aparecem com hover.
+ * Componente com ViewEncapsulation.None: os seletores são prefixados pelo elemento. */
+html.nh-mobile app-entities-page .feature-page { padding: 12px var(--nh-mobile-gutter) 32px; }
+html.nh-mobile app-entities-page .entity-grid { grid-template-columns: 1fr; gap: 12px; }
+html.nh-mobile app-entities-page :is(.entity-card-rename, .entity-card-delete) { width: var(--nh-touch-target); height: var(--nh-touch-target); opacity: 1; font-size: 16px; }
+html.nh-mobile app-entities-page .entity-card-rename { right: 56px; }
+html.nh-mobile app-entities-page .entity-list-row { grid-template-columns: minmax(0, 1fr) var(--nh-touch-target) var(--nh-touch-target); }
+html.nh-mobile app-entities-page :is(.entity-list-rename, .entity-list-delete) { width: var(--nh-touch-target); height: var(--nh-touch-target); opacity: 1; font-size: 16px; }
+html.nh-mobile app-entities-page .entity-list-open { min-height: 56px; font-size: 15px; }
+html.nh-mobile app-entities-page .entity-tab-pill { min-height: 40px; padding: 0 14px; font-size: 14px; }
+html.nh-mobile app-entities-page :is(.primary-button, .secondary-button) { min-height: var(--nh-touch-target); font-size: 15px; }
+html.nh-mobile app-entities-page .recent-carousel > button { min-height: var(--nh-touch-target); }

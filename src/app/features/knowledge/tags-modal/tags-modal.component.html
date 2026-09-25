@@ -1,6 +1,6 @@
 @if (store.metadataTarget(); as target) {
-  <div class="modal-backdrop" (mousedown)="close()">
-    <form class="modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="modal-backdrop" data-nh-dialog (mousedown)="close()">
+    <form class="modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       <header><div><span class="eyebrow">ORGANIZAÇÃO</span><h2>Tags</h2></div><button type="button" (click)="close()">×</button></header>
       <p class="modal-guidance"><strong>{{ target.name }}</strong> · Tags categorizam conteúdos. Campos pertencem somente às fichas de entidades.</p>
       <section class="metadata-section">

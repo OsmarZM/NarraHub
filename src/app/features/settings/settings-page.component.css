@@ -83,6 +83,11 @@ app-settings-page .ai-fields { margin-top: 0; }
 app-settings-page .pairing-panel { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px 15px; margin: 16px 0; padding: 14px; border: 1px solid color-mix(in srgb, var(--brand) 20%, var(--line)); border-radius: 11px; background: var(--brand-soft); }
 app-settings-page .pairing-panel small { color: var(--muted); font-size: 8px; }
 app-settings-page .pairing-panel strong { font-size: 11px; }
+/* I-BUG-04: a situação do código ocupa a linha inteira e se lê sem lupa. */
+app-settings-page .pairing-panel .pin-vencido, app-settings-page .pairing-panel .pin-validade { grid-column: 1 / -1; font-size: 12px; }
+app-settings-page .pairing-panel .pin-vencido { color: var(--nh-danger); }
+/* I-BUG-08: o aviso de que a escuta depende do app na tela ocupa a linha inteira. */
+app-settings-page .pairing-panel .escuta-na-tela { grid-column: 1 / -1; font-size: 12px; }
 app-settings-page .pairing-panel b { color: var(--brand); font-size: 22px; letter-spacing: .16em; }
 
 app-settings-page .share-session-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; margin: 16px 0 12px; padding: 13px; border: 1px solid color-mix(in srgb, var(--green) 28%, var(--line)); border-radius: 11px; background: color-mix(in srgb, var(--green) 6%, var(--surface-2)); }
@@ -163,3 +168,56 @@ app-settings-page .delete-warning { padding: 12px; border: 1px solid color-mix(i
   app-settings-page .backup-row { align-items: flex-start; flex-direction: column; }
   app-settings-page .backup-row-actions { align-self: flex-end; }
 }
+
+/* ── celular ─────────────────────────────────────────────────────────────────────
+ * Configurações no celular: uma coluna, abas que rolam por dentro, campos de 16px e botões de dedo.
+ * Componente com ViewEncapsulation.None: os seletores são prefixados pelo elemento. */
+html.nh-mobile app-settings-page .settings-grid { display: block; }
+html.nh-mobile app-settings-page .settings-grid .surface-card { margin-bottom: 12px; padding: 18px var(--nh-mobile-gutter); }
+html.nh-mobile app-settings-page .field-row { grid-template-columns: 1fr; }
+html.nh-mobile app-settings-page .settings-nav button { min-height: 48px; font-size: 14px; }
+html.nh-mobile app-settings-page :is(.primary-button, .secondary-button, .text-button) { min-height: var(--nh-touch-target); font-size: 15px; }
+html.nh-mobile app-settings-page :is(input, select, textarea) { min-height: var(--nh-touch-target); font-size: 16px; }
+html.nh-mobile app-settings-page .card-head h2,
+html.nh-mobile app-settings-page .card-head h3 { font-size: 18px; }
+html.nh-mobile app-settings-page :is(.security-note, .field-label, .modal-guidance) { font-size: 13px; }
+html.nh-mobile app-settings-page .surface-card p { font-size: 14px; line-height: 1.5; }
+
+/* Etapa F: aviso da atualização da sincronização e atalho para os conflitos. */
+.sync-epoch-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--nh-ochre, var(--line));
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+.sync-epoch-notice small { color: var(--muted); }
+.sync-epoch-notice button { align-self: flex-start; }
+.sync-conflicts-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--nh-touch-target, 40px);
+  color: var(--muted);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.sync-conflicts-link.attention { color: var(--nh-danger); font-weight: 600; }
+
+/* Etapa H (H-R3): o aviso das versões antigas. Enquanto houver pendência ele volta a cada
+   abertura — não existe "não mostrar mais", porque o que está em jogo é texto que só existe aqui. */
+app-settings-page .legacy-recovery-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--nh-danger);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+app-settings-page .legacy-recovery-notice span { color: var(--muted); }
+app-settings-page .legacy-recovery-notice a { align-self: flex-start; text-decoration: none; }

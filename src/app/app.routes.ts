@@ -79,6 +79,18 @@ export const routes: Routes = [
         data: navigationData('configuracoes', 'Configurações', '⚙', false, 70),
       },
       {
+        // Etapa H (H-R3): as versões antigas guardadas só neste aparelho. Também sob Configurações.
+        path: 'settings/recuperacao-sync-antigo',
+        loadComponent: () => import('./features/legacy-recovery/legacy-recovery-page.component').then((module) => module.LegacyRecoveryPageComponent),
+        data: { ...navigationData('configuracoes', 'Versões antigas para recuperar', '⏱', false, 72), hiddenFromMenu: true },
+      },
+      {
+        // Etapa F: os conflitos do Sync V2. Fica sob Configurações (mesmo item ativo) e fora do menu.
+        path: 'settings/conflitos',
+        loadComponent: () => import('./features/conflicts/conflicts-page.component').then((module) => module.ConflictsPageComponent),
+        data: { ...navigationData('configuracoes', 'Conflitos de sincronização', '⚠', false, 71), hiddenFromMenu: true },
+      },
+      {
         path: 'workspace/:universeId',
         loadComponent: () => import('./workspace-layout.component').then((module) => module.WorkspaceLayoutComponent),
         data: { navigationId: 'workspace', label: 'Workspace' },

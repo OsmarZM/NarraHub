@@ -2,12 +2,15 @@ import { Component, ElementRef, input, output, signal, viewChild } from '@angula
 import { FormsModule } from '@angular/forms';
 
 /**
- * A barra de cima do Android: título da tela e busca.
+ * A barra de cima do shell mobile.
  *
- * Substitui a barra de título do desktop, que no celular era logo + busca espremidos por baixo
- * da barra de status, com controles de janela que não existem num telefone. Aqui a busca fica
- * atrás de um botão e ocupa a barra inteira quando aberta, como nos apps nativos. Navegar é a
- * alça gestual; esta barra não tem menu.
+ *   biblioteca      NARRAHUB                 🔍  •••
+ *   universo        ‹  História               🔍  •••
+ *                      Hopi horror
+ *
+ * Três alvos de 44px no máximo, e nenhum texto de ação: o que não é voltar, buscar ou "•••" vai
+ * para a folha de ações. A busca abre ocupando a barra inteira. Navegar entre áreas é a alça
+ * gestual; esta barra não tem menu de navegação.
  */
 @Component({
   selector: 'app-mobile-topbar',
@@ -22,24 +25,31 @@ import { FormsModule } from '@angular/forms';
             #searchInput
             type="search"
             enterkeyhint="search"
-            [attr.aria-label]="workspaceMode() ? 'Buscar no universo' : 'Buscar universos'"
-            [placeholder]="workspaceMode() ? 'Buscar no universo' : 'Buscar universos'"
+            [attr.aria-label]="searchLabel()"
+            [placeholder]="searchLabel()"
             [ngModel]="query()"
             (ngModelChange)="queryChange.emit($event)"
           />
         </label>
         <button type="button" class="nh-mtop-icon" aria-label="Fechar busca" (click)="closeSearch()">✕</button>
       } @else {
-        <button type="button" class="nh-mtop-brand" aria-label="Voltar à biblioteca de universos" (click)="homeRequested.emit()">
-          <img src="assets/narrahub-logo-full.webp" alt="" />
-        </button>
-        <div class="nh-mtop-title">
-          @if (context()) { <small>{{ context() }}</small> }
-          <strong>{{ title() }}</strong>
+        @if (canGoBack()) {
+          <button type="button" class="nh-mtop-icon nh-mtop-back" aria-label="Voltar aos universos" (click)="back.emit()">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"></path></svg>
+          </button>
+        }
+        <div class="nh-mtop-title" [class.with-back]="canGoBack()">
+          @if (eyebrow()) { <small>{{ eyebrow() }}</small> }
+          <strong [class.wordmark]="title() === 'NarraHub'">{{ title() }}</strong>
         </div>
-        <button type="button" class="nh-mtop-icon" aria-label="Buscar" (click)="openSearch()">
+        <button type="button" class="nh-mtop-icon" [attr.aria-label]="searchLabel()" (click)="openSearch()">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m16.4 16.4 4.1 4.1"></path></svg>
         </button>
+        @if (hasActions()) {
+          <button type="button" class="nh-mtop-icon" aria-label="Mais ações" aria-haspopup="dialog" (click)="actionsRequested.emit()">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"></circle><circle cx="12" cy="12" r="1.6"></circle><circle cx="19" cy="12" r="1.6"></circle></svg>
+          </button>
+        }
       }
     </header>
   `,
@@ -47,11 +57,14 @@ import { FormsModule } from '@angular/forms';
 })
 export class MobileTopbarComponent {
   readonly title = input('NarraHub');
-  readonly context = input('');
+  readonly eyebrow = input('');
+  readonly canGoBack = input(false);
+  readonly hasActions = input(false);
   readonly query = input('');
-  readonly workspaceMode = input(false);
+  readonly searchLabel = input('Buscar');
   readonly queryChange = output<string>();
-  readonly homeRequested = output<void>();
+  readonly back = output<void>();
+  readonly actionsRequested = output<void>();
 
   readonly searching = signal(false);
   private readonly searchInput = viewChild<ElementRef<HTMLInputElement>>('searchInput');

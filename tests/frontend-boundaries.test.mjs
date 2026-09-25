@@ -37,6 +37,10 @@ const featureFiles = [
   '../src/app/features/knowledge/state/knowledge.store.ts',
   '../src/app/features/knowledge/gateways/knowledge.gateway.ts',
   '../src/app/features/knowledge/tags-modal/tags-modal.component.ts',
+  '../src/app/features/conflicts/conflicts-page.component.ts',
+  '../src/app/features/conflicts/state/conflicts.store.ts',
+  '../src/app/features/legacy-recovery/legacy-recovery-page.component.ts',
+  '../src/app/features/legacy-recovery/state/legacy-recovery.store.ts',
 ];
 
 test('features extraídas não conhecem SQL nem o serviço legado', () => {
@@ -277,7 +281,8 @@ test('o pool só é aberto depois do portão de compatibilidade de schema (ADR 0
   // Se esta ordem se inverter, o app volta a morrer em silêncio.
   const bootstrap = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
   const portao = bootstrap.indexOf('this.backupService.compatibility()');
-  const abertura = bootstrap.indexOf('this.db.init()');
+  // O pool abre em openDatabaseSafely (backup antes da migration, tests/migration-safety.test.mjs).
+  const abertura = bootstrap.indexOf('this.openDatabaseSafely()');
   assert.notEqual(portao, -1, 'o bootstrap precisa consultar a compatibilidade do schema');
   assert.notEqual(abertura, -1, 'o bootstrap continua responsável por abrir o pool');
   assert.ok(portao < abertura, 'a verificação de compatibilidade tem que vir ANTES de abrir o pool');
@@ -666,4 +671,27 @@ test('a capability não concede mais execução de SQL ao frontend', () => {
     'sql:allow-execute só pode voltar se o frontend voltar a executar SQL');
   assert.ok(permissions.includes('sql:default'),
     'o plugin ainda aplica as migrations e fecha o pool na restauração de backup');
+});
+
+test('GATE F15: o frontend não conhece o log causal nem o índice de conflitos', () => {
+  // A tela de conflitos recebe DTOs prontos do Rust. Se o frontend souber o nome de uma
+  // tabela de sincronização ou do envelope, ele passou a decidir sobre o log -- e a
+  // resolução deixa de ser um fato causal validado no núcleo para virar um palpite da tela.
+  const proibidos = /sync_events|sync_divergences|sync_aggregate_state|sync_revision_history|conflict_resolutions|EventEnvelope|remote_event_id|new_rev|base_rev/u;
+  const infratores = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const caminho = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(caminho); continue; }
+      if (!/\.(ts|html)$/u.test(entry.name)) continue;
+      if (proibidos.test(readFileSync(caminho, 'utf8'))) infratores.push(caminho.replace(/\\/gu, '/'));
+    }
+  };
+  walk(fileURLToPath(new URL('../src/app/', import.meta.url)));
+  assert.deepEqual(infratores, [], `o frontend conhece o log causal: ${infratores.join(', ')}`);
+
+  const pagina = readFileSync(new URL('../src/app/features/conflicts/conflicts-page.component.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(pagina, /\binvoke\s*[<(]/u, 'a página de conflitos fala com o Tauri só pela porta');
+  const rotas = readFileSync(new URL('../src/app/app.routes.ts', import.meta.url), 'utf8');
+  assert.match(rotas, /path: 'settings\/conflitos'[\s\S]{0,400}hiddenFromMenu: true/u, 'a rota dos conflitos fica fora do menu');
 });

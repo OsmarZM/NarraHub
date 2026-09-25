@@ -17,11 +17,17 @@ FASE  1 → Qualification e segurança de atualização
 FASE  2 → Hardening do frontend / Workspace
 FASE  3 → Consolidação do Rust Core
 FASE  3.5 → Fronteira nativa do frontend
-FASE  4 → Sync V2
-FASE  5 → Features e Design System
-FASE  6 → Context Engine / IA
+FASE  4 → Sync V2                               FECHADA — QUALIFIED (2026-09-25)
+FASE  4.5 → Device Discovery & Pairing UX       ← ativa
+FASE  5 → Mobile UX + Product/Design Hardening
+FASE  6 → Context Engine / IA                   → 1.1, não bloqueia a 1.0
 FASE  7 → Release Candidate 1.0
 ```
+
+**Revisão de 2026-09-25, depois da qualificação física do Sync V2.** O caminho até a 1.0 passou a
+ser `4.5 → 5 → 7`. A Fase 6 continua planejada e vai para a 1.1. Objetivo da 1.0:
+
+> NarraHub 1.0 = local-first, confiável, mobile-native e simples de conectar.
 
 Cada fase só fecha quando o **gate** passa. Gate é obstáculo, não recomendação.
 
@@ -171,23 +177,90 @@ Ver [ADR 0008](../ADR/0008-fronteira-nativa-e-portas-de-plataforma.md).
 
 **Gate:** todos os itens acima verdes. **Release sugerida:** `0.11.0`.
 
----
-
-## FASE 5 — Features e Design System
-
-- 5.1 Decompor `PlanningBoardComponent` (~607 linhas).
-- 5.2 Decompor a Writing Page. Tiptap continua independente.
-- 5.3 Extrair responsabilidades crescentes de Entities.
-- 5.4 **Teste de design tokens**: escanear `var(--*)` e comparar com as definições.
-  Variável usada sem definição reprova o CI. Isso impede para sempre o bug 0.9.0/0.9.1.
-- 5.5 Regressão visual por snapshot nos temas claro e escuro.
-
-**Gate:** nenhuma refatoração muda comportamento. Se mudou comportamento, é feature e vai
-para issue/PR separado.
+**Fechada em 2026-09-25.** Etapas 1–14 do ADR 0009, mais E (Hello), F (resolução de conflitos),
+G (remoção do Sync V1), H (hardening) e I (qualificação física, I1–I20 PASS em Windows 11 e
+Samsung Galaxy S23 — PR #74, merge `8d7562d`). **Sync V2 architecture = QUALIFIED.** O item 4.10
+(descoberta mDNS) não entrou: virou a Fase 4.5. Protocolo, Noise, identidade, causalidade, grupos
+de mutação, bootstrap, blobs, `conflict_resolution` e formato canônico ficam congelados salvo bug
+comprovado; trabalho de sync daqui em diante é `bugfix`, `performance`, `UX`, `feature` ou
+`release hardening`.
 
 ---
 
-## FASE 6 — Context Engine
+## FASE 4.5 — Device Discovery & Pairing UX
+
+Objetivo: tornar o pareamento simples **sem criar um segundo protocolo**. O sync continua
+`Noise + identidade + Sync V2`. Descoberta só encontra o endpoint ou o convite:
+
+```text
+BLE / mDNS / QR  →  descobre endpoint ou convite  →  pareamento existente  →  TCP/Noise  →  Sync V2
+```
+
+| Método | Papel |
+| --- | --- |
+| IP manual | já existe; continua como alternativa |
+| QR Code | implementar |
+| mDNS | lista de aparelhos na mesma rede |
+| Bluetooth LE | descoberta e passagem de convite **só**; não transfere eventos, banco nem blobs |
+
+Tela única, nos dois lados:
+
+```text
+Adicionar dispositivo                     Tornar este dispositivo disponível
+  [ Escanear QR ]                           QR · PIN · validade · nome do aparelho
+  Aparelhos próximos
+    PC do Osmar
+    Galaxy S23
+  [ endereço manual ]
+```
+
+Segurança a provar com gate: **descoberta ≠ confiança**; anúncio falso não entra no roster; QR
+expirado falha; PIN errado falha; aparelho fora da confiança não sincroniza. Cada gate só conta
+depois de ser visto falhando com mutação ou implementação incompleta, e cada fatia repete Windows ↔
+Android físico.
+
+Fatias, uma por PR, na ordem: **QR → mDNS → BLE → tela de pareamento**. Tarefa: **NH-084**.
+
+**Gate:** os quatro métodos levam ao mesmo pareamento; os gates de segurança acima reprovam com a
+implementação incompleta; Windows ↔ Android físico verde.
+
+---
+
+## FASE 5 — Mobile UX + Product/Design Hardening
+
+Premissa: **não adaptar o desktop ao celular.** O mobile tem composição própria (ADR 0011);
+compartilha domínio, stores, serviços, Router e handlers, e não precisa compartilhar layout,
+hierarquia visual, densidade, navegação, composição nem interação.
+
+| Item | Conteúdo |
+| --- | --- |
+| M0 | **auditoria no S23 físico**, screenshots de todas as páginas classificadas em OK / desconfortável / desktop espremido / inutilizável → `docs/mobile/UX_AUDIT_V1.md`. Nenhum redesign antes dela |
+| M1 | linguagem visual mobile: tipografia, espaçamento, raio, cards, sheets, navegação inferior, topbar, alvos de toque (44–48px+), iconografia, movimento, háptica, claro/escuro; inputs nunca abaixo de 16px |
+| M2 | navegação primária descobrível (Início · Escrever · Mundo · Planejar · Mais); a alça lateral vira *Quick Switcher*; nada essencial só por gesto escondido |
+| M3 | Home: continuar escrevendo em um toque, universos e objetos recentes, atividade e sync |
+| M4 | escrita (prioridade máxima): título, editor em tela cheia, barra junto do teclado; capítulos, resumo, notas, histórico e propriedades em sheets; teclado real, seleção, copiar/colar, paisagem, texto longo |
+| M5 | personagens e entidades: seções, acordeões, chips, sheets — não o formulário do desktop comprimido |
+| M6 | universo como hub: livro atual, continuar escrevendo, personagens, lugares, histórias, timeline, atividade |
+| M7 / M8 | planejamento uma coluna por vez com swipe; timeline vertical |
+| M9 | conexões: lista de relações por padrão, grafo em tela cheia sob demanda |
+| M10 | sync em linguagem de usuário (seus dispositivos, sincronizado, esperando, precisa de atenção); nada de peer, roster, vector, bootstrap, mutation, Noise |
+| M11 | movimento 180–260 ms, springs leves, só `transform`/`opacity`; háptica só em evento significativo; respeitar *reduced motion* |
+| M12 | design system: tokens oficiais; **`var(--token)` sem definição reprova o CI** (antiga 5.4); breakpoints novos unificados; sem mega-PR de CSS legado |
+| M13 | decomposição de Planning, Writing e Entities só onde a responsabilidade é comprovadamente excessiva ou bloqueia mobile/testabilidade — nunca por contagem de linhas |
+| M14 | regressão visual por snapshot: claro, escuro, desktop, mobile (antiga 5.5) |
+| M15 | gate físico no S23 (retrato, paisagem, teclado aberto, claro, escuro) e Playwright em vários celulares |
+
+**Gate (M15):** zero rolagem horizontal; nenhuma ação importante abaixo do alvo de toque; nenhuma
+dependência de hover; nenhuma ação essencial só por gesto escondido; editor confortável com teclado;
+nada atrás das barras do sistema; nenhuma tela que seja só o desktop comprimido; navegação principal
+em no máximo duas ações. Tarefa: **NH-085**.
+
+---
+
+## FASE 6 — Context Engine (1.1)
+
+Planejada, **não bloqueia a 1.0** e não é implementada antes dela. Nada de banco vetorial nem
+embeddings durante o hardening da 1.0.
 
 - 6.1 Contrato `AIContext v1`.
 - 6.2 Orçamento de contexto — contexto tem budget; não se manda o universo inteiro.
@@ -200,24 +273,32 @@ para issue/PR separado.
 
 ---
 
-## FASE 7 — 1.0 RC
+## FASE 7 — Release Candidate 1.0
 
-- 7.1 Migration matrix de todas as versões suportadas até a atual.
-- 7.2 Security review: sharing, sync, updater, sidecars, file paths, backup, restore,
-  capabilities do Tauri, API keys.
-- 7.3 Recovery drill: migration ruim, update quebrado, banco corrompido, restore.
-- 7.4 Canary `1.0.0-rc.1` → grupo pequeno → `rc.2` → stable.
-- 7.5 Definition of Done 1.0:
+Só começa com a 4.5 e a 5 fechadas. Tarefa: **NH-086**.
+
+- **R1 Migration matrix** — todos os upgrades suportados até a 1.0. Obrigatório `0.9.2 → 1.0`
+  sobre uma **cópia** do acervo real do usuário, nunca o original.
+- **R2 Security review** — sync, Noise, QR, mDNS, descoberta Bluetooth, updater, sidecars, file
+  paths, backup, restore, capabilities do Tauri, API keys, FileProvider do Android.
+- **R3 Recovery drill** — injetar migration ruim, banco inválido, update interrompido, restore
+  inválido, blob faltando e sync interrompido; provar a recuperação.
+- **R4 Qualification** — de novo: Windows, Android, updater, backup/restore, sync físico,
+  pareamento por QR, descoberta na LAN e descoberta Bluetooth.
+- **R5 RC** — `1.0.0-rc.1` → canary pequeno → correções → `rc.2` → canary → `1.0.0`. Nunca
+  estável direto.
+
+Definition of Done da 1.0:
 
 ```text
-□ Nenhum P0 aberto
-□ Nenhum P1 conhecido de perda de dados
-□ Migration matrix verde       □ Sync V2 verde
-□ Backup/restore verde         □ Upgrade verde
-□ Updater verde                □ Sharing verde
-□ Windows qualification verde  □ Android qualification verde
-□ CI verde                     □ Documentação atual
-□ Rollback de release documentado
+□ nenhum P0                               □ nenhum P1 conhecido de perda de dados
+□ migrations verdes                       □ backup/restore verde
+□ updater verde                           □ Sync V2 verde
+□ QR verde                                □ discovery verde
+□ mobile UX aprovada                      □ claro e escuro aprovados
+□ Windows qualification verde             □ Android qualification verde
+□ CI verde                                □ rollback documentado
+□ documentação atual
 ```
 
 ---
@@ -236,16 +317,37 @@ A revisão arquitetural propôs uma ordem que o roadmap adota:
 | 6 | Context Engine | depende de identidade de alteração e revisões, que o Sync V2 amadurece |
 | 7 | Colaboração em tempo real / CRDT | só se o produto pedir edição simultânea de texto |
 
-Os três primeiros foram concluídos em 2026-09-01.
+Os três primeiros foram concluídos em 2026-09-01, e o Sync V2 em 2026-09-25.
+
+## Ordem de execução até a 1.0, revista em 2026-09-25
+
+Uma fatia por PR, sem mega branch; a próxima só começa com a anterior revisada e mergeada, e nenhum
+merge é automático. Antes de qualquer fatia grande, o plano vem para revisão com estado atual,
+problema observado, contrato proposto, arquivos afetados, gates, riscos e rollback.
+
+```text
+PR A    roadmap e documentação (esta revisão)
+PR B    QR                          PR C    mDNS
+PR D    descoberta BLE              PR E    tela de pareamento
+PR F    linguagem visual mobile     PR G    navegação
+PR H    Home                        PR I    escrita
+PR J    entidades                   PR K    planejamento e timeline
+PR L    sync no mobile              PR M    gates do design system
+PR N    regressão visual            PR O+   endurecimento do release candidate
+```
+
+Cada PR: hipótese → gate antes → implementação mínima → teste → gate visto falhando (mutação ou
+implementação incompleta) → teste físico quando depende da plataforma → documentação.
 
 ## Milestones sugeridos no GitHub
 
 ```text
 0.9.2  — Baseline
-0.10.0 — Architecture Hardening (Fases 2 e 3)
-0.11.0 — Sync V2
-0.12.0 — Context Engine
-1.0.0  — Production Hardening
+0.10.0 — Sync V2 + shell mobile (Fases 2, 3, 4 e ADR 0011)
+0.11.0 — Device Discovery & Pairing UX (4.5)
+0.12.0 — Mobile UX + Design Hardening (5)
+1.0.0  — Release Candidate e estável (7)
+1.1.0  — Context Engine (6)
 ```
 
 Milestones com issues pequenas. Nunca uma mega branch.

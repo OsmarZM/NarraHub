@@ -2,7 +2,8 @@
 
 `AGENTS.md` diz **como** trabalhar. Este arquivo diz **no que** trabalhar.
 
-Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
+Fase ativa: **FASE 4.5 — Device Discovery & Pairing UX**. Ver `docs/ai/PROJECT_STATE.md` e o caminho
+até a 1.0 em `docs/ai/ROADMAP.md` (4.5 → 5 → 7; Context Engine na 1.1).
 
 ## Regras deste arquivo
 
@@ -11,12 +12,145 @@ Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 - Edite **apenas a sua entrada** e commite essa mudança sozinha, para o merge ser trivial.
 - Detalhe do trabalho não vai aqui — vai no handoff (`docs/handoffs/`).
 - `DONE` exige validação executada, não só build verde.
-- Desde a PR #5, `main` é a linha canônica: branch curta a partir de `main`, PR de volta
-  para `main`. `main` é protegida — promoção só por PR, nunca por push direto.
+- Desde a PR #5, `main` é a linha canônica das versões **estáveis** e é protegida — promoção só por
+  PR, nunca por push direto. A linha 0.10 (Sync V2, shell mobile e o caminho até a 1.0) vive em
+  `mobile-shell`: branch curta a partir dela, PR de volta para ela, nunca merge automático.
 
 ---
 
 ## ACTIVE
+
+### NH-084 — Fase 4.5: Device Discovery & Pairing UX
+
+```text
+Owner:  Claude
+Status: READY — cada fatia só começa depois de o plano dela ser revisado
+Fase:   4.5
+Branch: uma por fatia, a partir de mobile-shell
+```
+
+Pareamento simples **sem segundo protocolo**: QR, mDNS e Bluetooth LE só descobrem endpoint ou
+convite; o resto é o pareamento existente, TCP/Noise e Sync V2. Absorve a NH-078.
+
+| Fatia | Entrega | Status |
+| --- | --- | --- |
+| PR B | QR: o aparelho disponível mostra, o celular lê pela câmera | plano para revisão |
+| PR C | mDNS: lista de aparelhos na mesma rede | BACKLOG |
+| PR D | Bluetooth LE: descoberta e passagem de convite, sem dados | BACKLOG |
+| PR E | tela única "Adicionar dispositivo" / "Tornar este dispositivo disponível" | BACKLOG |
+
+Gates de segurança obrigatórios, cada um visto falhando antes de contar: descoberta ≠ confiança;
+anúncio falso não entra no roster; QR expirado falha; PIN errado falha; aparelho fora da confiança
+não sincroniza. Cada fatia repete Windows ↔ Android físico.
+
+---
+
+### NH-085 — Fase 5: Mobile UX + Product/Design Hardening
+
+```text
+Owner:  não atribuída
+Status: BACKLOG — começa quando a 4.5 fechar
+Fase:   5
+```
+
+M0 (auditoria no S23 físico → `docs/mobile/UX_AUDIT_V1.md`, antes de qualquer redesign) até M15
+(gate físico e Playwright em vários celulares). Absorve as antigas 5.1–5.5 (decomposição, gate de
+tokens, regressão visual) e a NH-050 (tokens sem definição). Detalhe em `docs/ai/ROADMAP.md`.
+
+---
+
+### NH-086 — Fase 7: Release Candidate 1.0
+
+```text
+Owner:  não atribuída
+Status: BACKLOG — começa quando a 4.5 e a 5 fecharem
+Fase:   7
+```
+
+R1 migration matrix (obrigatório `0.9.2 → 1.0` sobre cópia do acervo real), R2 security review,
+R3 recovery drill, R4 qualificação completa, R5 `1.0.0-rc.1` → canary → `rc.2` → canary → `1.0.0`.
+Nunca estável direto.
+
+---
+
+### NH-083 — Sync V2, etapa I: qualificação física
+
+```text
+Owner:  Claude
+Status: DONE (PR #74 → 8d7562d, 2026-09-25) — Etapa I = CLOSED, Sync V2 = QUALIFIED
+Fase:   4 — Sync V2
+Branch: sync-i-qualificacao-fisica (base: mobile-shell @ 3d29469)
+```
+
+Instalação real, aparelhos reais (Windows 11 x64 + Samsung Galaxy S23 / Android 16), rede real e
+dados reais/controlados. Arquitetura do Sync V2 congelada: só correções mínimas, cada uma com gate.
+
+- **I1–I20: PASS.** I6 com terceira instalação desktop controlada (transporte Windows ↔ Android
+  físico); I14 com a limitação do segundo plano no Android; I19 no Android por evidência indireta
+  (checagem do próprio app + vetor 0/0).
+- **Achados corrigidos**: I-BUG-02 (janela do perfil Qualification), I-BUG-03 (fim de sessão
+  invisível), I-BUG-04 (código vencido / erros de pareamento), I-BUG-05 (tela de conflitos),
+  I-BUG-06 e I-BUG-09 (atualização pelo app no Android nunca funcionava), I-BUG-07 (conflito entre
+  decisões ilegível), I-BUG-08 (mensagens de conexão), I-UX-04 (decisão com confirmação).
+- **Não eram defeito**: I-BUG-01 (backup do Google restaura o acervo; identidade é nova) e I-ENV-01
+  (AppData virtualizado do agente MSIX).
+- **Atualização pelo app no Android** provada ponta a ponta: beta.8 → oferta da beta.9 → instalada.
+
+Evidência em `docs/qualification/SYNC_V2_PHYSICAL_QUALIFICATION.md` e no handoff da etapa I.
+
+---
+
+### NH-082 — Sync V2, etapa H: hardening final (H-R1, H-R2, H-R3)
+
+```text
+Owner:  Claude
+Status: DONE (PR #73 → 3d29469, 2026-09-24)
+Fase:   4 — Sync V2
+Branch: sync-h-hardening (base: mobile-shell)
+```
+
+A etapa que prova o que os casos extremos **não** conseguem: ressuscitar dado apagado, sobrescrever
+edição concorrente, usar `resolution` para escrever agregado alheio, perder conteúdo legado em
+silêncio ou deixar estado pela metade depois de uma queda. A prioridade é uma: **perda silenciosa é
+proibida**; conflito a mais, espera e fail closed são respostas aceitáveis.
+
+- **H-R1**: R2 com prova positiva; remoção de tombstone centralizada com motivo; GC físico continua
+  não existindo.
+- **H-R2**: `other_rev` deixou de ser autoridade; auxiliar só se junta quando pertence à ação
+  original, provado localmente.
+- **H-R3**: migration 29 (`legacy_recovery_items`), import pré-`Ready` e a tela "Versões antigas
+  para recuperar".
+
+Gates H1–H27 (`application/hardening_testes.rs`, `application/legado_testes.rs`,
+`database/legado_v1.rs`) e mutações HM1–HM8. Detalhe em `docs/sync/MATRIZ_COBERTURA_NH079.md` §5.3
+e no handoff da etapa H.
+
+---
+
+### NH-081 — Sync V2, etapa G: remoção definitiva do Sync V1
+
+```text
+Owner:  Claude
+Status: REVIEW
+Fase:   4 — Sync V2
+Branch: sync-g-remocao-v1 (base: mobile-shell)
+```
+
+**Sync V1 = removido do runtime. Sync V2 = único protocolo alcançável.**
+
+Saiu: `src-tauri/src/sync.rs` (snapshot de 17 tabelas por TCP, código de seis dígitos, LWW), os
+comandos `sync_status/start/stop/connect` e o `SyncState`; no frontend, `SyncService`,
+`SyncServerStatus`/`SyncResult`, o estado e as travas V1↔V2 do `SettingsStore` e os cartões
+"Receber sincronização" e "Conectar a outro dispositivo". A captura do bootstrap deixou de ler
+`sync_conflicts` (`ConflitoV1Aberto` saiu): o V1 nunca teve como resolver um conflito, e a trava
+virava um aparelho trancado para sempre.
+
+Ficou, como **legado histórico não utilizado em produção**: as tabelas `sync_conflicts`,
+`sync_peers` e `devices` (sem `DROP`, sem migration nova), a conversão de mídia do ADR 0010 sobre
+`sync_conflicts` no arranque (migração de banco antigo) e as citações de catálogo. Detalhe em
+`docs/sync/MATRIZ_COBERTURA_NH079.md` §5.2 e no handoff da etapa G.
+
+---
 
 ### NH-080 — NarraHub Mobile: navegação gestual e APK assinado nas releases
 
@@ -65,6 +199,25 @@ os quatro segredos de assinatura, constrói com a mesma action da CI, exige APK 
 `-unsigned`) e passa no `apksigner`. A release nasce rascunho e só é publicada depois de o APK
 estar nos assets. **A assinatura ainda não existe**: não havia keystore Android, e o workflow de
 release falha de propósito até os segredos serem criados. Ver `docs/RELEASE_ANDROID.md`.
+
+**Reestruturação mobile (PR #56, branch `mobile-shell`).** Pedido do humano: parar de tratar o
+celular como desktop espremido. Decisão registrada no **ADR 0011** — DesktopShell e MobileShell
+compartilham domínio e navegação, não a composição visual. Auditoria em `docs/mobile/AUDITORIA.md`;
+arquitetura, gestos, zoom, safe area e desempenho em `docs/mobile/README.md`.
+
+```text
+etapa 1  sem zoom (meta, WebView, touch-action); critério toque + lado menor <= 760
+etapa 2-3 app-mobile-shell, barra ‹ universo 🔍 •••, ações como dados (ShellActionsState)
+etapa 4  alça de três barras, dica de primeira execução, vibração, faixa do Android sincronizada
+etapa 5  escrita: editor na tela, árvore e resumo como folhas, "⋯" por item
+etapa 6  contrato data-nh-dialog: todo diálogo vira folha; altura por cadeia de 100%
+etapa 7  kanban uma coluna por vez, timeline em pé, grafo com a tela, ações sem hover
+etapa 8  perfil de desempenho: sem blur, sem will-change permanente
+etapa 9  Playwright: 4 celulares + desktop, 38 testes, job Mobile na CI
+```
+
+O `android-shell.css` da correção de emergência foi removido. Falta o roteiro físico
+(`docs/mobile/ROTEIRO_ANDROID.md`) no aparelho.
 
 **Layout só para Android (2026-09-14, depois do teste no S23 / Android 16).** O humano instalou a
 `0.10.0-beta.1` e o app parecia "um navegador quebrado tentando ser app": barra de título do desktop
@@ -141,8 +294,8 @@ semear devolvia `ReceptorNaoEstaVazio { tabela: "sync_devices" }`:
   não-transitividade vale para pareamento e para sessão pareada — um estranho autenticado é
   recusado pelo roster (`estranho_autenticado_nao_sincroniza`).
 
-**O V1 continua no código, congelado**, e a tela impede os dois ativos juntos. Ele sai do fluxo
-de produto quando o gate físico fechar — mas veja a `NH-079` antes disso.
+~~O V1 continua no código, congelado~~ — **saiu do runtime na etapa G** (`NH-081`), por decisão do
+autor, antes do gate físico desta tarefa; o roteiro físico continua valendo para o V2.
 
 ---
 
@@ -150,9 +303,12 @@ de produto quando o gate físico fechar — mas veja a `NH-079` antes disso.
 
 ```text
 Owner:  não atribuída
-Status: BACKLOG
+Status: DONE como tarefa — absorvida pela NH-084 (Fase 4.5) em 2026-09-25
 Fase:   4  (follow-up de UX; NÃO bloqueia o fechamento da etapa 14)
 ```
+
+O escopo abaixo continua valendo e segue na **NH-084**, que o amplia com Bluetooth LE e a tela única
+de pareamento.
 
 A antiga fatia 5 da etapa 14. Saiu do caminho crítico por decisão registrada: provar o
 transporte antes de envolver câmera, mDNS, multicast do Android e diferença entre roteadores.
@@ -162,13 +318,147 @@ material que o PIN já transporta — endpoint, identidade pública, informaçã
 a descoberta substitui a digitação do endereço. Se alterar mensagem, handshake ou ordem, deixou
 de ser esta tarefa.
 
+**Reforço da Etapa I (2026-09-24), pedido do usuário depois do teste físico:** entra logo **depois
+de fechar a I**, nunca durante, porque a I qualifica o fluxo atual. Evidência de que é necessário: no
+Samsung S23 o usuário não achou o código de pareamento (só aparece depois de "Escutar nesta rede",
+I-UX-01) e precisou digitar IP e porta à mão. Escopo:
+
+- **QR**: o aparelho que escuta mostra o QR; o celular lê pela câmera e preenche endereço + PIN.
+  Exige permissão de câmera e plugin de leitura no Android (muda manifest e o pedido ao usuário).
+- **Lista de aparelhos por perto** (como Bluetooth): mDNS anuncia só nome e endereço de quem está
+  escutando. **Descoberta nunca é confiança** — quem autoriza continua sendo o PIN/roster; um anúncio
+  falso só leva a um PIN que o impostor não tem.
+- Digitar o endereço continua existindo: rede "Pública" do Windows e roteadores com isolamento
+  bloqueiam multicast.
+
+---
+
+### H-R1 — Resolução antiga depois de o GC coletar o tombstone participante
+
+```text
+Owner:  Claude
+Status: CLOSED na etapa H (gates H1–H6, mutação HM1)
+Fase:   Hardening pré-release estável
+```
+
+**Fechado assim:** a regra R2 passou a exigir prova positiva de "nunca materializou aqui" —
+história vazia com o evento-base exato pendente, ou história feita só de decisões registradas
+(conflito de nome de tag, exclusão bloqueada, decisão de grupo). Ausência deixou de ser prova.
+Toda remoção de tombstone passa por `sync_repository::remover_tombstone`, com motivo declarado, e
+não existe variante de coleta: um GC futuro terá de acrescentar a própria e passar por H1–H6.
+
+O problema original:
+
+Uma decisão de `conflict_resolution` que chega tarde, depois de o GC ter podado o tombstone de
+um participante, encontra o agregado sem cabeça local. A regra R2 da etapa F ("nunca
+materializou aqui") poderia tratar isso como primeira materialização e **ressuscitar** o agregado
+ou **sobrescrever em silêncio** o estado que o GC julgou definitivo.
+
+**Critério de saída:** um gate — antes da release estável — que monta exclusão, coleta pelo GC e
+só então entrega a resolução antiga, e prova que não há ressurreição nem sobrescrita silenciosa
+(a resolução espera, é recusada ou vira concorrência explícita). Contexto:
+`docs/sync/MATRIZ_COBERTURA_NH079.md` §5.1, "Riscos para o hardening".
+
+---
+
+### H-R2 — Legitimidade semântica dos efeitos irmãos/meta em grupos `resolution`
+
+```text
+Owner:  Claude
+Status: CLOSED na etapa H (gates H7–H15, H28 e H29; mutações HM2–HM4, HM9 e HM10)
+Fase:   Hardening pré-release estável
+```
+
+**Fechado assim:** `other_rev` deixou de ser autoridade. Um efeito sobre agregado que não é
+participante só ganha a junção de dois pais quando ESTE aparelho prova que ele pertence à ação
+original do conflito — mesma origem e mesmo `mutation_id` do evento que produziu a revisão
+participante — e o **par inteiro** é a aresta daquela ação (`{baseRev, newRev}` de um membro) ou as
+cabeças das duas ações participantes. Conhecer uma das pontas não basta: a revisão do PR #73 mostrou
+que `{X1, X2}`, com X1 da ação e X2 produzido depois pelo receptor, passaria e sobrescreveria X2.
+Sem prova, o `other_rev` é descartado e o efeito segue pelo classificador comum: sequencial aplica,
+concorrente vira pergunta, desconhecido espera. Certificado inválido continua sendo recusa do grupo inteiro; falta
+de prova local, não.
+
+O problema original:
+
+`results[]` garante coerência **estrutural** entre o certificado e o grupo: mesma contagem, mesmos
+agregados, operação, base e `resultRev` recomputável. Mas para efeitos sobre agregados que não são
+os participantes (irmãos da ação inteira, efeitos meta como as marcações movidas numa mesclagem de
+tags) a regra de par é de conhecimento genérico, não amarrada à `conflictKey`.
+
+**Critério de saída:** restringir o que um certificado de cada `(kind, choice)` pode tocar, ou
+provar por gate que um certificado válido não consegue autorizar efeitos semanticamente
+arbitrários (agregado sem relação com o conflito, operação que a escolha não implica). Contexto:
+`docs/sync/MATRIZ_COBERTURA_NH079.md` §5.1, "Riscos para o hardening".
+
+---
+
+### H-R3 — Conflito V1 legado no bootstrap
+
+```text
+Owner:  Claude
+Status: CLOSED na etapa H (migration 29, gates H16–H27, mutações HM5–HM8)
+Fase:   Etapa H (sync-h-hardening)
+```
+
+**Fechado assim:** a migration 29 cria `legacy_recovery_items`, uma tabela local e não causal. O
+import roda no arranque, depois da conversão de mídia do ADR 0010 e antes de `Ready` — então o que
+entra já está convertido, e depois de `Ready` ninguém lê `sync_conflicts` (a garantia da G segue
+provada pelo autorizador do SQLite). É idempotente por `source_conflict_id`, e item decidido nunca
+volta a pendente. Em Configurações, o aviso não pode ser silenciado enquanto houver pendência; na
+tela "Versões antigas para recuperar", o escritor preserva (vira capítulo novo, por `Mutacao`
+normal, que sincroniza como qualquer conteúdo) ou descarta com confirmação explícita. Nada é
+automático, e `sync_conflicts` continua imutável.
+
+O problema original:
+
+**Cenário.** `sync_conflicts` pode guardar uma alternativa histórica (`remote_value`) que não faz
+parte do conteúdo materializado e não viaja no bootstrap V2.
+
+```text
+conteúdo materializado = A
+local_value            = A
+remote_value           = B
+
+bootstrap para aparelho novo
+→ A viaja
+→ B fica apenas no aparelho antigo
+```
+
+**Risco.** Se o último aparelho que contém esse legado for aposentado, abandonado, perdido ou
+descartado, B pode desaparecer sem uma decisão explícita do usuário.
+
+**Restrições.**
+
+- NÃO reintroduzir o Sync V1;
+- NÃO converter automaticamente `sync_conflicts` em `sync_divergences` V2;
+- NÃO inventar payload canônico completo a partir de um conflito por campo;
+- preservar a compatibilidade de upgrade.
+
+**Critério de saída.**
+
+```text
+banco legado com conflito A/B
+→ upgrade
+→ bootstrap para aparelho novo
+→ saída definitiva do último aparelho que contém o legado
+```
+
+deve resultar em UMA destas propriedades:
+
+1. B foi preservado em artefato/histórico transferível; ou
+2. o usuário recebeu aviso explícito e aceitou a perda.
+
+**Nunca perda silenciosa.** Contexto: `docs/sync/MATRIZ_COBERTURA_NH079.md` §5.1, "Riscos para o
+hardening", e §5.2 (por que a etapa G deixou de bloquear o bootstrap por conflito V1 aberto).
+
 ---
 
 ### NH-079 — Só 2 de ~47 escritas de domínio geram evento V2
 
 ```text
 Owner:  não atribuída
-Status: BACKLOG — bloqueia remover o Sync V1 do fluxo de produto
+Status: DONE — coberta pelas etapas B1–B6 (gate de cobertura total na B6); o V1 saiu na etapa G
 Fase:   4
 ```
 

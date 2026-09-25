@@ -27,48 +27,84 @@
 }
 
 /* ── a alça ─────────────────────────────────────────────────────────────────
- * Visualmente uma cápsula de 3px com um brilho dourado; o alvo de toque tem 44×112px, que é o
- * que um polegar precisa. Fica a 58% da altura — a faixa que o polegar alcança segurando o
- * aparelho com uma mão. */
+ * Três barras verticais douradas na borda direita: discretas, mas visíveis — a primeira coisa
+ * que diz "daqui sai alguma coisa". Visual de ~10px; alvo de toque de 48×132px, que é o que um
+ * polegar precisa. Centro a 60% da altura, a faixa que o polegar alcança segurando o aparelho
+ * com uma mão. O MainActivity usa o MESMO 60% para desligar o "voltar" do Android só ali
+ * (teste em tests/mobile-shell.test.mjs). */
 .nh-mnav-handle {
   position: absolute;
-  top: 58%;
+  top: 60%;
   right: 0;
-  /* 44px para dentro da tela: o polegar raramente começa exatamente na borda, e a faixa em que
-   * o Android desliga o "voltar" (MainActivity.kt) tem 48dp — a área de toque cabe nela. */
-  width: 52px;
-  height: 140px;
-  margin-top: -70px;
+  width: 48px;
+  height: 132px;
+  margin-top: -66px;
   display: grid;
   place-items: center end;
-  padding: 0 4px 0 0;
+  padding: 0 7px 0 0;
   border: 0;
   background: transparent;
   pointer-events: auto;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
-  will-change: transform, opacity;
 }
 
 .nh-mnav-grip {
-  width: 4px;
-  height: 56px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--mnav-gold) 75%, transparent), transparent);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--mnav-gold) 35%, transparent);
-  opacity: .9;
-  transition: width .18s ease, height .18s ease, opacity .18s ease;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  opacity: .78;
+  transform-origin: 100% 50%;
+  transition: transform .18s cubic-bezier(.2, .8, .2, 1), opacity .18s ease;
 }
 
-/* Tocando: cresce e acende. É a resposta que o dedo espera antes de o navegador aparecer. */
+.nh-mnav-grip i {
+  width: 2px;
+  height: 22px;
+  border-radius: 1px;
+  background: var(--mnav-gold);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--mnav-gold) 45%, transparent);
+}
+.nh-mnav-grip i:nth-child(2) { height: 34px; }
+
+/* Tocando: cresce e acende. Só `transform` e `opacity` — nada de largura ou altura, que
+ * recalculariam o layout no momento exato em que o dedo espera resposta. */
 :host(.nh-mnav-pulling) .nh-mnav-grip,
 .nh-mnav-handle:focus-visible .nh-mnav-grip {
-  width: 5px;
-  height: 72px;
   opacity: 1;
+  transform: scale(1.35);
 }
 
 .nh-mnav-handle:focus-visible { outline: none; }
+
+/* ── a dica de primeira execução ──────────────────────────────────────────────
+ * "← Puxe para navegar", ao lado da alça. Aparece uma vez por versão da dica, some sozinha ou
+ * quando a navegação abre pela primeira vez. */
+.nh-mnav-coach {
+  position: absolute;
+  top: 60%;
+  right: 54px;
+  margin-top: -18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 14px 0 12px;
+  border: 1px solid color-mix(in srgb, var(--mnav-gold) 45%, transparent);
+  border-radius: 18px;
+  color: var(--mnav-ink);
+  background: var(--nh-mobile-sheet, #111726);
+  box-shadow: 0 8px 20px rgb(0 0 0 / 35%);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: nh-mnav-coach-in .45s cubic-bezier(.2, .8, .2, 1) both, nh-mnav-coach-nudge 1.4s ease-in-out .6s 2;
+}
+.nh-mnav-coach b { color: var(--mnav-gold); font-size: 16px; }
+
+@keyframes nh-mnav-coach-in { from { opacity: 0; transform: translate3d(16px, 0, 0); } }
+@keyframes nh-mnav-coach-nudge { 50% { transform: translate3d(-8px, 0, 0); } }
 
 /* ── a camada ───────────────────────────────────────────────────────────────
  * A arte de fundo do tema, com um véu por cima para os cartões lerem bem. O centro da arte já é
@@ -82,7 +118,6 @@
   color: var(--mnav-ink);
   background-color: var(--nh-mobile-bg-color, #0a0f1c);
   touch-action: none;
-  will-change: opacity;
 }
 
 :host(.nh-mnav-open) .nh-mnav-layer { pointer-events: auto; }
@@ -116,6 +151,14 @@
     radial-gradient(1px 1px at 24% 80%, var(--mnav-gold), transparent 60%);
   animation: nh-mnav-twinkle 6s ease-in-out infinite alternate;
 }
+
+/* Camadas de composição só enquanto o navegador está visível (o componente liga `nh-mnav-active`
+ * no <html> duas vezes por abertura, não por quadro). Fechado, a camada e os oito cartões não
+ * ocupam memória de GPU, e o brilho das estrelas não roda escondido. */
+:host-context(html.nh-mnav-active) .nh-mnav-layer { will-change: opacity; }
+:host-context(html.nh-mnav-active) .nh-mnav-card { will-change: transform, opacity; }
+.nh-mnav-sky i:last-child { animation-play-state: paused; }
+:host-context(html.nh-mnav-active) .nh-mnav-sky i:last-child { animation-play-state: running; }
 
 @keyframes nh-mnav-twinkle {
   from { opacity: .15; }
@@ -175,7 +218,6 @@
   box-shadow: var(--mnav-shadow);
   text-align: left;
   transform-origin: 50% 50%;
-  will-change: transform, opacity;
   -webkit-tap-highlight-color: transparent;
   touch-action: none;
 }
@@ -263,4 +305,5 @@
 @media (prefers-reduced-motion: reduce) {
   .nh-mnav-sky i:last-child { animation: none; opacity: .45; }
   .nh-mnav-grip { transition: none; }
+  .nh-mnav-coach { animation: none; }
 }

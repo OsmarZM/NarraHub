@@ -5,13 +5,13 @@ pub mod infrastructure;
 pub mod interface;
 mod local_ai;
 mod online_share;
-mod sync;
 
 use database::migrations::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V11, MIGRATION_V12, MIGRATION_V13, MIGRATION_V14,
     MIGRATION_V15, MIGRATION_V16, MIGRATION_V17, MIGRATION_V18, MIGRATION_V19, MIGRATION_V2,
-    MIGRATION_V20, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7,
-    MIGRATION_V8, MIGRATION_V9,
+    MIGRATION_V20, MIGRATION_V21, MIGRATION_V22, MIGRATION_V23, MIGRATION_V24, MIGRATION_V25,
+    MIGRATION_V26, MIGRATION_V27, MIGRATION_V28, MIGRATION_V29, MIGRATION_V3, MIGRATION_V4,
+    MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9,
 };
 use tauri_plugin_sql::{Migration, MigrationKind};
 
@@ -32,15 +32,16 @@ fn updater_configured(app: tauri::AppHandle) -> bool {
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(database::backup::BackupRuntimeState::default())
+        // Nenhum comando toca o banco antes do upgrade seguro terminar (database/estado.rs).
+        .manage(database::estado::EstadoDoBanco::default())
         .manage(database::recovery::RestoreRuntimeState::default())
-        .manage(std::sync::Mutex::new(sync::SyncState::default()))
         .manage(std::sync::Mutex::new(
             local_ai::LocalAiRuntimeState::default(),
         ))
         .manage(std::sync::Mutex::new(
             online_share::OnlineShareState::default(),
         ))
-        // Sync V2 (etapa 14). Estado proprio, que nao conversa com o do V1.
+        // Sync V2: o unico protocolo de sincronizacao alcancavel (etapa G).
         .manage(interface::tauri::sync_v2_commands::EstadoV2::default())
         .manage(interface::tauri::android_update_commands::EstadoAtualizacaoAndroid::default())
         .plugin(tauri_plugin_process::init())
@@ -195,6 +196,60 @@ pub fn run() {
                             sql: MIGRATION_V20,
                             kind: MigrationKind::Up,
                         },
+                        Migration {
+                            version: 21,
+                            description: "Divergence kind for blocked parent deletions",
+                            sql: MIGRATION_V21,
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 22,
+                            description: "Canvas edges die with their endpoint; tag name conflicts",
+                            sql: MIGRATION_V22,
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 23,
+                            description: "Atomic mutation groups",
+                            sql: MIGRATION_V23,
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 24,
+                            description: "Portable conflict identity",
+                            sql: MIGRATION_V24,
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 25,
+                            description: "Unique canvas entity position",
+                            sql: MIGRATION_V25,
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 26,
+                            description: "Versioned archive adoption",
+                            sql: MIGRATION_V26,
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 27,
+                            description: "Sync protocol 1 causal epoch",
+                            sql: MIGRATION_V27,
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 28,
+                            description: "Conflict resolution as a causal fact",
+                            sql: MIGRATION_V28,
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 29,
+                            description: "Legacy recovery inbox",
+                            sql: MIGRATION_V29,
+                            kind: MigrationKind::Up,
+                        },
                     ],
                 )
                 .build(),
@@ -238,8 +293,17 @@ pub fn run() {
             interface::tauri::blob_commands::blob_put,
             interface::tauri::blob_commands::blob_read,
             interface::tauri::blob_commands::blob_has,
-            interface::tauri::blob_commands::storage_prepare_assets,
+            interface::tauri::arranque_commands::storage_prepare_archive,
             interface::tauri::sync_v2_commands::sync_v2_panorama,
+            interface::tauri::conflitos_commands::sync_conflitos_listar,
+            interface::tauri::conflitos_commands::sync_conflito_inspecionar,
+            interface::tauri::conflitos_commands::sync_conflito_resolver,
+            interface::tauri::conflitos_commands::sync_v2_aviso_de_epoca,
+            interface::tauri::legado_commands::legado_pendentes,
+            interface::tauri::legado_commands::legado_listar,
+            interface::tauri::legado_commands::legado_destinos,
+            interface::tauri::legado_commands::legado_preservar,
+            interface::tauri::legado_commands::legado_descartar,
             interface::tauri::sync_v2_commands::sync_v2_estado,
             interface::tauri::sync_v2_commands::sync_v2_escuta_iniciar,
             interface::tauri::sync_v2_commands::sync_v2_escuta_parar,
@@ -266,6 +330,7 @@ pub fn run() {
             interface::tauri::knowledge_commands::tags_for_owner,
             interface::tauri::knowledge_commands::tag_assignments,
             interface::tauri::knowledge_commands::tag_create,
+            interface::tauri::knowledge_commands::tag_update,
             interface::tauri::knowledge_commands::tag_set,
             interface::tauri::knowledge_commands::tag_delete,
             interface::tauri::knowledge_commands::mentions_list,
@@ -299,6 +364,9 @@ pub fn run() {
             updater_configured,
             database::health::database_health,
             database::health::database_compatibility,
+            database::upgrade::database_migration_prepare,
+            database::upgrade::database_migration_finish,
+            database::upgrade::database_migration_rollback,
             database::backup::backup_create,
             database::backup::backup_list,
             database::backup::backup_validate,
@@ -313,10 +381,6 @@ pub fn run() {
             local_ai::install_local_ai,
             local_ai::start_local_ai_engine,
             local_ai::restart_local_ai_engine,
-            sync::sync_status,
-            sync::sync_start,
-            sync::sync_stop,
-            sync::sync_connect,
             online_share::online_share_status,
             online_share::online_share_start,
             online_share::online_share_stop,

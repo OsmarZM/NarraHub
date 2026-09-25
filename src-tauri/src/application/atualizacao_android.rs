@@ -215,12 +215,31 @@ pub struct PacoteBaixado {
 }
 
 fn cliente(versao_instalada: &str) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    let construtor = reqwest::Client::builder()
         // A API do GitHub recusa requisição sem User-Agent.
         .user_agent(format!("NarraHub-Android/{versao_instalada}"))
-        .connect_timeout(std::time::Duration::from_secs(15))
+        .connect_timeout(std::time::Duration::from_secs(15));
+    // I-BUG-09: sem isto, a primeira requisição HTTPS no Android derruba a tarefa com
+    // "Expect rustls-platform-verifier to be initialized" — e a atualização nunca aparece.
+    #[cfg(target_os = "android")]
+    let construtor = construtor.tls_backend_preconfigured(tls_com_raizes_embutidas()?);
+    construtor
         .build()
         .map_err(|e| format!("não foi possível preparar a conexão: {e}"))
+}
+
+/// TLS com as raízes da Mozilla embutidas no binário (`webpki-roots`), em vez do verificador da
+/// plataforma. No Android este é o único caminho que não depende de inicialização por JNI.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn tls_com_raizes_embutidas() -> Result<rustls::ClientConfig, String> {
+    let mut raizes = rustls::RootCertStore::empty();
+    raizes.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let provedor = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    Ok(rustls::ClientConfig::builder_with_provider(provedor)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| format!("não foi possível preparar a conexão segura: {e}"))?
+        .with_root_certificates(raizes)
+        .with_no_client_auth())
 }
 
 /// Consulta as releases e devolve a novidade, se houver.
@@ -345,6 +364,28 @@ pub async fn baixar(
 
 #[cfg(test)]
 mod tests {
+    /// **I-BUG-09 — o cliente do atualizador não depende do verificador da plataforma.** Achado em
+    /// aparelho físico (Android 16): a verificação entrava em pânico com "Expect
+    /// rustls-platform-verifier to be initialized". O reqwest precisa aceitar a configuração embutida
+    /// — se as versões do rustls divergirem, o downcast falha e o build do cliente dá erro, que é o
+    /// que este gate pega no desktop antes de chegar ao celular.
+    #[test]
+    fn ibug09_tls_embutido_e_aceito_pelo_reqwest() {
+        let tls = super::tls_com_raizes_embutidas().expect("tls");
+        let cliente = reqwest::Client::builder()
+            .tls_backend_preconfigured(tls)
+            .build();
+        assert!(
+            cliente.is_ok(),
+            "o reqwest recusou o TLS embutido: {:?}",
+            cliente.err()
+        );
+        assert!(
+            webpki_roots::TLS_SERVER_ROOTS.len() > 100,
+            "as raízes embutidas vieram vazias"
+        );
+    }
+
     use super::*;
     use serde_json::json;
 

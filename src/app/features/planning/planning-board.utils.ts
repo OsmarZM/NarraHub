@@ -33,7 +33,12 @@ export function reorderPlanningItems(
   const withoutDragged = items.filter((item) => item.id !== draggedId);
   const columns = new Map(PLANNING_STATUSES.map((status) => [
     status,
-    withoutDragged.filter((item) => item.status === status).sort((a, b) => a.sort_order - b.sort_order),
+    withoutDragged
+      .filter((item) => item.status === status)
+      // Empate de posição é válido (duas criações offline podem receber o mesmo número) e se
+      // resolve pelo id, igual ao `ORDER BY sort_order, id` do core — senão cada aparelho mostraria
+      // os empatados numa ordem.
+      .sort((a, b) => a.sort_order - b.sort_order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
   ]));
   const target = columns.get(targetStatus) ?? [];
   target.splice(Math.max(0, Math.min(targetIndex, target.length)), 0, { ...dragged, status: targetStatus });

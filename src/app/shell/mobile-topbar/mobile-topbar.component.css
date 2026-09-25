@@ -2,22 +2,21 @@
 
 .nh-mtop {
   height: 56px;
-  display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  border-bottom: 1px solid color-mix(in srgb, var(--nh-mobile-gold, #d8b772) 14%, transparent);
-  background: color-mix(in srgb, var(--nh-mobile-bg-color, #0b0813) 88%, transparent);
+  gap: 2px;
+  padding: 0 4px 0 var(--nh-mobile-gutter, 16px);
   color: var(--nh-mobile-ink, #ede7d9);
+  background: color-mix(in srgb, var(--nh-mobile-bg-color, #0a0f1c) 86%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--nh-mobile-gold, #d8b772) 14%, transparent);
 }
+.nh-mtop:has(.nh-mtop-back),
+.nh-mtop.searching { padding-left: 4px; }
 
-.nh-mtop.searching { grid-template-columns: minmax(0, 1fr) 44px; }
-
-.nh-mtop-brand,
 .nh-mtop-icon {
-  width: 44px;
-  height: 44px;
+  width: var(--nh-touch-target, 44px);
+  height: var(--nh-touch-target, 44px);
+  flex: 0 0 auto;
   display: grid;
   place-items: center;
   padding: 0;
@@ -26,35 +25,42 @@
   color: inherit;
   background: transparent;
   font-size: 18px;
-  -webkit-tap-highlight-color: transparent;
 }
+.nh-mtop-icon:active { background: color-mix(in srgb, var(--nh-mobile-gold, #d8b772) 16%, transparent); }
 
-.nh-mtop-brand img { width: 30px; height: 30px; object-fit: cover; object-position: 0 50%; }
-.nh-mtop-icon:active,
-.nh-mtop-brand:active { background: color-mix(in srgb, var(--nh-mobile-gold, #d8b772) 14%, transparent); }
+.nh-mtop svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.nh-mtop svg circle[r="1.6"] { fill: currentColor; stroke: none; }
 
-.nh-mtop svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
-
-.nh-mtop-title { min-width: 0; display: grid; line-height: 1.15; }
+.nh-mtop-title { min-width: 0; flex: 1 1 auto; display: grid; line-height: 1.2; }
+.nh-mtop-title.with-back { padding-left: 2px; }
 .nh-mtop-title small {
   overflow: hidden;
   color: var(--nh-mobile-gold, #d8b772);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: .06em;
+  letter-spacing: .04em;
   text-overflow: ellipsis;
-  text-transform: uppercase;
   white-space: nowrap;
 }
 .nh-mtop-title strong { overflow: hidden; font-size: 18px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.nh-mtop-title strong.wordmark {
+  color: var(--nh-mobile-gold, #d8b772);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: .24em;
+  text-transform: uppercase;
+}
 
 .nh-mtop-search {
-  height: 40px;
+  height: 42px;
+  min-width: 0;
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 12px;
-  border-radius: 20px;
+  margin-left: 8px;
+  padding: 0 14px;
+  border-radius: 21px;
   background: color-mix(in srgb, var(--nh-mobile-ink, #ede7d9) 9%, transparent);
 }
 .nh-mtop-search input {

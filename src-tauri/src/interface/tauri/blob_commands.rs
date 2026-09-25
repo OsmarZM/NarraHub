@@ -77,8 +77,9 @@ pub fn blob_put(app: AppHandle, base64: String) -> DatabaseCommandResult<String>
 ///
 /// `BlobStore::read` recalcula o hash antes de devolver, então blob corrompido
 /// no disco chega como erro e não como imagem errada na tela. Blob ausente
-/// chega como `not_found`, que é estado normal no incremental: a referência
-/// pode chegar antes do arquivo.
+/// chega como `not_found`: o evento remoto não materializa sem o arquivo
+/// (etapa D, item 12), mas acervo legado e escrita local ainda podem citar um
+/// hash cujo arquivo se perdeu.
 #[tauri::command]
 pub fn blob_read(app: AppHandle, hash: String) -> DatabaseCommandResult<BlobLido> {
     let store = super::blob_store(&app)?;

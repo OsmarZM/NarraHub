@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -119,7 +119,6 @@ test('só as portas nativas falam com o Tauri', () => {
     'core/services/rust-core.service.ts',
     // As portas de plataforma. Cada uma existe porque a capacidade é do sistema, não do
     // domínio: elas não gravam conteúdo do escritor, elas acionam o dispositivo.
-    'core/native/sync.service.ts',
     'core/native/online-share.service.ts',
     'core/native/ai.service.ts',
     'core/native/backup.service.ts',
@@ -136,11 +135,18 @@ test('só as portas nativas falam com o Tauri', () => {
     'core/services/database.service.ts',
     // O estado do Sync V2 (etapa 14, fatia 2). É plataforma: o que ela lê é sobre
     // ESTE APARELHO -- identidade, roster, cursor, pendência --, e não conteúdo do
-    // escritor. Distinta de `sync.service.ts`, que é a porta do V1 e está congelada.
+    // escritor. É a única porta de sincronização: o V1 saiu do runtime na etapa G.
     'core/native/sync-v2.service.ts',
     // Atualização do Android por APK das GitHub Releases. É plataforma: baixa e abre o instalador do
     // sistema, e não recebe URL nem caminho da tela -- o Rust usa o que ele próprio verificou.
     'core/native/android-update.service.ts',
+    // Os conflitos do Sync V2 (etapa F). É plataforma pelo mesmo motivo do Sync V2: o que ela
+    // lê é sobre a sincronização DESTE APARELHO. Ela recebe DTOs prontos -- nunca tabela de
+    // sincronização, envelope nem revisão crua -- e a decisão viaja como ação portátil.
+    'core/native/sync-conflicts.service.ts',
+    // A caixa de versões antigas (etapa H, H-R3). É plataforma pelo mesmo motivo: o que ela lê é o
+    // passado DESTE aparelho, e a tela nunca vê a tabela de origem.
+    'core/native/legacy-recovery.service.ts',
   ];
 
   const infratores = [];
@@ -404,7 +410,7 @@ test('o servico de blob nao devolve caminho de arquivo ao frontend', () => {
   );
 });
 
-test('o arranque chama a fronteira de assets entre as migrations e o primeiro consumo', () => {
+test('o arranque prepara o acervo entre as migrations e o primeiro consumo', () => {
   // ADR 0010. O backfill existia desde a fatia 5 e nao tinha chamador -- a mesma lacuna que a
   // revisao da etapa 2.5 apontou para `load_or_create`: funciona em teste e nunca roda no
   // aplicativo.
@@ -412,22 +418,28 @@ test('o arranque chama a fronteira de assets entre as migrations e o primeiro co
   // A ordem importa e por isso o gate mede posicao, nao so presenca:
   //
   //   db.init()          o plugin-sql aplica as migrations
-  //   prepareAssets()    converte o legado de midia
+  //   prepareArchive()   converte o legado de midia E adota o acervo (etapa C)
   //   universes.load()   primeiro consumo do acervo
+  //
+  // A ordem DENTRO da preparacao (midia antes da adocao) e do Rust, e tem gate la
+  // (`application::arranque`). Aqui o que se mede e a posicao da chamada no arranque.
   //
   // Chamar depois do primeiro consumo deixaria a tela ler um acervo que ainda tem base64
   // dentro, e `update_chapter` recusaria o proximo salvamento.
   const arranque = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
 
-  const migrations = arranque.indexOf('this.db.init()');
-  const assets = arranque.indexOf('this.blobs.prepareAssets()');
+  // O pool abre (e o plugin migra) dentro de openDatabaseSafely, com backup antes — ver
+  // tests/migration-safety.test.mjs. A posição que importa é a da chamada no arranque.
+  const migrations = arranque.indexOf('this.openDatabaseSafely()');
+  const assets = arranque.indexOf('this.blobs.prepareArchive()');
   const consumo = arranque.indexOf('this.universes.load()');
 
   assert.ok(migrations > 0, 'nao achei a abertura do pool; a varredura quebrou');
   assert.ok(
     assets > 0,
-    'o arranque nao chama `prepareAssets`. Sem isso o backfill volta a ser codigo sem '
-      + 'chamador, e um acervo antigo abre com base64 dentro do banco.',
+    'o arranque nao chama `prepareArchive`. Sem isso o backfill e a adocao voltam a ser '
+      + 'codigo sem chamador: um acervo antigo abriria com base64 dentro do banco e sem '
+      + 'passado causal nenhum.',
   );
   assert.ok(consumo > 0, 'nao achei o primeiro consumo do acervo');
 
@@ -435,22 +447,37 @@ test('o arranque chama a fronteira de assets entre as migrations e o primeiro co
     migrations < assets && assets < consumo,
     'a fronteira de assets tem que ficar DEPOIS das migrations e ANTES do primeiro consumo:'
       + `\n  db.init()        em ${migrations}`
-      + `\n  prepareAssets()  em ${assets}`
+      + `\n  prepareArchive() em ${assets}`
       + `\n  universes.load() em ${consumo}`,
   );
 });
 
-test('uma falha na migracao de midia nao impede o aplicativo de abrir', () => {
-  // Pendencia de midia e problema de midia. Quem exige o contrato completo e o pareamento, e
-  // ele ja sabe recusar. Travar a abertura por uma imagem antiga ilegivel transformaria um
-  // problema de midia em perda de acesso ao texto.
+test('uma falha no preparo do acervo interrompe o arranque em vez de ser engolida', () => {
+  // Ate a etapa C, a chamada era so de midia e ficava dentro de um try/catch que registrava e
+  // seguia: pendencia de midia e problema de midia, e travar a abertura por uma imagem antiga
+  // ilegivel transformaria isso em perda de acesso ao texto.
+  //
+  // Com a adocao na mesma chamada, a regra muda. Pendencia de midia continua nao travando nada
+  // (o Rust devolve Ok, com `sincronizacaoDisponivel: false` e o motivo); mas um ERRO significa
+  // acervo sem passado causal, e seguir abriria o aplicativo sobre um estado que a
+  // sincronizacao nao sabe descrever. O banco fica preservado, em recuperacao.
   const arranque = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
-  const inicio = arranque.indexOf('this.blobs.prepareAssets()');
-  const trecho = arranque.slice(Math.max(0, inicio - 400), inicio + 400);
+  const inicio = arranque.indexOf('this.blobs.prepareArchive()');
+  assert.ok(inicio > 0, 'nao achei a chamada de preparo do acervo');
 
+  // Nada de try/catch local em volta da chamada: o erro tem que subir para o catch do arranque,
+  // que mostra a causa na tela.
+  const trecho = arranque.slice(Math.max(0, inicio - 200), inicio + 200);
   assert.ok(
-    /try\s*\{/u.test(trecho) && /catch/u.test(trecho),
-    'a chamada precisa estar protegida: uma falha ali nao pode impedir a abertura.',
+    !/try\s*\{[^]*this\.blobs\.prepareArchive\(\)/u.test(trecho),
+    'a chamada voltou a ser engolida por um try/catch local: uma adocao que falha precisa '
+      + 'interromper o arranque, nao virar linha de log.',
+  );
+
+  // E o resultado sem sincronizacao precisa ser dito, nao ignorado.
+  assert.ok(
+    arranque.includes('sincronizacaoDisponivel'),
+    'o arranque ignora o veredito de sincronizacao do preparo do acervo.',
   );
 });
 
@@ -619,27 +646,92 @@ test('os sete comandos do Sync V2 estao registrados e a porta chama cada um', ()
   );
 });
 
-test('a tela nao deixa o Sync V1 e o Sync V2 ativos ao mesmo tempo', () => {
-  // Decisao registrada: congelar o V1 e substituir, sem coexistir. A trava fica na tela
-  // porque o Rust do V2 nao pode depender do V1. Este gate cobra os dois lados da trava.
-  const html = readFileSync(
-    new URL('../src/app/features/settings/settings-page.component.html', import.meta.url), 'utf8');
-  const store = readFileSync(
-    new URL('../src/app/features/settings/state/settings.store.ts', import.meta.url), 'utf8');
+test('ETAPA G — G1: nenhum comando do Sync V1 existe nem esta registrado', () => {
+  const lib = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+  const inicio = lib.indexOf('invoke_handler');
+  const lista = lib.slice(inicio, lib.indexOf('])', inicio));
+  for (const comando of ['sync_status', 'sync_start', 'sync_stop', 'sync_connect']) {
+    assert.ok(
+      !new RegExp(`\\b${comando}\\b`, 'u').test(lista),
+      `\`${comando}\` e comando do Sync V1 e voltou ao invoke_handler. O V1 saiu do runtime na etapa G.`,
+    );
+  }
+  assert.doesNotMatch(lib, /^\s*mod sync;/mu, 'o modulo do Sync V1 voltou');
+  assert.doesNotMatch(lib, /SyncState/u, 'o estado do Sync V1 voltou a ser gerenciado');
+  assert.ok(
+    !existsSync(fileURLToPath(new URL('../src-tauri/src/sync.rs', import.meta.url))),
+    'src-tauri/src/sync.rs voltou',
+  );
+});
 
+test('ETAPA G — G2/G12: o frontend nao referencia servico, store, DTO nem API do Sync V1', () => {
+  // O V1 era: porta `core/native/sync.service.ts` (SyncService), DTOs SyncServerStatus e
+  // SyncResult, o sinal `syncStatus`, as travas V1<->V2 e quatro comandos Tauri. Nada disso pode
+  // voltar a ser citado em codigo do app -- nem em comentario, para a busca continuar trivial.
+  const proibidos = /\bSyncService\b|\bSyncServerStatus\b|\bSyncResult\b|native\/sync\.service|\bsyncStatus\b|\bsyncV1Blocked\b|\bsyncV2Blocked\b|\bsync_status\b|\bsync_start\b|\bsync_stop\b|\bsync_connect\b|\bsync_conflicts\b|\bsync_peers\b|\bconnectSync\b|\bstartSync\b|\bstopSync\b/u;
+  const infratores = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const caminho = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(caminho); continue; }
+      if (!/\.(ts|html|css)$/u.test(entry.name)) continue;
+      const fonte = readFileSync(caminho, 'utf8');
+      const achado = fonte.match(proibidos);
+      if (achado) {
+        const relativo = caminho.split(/[\\/]/u).join('/');
+        infratores.push(`${relativo.slice(relativo.indexOf('src/app/'))}: ${achado[0]}`);
+      }
+    }
+  };
+  walk(fileURLToPath(new URL('../src/app/', import.meta.url)));
+  assert.deepEqual(infratores, [], `o frontend voltou a citar o Sync V1:\n${infratores.join('\n')}`);
   assert.ok(
-    /\(click\)="startSync\(\)"/u.test(html) && /store\.syncV1Blocked\(\)[^"]*"\s*\(click\)="startSync\(\)"/u.test(html),
-    'o botao de ligar o V1 precisa ficar travado enquanto a escuta do V2 estiver ativa.',
+    !existsSync(fileURLToPath(new URL('../src/app/core/native/sync.service.ts', import.meta.url))),
+    'a porta do Sync V1 voltou',
   );
-  assert.ok(
-    /store\.syncV2Blocked\(\)[^"]*"\s*\(click\)="startSyncV2\(\)"/u.test(html),
-    'o botao de ligar a escuta do V2 precisa ficar travado enquanto o V1 estiver ativo.',
-  );
-  assert.ok(
-    /syncV1Blocked\(\): boolean \{\s*return this\.syncV2State\(\)\.escutando;/u.test(store)
-      && /syncV2Blocked\(\): boolean \{\s*return this\.syncStatus\(\)\.running;/u.test(store),
-    'as travas precisam olhar o estado real de cada mecanismo.',
-  );
+});
+
+test('ETAPA G — G4/G5: todo comando de sincronizacao chamado pelo app e do V2', () => {
+  // Parear (PIN/Noise) e sincronizar aparelho ja pareado so existem como `sync_v2_*`, e os
+  // conflitos so pelos comandos da etapa F. Qualquer outro `sync_*` invocado e um caminho paralelo.
+  const PERMITIDOS = new Set([
+    'sync_v2_panorama', 'sync_v2_estado', 'sync_v2_escuta_iniciar', 'sync_v2_escuta_parar',
+    'sync_v2_pin_novo', 'sync_v2_parear', 'sync_v2_sincronizar', 'sync_v2_aviso_de_epoca',
+    'sync_conflitos_listar', 'sync_conflito_inspecionar', 'sync_conflito_resolver',
+  ]);
+  const chamados = new Set();
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const caminho = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(caminho); continue; }
+      if (!entry.name.endsWith('.ts')) continue;
+      const fonte = readFileSync(caminho, 'utf8');
+      for (const m of fonte.matchAll(/'(sync_[a-z0-9_]+)'/gu)) chamados.add(m[1]);
+    }
+  };
+  walk(fileURLToPath(new URL('../src/app/', import.meta.url)));
+  const estranhos = [...chamados].filter((c) => !PERMITIDOS.has(c));
+  assert.deepEqual(estranhos, [], `comando de sincronizacao fora do V2: ${estranhos.join(', ')}`);
+  for (const essencial of ['sync_v2_parear', 'sync_v2_sincronizar']) {
+    assert.ok(chamados.has(essencial), `o app nao chama mais \`${essencial}\`; a varredura quebrou`);
+  }
+
+  // A tela liga os botoes de parear e de sincronizar ao fluxo do V2, e so a ele.
+  const html = readFileSync(new URL('../src/app/features/settings/settings-page.component.html', import.meta.url), 'utf8');
+  assert.match(html, /\(click\)="pairSyncV2\(\)"/u);
+  assert.match(html, /\(click\)="syncNowV2\(\)"/u);
+  const store = readFileSync(new URL('../src/app/features/settings/state/settings.store.ts', import.meta.url), 'utf8');
+  assert.match(store, /this\.syncV2\.pair\(/u, 'parear precisa passar pela porta do V2');
+  assert.match(store, /this\.syncV2\.syncWith\(/u, 'sincronizar pareado precisa passar pela porta do V2');
+});
+
+test('ETAPA G — G3: o panorama e o contador de conflitos leem so sync_divergences', () => {
+  const ler = (r) => readFileSync(new URL(r, import.meta.url), 'utf8').split('#[cfg(test)]')[0];
+  for (const arquivo of ['../src-tauri/src/application/sync_panorama.rs', '../src-tauri/src/application/conflitos.rs']) {
+    const codigo = ler(arquivo).replace(/^\s*\/\/.*$/gmu, '');
+    assert.doesNotMatch(codigo, /\bsync_conflicts\b/u, `${arquivo} voltou a ler o Sync V1`);
+    assert.match(codigo, /FROM sync_divergences/u, `${arquivo} deixou de ler sync_divergences`);
+  }
 });
 
 test('os tipos da atualizacao do Android tem os mesmos campos no Rust e no TypeScript', () => {
@@ -694,4 +786,140 @@ test('os comandos de atualizacao do Android nao recebem URL, caminho nem hash da
   for (const comando of ['android_update_supported', 'android_update_check', 'android_update_download', 'android_update_install']) {
     assert.ok(lib.includes(`android_update_commands::${comando}`), `${comando} fora do invoke_handler`);
   }
+});
+
+test('os DTOs dos conflitos (etapa F) tem os mesmos campos no Rust e no TypeScript', () => {
+  // Mesmo motivo dos gates do Sync V2: o IPC serializa em camelCase e ninguém compara as duas
+  // declarações. Um campo renomeado chega como `undefined` -- e numa tela de conflito isso vira
+  // uma versão vazia, que o escritor pode escolher achando que é a certa.
+  const ler = (relativo) => readFileSync(new URL(relativo, import.meta.url), 'utf8');
+  const ts = ler('../src/app/core/native/sync-conflicts.service.ts');
+  const camposRust = (fonte, nome) => {
+    const inicio = fonte.indexOf(`pub struct ${nome} {`);
+    assert.ok(inicio >= 0, `nao achei o struct ${nome}; a varredura quebrou`);
+    const corpo = fonte.slice(inicio, fonte.indexOf('\n}', inicio));
+    return [...corpo.matchAll(/^\s{4}pub ([a-z0-9_]+):/gmu)].map((m) => m[1]);
+  };
+  const camposTs = (nome) => {
+    const inicio = ts.indexOf(`export interface ${nome} {`);
+    assert.ok(inicio >= 0, `nao achei a interface ${nome}; a varredura quebrou`);
+    const corpo = ts.slice(inicio, ts.indexOf('\n}', inicio));
+    return [...corpo.matchAll(/^\s{2}([A-Za-z0-9_]+)\??:/gmu)].map((m) => m[1]);
+  };
+  const camel = (snake) => snake.replace(/_([a-z0-9])/gu, (_, c) => c.toUpperCase());
+  const conflitos = '../src-tauri/src/application/conflitos.rs';
+  for (const [arquivo, nomeRust, nomeTs] of [
+    [conflitos, 'FiltroDeConflitos', 'ConflictFilter'],
+    [conflitos, 'ResumoDoConflito', 'ConflictSummary'],
+    [conflitos, 'Campo', 'ConflictField'],
+    [conflitos, 'LadoDoConflito', 'ConflictSide'],
+    [conflitos, 'Diferenca', 'ConflictDifference'],
+    [conflitos, 'LinhaDeDiff', 'ConflictDiffLine'],
+    [conflitos, 'AcaoDisponivel', 'ConflictAction'],
+    [conflitos, 'DetalheDoConflito', 'ConflictDetail'],
+    [conflitos, 'AvisoDeEpoca', 'EpochNotice'],
+    ['../src-tauri/src/application/resolucao_divergencia.rs', 'ResultadoDaResolucao', 'ConflictResolutionResult'],
+  ]) {
+    const esperados = camposRust(ler(arquivo), nomeRust).map(camel).sort();
+    assert.ok(esperados.length >= 2, `${nomeRust}: a varredura achou campos de menos`);
+    assert.deepStrictEqual(camposTs(nomeTs).sort(), esperados, `${nomeRust} (Rust) e ${nomeTs} (TypeScript) divergiram.`);
+  }
+
+  // A ação é um enum com `tag = "tipo"`: as variantes, em camelCase, são o tipo do TS.
+  const resolucao = ler('../src-tauri/src/application/resolucao_divergencia.rs');
+  const inicio = resolucao.indexOf('pub enum Acao {');
+  const corpo = resolucao.slice(inicio, resolucao.indexOf('\n}', inicio));
+  const variantes = [...corpo.matchAll(/^\s{4}([A-Z][A-Za-z]+)[ ,{]/gmu)]
+    .map((m) => m[1].charAt(0).toLowerCase() + m[1].slice(1)).sort();
+  const declaradas = [...ts.match(/export type ConflictActionType =([^;]+);/u)[1].matchAll(/'([A-Za-z]+)'/gu)]
+    .map((m) => m[1]).sort();
+  assert.ok(variantes.length >= 8, 'a varredura das ações quebrou');
+  assert.deepStrictEqual(declaradas, variantes, 'as ações de resolução divergiram entre Rust e TypeScript');
+  assert.match(corpo, /#\[serde\(rename_all = "camelCase"\)\]\s*Renomear \{ tag_id/u, 'renomear precisa chegar como tagId');
+});
+
+test('os quatro comandos dos conflitos estao registrados e a porta chama cada um', () => {
+  const lib = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+  const inicio = lib.indexOf('invoke_handler');
+  const lista = lib.slice(inicio, lib.indexOf('])', inicio));
+  const ts = readFileSync(new URL('../src/app/core/native/sync-conflicts.service.ts', import.meta.url), 'utf8');
+  for (const comando of [
+    'sync_conflitos_listar',
+    'sync_conflito_inspecionar',
+    'sync_conflito_resolver',
+    'sync_v2_aviso_de_epoca',
+  ]) {
+    assert.ok(lista.includes(`conflitos_commands::${comando}`), `\`${comando}\` nao esta no invoke_handler.`);
+    assert.ok(ts.includes(`'${comando}'`), `a porta do frontend nao chama \`${comando}\`.`);
+  }
+});
+
+test('ETAPA H — os comandos da recuperacao do legado estao registrados e a porta chama cada um', () => {
+  const lib = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+  const inicio = lib.indexOf('invoke_handler');
+  const lista = lib.slice(inicio, lib.indexOf('])', inicio));
+  const ts = readFileSync(new URL('../src/app/core/native/legacy-recovery.service.ts', import.meta.url), 'utf8');
+  for (const comando of ['legado_pendentes', 'legado_listar', 'legado_destinos', 'legado_preservar', 'legado_descartar']) {
+    assert.ok(lista.includes(`legado_commands::${comando}`), `\`${comando}\` nao esta no invoke_handler.`);
+    assert.ok(ts.includes(`'${comando}'`), `a porta do frontend nao chama \`${comando}\`.`);
+  }
+});
+
+test('ETAPA H — os DTOs da recuperacao do legado tem os mesmos campos no Rust e no TypeScript', () => {
+  const ler = (relativo) => readFileSync(new URL(relativo, import.meta.url), 'utf8');
+  const ts = ler('../src/app/core/native/legacy-recovery.service.ts');
+  const camposRust = (fonte, nome) => {
+    const inicio = fonte.indexOf(`pub struct ${nome} {`);
+    assert.ok(inicio >= 0, `nao achei o struct ${nome}; a varredura quebrou`);
+    const corpo = fonte.slice(inicio, fonte.indexOf('\n}', inicio));
+    return [...corpo.matchAll(/^\s{4}pub ([a-z0-9_]+):/gmu)].map((m) => m[1]);
+  };
+  const camposTs = (nome) => {
+    const inicio = ts.indexOf(`export interface ${nome} {`);
+    assert.ok(inicio >= 0, `nao achei a interface ${nome}; a varredura quebrou`);
+    const corpo = ts.slice(inicio, ts.indexOf('\n}', inicio));
+    return [...corpo.matchAll(/^\s{2}([A-Za-z0-9_]+)\??:/gmu)].map((m) => m[1]);
+  };
+  const camel = (snake) => snake.replace(/_([a-z0-9])/gu, (_, c) => c.toUpperCase());
+  const rust = ler('../src-tauri/src/application/legado_recuperacao.rs');
+  for (const [nomeRust, nomeTs] of [
+    ['ItemDeRecuperacao', 'LegacyRecoveryItem'],
+    ['DestinoPossivel', 'RecoveryDestination'],
+    ['PedidoDePreservacao', 'PreserveRequest'],
+  ]) {
+    const esperados = camposRust(rust, nomeRust).map(camel).sort();
+    assert.ok(esperados.length >= 3, `${nomeRust}: a varredura achou campos de menos`);
+    assert.deepStrictEqual(camposTs(nomeTs).sort(), esperados, `${nomeRust} (Rust) e ${nomeTs} (TypeScript) divergiram.`);
+  }
+});
+
+test('ETAPA H — o aviso das versoes antigas nao pode ser silenciado enquanto houver pendencia', () => {
+  // A diferenca para o aviso de epoca (E0) e proposital: aquele e informativo e tem "Entendi";
+  // este e sobre texto do escritor que so existe neste aparelho, entao ele volta a cada abertura.
+  const html = readFileSync(new URL('../src/app/features/settings/settings-page.component.html', import.meta.url), 'utf8');
+  const inicio = html.indexOf('legacy-recovery-notice');
+  assert.ok(inicio > 0, 'o aviso das versoes antigas sumiu de Configuracoes');
+  const bloco = html.slice(html.lastIndexOf('@if', inicio), html.indexOf('</div>', inicio));
+  assert.match(bloco, /legacyRecovery\.pending\(\) > 0/u, 'o aviso precisa depender so da pendencia');
+  assert.doesNotMatch(bloco, /localStorage|dismiss|Entendi/u, 'o aviso ganhou um jeito de ser silenciado');
+  const componente = readFileSync(new URL('../src/app/features/settings/settings-page.component.ts', import.meta.url), 'utf8');
+  assert.match(componente, /legacyRecovery\.refreshPending\(\)/u, 'a contagem precisa ser relida a cada abertura');
+});
+
+// I-BUG-03 (Etapa I, achado em aparelho físico): o aparelho que ESCUTA recebia a sessão, gravava no
+// banco e a tela seguia mostrando o acervo antigo até o app ser reaberto — ele não chamou comando
+// nenhum, então nada do frontend ficava sabendo. O aviso é um evento do Rust, e alguém tem de ouvi-lo
+// desde o arranque.
+test('a sessão atendida pela escuta chega à tela: o Rust emite e o arranque escuta o mesmo evento', () => {
+  const comandos = readFileSync(new URL('../src-tauri/src/interface/tauri/sync_v2_commands.rs', import.meta.url), 'utf8');
+  const nomeNoRust = comandos.match(/pub const EVENTO_SESSAO_ATENDIDA: &str = "([^"]+)";/u)?.[1];
+  assert.ok(nomeNoRust, 'o nome do evento sumiu do Rust');
+  const escuta = comandos.slice(comandos.indexOf('fn sync_v2_escuta_iniciar'), comandos.indexOf('fn atender('));
+  assert.match(escuta, /app\.emit\(EVENTO_SESSAO_ATENDIDA,/u, 'a escuta não emite o fim da sessão');
+
+  const porta = readFileSync(new URL('../src/app/core/native/sync-v2.service.ts', import.meta.url), 'utf8');
+  assert.equal(porta.match(/SYNC_V2_SERVED_EVENT = '([^']+)'/u)?.[1], nomeNoRust, 'frontend e Rust divergem no nome do evento');
+
+  const arranque = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
+  assert.match(arranque, /await this\.syncFeedback\.start\(\);/u, 'ninguém escuta a sessão atendida desde o arranque');
 });

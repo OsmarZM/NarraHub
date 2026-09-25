@@ -1,0 +1,121 @@
+:host {
+  /* I-BUG-05: o .content-stage da rota tem altura fixa e overflow oculto; a página rola por conta própria,
+     como Configurações. Sem isto, o que passa da janela (inclusive os botões de decisão) some. */
+  display: block;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.conflicts-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.conflicts-head { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.conflicts-head h1 { margin: 0; font-size: 1.5rem; color: var(--text); }
+.conflicts-sub { margin: 4px 0 0; color: var(--muted); }
+.back-link { text-decoration: none; }
+
+.conflicts-info, .conflicts-error {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+.conflicts-info { background: var(--brand-soft); color: var(--text); }
+.conflicts-error { border-color: var(--nh-danger); color: var(--nh-danger); }
+
+.conflicts-filters { display: flex; flex-wrap: wrap; gap: 12px; }
+.conflicts-filters label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 0.85rem; min-width: 0; }
+.conflicts-filters select { min-height: var(--nh-touch-target, 40px); max-width: 100%; }
+
+.conflicts-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+@media (min-width: 900px) {
+  .conflicts-body.com-detalhe { grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); }
+}
+
+.conflicts-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.conflict-item {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  min-height: var(--nh-touch-target, 44px);
+  box-sizing: border-box;
+}
+.conflict-item.ativo { border-color: var(--brand); }
+.conflict-item small { color: var(--muted); }
+.conflict-type { font-size: 0.8rem; color: var(--subtle); text-transform: uppercase; letter-spacing: 0.04em; }
+.conflicts-empty { color: var(--muted); padding: 12px 0; }
+
+.conflict-detail { padding: 16px; display: flex; flex-direction: column; gap: 16px; min-width: 0; box-sizing: border-box; }
+.detail-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.detail-head h2 { margin: 4px 0; overflow-wrap: anywhere; }
+.detail-head p { margin: 0; color: var(--muted); }
+.detail-note { color: var(--muted); font-size: 0.9rem; }
+
+.conflito-versoes { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+@media (min-width: 700px) { .conflito-versoes { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* Nome próprio de propósito (I-BUG-05): `.version` colidia com uma regra global de 9px. */
+.conflito-versao {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px;
+  background: var(--surface-2);
+  min-width: 0;
+  font-size: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.versao-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.versao-head h3 { margin: 0; font-size: 1rem; }
+.versao-texto { display: flex; flex-direction: column; gap: 8px; line-height: 1.6; user-select: text; }
+.versao-texto p { margin: 0; padding: 4px 8px; border-left: 3px solid transparent; border-radius: 4px; overflow-wrap: anywhere; }
+.versao-texto p.difere { border-left-color: var(--brand); background: var(--brand-soft); }
+.conflito-versao:nth-child(2) .versao-texto p.difere { border-left-color: var(--nh-ochre); background: var(--surface); }
+.versao-campos { margin: 0; display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: 6px 12px; font-size: 0.95rem; }
+.versao-campos dt { color: var(--muted); }
+.versao-campos dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+.versao-iguais summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; min-height: var(--nh-touch-target, 36px); display: flex; align-items: center; }
+.versao-iguais .versao-campos { margin-top: 6px; }
+.conflito-versao.deleted { border-color: var(--nh-danger); }
+.deleted-mark { margin: 8px 0; font-weight: 700; letter-spacing: 0.1em; color: var(--nh-danger); font-size: 1.2rem; }
+
+/* O lado a lado já destaca o que difere; a lista em sequência é para a tela estreita. */
+@media (min-width: 700px) { .text-diff { display: none; } }
+.diff-resumo { font-style: italic; font-size: 0.9rem; }
+
+.text-diff h3, .field-diff h3, .decision h3 { margin: 0 0 8px; font-size: 1rem; }
+.text-diff p { margin: 0; padding: 6px 10px; border-left: 3px solid transparent; overflow-wrap: anywhere; }
+.diff-igual { color: var(--muted); }
+.diff-so_deste { border-left-color: var(--brand); background: var(--brand-soft); }
+.diff-so_do_outro { border-left-color: var(--nh-ochre); background: var(--surface-2); }
+.diff-mark { display: block; font-size: 0.75rem; color: var(--subtle); }
+
+.field-diff { overflow-x: auto; }
+.field-diff table { width: 100%; border-collapse: collapse; }
+.field-diff th, .field-diff td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; white-space: pre-wrap; }
+
+.decision { display: flex; flex-direction: column; gap: 10px; }
+.decision-option { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.decision-option small { color: var(--muted); flex-basis: 100%; }
+.decision-option .decision-warning { color: var(--nh-ochre); font-weight: 600; }
+.decision-option input { min-height: var(--nh-touch-target, 40px); min-width: 0; flex: 1 1 180px; }
+
+@media (max-width: 600px) {
+  .conflicts-page { padding: 16px var(--nh-mobile-gutter, 12px); }
+}

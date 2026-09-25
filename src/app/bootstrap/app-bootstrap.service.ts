@@ -1,5 +1,6 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { isTauri } from '@tauri-apps/api/core';
+import { SyncSessionFeedbackService } from '../application/sync-session-feedback.service';
 import { AiService } from '../core/native/ai.service';
 import { BackupService } from '../core/native/backup.service';
 import { BlobService } from '../core/native/blob.service';
@@ -20,6 +21,7 @@ export class AppBootstrapService {
   private readonly knowledge = inject(KnowledgeStore);
   private readonly universes = inject(UniverseStore);
   private readonly settings = inject(SettingsStore);
+  private readonly syncFeedback = inject(SyncSessionFeedbackService);
 
   readonly ready = signal(false);
   readonly error = signal('');
@@ -44,6 +46,7 @@ export class AppBootstrapService {
     this.collaborationTimer = null;
     this.updateTimer = null;
     this.settings.dispose();
+    this.syncFeedback.stop();
     this.ai.dispose();
   }
 
@@ -65,43 +68,61 @@ export class AppBootstrapService {
         return;
       }
 
-      await this.db.init();
+      await this.openDatabaseSafely();
 
-      // A FRONTEIRA DE UPGRADE DOS ASSETS (ADR 0010).
+      // O PREPARO DO ACERVO (ADR 0010 + NH-079 etapa C).
       //
       //   db.init()          o plugin-sql aplica as migrations
-      //   prepareAssets()    ◄── aqui: o legado de mídia vira referência
+      //   prepareArchive()   ◄── aqui: mídia convertida, acervo adotado, banco liberado
       //   universes.load()   primeiro consumo do acervo
       //
-      // Tem que ser antes do primeiro consumo, e não em cada operação: o
-      // backfill é idempotente, mas varrer o acervo a cada gravação seria
-      // pagar de novo por um upgrade que já aconteceu.
+      // A ordem dentro dessa chamada é do Rust, não daqui: conversão de mídia,
+      // depois adoção, e só então o banco sai de "preparando". Nenhum comando
+      // de domínio — inclusive os de sincronização — responde antes disso.
       //
-      // Uma falha aqui NÃO impede a abertura. O legado que não pôde ser
-      // convertido continua preservado e vira pendência; quem exige o
-      // contrato completo é o pareamento, e ele já sabe recusar. Travar o
-      // aplicativo por uma imagem antiga ilegível seria transformar um
-      // problema de mídia em perda de acesso ao texto.
-      try {
-        const assets = await this.blobs.prepareAssets();
-        if (assets?.haviaTrabalho) {
-          console.log(
-            `[NarraHub] Assets migrados: ${assets.migrados} publicados, `
-              + `${assets.inlineLimpo} liberados do banco, `
-              + `${assets.pendenciasAbertas} pendência(s).`,
-          );
-        }
-      } catch (error) {
-        console.error('[NarraHub] A migração de mídia não pôde ser concluída.', error);
+      // **Erro aqui interrompe o arranque de propósito.** Até a etapa C a
+      // falha era registrada e seguia adiante, porque só havia mídia em jogo;
+      // agora, uma adoção que falha significa acervo sem passado causal, e
+      // seguir abriria o aplicativo sobre um estado que a sincronização não
+      // sabe descrever. O banco fica preservado, em recuperação, e o erro
+      // aparece na tela.
+      //
+      // Pendência de mídia continua não travando nada: o texto abre, e o que
+      // espera é a sincronização — com o motivo dito.
+      const acervo = await this.blobs.prepareArchive();
+      if (acervo?.assets?.haviaTrabalho) {
+        console.log(
+          `[NarraHub] Assets migrados: ${acervo.assets.migrados} publicados, `
+            + `${acervo.assets.inlineLimpo} liberados do banco, `
+            + `${acervo.assets.pendenciasAbertas} pendência(s).`,
+        );
+      }
+      if (acervo && acervo.adocao.adotados > 0) {
+        console.log(
+          `[NarraHub] Acervo adotado pela sincronização: ${acervo.adocao.adotados} itens.`,
+        );
+      }
+      if (acervo?.pareamentosInvalidados) {
+        console.warn(
+          '[NarraHub] A sincronização foi atualizada. Por segurança, pareie seus aparelhos novamente.',
+        );
+      }
+      if (acervo && !acervo.sincronizacaoDisponivel) {
+        console.warn(
+          '[NarraHub] Sincronização indisponível nesta sessão: '
+            + acervo.motivoDaIndisponibilidade,
+        );
       }
 
       await this.universes.load();
       await this.knowledge.refreshLibraryPreviewTags();
+      // Antes de qualquer escuta: uma sessão atendida precisa encontrar alguém ouvindo (I-BUG-03).
+      await this.syncFeedback.start();
       await this.collaboration.refreshShareStatus();
       await this.collaboration.loadReview();
       this.collaborationTimer = setInterval(() => void this.collaboration.syncIncoming(), 2500);
       await this.settings.primeCurrentVersion();
-      if (await this.settings.isUpdateConfigured()) {
+      if (await this.settings.shouldCheckForUpdatesOnStartup()) {
         this.updateTimer = setTimeout(() => void this.settings.checkForUpdates(true), 1800);
       }
     } catch (error) {
@@ -109,6 +130,50 @@ export class AppBootstrapService {
       this.error.set(error instanceof Error ? error.message : String(error));
     } finally {
       this.ready.set(true);
+    }
+  }
+
+  /**
+   * Abre o banco com a migration protegida (ver `src-tauri/src/database/upgrade.rs`).
+   *
+   *   prepareMigration   backup validado antes; migration interrompida antes é desfeita
+   *   db.init            o plugin-sql aplica as migrations
+   *   finishMigration    só aqui o registro some; versão intermediária não passa
+   *   rollbackMigration  qualquer falha acima devolve o banco original
+   */
+  private async openDatabaseSafely(): Promise<void> {
+    const preparation = await this.backupService.prepareMigration();
+    if (preparation.recoveredInterrupted) {
+      console.warn('[NarraHub] Uma atualização do banco tinha sido interrompida; o banco anterior foi restaurado antes de tentar de novo.');
+    }
+    if (!preparation.needed) {
+      await this.db.init();
+      return;
+    }
+    console.log(
+      `[NarraHub] Atualizando o banco da versão ${preparation.fromVersion} para a ${preparation.toVersion}. `
+        + `Backup antes da atualização: ${preparation.backup?.backupId}.`,
+    );
+    try {
+      await this.db.init();
+      await this.backupService.finishMigration();
+    } catch (error) {
+      await this.db.close().catch(() => undefined);
+      const detalhe = error instanceof Error ? error.message : String(error);
+      try {
+        const rollback = await this.backupService.rollbackMigration();
+        throw new Error(
+          `A atualização do banco falhou (${detalhe}). Seu banco anterior foi restaurado`
+            + `${rollback.backupId ? ` a partir do backup ${rollback.backupId}` : ''} e nada foi perdido.`,
+        );
+      } catch (rollbackError) {
+        if (rollbackError instanceof Error && rollbackError.message.startsWith('A atualização do banco falhou')) throw rollbackError;
+        const motivo = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+        throw new Error(
+          `A atualização do banco falhou (${detalhe}) e o banco anterior não pôde ser restaurado automaticamente (${motivo}). `
+            + `O backup ${preparation.backup?.backupId ?? ''} continua em Configurações → Backup.`,
+        );
+      }
     }
   }
 }

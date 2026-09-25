@@ -1,6 +1,6 @@
 [package]
 name = "narrahub"
-version = "0.10.0-beta.1"
+version = "0.10.0-beta.9"
 description = "NarraHub - Workspace Local-First para Construir Universos Narrativos"
 authors = ["FortaTech"]
 edition = "2021"
@@ -27,6 +27,11 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
+# I-BUG-09 (Etapa I): no Android o verificador da plataforma do reqwest exige inicialização por JNI
+# e entra em pânico sem ela. O cliente do atualizador usa as raízes da Mozilla embutidas. As duas
+# já vinham pelo reqwest; aqui só ficam nomeadas.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+webpki-roots = "1"
 sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 snow = "0.9"
@@ -42,6 +47,10 @@ zip = { version = "4", default-features = false, features = ["deflate"] }
 # um atributo e repassar todo o resto verbatim, que e a garantia de preservar
 # atributo desconhecido e o HTML ao redor.
 lol_html = "3.0.1"
+
+[dev-dependencies]
+# Só nos testes: o autorizador do SQLite vigia as tabelas legadas do Sync V1 (etapa G, G10/G11).
+rusqlite = { version = "0.32", features = ["backup", "bundled", "hooks"] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2"

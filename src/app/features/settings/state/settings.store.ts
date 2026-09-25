@@ -1,12 +1,10 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { isTauri } from '@tauri-apps/api/core';
-import { SyncResult, SyncServerStatus } from '../../../core/models';
 import { BackupManifest, BackupService, BackupValidation, DatabaseHealthReport, RestorePreparation } from '../../../core/native/backup.service';
 // DatabaseService is injected here on purpose, unlike the domain gateways: restoring a
 // backup has to close and reopen the app's own SQLite connection pool, which is native
 // pool lifecycle, not the SQL-vs-Rust boundary the other LegacyXGateway adapters abstract.
 import { DatabaseService } from '../../../core/services/database.service';
-import { SyncService } from '../../../core/native/sync.service';
 import {
   SYNC_V2_DEFAULT_PORT,
   SyncSessionResult,
@@ -33,7 +31,6 @@ export class SettingsStore {
   private readonly backupService = inject(BackupService);
   private readonly updateService = inject(UpdateService);
   private readonly androidUpdate = inject(AndroidUpdateService);
-  private readonly syncService = inject(SyncService);
   private readonly syncV2 = inject(SyncV2Service);
   private readonly db = inject(DatabaseService);
 
@@ -57,11 +54,7 @@ export class SettingsStore {
    */
   readonly updateChannel = signal<'desktop' | 'android'>('desktop');
 
-  readonly syncStatus = signal<SyncServerStatus>({ running: false, address: null, pairing_code: null, device_name: 'Meu computador' });
-  readonly syncBusy = signal(false);
-
-  // Sync V2 (etapa 14). O V1 acima continua no código só até o E2E físico
-  // fechar; os dois nunca ficam ativos juntos — ver `syncV2Blocked`.
+  // Sync V2: o único protocolo de sincronização (o V1 saiu na etapa G).
   readonly syncV2State = signal<SyncV2ListenState>({
     escutando: false,
     porta: null,
@@ -192,6 +185,15 @@ export class SettingsStore {
 
   isUpdateConfigured(): Promise<boolean> {
     return this.updateService.isConfigured();
+  }
+
+  /**
+   * Se o arranque deve procurar atualização. I-BUG-06 (Etapa I): o arranque perguntava só pelo
+   * atualizador do desktop (`updater_configured`), que o Android não tem — e o celular nunca
+   * oferecia a beta nova sozinho. O canal do Android é outro e vale por si.
+   */
+  async shouldCheckForUpdatesOnStartup(): Promise<boolean> {
+    return (await this.androidUpdate.supported()) || (await this.updateService.isConfigured());
   }
 
   async checkForUpdates(silent: boolean): Promise<{ ok: boolean; message: string }> {
@@ -349,25 +351,8 @@ export class SettingsStore {
   }
 
   async refreshSyncStatus(): Promise<void> {
-    this.syncStatus.set(await this.syncService.status());
     const v2 = await this.syncV2.listenState();
     if (v2) this.syncV2State.set(v2);
-  }
-
-  /**
-   * V1 e V2 não podem estar ativos ao mesmo tempo no mesmo acervo.
-   *
-   * Decisão registrada: congelar o V1 e substituí-lo, sem coexistir. Um acervo
-   * com parte das escritas vindas do snapshot do V1 e parte da causalidade do
-   * V2 teria estado cuja origem o V2 não explica. A trava fica na tela, e não
-   * no Rust, porque o código do V2 não pode depender do V1.
-   */
-  syncV1Blocked(): boolean {
-    return this.syncV2State().escutando;
-  }
-
-  syncV2Blocked(): boolean {
-    return this.syncStatus().running;
   }
 
   async startSyncV2(deviceName: string): Promise<SettingsActionResult> {
@@ -403,7 +388,6 @@ export class SettingsStore {
 
   private async runSyncV2(action: () => Promise<void>): Promise<SettingsActionResult> {
     if (!isTauri()) return { ok: false, error: 'A sincronização de rede só funciona no aplicativo instalado.' };
-    if (this.syncV2Blocked()) return { ok: false, error: 'Pare a sincronização antiga antes de usar a nova.' };
     this.syncV2Busy.set(true);
     try {
       await action();
@@ -417,7 +401,6 @@ export class SettingsStore {
 
   private async sessionSyncV2(run: () => Promise<SyncSessionResult>): Promise<{ ok: boolean; result?: SyncSessionResult; error?: string }> {
     if (!isTauri()) return { ok: false, error: 'A sincronização de rede só funciona no aplicativo instalado.' };
-    if (this.syncV2Blocked()) return { ok: false, error: 'Pare a sincronização antiga antes de usar a nova.' };
     this.syncV2Busy.set(true);
     try {
       const result = await run();
@@ -428,45 +411,6 @@ export class SettingsStore {
       this.syncV2Busy.set(false);
       const v2 = await this.syncV2.listenState().catch(() => null);
       if (v2) this.syncV2State.set(v2);
-    }
-  }
-
-  async startSync(deviceName: string): Promise<SettingsActionResult> {
-    if (!isTauri()) return { ok: false, error: 'A sincronização de rede só funciona no aplicativo instalado.' };
-    this.syncBusy.set(true);
-    try {
-      this.syncStatus.set(await this.syncService.start(deviceName));
-      return { ok: true };
-    } catch (error) {
-      return { ok: false, error: this.messageOf(error) };
-    } finally {
-      this.syncBusy.set(false);
-    }
-  }
-
-  async stopSync(): Promise<SettingsActionResult> {
-    this.syncBusy.set(true);
-    try {
-      this.syncStatus.set(await this.syncService.stop());
-      return { ok: true };
-    } catch (error) {
-      return { ok: false, error: this.messageOf(error) };
-    } finally {
-      this.syncBusy.set(false);
-    }
-  }
-
-  async connectSync(address: string, code: string, deviceName: string): Promise<{ ok: boolean; result?: SyncResult; error?: string }> {
-    if (!isTauri()) return { ok: false, error: 'A sincronização de rede só funciona no aplicativo instalado.' };
-    if (!address.trim() || !/^\d{6}$/.test(code.trim())) return { ok: false, error: 'Informe endereço e código de seis dígitos.' };
-    this.syncBusy.set(true);
-    try {
-      const result = await this.syncService.connect(address.trim(), code.trim(), deviceName);
-      return { ok: true, result };
-    } catch (error) {
-      return { ok: false, error: this.messageOf(error) };
-    } finally {
-      this.syncBusy.set(false);
     }
   }
 

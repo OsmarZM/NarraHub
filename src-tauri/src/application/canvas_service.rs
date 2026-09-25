@@ -1,4 +1,5 @@
 use crate::application::blob_fields;
+use crate::application::mutacao::Mutacao;
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::canvas::{
     is_known_attachment_owner, is_known_endpoint_kind, is_known_node_kind, Attachment, CanvasEdge,
@@ -6,9 +7,7 @@ use crate::domain::canvas::{
 };
 use crate::domain::identity::DeviceIdentity;
 use crate::domain::ids::{new_id, now_timestamp};
-use crate::domain::sync::{AggregateRef, Operation};
 use crate::infrastructure::blob_store::BlobStore;
-use crate::infrastructure::sqlite::sync_repository::{append_event_in_transaction, LocalChange};
 use crate::infrastructure::sqlite::{canvas_repository, SqliteDatabase};
 
 pub fn list_nodes(
@@ -27,10 +26,13 @@ pub fn list_nodes(
 // Oito parametros, um a mais que o limite do clippy, e o que passou do limite
 // foi o `store`. Agrupar num struct seria um refactor do contrato do comando
 // no meio do fechamento da etapa 13 -- registrado como divida (NH-070).
+/// Cria o elemento livre. **Duas revisões, de propósito:** o conteúdo e a posição são agregados
+/// diferentes desde a B5, então nascer já é dizer as duas coisas.
 #[allow(clippy::too_many_arguments)]
 pub fn create_node(
     database: &SqliteDatabase,
     store: &BlobStore,
+    identidade: &DeviceIdentity,
     universe_id: &str,
     kind: &str,
     text: &str,
@@ -56,79 +58,89 @@ pub fn create_node(
         created_at: timestamp.clone(),
         updated_at: timestamp,
     };
-    let mut connection = database.write()?;
-    let tx = connection
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    canvas_repository::insert_node(&tx, &node)?;
-    blob_fields::gravar_asset_direto(&tx, store, "canvas_nodes", &node.id, image)?;
-    tx.commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Mutacao::executar(database, identidade, |m| {
+        canvas_repository::insert_node(m.tx(), &node)?;
+        blob_fields::gravar_asset_direto(m.tx(), store, "canvas_nodes", &node.id, image)?;
+        m.gravou("canvas_node", &node.id)?;
+        m.gravou("canvas_node_position", &node.id)
+    })?;
     Ok(node)
 }
 
+/// Edita texto, imagem ou cor. **Não move o elemento**: posição é outro agregado.
 pub fn update_node(
     database: &SqliteDatabase,
     store: &BlobStore,
+    identidade: &DeviceIdentity,
     id: &str,
     patch: CanvasNodePatch,
 ) -> DatabaseCommandResult<()> {
     if patch.is_empty() {
         return Ok(());
     }
-    let mut conexao = database.write()?;
-    let connection = conexao
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    if !canvas_repository::update_node(&connection, id, &patch, &now_timestamp())? {
-        return Err(DatabaseCommandError::not_found(
-            "O elemento não existe mais no canvas.",
-        ));
-    }
-    if let Some(imagem) = patch.image.as_deref() {
-        blob_fields::gravar_asset_direto(&connection, store, "canvas_nodes", id, imagem)?;
-    }
-    connection
-        .commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        if !canvas_repository::update_node(m.tx(), id, &patch, &now_timestamp())? {
+            return Err(DatabaseCommandError::not_found(
+                "O elemento não existe mais no canvas.",
+            ));
+        }
+        if let Some(imagem) = patch.image.as_deref() {
+            blob_fields::gravar_asset_direto(m.tx(), store, "canvas_nodes", id, imagem)?;
+        }
+        m.gravou("canvas_node", id)
+    })
 }
 
-/// Exclui o elemento e as ligações dele na mesma transação.
+/// Exclui o elemento, as ligações dele e a posição — cada um com o seu evento.
 ///
-/// As pontas das ligações são polimórficas, então não há FK para cuidar disso.
-/// Sem a transação, uma falha entre os dois `DELETE` deixaria ligação apontando
-/// para elemento que não existe mais — e ela sumiria da tela pelo filtro da
-/// leitura, mas continuaria no arquivo para sempre.
-pub fn delete_node(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<()> {
-    let mut connection = database.write()?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    if !canvas_repository::delete_node(&transaction, id)? {
-        return Err(DatabaseCommandError::not_found(
-            "O elemento não existe mais no canvas.",
-        ));
-    }
-    transaction
-        .commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+/// ```text
+/// Excluido(canvas_edge…)          `trg_canvas_node_edges_delete` (migration 22)
+/// Excluido(canvas_node_position)  mora nas colunas do nó
+/// Excluido(canvas_node)
+/// ```
+///
+/// A limpeza das arestas era manual aqui até a B5. Virou gatilho de schema porque o mesmo efeito
+/// precisa acontecer quando quem sai é a **entidade** da outra ponta — e isso não passava por
+/// função nenhuma deste serviço.
+pub fn delete_node(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    id: &str,
+) -> DatabaseCommandResult<()> {
+    Mutacao::executar(database, identidade, |m| {
+        m.excluir("canvas_node", id).map_err(|erro| {
+            if erro.kind == crate::database::error::DatabaseErrorKind::NotFound {
+                DatabaseCommandError::not_found("O elemento não existe mais no canvas.")
+            } else {
+                erro
+            }
+        })?;
+        if !canvas_repository::delete_node(m.tx(), id)? {
+            return Err(DatabaseCommandError::not_found(
+                "O elemento não existe mais no canvas.",
+            ));
+        }
+        Ok(())
+    })
 }
 
+/// Arrastar o elemento é revisão da **posição**, não do conteúdo. Mover num aparelho e escrever
+/// no outro não pode virar conflito: não colidiu nada de verdade.
 pub fn save_node_position(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     id: &str,
     x: f64,
     y: f64,
 ) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    if !canvas_repository::save_node_position(&connection, id, x, y, &now_timestamp())? {
-        return Err(DatabaseCommandError::not_found(
-            "O elemento não existe mais no canvas.",
-        ));
-    }
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        if !canvas_repository::save_node_position(m.tx(), id, x, y, &now_timestamp())? {
+            return Err(DatabaseCommandError::not_found(
+                "O elemento não existe mais no canvas.",
+            ));
+        }
+        m.gravou("canvas_node_position", id)
+    })
 }
 
 pub fn list_entity_positions(
@@ -139,27 +151,56 @@ pub fn list_entity_positions(
     canvas_repository::list_entity_positions(&connection, universe_id)
 }
 
+/// A posição que o escritor arrastou é autoral e sincroniza (B3). Zoom, pan, seleção e hover não
+/// passam por aqui: eles vivem na memória do componente.
 pub fn save_entity_position(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     universe_id: &str,
     entity_id: &str,
     x: f64,
     y: f64,
 ) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    canvas_repository::save_entity_position(
-        &connection,
-        universe_id,
-        entity_id,
-        x,
-        y,
-        &now_timestamp(),
-    )
+    Mutacao::executar(database, identidade, |m| {
+        canvas_repository::save_entity_position(
+            m.tx(),
+            universe_id,
+            entity_id,
+            x,
+            y,
+            &now_timestamp(),
+        )?;
+        m.gravou("canvas_entity_position", entity_id)
+    })
 }
 
-pub fn clear_layout(database: &SqliteDatabase, universe_id: &str) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    canvas_repository::clear_layout(&connection, universe_id)
+/// Desfaz o layout do universo: cada posição persistida é excluída, e cada exclusão é um evento.
+pub fn clear_layout(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    universe_id: &str,
+) -> DatabaseCommandResult<()> {
+    Mutacao::executar(database, identidade, |m| {
+        let entidades: Vec<String> = {
+            let mut consulta = m
+                .tx()
+                .prepare(
+                    "SELECT entity_id FROM canvas_entity_positions WHERE universe_id = ?1
+                      ORDER BY entity_id",
+                )
+                .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+            let linhas = consulta
+                .query_map([universe_id], |row| row.get(0))
+                .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+            linhas
+                .collect::<Result<_, _>>()
+                .map_err(|error| DatabaseCommandError::storage(error.to_string()))?
+        };
+        for entidade in &entidades {
+            m.excluir("canvas_entity_position", entidade)?;
+        }
+        canvas_repository::clear_layout(m.tx(), universe_id)
+    })
 }
 
 pub fn list_edges(
@@ -178,6 +219,7 @@ pub fn list_edges(
 /// deixava a ligação inválida morar no arquivo para sempre, invisível.
 pub fn create_edge(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     universe_id: &str,
     source: &CanvasEndpoint,
     target: &CanvasEndpoint,
@@ -197,20 +239,6 @@ pub fn create_edge(
         ));
     }
 
-    let connection = database.write()?;
-    for endpoint in [source, target] {
-        if !canvas_repository::endpoint_exists(
-            &connection,
-            universe_id,
-            &endpoint.kind,
-            &endpoint.id,
-        )? {
-            return Err(DatabaseCommandError::not_found(
-                "Uma das pontas da ligação não existe mais neste universo.",
-            ));
-        }
-    }
-
     let edge = CanvasEdge {
         id: new_id(),
         universe_id: universe_id.to_string(),
@@ -221,18 +249,47 @@ pub fn create_edge(
         label: label.trim().to_string(),
         created_at: now_timestamp(),
     };
-    canvas_repository::insert_edge(&connection, &edge)?;
+    Mutacao::executar(database, identidade, |m| {
+        // A checagem das pontas é a MESMA regra que o apply remoto cobra (`sync_codec::canvas`),
+        // e ela roda de novo na emissão: nenhum evento local sai estruturalmente inválido.
+        for endpoint in [source, target] {
+            if !canvas_repository::endpoint_exists(
+                m.tx(),
+                universe_id,
+                &endpoint.kind,
+                &endpoint.id,
+            )? {
+                return Err(DatabaseCommandError::not_found(
+                    "Uma das pontas da ligação não existe mais neste universo.",
+                ));
+            }
+        }
+        canvas_repository::insert_edge(m.tx(), &edge)?;
+        m.gravou("canvas_edge", &edge.id)
+    })?;
     Ok(edge)
 }
 
-pub fn delete_edge(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    if !canvas_repository::delete_edge(&connection, id)? {
-        return Err(DatabaseCommandError::not_found(
-            "A ligação não existe mais.",
-        ));
-    }
-    Ok(())
+pub fn delete_edge(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    id: &str,
+) -> DatabaseCommandResult<()> {
+    Mutacao::executar(database, identidade, |m| {
+        m.excluir("canvas_edge", id).map_err(|erro| {
+            if erro.kind == crate::database::error::DatabaseErrorKind::NotFound {
+                DatabaseCommandError::not_found("A ligação não existe mais.")
+            } else {
+                erro
+            }
+        })?;
+        if !canvas_repository::delete_edge(m.tx(), id)? {
+            return Err(DatabaseCommandError::not_found(
+                "A ligação não existe mais.",
+            ));
+        }
+        Ok(())
+    })
 }
 
 // ── Anexos ───────────────────────────────────────────────────────────────
@@ -300,72 +357,24 @@ pub fn create_attachment(
         sort_order: 0,
         created_at: now_timestamp(),
     };
-    let mut conexao = database.write()?;
-    let tx = conexao
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    // A posição é calculada pelo banco numa subquery do `INSERT`, então ela
-    // volta de lá — devolver o zero que montamos aqui mostraria a imagem no
-    // começo da galeria até a próxima recarga.
-    attachment.sort_order = canvas_repository::insert_attachment(&tx, &attachment)?;
-    blob_fields::gravar_asset_direto(&tx, store, "attachments", &attachment.id, data_url)?;
-
-    // O payload é lido do banco depois da escrita, dentro da transação: é
-    // assim que ele carrega a referência em vez do que a tela mandou.
-    let gravado = canvas_repository::get_attachment(&tx, &attachment.id)?
-        .ok_or_else(|| DatabaseCommandError::storage("O anexo não foi encontrado após gravar."))?;
-    emitir_evento_de_anexo(&tx, identidade, &gravado, Operation::Upsert)?;
-
-    tx.commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    // O que volta para a tela leva a referência; a `data:` URL de exibição é
-    // montada na leitura seguinte.
-    attachment.blob_hash = gravado.blob_hash;
-    attachment.mime_type = gravado.mime_type;
-    attachment.data_url = String::new();
-    Ok(attachment)
-}
-
-/// O envelope do anexo, com o payload sem bytes.
-fn emitir_evento_de_anexo(
-    tx: &rusqlite::Transaction<'_>,
-    identidade: &DeviceIdentity,
-    anexo: &Attachment,
-    operacao: Operation,
-) -> DatabaseCommandResult<()> {
-    // **Delete não carrega payload**, e é o schema que cobra:
-    //
-    //   RAISE(ABORT, 'Evento delete nao carrega payload.')
-    //    WHERE NEW.operation = 'delete' AND NEW.payload <> ''
-    //
-    // A regra existe porque um delete com payload sugeriria que há o que
-    // restaurar. Não há: o tombstone é a informação inteira. Eu serializava o
-    // anexo nas duas operações, e o gate reprovou.
-    //
-    // No upsert, a cópia tem `data_url` vazio de propósito e não por acidente:
-    // o campo existe no struct para transporte de leitura, e o evento é o
-    // lugar em que ele não pode aparecer.
-    let payload = if operacao == Operation::Delete {
-        String::new()
-    } else {
-        serde_json::to_string(&Attachment {
-            data_url: String::new(),
-            ..anexo.clone()
-        })
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?
-    };
-
-    append_event_in_transaction(
-        tx,
-        identidade,
-        &LocalChange {
-            universe_id: &anexo.universe_id,
-            aggregate: AggregateRef::new("attachment", &anexo.id),
-            operation: operacao,
-            payload: &payload,
-        },
-    )?;
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        // A posição é calculada pelo banco numa subquery do `INSERT`, então ela volta de lá —
+        // devolver o zero que montamos aqui mostraria a imagem no começo da galeria.
+        attachment.sort_order = canvas_repository::insert_attachment(m.tx(), &attachment)?;
+        blob_fields::gravar_asset_direto(m.tx(), store, "attachments", &attachment.id, data_url)?;
+        let gravado =
+            canvas_repository::get_attachment(m.tx(), &attachment.id)?.ok_or_else(|| {
+                DatabaseCommandError::storage("O anexo não foi encontrado após gravar.")
+            })?;
+        // O evento é lido pela fronteira do banco, com a referência de blob e sem `data_url`.
+        m.gravou("attachment", &attachment.id)?;
+        m.gravou("attachment_position", &attachment.id)?;
+        // O que volta para a tela leva a referência; a `data:` URL é montada na leitura seguinte.
+        attachment.blob_hash = gravado.blob_hash;
+        attachment.mime_type = gravado.mime_type;
+        attachment.data_url = String::new();
+        Ok(attachment)
+    })
 }
 
 /// Remove o anexo e emite o tombstone causal.
@@ -379,22 +388,16 @@ pub fn delete_attachment(
     identidade: &DeviceIdentity,
     id: &str,
 ) -> DatabaseCommandResult<()> {
-    let mut connection = database.write()?;
-    let tx = connection
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-
-    let Some(anexo) = canvas_repository::get_attachment(&tx, id)? else {
-        return Err(DatabaseCommandError::not_found("O anexo não existe mais."));
-    };
-    if !canvas_repository::delete_attachment(&tx, id)? {
-        return Err(DatabaseCommandError::not_found("O anexo não existe mais."));
-    }
-    emitir_evento_de_anexo(&tx, identidade, &anexo, Operation::Delete)?;
-
-    tx.commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        if canvas_repository::get_attachment(m.tx(), id)?.is_none() {
+            return Err(DatabaseCommandError::not_found("O anexo não existe mais."));
+        }
+        m.excluir("attachment", id)?;
+        if !canvas_repository::delete_attachment(m.tx(), id)? {
+            return Err(DatabaseCommandError::not_found("O anexo não existe mais."));
+        }
+        Ok(())
+    })
 }
 
 fn ensure_attachment_owner(owner_type: &str) -> DatabaseCommandResult<()> {
@@ -473,6 +476,7 @@ mod tests {
         let node = create_node(
             &fixture.database,
             &loja_de_teste().1,
+            &identidade_de_teste(&fixture).1,
             "u1",
             "note",
             "x",
@@ -484,6 +488,7 @@ mod tests {
 
         let error = create_edge(
             &fixture.database,
+            &identidade_de_teste(&fixture).1,
             "u1",
             &endpoint("canvas", &node.id),
             &endpoint("entity", "nao-existe"),
@@ -504,6 +509,7 @@ mod tests {
         let node = create_node(
             &fixture.database,
             &loja_de_teste().1,
+            &identidade_de_teste(&fixture).1,
             "u1",
             "note",
             "x",
@@ -515,6 +521,7 @@ mod tests {
 
         let error = create_edge(
             &fixture.database,
+            &identidade_de_teste(&fixture).1,
             "u1",
             &endpoint("canvas", &node.id),
             &endpoint("canvas", &node.id),
@@ -532,6 +539,7 @@ mod tests {
         let error = create_node(
             &fixture.database,
             &loja_de_teste().1,
+            &identidade_de_teste(&fixture).1,
             "u1",
             "desenho",
             "x",
@@ -551,6 +559,7 @@ mod tests {
         let node = create_node(
             &fixture.database,
             &loja_de_teste().1,
+            &identidade_de_teste(&fixture).1,
             "u1",
             "note",
             "x",
@@ -561,6 +570,7 @@ mod tests {
         .expect("criar");
         create_edge(
             &fixture.database,
+            &identidade_de_teste(&fixture).1,
             "u1",
             &endpoint("canvas", &node.id),
             &endpoint("entity", "e1"),
@@ -568,7 +578,12 @@ mod tests {
         )
         .expect("ligar");
 
-        delete_node(&fixture.database, &node.id).expect("excluir");
+        delete_node(
+            &fixture.database,
+            &identidade_de_teste(&fixture).1,
+            &node.id,
+        )
+        .expect("excluir");
 
         let total: i64 = fixture
             .connection()
@@ -708,7 +723,9 @@ mod tests {
         // No evento: referência, e nada de bytes.
         let (tipo, payload): (String, String) = conexao
             .query_row(
-                "SELECT aggregate_type, payload FROM sync_events ORDER BY seq DESC LIMIT 1",
+                // Filtra pelo tipo: desde a B2.2 a posição do anexo sai logo depois dele.
+                "SELECT aggregate_type, payload FROM sync_events
+                  WHERE aggregate_type = 'attachment' ORDER BY seq DESC LIMIT 1",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )

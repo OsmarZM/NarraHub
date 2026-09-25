@@ -70,16 +70,26 @@ export interface SyncV2ListenState {
   ultimoErro: string | null;
 }
 
+/**
+ * Uma sessão que a escuta DESTE aparelho atendeu. Chega por evento, não por resposta de comando:
+ * quem escuta não pediu nada, e sem o aviso a tela seguiria mostrando o acervo de antes (I-BUG-03).
+ */
+export interface SyncServedSession {
+  resultado: SyncSessionResult | null;
+  erro: string | null;
+}
+
+/** O evento que o Rust emite ao fim de cada sessão atendida. */
+export const SYNC_V2_SERVED_EVENT = 'sync-v2-sessao-atendida';
+
 /** A porta padrão da escuta. O usuário pode trocar. */
 export const SYNC_V2_DEFAULT_PORT = 45870;
 
 /**
  * A porta do Sync V2 no frontend (etapas 14, fatias 2 e 4).
  *
- * **Não é o `SyncService`.** Aquele fala com o Sync V1 — `sync_start`,
- * `sync_connect` —, que copia tabelas inteiras sem passar pelo log de eventos.
- * A decisão registrada é congelar e substituir, sem coexistir: este serviço
- * não chama nada do V1, e o V1 não recebe nada novo.
+ * É a única porta de sincronização do app: o protocolo antigo, que copiava tabelas
+ * inteiras sem passar pelo log de eventos, saiu do runtime na etapa G.
  *
  * `panorama()` é só leitura. Escuta e pareamento entram na fatia 3, junto com
  * o transporte que dá a eles algo para conversar.
@@ -125,6 +135,13 @@ export class SyncV2Service {
       { endereco: address, nome: deviceName },
       'A sincronização não pôde ser concluída.',
     );
+  }
+
+  /** Avisa a cada sessão que a escuta deste aparelho terminar. Devolve o cancelamento. */
+  async onSessionServed(handler: (session: SyncServedSession) => void): Promise<() => void> {
+    if (!isTauri()) return () => undefined;
+    const { listen } = await import('@tauri-apps/api/event');
+    return listen<SyncServedSession>(SYNC_V2_SERVED_EVENT, ({ payload }) => handler(payload));
   }
 
   private async call<T>(command: string, args: Record<string, unknown>, fallback: string): Promise<T> {

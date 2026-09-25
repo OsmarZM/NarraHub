@@ -1,4 +1,4 @@
-import { Component, OnInit, ViewEncapsulation, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, ViewEncapsulation, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { AiMode, AiModelProfile, AiService } from '../../core/native/ai.service';
 import { BackupManifest } from '../../core/native/backup.service';
@@ -8,6 +8,10 @@ import { ThemeService } from '../../core/services/theme.service';
 import { CollaborationStore } from '../collaboration/state/collaboration.store';
 import { ProductionReplicaComponent } from '../production-replica/production-replica.component';
 import { SettingsStore } from './state/settings.store';
+import { ConflictsStore } from '../conflicts/state/conflicts.store';
+import { LegacyRecoveryStore } from '../legacy-recovery/state/legacy-recovery.store';
+import { RouterLink } from '@angular/router';
+import { SyncSessionFeedbackService } from '../../application/sync-session-feedback.service';
 
 export type SettingsSection = 'general' | 'ai' | 'sync' | 'share' | 'updates';
 
@@ -16,13 +20,19 @@ type RestoreModal = 'restore-backup' | null;
 @Component({
   selector: 'app-settings-page',
   standalone: true,
-  imports: [FormsModule, ProductionReplicaComponent],
+  imports: [FormsModule, ProductionReplicaComponent, RouterLink],
   templateUrl: './settings-page.component.html',
   styleUrl: './settings-page.component.css',
   encapsulation: ViewEncapsulation.None,
 })
-export class SettingsPageComponent implements OnInit {
+export class SettingsPageComponent implements OnInit, OnDestroy {
   readonly store = inject(SettingsStore);
+  /** Etapa F: o contador de conflitos e o aviso da atualização da sincronização. */
+  readonly conflicts = inject(ConflictsStore);
+  private readonly syncFeedback = inject(SyncSessionFeedbackService);
+  /** Etapa H (H-R3): as versões antigas que só existem neste aparelho. */
+  readonly legacyRecovery = inject(LegacyRecoveryStore);
+  readonly epochNoticeDismissed = signal(false);
   readonly collaboration = inject(CollaborationStore);
   readonly ai = inject(AiService);
   readonly theme = inject(ThemeService);
@@ -43,17 +53,47 @@ export class SettingsPageComponent implements OnInit {
   aiInstallError = signal('');
 
   deviceName = localStorage.getItem('narrahub.deviceName') || 'Meu computador';
-  remoteAddress = '';
-  pairingCode = '';
   v2Address = '';
   v2Pin = '';
   restoreConfirmation = '';
 
+  /**
+   * I-BUG-04: o código vence no Rust (três minutos) sem ninguém avisar a tela. Enquanto a escuta está
+   * aberta, relê o estado de tempos em tempos para não mostrar como válido um código que já venceu.
+   */
+  private syncStatusTimer: ReturnType<typeof setInterval> | null = null;
+
+  ngOnDestroy(): void {
+    if (this.syncStatusTimer) clearInterval(this.syncStatusTimer);
+    this.syncStatusTimer = null;
+  }
+
   ngOnInit(): void {
+    this.syncStatusTimer = setInterval(() => {
+      if (this.store.syncV2State().escutando) void this.store.refreshSyncStatus();
+    }, 5000);
     this.aiSelectedProfile = (this.ai.localStatus().installedProfile as AiModelProfile['id']) || this.ai.localStatus().recommended.id;
     void this.store.refreshSyncStatus();
     void this.store.refreshBackupStatus();
     void this.store.primeCurrentVersion();
+    void this.conflicts.refreshOpenCount();
+    void this.legacyRecovery.refreshPending();
+    void this.conflicts.loadEpochNotice().then(() => {
+      const aviso = this.conflicts.epochNotice();
+      this.epochNoticeDismissed.set(Boolean(aviso && this.readDismissed() === aviso.iniciadaEm));
+    });
+  }
+
+  /** O aviso da atualização (E0-beta) some depois de lido — por época, não para sempre. */
+  dismissEpochNotice(): void {
+    const aviso = this.conflicts.epochNotice();
+    if (!aviso) return;
+    try { localStorage.setItem('narrahub.syncEpochNoticeSeen', aviso.iniciadaEm); } catch { /* sem armazenamento: o aviso volta na próxima abertura */ }
+    this.epochNoticeDismissed.set(true);
+  }
+
+  private readDismissed(): string {
+    try { return localStorage.getItem('narrahub.syncEpochNoticeSeen') ?? ''; } catch { return ''; }
   }
 
   selectSection(section: SettingsSection): void {
@@ -197,7 +237,7 @@ export class SettingsPageComponent implements OnInit {
   async requestPrepareRestore(): Promise<void> {
     const backup = this.pendingRestoreBackup();
     if (!backup) return;
-    if (this.collaboration.shareSession().running || this.store.syncStatus().running) {
+    if (this.collaboration.shareSession().running || this.store.syncV2State().escutando) {
       this.store.backupError.set('Encerre o compartilhamento e a sincronização antes de restaurar um backup.');
       return;
     }
@@ -241,25 +281,7 @@ export class SettingsPageComponent implements OnInit {
     this.showInfo('Nome do dispositivo salvo.');
   }
 
-  async startSync(): Promise<void> {
-    this.saveDeviceName();
-    const result = await this.store.startSync(this.deviceName);
-    if (!result.ok && result.error) this.showError(result.error);
-  }
-
-  async stopSync(): Promise<void> {
-    const result = await this.store.stopSync();
-    if (!result.ok && result.error) this.showError(result.error);
-  }
-
-  async connectSync(): Promise<void> {
-    const result = await this.store.connectSync(this.remoteAddress, this.pairingCode, this.deviceName);
-    if (!result.ok) { if (result.error) this.showError(result.error); return; }
-    const peer = result.result;
-    if (peer) this.showInfo(`Sincronizado com ${peer.peer_name}: ${peer.received} recebidos, ${peer.sent} enviados, ${peer.conflicts} conflitos.`);
-  }
-
-  // ── Sync V2 (etapa 14) ───────────────────────────────────
+  // ── Sync V2 ───────────────────────────────────────────────
 
   async startSyncV2(): Promise<void> {
     this.saveDeviceName();
@@ -280,23 +302,13 @@ export class SettingsPageComponent implements OnInit {
   async pairSyncV2(): Promise<void> {
     const result = await this.store.pairSyncV2(this.v2Address, this.v2Pin, this.deviceName);
     if (!result.ok) { if (result.error) this.showError(result.error); return; }
-    if (result.result) this.showInfo(this.describeSyncV2(result.result));
+    if (result.result) await this.syncFeedback.applied(result.result);
   }
 
   async syncNowV2(): Promise<void> {
     const result = await this.store.syncNowV2(this.v2Address, this.deviceName);
-    if (!result.ok) { if (result.error) this.showError(result.error); return; }
-    if (result.result) this.showInfo(this.describeSyncV2(result.result));
-  }
-
-  private describeSyncV2(r: import('../../core/native/sync-v2.service').SyncSessionResult): string {
-    const papel = r.papel === 'receptor' ? 'Acervo recebido de' : r.papel === 'doador' ? 'Acervo enviado para' : 'Sincronizado com';
-    const contar = (n: number, um: string, varios: string) => `${n} ${n === 1 ? um : varios}`;
-    return `${papel} ${r.parceiro.nome}: `
-      + `${contar(r.eventosAplicados, 'alteração recebida', 'alterações recebidas')}, `
-      + `${contar(r.eventosEnviados, 'alteração enviada', 'alterações enviadas')}, `
-      + `${contar(r.blobsRecebidos, 'imagem recebida', 'imagens recebidas')}.`
-      + (r.eventosPendentes ? ` ${contar(r.eventosPendentes, 'alteração aguarda', 'alterações aguardam')} a próxima sessão.` : '');
+    if (!result.ok) { if (result.error) this.showError(result.error); void this.conflicts.refreshOpenCount(); return; }
+    if (result.result) await this.syncFeedback.applied(result.result);
   }
 
   // ── Compartilhamento e colaboração ───────────────────────
