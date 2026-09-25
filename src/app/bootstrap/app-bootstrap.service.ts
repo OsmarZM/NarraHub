@@ -122,7 +122,7 @@ export class AppBootstrapService {
       await this.collaboration.loadReview();
       this.collaborationTimer = setInterval(() => void this.collaboration.syncIncoming(), 2500);
       await this.settings.primeCurrentVersion();
-      if (await this.settings.isUpdateConfigured()) {
+      if (await this.settings.shouldCheckForUpdatesOnStartup()) {
         this.updateTimer = setTimeout(() => void this.settings.checkForUpdates(true), 1800);
       }
     } catch (error) {

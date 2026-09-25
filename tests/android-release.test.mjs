@@ -86,3 +86,15 @@ test('pré-release é só Android; Windows só recebe versão estável', () => {
   assert.match(pre, /\*\) echo "::error::\$VERSAO é estável/u, 'o job de pré-release recusa versão estável');
   assert.doesNotMatch(workflow, /wix/iu, 'nenhum ajuste de versão do MSI: beta não passa pelo Windows');
 });
+
+// I-BUG-06 (Etapa I, achado em aparelho físico): o arranque só procurava atualização quando o
+// atualizador do DESKTOP estava configurado, o que nunca é verdade no Android — a beta nova só
+// aparecia indo em Configurações. O canal do Android tem de bastar para o arranque procurar.
+test('o arranque procura atualização também pelo canal do Android', () => {
+  const arranque = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
+  assert.match(arranque, /if \(await this\.settings\.shouldCheckForUpdatesOnStartup\(\)\)/u);
+  assert.doesNotMatch(arranque, /if \(await this\.settings\.isUpdateConfigured\(\)\)/u);
+  const store = readFileSync(new URL('../src/app/features/settings/state/settings.store.ts', import.meta.url), 'utf8');
+  const metodo = store.slice(store.indexOf('async shouldCheckForUpdatesOnStartup'));
+  assert.match(metodo.slice(0, 300), /this\.androidUpdate\.supported\(\)/u);
+});
