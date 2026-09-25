@@ -2,6 +2,14 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.10 — 2026-09-25 (pré-release)
+
+Pré-release só Android, para testar o pareamento por QR (Fase 4.5). Instala por cima da 0.10.0-beta.9.
+
+- **Parear pelo QR**: o aparelho que escuta mostra um QR junto do código; no celular, "Escanear QR" lê
+  endereço e código pela câmera e pareia sem digitar nada. É o mesmo pareamento por código de antes —
+  vale três minutos, três tentativas e uma vez só. Sem câmera ou sem permissão, digitar continua funcionando.
+
 ## 0.10.0-beta.9 — 2026-09-25 (pré-release)
 
 Pré-release só Android, sem mudança de funcionamento. Existe para provar em aparelho real que a atualização
