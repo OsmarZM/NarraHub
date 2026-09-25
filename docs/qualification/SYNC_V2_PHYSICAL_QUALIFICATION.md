@@ -393,8 +393,6 @@ Gates F1–F21, G1–G12 e H1–H29 dentro da suíte Rust completa, todos verdes
 - **Descoberta/QR**: pareamento ainda exige digitar endereço e código (NH-078, próximo passo pedido pelo
   usuário).
 - **Terceiro aparelho físico** não disponível: o I6 usou uma terceira instalação desktop controlada.
-- **Atualização pelo app no Android**: corrigida na beta.8 (I-BUG-06/09); a prova ponta a ponta exige a
-  beta.8 no aparelho e a publicação de uma beta seguinte — ver I-BUG-09.
 - **Reinstalação no Android** pode restaurar o acervo pelo backup do Google (I-BUG-01) — identidade nova,
   exige reparear; documentado, não é defeito do sync.
 - Rede Wi-Fi com dois SSIDs no mesmo local: o S23 voltou sozinho para a outra rede três vezes durante a I;
@@ -405,8 +403,7 @@ Gates F1–F21, G1–G12 e H1–H29 dentro da suíte Rust completa, todos verdes
 **Release (pré-release Android e qualificação do Windows): sim.** Todos os gates essenciais passaram em
 aparelho físico real, com transporte Windows ↔ Android real, e nenhum bug encontrado ficou aberto no sync:
 os 9 achados de código (I-BUG-02 … I-BUG-09) e o I-UX-04 foram corrigidos com gate automatizado e repetidos
-fisicamente, exceto a oferta automática da atualização (I-BUG-06/09), que depende de o aparelho receber a
-beta.8 e a seguinte. **Sync V2 architecture = QUALIFIED.** Para uma versão **estável** do Windows, falta
+fisicamente — inclusive a atualização pelo próprio app no Android (beta.8 → beta.9). **Sync V2 architecture = QUALIFIED.** Para uma versão **estável** do Windows, falta
 apenas o que não é do sync: rodar o instalador de produção sobre uma cópia do acervo real (a I usou o perfil
 Qualification por decisão do usuário) e decidir sobre a escuta em segundo plano no Android.
 
@@ -573,7 +570,7 @@ Qualification por decisão do usuário) e decidir sobre a escuta em segundo plan
 - **Gates**: `atualizacao_android::ibug09_tls_embutido_e_aceito_pelo_reqwest` (o `reqwest` aceita a
   configuração — pega divergência de versão do rustls antes do celular) e contrato em
   `tests/android-release.test.mjs` (o cliente Android usa o TLS embutido; vermelho sem a correção).
-- **Repetição física**: pendente — a beta.8 foi publicada (CI 4/4, APK conferido), mas o S23 saiu do `adb` antes da instalação. Roteiro: instalar a beta.8 por cima, abrir o app e conferir no `logcat` que o pânico não aparece; publicar uma beta.9 e ver o app oferecer, baixar e instalar sozinho.
+- **Repetição física**: **feita**. A beta.8 foi instalada por cima da beta.6 (`adb install -r`); arranque sem pânico no `logcat`. Publicada a beta.9, o app na beta.8, reaberto, **ofereceu sozinho** "NarraHub 0.10.0-beta.9 está disponível" (captura `i-bug-09\oferta.png`); o operador tocou em "Atualizar agora", o app baixou, conferiu e abriu o instalador do Android, e o S23 ficou na **0.10.0-beta.9** (`lastUpdateTime` 13:55, `firstInstallTime` preservado, 4 universos). Primeira atualização pelo app no Android que funcionou de ponta a ponta.
 
 ### Observações de UX (sem correção nesta etapa)
 

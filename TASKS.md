@@ -39,7 +39,7 @@ dados reais/controlados. Arquitetura do Sync V2 congelada: só correções míni
   decisões ilegível), I-BUG-08 (mensagens de conexão), I-UX-04 (decisão com confirmação).
 - **Não eram defeito**: I-BUG-01 (backup do Google restaura o acervo; identidade é nova) e I-ENV-01
   (AppData virtualizado do agente MSIX).
-- **Pendente físico**: a oferta automática da atualização (beta.8 no aparelho + beta seguinte).
+- **Atualização pelo app no Android** provada ponta a ponta: beta.8 → oferta da beta.9 → instalada.
 
 Evidência em `docs/qualification/SYNC_V2_PHYSICAL_QUALIFICATION.md` e no handoff da etapa I.
 

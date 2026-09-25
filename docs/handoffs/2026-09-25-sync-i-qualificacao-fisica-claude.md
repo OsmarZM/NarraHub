@@ -43,14 +43,12 @@ Nada no núcleo causal: protocolo 1, formato canônico 2, migration 29, wire, He
 
 ## Pré-releases publicadas
 
-`0.10.0-beta.3` … `0.10.0-beta.8` (só Android), cada uma depois de CI 4/4 no PR #74.
+`0.10.0-beta.3` … `0.10.0-beta.9` (só Android), cada uma depois de CI 4/4 no PR #74.
 
 ## O que ficou pendente
 
-- **Prova física da oferta automática de atualização (I-BUG-06/09):** a beta.8 está publicada, mas o
-  S23 saiu do `adb` antes da instalação. Roteiro no documento de qualificação (instalar a beta.8 por
-  cima, conferir no `logcat` que não há pânico, publicar uma beta seguinte e ver o app oferecer,
-  baixar e instalar).
+- ~~Prova física da atualização pelo app~~ — feita: o S23 na beta.8 ofereceu, baixou e instalou a
+  beta.9 sozinho.
 - Repetição física do I-BUG-07 (coberto por gate).
 
 ## Armadilha para o próximo agente
