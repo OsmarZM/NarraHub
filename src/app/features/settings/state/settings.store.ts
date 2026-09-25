@@ -376,8 +376,14 @@ export class SettingsStore {
   }
 
   /** Pareia pelo texto cru lido no QR. Nada é interpretado aqui: o Rust valida e recusa. */
-  async pairSyncV2ByQr(conteudo: string, deviceName: string): Promise<{ ok: boolean; result?: SyncSessionResult; error?: string }> {
-    return this.sessionSyncV2(() => this.syncV2.pairByQr(conteudo, deviceName));
+  async pairSyncV2ByQr(conteudo: string, deviceName: string): Promise<{ ok: boolean; result?: SyncSessionResult; error?: string; endereco?: string }> {
+    let endereco = '';
+    const resultado = await this.sessionSyncV2(async () => {
+      const pareado = await this.syncV2.pairByQr(conteudo, deviceName);
+      endereco = pareado.endereco;
+      return pareado.resultado;
+    });
+    return resultado.ok ? { ...resultado, endereco } : resultado;
   }
 
   /**

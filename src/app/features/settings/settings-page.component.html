@@ -171,15 +171,12 @@
             } @else {
               <small class="pin-validade">Vale três minutos e três tentativas.</small>
             }
-            @if (store.syncV2State().pin && store.syncV2Qr(); as conteudoDoQr) {
-              <!-- NH-084: açúcar sobre o PIN. O outro aparelho lê endereço e código; a validade é esta escuta. -->
-              <div class="pairing-qr-slot">
-                <app-pairing-qr [conteudo]="conteudoDoQr" />
-                <small>Ou aponte a câmera do outro aparelho para este QR.</small>
-              </div>
-            }
+
           </div>
           <div class="field-row">
+            @if (store.syncV2State().pin && store.syncV2Qr()) {
+              <button type="button" class="primary-button" (click)="qrAberto.set(true)" data-testid="mostrar-qr">Mostrar QR</button>
+            }
             <button type="button" class="secondary-button" [disabled]="store.syncV2Busy()" (click)="newSyncV2Pin()">Novo código</button>
             <button type="button" class="secondary-button danger-outline" [disabled]="store.syncV2Busy()" (click)="stopSyncV2()">Parar escuta</button>
           </div>
@@ -191,6 +188,9 @@
           <div class="field-row">
             <button type="button" class="primary-button" [disabled]="store.syncV2Busy()" (click)="scanPairingQr()" data-testid="escanear-qr">Escanear QR</button>
           </div>
+        }
+        @if (store.syncV2Busy()) {
+          <p class="sync-busy" role="status" data-testid="sync-ocupado"><span class="sync-busy-dot" aria-hidden="true"></span>Conectando e sincronizando com o outro aparelho… mantenha os dois abertos.</p>
         }
         @if (qrScanMessage()) { <small class="security-note qr-scan-message" data-testid="qr-scan-message">{{ qrScanMessage() }}</small> }
         <div class="field-row"><label class="field-label">Endereço do outro aparelho<input [(ngModel)]="v2Address" placeholder="192.168.0.10:45870" /></label><label class="field-label code-field">Código<input [(ngModel)]="v2Pin" inputmode="numeric" maxlength="9" placeholder="0000 0000" /></label></div>
@@ -299,6 +299,25 @@
     </div>
   </div>
 </section>
+
+@if (qrAberto() && store.syncV2State().pin && store.syncV2Qr(); as conteudoDoQr) {
+  <!-- NH-084: açúcar sobre o PIN. Abre só quando pedido; some quando o código é usado ou vence. -->
+  <div class="settings-modal-backdrop pairing-qr-backdrop" data-nh-dialog (mousedown)="qrAberto.set(false)" (keydown.escape)="qrAberto.set(false)">
+    <section class="settings-modal pairing-qr-dialog" data-nh-dialog-panel role="dialog" aria-modal="true" aria-labelledby="pairing-qr-titulo" (mousedown)="$event.stopPropagation()" data-testid="dialogo-qr">
+      <header>
+        <div><small>Sincronização</small><h2 id="pairing-qr-titulo">Parear pelo QR</h2></div>
+        <button type="button" aria-label="Fechar" (click)="qrAberto.set(false)">×</button>
+      </header>
+      <div class="pairing-qr-code"><app-pairing-qr [conteudo]="conteudoDoQr" /></div>
+      <p class="modal-guidance">No outro aparelho, abra Configurações → Sincronização e toque em <strong>Escanear QR</strong>.</p>
+      <dl class="pairing-qr-dados">
+        <div><dt>Endereço</dt><dd>{{ store.syncV2State().enderecos[0] }}</dd></div>
+        <div><dt>Código</dt><dd>{{ store.syncV2State().pin }}</dd></div>
+      </dl>
+      <small class="pairing-qr-validade">Vale uma vez, por poucos minutos. Depois de usado ou vencido, gere um novo código.</small>
+    </section>
+  </div>
+}
 
 @if (restoreModal() && pendingRestoreBackup(); as backup) {
   <div class="settings-modal-backdrop" data-nh-dialog (mousedown)="closeRestoreModal()">

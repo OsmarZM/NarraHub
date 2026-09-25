@@ -44,6 +44,12 @@ export interface SyncPartner {
   nome: string;
 }
 
+/** O resultado do pareamento por QR (NH-084): a sessão e o endereço que o Rust validou. */
+export interface SyncPairedByQr {
+  resultado: SyncSessionResult;
+  endereco: string;
+}
+
 /** O papel deste aparelho na sessão, decidido pelos dois lados juntos. */
 export type SyncRole = 'doador' | 'receptor' | 'par';
 
@@ -137,9 +143,12 @@ export class SyncV2Service {
     return this.call<string | null>('sync_v2_qr', {}, 'O QR de pareamento não pôde ser gerado.');
   }
 
-  /** Pareia pelo texto cru que o leitor de QR devolveu. Quem interpreta e valida é o Rust. */
-  async pairByQr(conteudo: string, deviceName: string): Promise<SyncSessionResult> {
-    return this.call<SyncSessionResult>(
+  /**
+   * Pareia pelo texto cru que o leitor de QR devolveu. Quem interpreta e valida é o Rust, que devolve
+   * também o endereço que ele leu — para "Sincronizar pareado" funcionar depois. Nunca o PIN.
+   */
+  async pairByQr(conteudo: string, deviceName: string): Promise<SyncPairedByQr> {
+    return this.call<SyncPairedByQr>(
       'sync_v2_parear_por_qr',
       { conteudo, nome: deviceName },
       'O pareamento pelo QR não pôde ser concluído.',

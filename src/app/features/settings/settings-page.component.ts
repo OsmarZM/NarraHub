@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit, ViewEncapsulation, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, ViewEncapsulation, effect, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { AiMode, AiModelProfile, AiService } from '../../core/native/ai.service';
 import { BackupManifest } from '../../core/native/backup.service';
@@ -60,7 +60,13 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   aiInstallError = signal('');
 
   deviceName = localStorage.getItem('narrahub.deviceName') || 'Meu computador';
-  v2Address = '';
+  /** NH-084: o último endereço que pareou ou sincronizou, lembrado entre aberturas. */
+  v2Address = lerUltimoEndereco();
+  /** NH-084: o QR não abre sozinho; o escritor pede. Fecha quando o código deixa de valer. */
+  readonly qrAberto = signal(false);
+  private readonly fecharQrSemCodigo = effect(() => {
+    if (!this.store.syncV2Qr() || !this.store.syncV2State().pin) this.qrAberto.set(false);
+  });
   v2Pin = '';
   restoreConfirmation = '';
 
@@ -303,6 +309,7 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   }
 
   async newSyncV2Pin(): Promise<void> {
+    this.qrAberto.set(false);
     const result = await this.store.newSyncV2Pin();
     if (!result.ok && result.error) this.showError(result.error);
   }
@@ -326,18 +333,27 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
     this.saveDeviceName();
     const result = await this.store.pairSyncV2ByQr(leitura.conteudo, this.deviceName);
     if (!result.ok) { if (result.error) this.showError(result.error); return; }
+    // O endereço vem do Rust, que leu e validou o QR; a tela só o guarda para "Sincronizar pareado".
+    if (result.endereco) this.lembrarEndereco(result.endereco);
     if (result.result) await this.syncFeedback.applied(result.result);
+  }
+
+  private lembrarEndereco(endereco: string): void {
+    this.v2Address = endereco;
+    try { localStorage.setItem(ULTIMO_ENDERECO, endereco); } catch { /* sem armazenamento: vale só nesta abertura */ }
   }
 
   async pairSyncV2(): Promise<void> {
     const result = await this.store.pairSyncV2(this.v2Address, this.v2Pin, this.deviceName);
     if (!result.ok) { if (result.error) this.showError(result.error); return; }
+    this.lembrarEndereco(this.v2Address.trim());
     if (result.result) await this.syncFeedback.applied(result.result);
   }
 
   async syncNowV2(): Promise<void> {
     const result = await this.store.syncNowV2(this.v2Address, this.deviceName);
     if (!result.ok) { if (result.error) this.showError(result.error); void this.conflicts.refreshOpenCount(); return; }
+    this.lembrarEndereco(this.v2Address.trim());
     if (result.result) await this.syncFeedback.applied(result.result);
   }
 
@@ -401,4 +417,11 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   private messageOf(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
+}
+
+/** NH-084: o endereço do último pareamento ou sincronização, para não digitar de novo. */
+const ULTIMO_ENDERECO = 'narrahub.syncV2.lastAddress';
+
+function lerUltimoEndereco(): string {
+  try { return localStorage.getItem(ULTIMO_ENDERECO) ?? ''; } catch { return ''; }
 }

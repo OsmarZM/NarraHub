@@ -371,7 +371,7 @@ pub async fn sync_v2_parear_por_qr(
     estado: State<'_, EstadoV2>,
     conteudo: String,
     nome: String,
-) -> DatabaseCommandResult<ResultadoDaSessao> {
+) -> DatabaseCommandResult<sync_qr_pin::PareadoPorQr> {
     let app_da_sessao = app.clone();
     let resultado = tauri::async_runtime::spawn_blocking(move || {
         let database = super::database(&app_da_sessao)?;
@@ -384,7 +384,11 @@ pub async fn sync_v2_parear_por_qr(
     })
     .await
     .map_err(|erro| DatabaseCommandError::storage(erro.to_string()))?;
-    registrar(&estado, &resultado)?;
+    let para_registro = resultado
+        .as_ref()
+        .map(|p| p.resultado.clone())
+        .map_err(Clone::clone);
+    registrar(&estado, &para_registro)?;
     resultado
 }
 

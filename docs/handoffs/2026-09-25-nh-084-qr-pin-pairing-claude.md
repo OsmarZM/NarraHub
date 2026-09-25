@@ -58,6 +58,30 @@ roster, protocolo, formato canônico ou schema. O QR criptográfico da ADR 0009 
 planning 4/4, ai 5/5, share-api 4/4, android-release 7/7, E2E `sync-session-feedback` 50/50 (5
 viewports). Suíte Rust completa e CI: ver o PR.
 
+## Teste físico da beta.10 → ajustes da beta.11
+
+O S23 leu o QR do Windows e pareou (o QR, já usado, não pareia de novo — correto). Três problemas de tela:
+
+1. **Tudo cinza depois do QR** — o endereço vinha no QR mas não ia para o campo, e "Sincronizar pareado"
+   exige endereço. Agora `sync_v2_parear_por_qr` devolve `{ resultado, endereco }` (o endereço que o Rust
+   validou; nunca o PIN), a tela preenche o campo e lembra o último endereço (`narrahub.syncV2.lastAddress`)
+   depois de parear ou sincronizar, por QR ou à mão.
+2. **Sem aviso durante a sessão** — os botões apagavam sem explicação. Agora há a linha
+   "Conectando e sincronizando com o outro aparelho…" (`role=status`) enquanto a sessão corre.
+3. **QR sempre aberto, mal posicionado** — agora só o botão "Mostrar QR"; abre uma janela (folha de baixo no
+   celular, centralizada no Windows) com QR de 260 px, endereço e código; fecha sozinha quando o código é usado
+   ou vence, e um código novo não a reabre.
+
+| Gate | Mutação vista falhando |
+| --- | --- |
+| QR só abre quando pedido e fecha quando o código some | QF5 abrir sozinho com código, QF8 não fechar |
+| endereço do QR preenchido e "Sincronizar pareado" habilitado | QF6 esquecer o endereço |
+| aviso visível durante a sessão | QF7 sem aviso |
+
+Geometria medida nos 5 viewports: folha ocupa a largura toda no celular, sem rolagem horizontal; no desktop
+1366×768 fica centralizada com 460 px. E2E `sync-session-feedback` 60/60, arquitetura 104/104,
+`sync_qr_pin` 11/11, fmt e clippy limpos.
+
 ## Falta
 
 Teste físico: Windows mostra o QR → S23 escaneia → nenhum IP/PIN digitado → pareia → identidade

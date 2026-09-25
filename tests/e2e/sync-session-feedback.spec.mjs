@@ -99,7 +99,7 @@ async function abrirDispositivos(page) {
 
 const ESCUTA = { escutando: true, porta: 45870, enderecos: ['192.168.1.145:45870'], ultimoResultado: null, ultimoErro: null };
 
-test('o QR só aparece com código válido, e some quando o código vence', async ({ page }) => {
+test('o QR só abre quando pedido, só com código válido, e fecha quando o código vence', async ({ page }) => {
   await abrirDispositivos(page);
   await page.evaluate((escuta) => {
     const pagina = window.ng.getComponent(document.querySelector('app-settings-page'));
@@ -107,6 +107,12 @@ test('o QR só aparece com código válido, e some quando o código vence', asyn
     pagina.store.syncV2State.set({ ...escuta, pin: '1234 5678' });
     pagina.store.syncV2Qr.set('conteudo-opaco-do-rust');
   }, ESCUTA);
+  // Não abre sozinho: o escritor pede.
+  await expect(page.getByTestId('mostrar-qr')).toBeVisible();
+  await expect(page.getByTestId('pairing-qr')).toHaveCount(0);
+  await page.getByTestId('mostrar-qr').click();
+  await expect(page.getByTestId('dialogo-qr')).toBeVisible();
+  await expect(page.getByTestId('dialogo-qr')).toContainText('192.168.1.145:45870');
   await expect(page.getByTestId('pairing-qr')).toBeVisible();
   const src = await page.getByTestId('pairing-qr').getAttribute('src');
   expect(src.startsWith('data:image/svg+xml')).toBe(true);
@@ -115,8 +121,27 @@ test('o QR só aparece com código válido, e some quando o código vence', asyn
     const pagina = window.ng.getComponent(document.querySelector('app-settings-page'));
     pagina.store.syncV2State.set({ ...escuta, pin: null });
   }, ESCUTA);
+  await expect(page.getByTestId('dialogo-qr')).toHaveCount(0);
   await expect(page.getByTestId('pairing-qr')).toHaveCount(0);
+  await expect(page.getByTestId('mostrar-qr')).toHaveCount(0);
   await expect(page.getByTestId('pin-vencido')).toBeVisible();
+
+  // Código novo não reabre o QR sozinho.
+  await page.evaluate((escuta) => {
+    const pagina = window.ng.getComponent(document.querySelector('app-settings-page'));
+    pagina.store.syncV2State.set({ ...escuta, pin: '8765 4321' });
+  }, ESCUTA);
+  await expect(page.getByTestId('mostrar-qr')).toBeVisible();
+  await expect(page.getByTestId('dialogo-qr')).toHaveCount(0);
+});
+
+// Teste físico da beta.10: durante a sessão os botões ficavam cinza sem dizer por quê.
+test('durante a sessão a tela diz que está conectando', async ({ page }) => {
+  await abrirDispositivos(page);
+  await expect(page.getByTestId('sync-ocupado')).toHaveCount(0);
+  await page.evaluate(() => window.ng.getComponent(document.querySelector('app-settings-page')).store.syncV2Busy.set(true));
+  await expect(page.getByTestId('sync-ocupado')).toBeVisible();
+  await expect(page.getByTestId('sync-ocupado')).toContainText('Conectando');
 });
 
 async function comLeitor(page, leitura) {
@@ -129,7 +154,7 @@ async function comLeitor(page, leitura) {
     pagina.qrScannerAvailable.set(true);
     pagina.store.pairSyncV2ByQr = async (conteudo) => {
       window.__pareamentosPorQr.push(conteudo);
-      return { ok: true, result: { parceiro: { deviceId: 'D', nome: 'PC do Osmar' }, papel: 'par', houveBootstrap: false, blobsRecebidos: 0, eventosEnviados: 0, eventosAplicados: 0, eventosPendentes: 0 } };
+      return { ok: true, endereco: '192.168.1.145:45870', result: { parceiro: { deviceId: 'D', nome: 'PC do Osmar' }, papel: 'par', houveBootstrap: false, blobsRecebidos: 0, eventosEnviados: 0, eventosAplicados: 0, eventosPendentes: 0 } };
     };
     pagina.store.pairSyncV2 = async () => { window.__pareamentosManuais += 1; return { ok: false, error: 'manual' }; };
     pagina.syncFeedback.workspaceSync.universeStore.load = async () => undefined;
@@ -144,7 +169,16 @@ test('escanear QR pareia repassando a leitura crua, sem interpretar nada', async
   await page.getByTestId('escanear-qr').click();
   await expect(page.locator('.toast')).toContainText('Sincronizado com PC do Osmar');
   expect(await page.evaluate(() => window.__pareamentosPorQr)).toEqual([cru]);
-  await expect(page.getByPlaceholder('192.168.0.10:45870')).toBeVisible();
+  // Teste físico da beta.10: depois do QR o endereço ficava vazio e "Sincronizar pareado", cinza.
+  await expect(page.getByPlaceholder('192.168.0.10:45870')).toHaveValue('192.168.1.145:45870');
+  await expect(page.getByRole('button', { name: 'Sincronizar pareado' })).toBeEnabled();
+  expect(await page.evaluate(() => localStorage.getItem('narrahub.syncV2.lastAddress'))).toBe('192.168.1.145:45870');
+});
+
+test('o último endereço volta ao reabrir a tela', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('narrahub.syncV2.lastAddress', '192.168.1.145:45870'));
+  await abrirDispositivos(page);
+  await expect(page.getByPlaceholder('192.168.0.10:45870')).toHaveValue('192.168.1.145:45870');
 });
 
 test('câmera negada: nada é pareado e a entrada manual continua utilizável', async ({ page }) => {

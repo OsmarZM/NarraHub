@@ -138,14 +138,24 @@ pub fn interpretar(texto: &str) -> Result<ConvitePorPin, FalhaDoQr> {
     })
 }
 
+/// O que o pareamento por QR devolve à tela: o resultado da sessão e o endereço que o **Rust** leu e
+/// validou — para "Sincronizar pareado" funcionar depois sem a tela interpretar o QR. Nunca o PIN.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PareadoPorQr {
+    pub resultado: ResultadoDaSessao,
+    pub endereco: String,
+}
+
 /// Pareia com o aparelho do QR pelo caminho do PIN — o mesmo, sem atalho.
-pub fn parear_por_qr(
-    conteudo: &str,
-    ctx: &Contexto<'_>,
-) -> DatabaseCommandResult<ResultadoDaSessao> {
+pub fn parear_por_qr(conteudo: &str, ctx: &Contexto<'_>) -> DatabaseCommandResult<PareadoPorQr> {
     let convite = interpretar(conteudo)
         .map_err(|falha| DatabaseCommandError::validation(falha.to_string()))?;
-    parear_por_pin(&convite.endpoint, &convite.pin, ctx)
+    let resultado = parear_por_pin(&convite.endpoint, &convite.pin, ctx)?;
+    Ok(PareadoPorQr {
+        resultado,
+        endereco: convite.endpoint,
+    })
 }
 
 fn validar_endpoint(endpoint: &str) -> Result<(), FalhaDoQr> {
@@ -397,7 +407,7 @@ mod tests {
         conteudo: impl FnOnce(&str, &str) -> String,
     ) -> (
         DatabaseCommandResult<ResultadoDaSessao>,
-        DatabaseCommandResult<ResultadoDaSessao>,
+        DatabaseCommandResult<PareadoPorQr>,
     ) {
         let escuta = escutar(0).expect("escutar");
         let endpoint = format!(
@@ -437,7 +447,14 @@ mod tests {
         });
         let v = v.expect("o visitante pareia pelo QR");
         a.expect("o anfitrião pareia");
-        assert_eq!(v.parceiro.device_id, anfitriao.identidade.device_id());
+        assert_eq!(
+            v.resultado.parceiro.device_id,
+            anfitriao.identidade.device_id()
+        );
+        assert!(
+            v.endereco.starts_with("127.0.0.1:"),
+            "o endereço validado volta para a tela"
+        );
         assert_eq!(anfitriao.roster(), vec![visitante.identidade.device_id()]);
         assert_eq!(visitante.roster(), vec![anfitriao.identidade.device_id()]);
     }

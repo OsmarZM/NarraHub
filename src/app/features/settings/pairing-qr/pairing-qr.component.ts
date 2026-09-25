@@ -12,7 +12,7 @@ import { renderSVG } from 'uqr';
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `<img class="pairing-qr-image" [src]="imagem" alt="QR para parear: aponte a câmera do outro aparelho" width="200" height="200" data-testid="pairing-qr" />`,
-  styles: [`:host { display: flex; justify-content: center; } .pairing-qr-image { width: 200px; height: 200px; padding: 10px; border-radius: 12px; background: #fff; image-rendering: pixelated; }`],
+  styles: [`:host { display: flex; justify-content: center; } .pairing-qr-image { width: min(260px, 70vw); height: auto; aspect-ratio: 1; padding: 10px; border-radius: 12px; background: #fff; image-rendering: pixelated; }`],
 })
 export class PairingQrComponent {
   imagem = '';
