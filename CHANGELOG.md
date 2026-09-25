@@ -2,6 +2,16 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.6 — 2026-09-25 (pré-release)
+
+Pré-release só Android, correções achadas na qualificação física do Sync V2. Instala por cima da 0.10.0-beta.5.
+
+- **Atualização no celular**: o app volta a procurar a beta nova sozinho ao abrir.
+- **Conflito entre decisões legível**: mostra o capítulo e o texto que cada decisão produz, em vez dos dados
+  internos da decisão.
+- **Decisão com confirmação**: escolher uma versão pede um segundo toque, porque a decisão vale para os dois
+  aparelhos e não pode ser desfeita.
+
 ## 0.10.0-beta.5 — 2026-09-24 (pré-release)
 
 Pré-release só Android, correções achadas na qualificação física do Sync V2. Instala por cima da 0.10.0-beta.4.
