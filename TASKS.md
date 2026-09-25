@@ -18,11 +18,38 @@ Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 
 ## ACTIVE
 
+### NH-083 — Sync V2, etapa I: qualificação física
+
+```text
+Owner:  Claude
+Status: REVIEW (PR #74)
+Fase:   4 — Sync V2
+Branch: sync-i-qualificacao-fisica (base: mobile-shell @ 3d29469)
+```
+
+Instalação real, aparelhos reais (Windows 11 x64 + Samsung Galaxy S23 / Android 16), rede real e
+dados reais/controlados. Arquitetura do Sync V2 congelada: só correções mínimas, cada uma com gate.
+
+- **I1–I20: PASS.** I6 com terceira instalação desktop controlada (transporte Windows ↔ Android
+  físico); I14 com a limitação do segundo plano no Android; I19 no Android por evidência indireta
+  (checagem do próprio app + vetor 0/0).
+- **Achados corrigidos**: I-BUG-02 (janela do perfil Qualification), I-BUG-03 (fim de sessão
+  invisível), I-BUG-04 (código vencido / erros de pareamento), I-BUG-05 (tela de conflitos),
+  I-BUG-06 e I-BUG-09 (atualização pelo app no Android nunca funcionava), I-BUG-07 (conflito entre
+  decisões ilegível), I-BUG-08 (mensagens de conexão), I-UX-04 (decisão com confirmação).
+- **Não eram defeito**: I-BUG-01 (backup do Google restaura o acervo; identidade é nova) e I-ENV-01
+  (AppData virtualizado do agente MSIX).
+- **Atualização pelo app no Android** provada ponta a ponta: beta.8 → oferta da beta.9 → instalada.
+
+Evidência em `docs/qualification/SYNC_V2_PHYSICAL_QUALIFICATION.md` e no handoff da etapa I.
+
+---
+
 ### NH-082 — Sync V2, etapa H: hardening final (H-R1, H-R2, H-R3)
 
 ```text
 Owner:  Claude
-Status: REVIEW
+Status: DONE (PR #73 → 3d29469, 2026-09-24)
 Fase:   4 — Sync V2
 Branch: sync-h-hardening (base: mobile-shell)
 ```
@@ -232,6 +259,19 @@ transporte antes de envolver câmera, mDNS, multicast do Android e diferença en
 material que o PIN já transporta — endpoint, identidade pública, informação de sessão, PIN — e
 a descoberta substitui a digitação do endereço. Se alterar mensagem, handshake ou ordem, deixou
 de ser esta tarefa.
+
+**Reforço da Etapa I (2026-09-24), pedido do usuário depois do teste físico:** entra logo **depois
+de fechar a I**, nunca durante, porque a I qualifica o fluxo atual. Evidência de que é necessário: no
+Samsung S23 o usuário não achou o código de pareamento (só aparece depois de "Escutar nesta rede",
+I-UX-01) e precisou digitar IP e porta à mão. Escopo:
+
+- **QR**: o aparelho que escuta mostra o QR; o celular lê pela câmera e preenche endereço + PIN.
+  Exige permissão de câmera e plugin de leitura no Android (muda manifest e o pedido ao usuário).
+- **Lista de aparelhos por perto** (como Bluetooth): mDNS anuncia só nome e endereço de quem está
+  escutando. **Descoberta nunca é confiança** — quem autoriza continua sendo o PIN/roster; um anúncio
+  falso só leva a um PIN que o impostor não tem.
+- Digitar o endereço continua existindo: rede "Pública" do Windows e roteadores com isolamento
+  bloqueiam multicast.
 
 ---
 

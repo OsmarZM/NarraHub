@@ -9,7 +9,7 @@ Atualizado em: 2026-09-09
 
 | Item | Valor |
 | --- | --- |
-| Versão corrente | **0.10.0-beta.2** |
+| Versão corrente | **0.10.0-beta.9** |
 | Última tag publicada | `app-v0.9.2`, em 2026-09-01 |
 | `origin/main` | 0.9.2 — canônica e **default** do repositório |
 | Manifests, README e CHANGELOG | 0.9.2, sob teste no CI |
@@ -151,6 +151,18 @@ diretório não o pegaria; o gate contra **colocação** pega.
 > aparelho. O import roda no arranque, depois da conversão de mídia e antes de `Ready`; depois
 > disso ninguém lê `sync_conflicts`. O escritor preserva (vira capítulo novo, que sincroniza) ou
 > descarta com confirmação. Gates H1–H27 em `application/{hardening,legado}_testes.rs`.
+>
+> **Etapa I — qualificação física do Sync V2 (2026-09-24/25).** I1–I20 executados em aparelhos reais:
+> Windows 11 x64 (instalador NSIS do perfil Qualification) e Samsung Galaxy S23 / Android 16 (APK
+> assinado das pré-releases), na mesma LAN. Bootstrap nos dois sentidos, incremental bidirecional,
+> conflitos e decisões resolvidos dos dois lados (inclusive decisões concorrentes), update × delete,
+> delete × delete, blobs de 7,8 MB com Wi-Fi cortado e app morto no meio, kill do Windows, pareamento
+> negativo, recuperação do legado V1 e um acervo de 600 capítulos (bootstrap em 58 s, pico de 259 MB
+> no celular). Nenhum defeito do núcleo causal: os achados foram de tela, mensagem e plataforma —
+> I-BUG-02 … I-BUG-09 e I-UX-04, todos corrigidos com gate. Dois merecem nota: a **atualização pelo
+> app no Android nunca funcionou** (I-BUG-06 + I-BUG-09, pânico do `rustls-platform-verifier`) e a
+> **escuta no Android só funciona com o app na tela** (limitação do Android 16, documentada).
+> **Sync V2 architecture = QUALIFIED.** Evidência: `docs/qualification/SYNC_V2_PHYSICAL_QUALIFICATION.md`.
 >
 > Reconciliação fina de capítulo por bloco depende da **NH-045** e não faz parte das 14
 > etapas. O Sync V2 pode fechar com conflito seguro de capítulo inteiro.

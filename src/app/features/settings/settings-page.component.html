@@ -162,9 +162,15 @@
         </a>
         @if (store.syncV2State().escutando) {
           <div class="pairing-panel">
+            <small class="escuta-na-tela" data-testid="escuta-na-tela">No celular, a escuta só funciona com o NarraHub aberto na tela: em segundo plano o Android pausa o app.</small>
             <small>Endereço para digitar no outro aparelho</small>
             @for (endereco of store.syncV2State().enderecos; track endereco) { <strong>{{ endereco }}</strong> }
             <small>Código de pareamento</small><b>{{ store.syncV2State().pin || '—' }}</b>
+            @if (!store.syncV2State().pin) {
+              <small class="pin-vencido" data-testid="pin-vencido">O código venceu ou já foi usado. Toque em "Novo código" e digite logo em seguida no outro aparelho.</small>
+            } @else {
+              <small class="pin-validade">Vale três minutos e três tentativas.</small>
+            }
           </div>
           <div class="field-row">
             <button type="button" class="secondary-button" [disabled]="store.syncV2Busy()" (click)="newSyncV2Pin()">Novo código</button>

@@ -1,5 +1,6 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { isTauri } from '@tauri-apps/api/core';
+import { SyncSessionFeedbackService } from '../application/sync-session-feedback.service';
 import { AiService } from '../core/native/ai.service';
 import { BackupService } from '../core/native/backup.service';
 import { BlobService } from '../core/native/blob.service';
@@ -20,6 +21,7 @@ export class AppBootstrapService {
   private readonly knowledge = inject(KnowledgeStore);
   private readonly universes = inject(UniverseStore);
   private readonly settings = inject(SettingsStore);
+  private readonly syncFeedback = inject(SyncSessionFeedbackService);
 
   readonly ready = signal(false);
   readonly error = signal('');
@@ -44,6 +46,7 @@ export class AppBootstrapService {
     this.collaborationTimer = null;
     this.updateTimer = null;
     this.settings.dispose();
+    this.syncFeedback.stop();
     this.ai.dispose();
   }
 
@@ -113,11 +116,13 @@ export class AppBootstrapService {
 
       await this.universes.load();
       await this.knowledge.refreshLibraryPreviewTags();
+      // Antes de qualquer escuta: uma sessão atendida precisa encontrar alguém ouvindo (I-BUG-03).
+      await this.syncFeedback.start();
       await this.collaboration.refreshShareStatus();
       await this.collaboration.loadReview();
       this.collaborationTimer = setInterval(() => void this.collaboration.syncIncoming(), 2500);
       await this.settings.primeCurrentVersion();
-      if (await this.settings.isUpdateConfigured()) {
+      if (await this.settings.shouldCheckForUpdatesOnStartup()) {
         this.updateTimer = setTimeout(() => void this.settings.checkForUpdates(true), 1800);
       }
     } catch (error) {

@@ -80,48 +80,75 @@
           <button type="button" class="secondary-button" (click)="store.close()">Fechar</button>
         </div>
 
-        <div class="versions">
+        @if (linhasQueMudaram(detalhe).length) {
+          <!-- Celular: só as linhas em conflito, uma seguida da outra (no desktop o lado a lado já mostra). -->
+          <section class="text-diff" aria-label="Diferenças no texto" data-testid="diff-texto">
+            <h3>O que mudou no texto</h3>
+            @for (linha of linhasQueMudaram(detalhe); track $index) {
+              @if (linha.tipo === 'igual') {
+                <p class="diff-igual diff-resumo">{{ linha.texto }}</p>
+              } @else {
+                <p [class]="'diff-' + linha.tipo">
+                  <span class="diff-mark">{{ linha.tipo === 'so_deste' ? 'Neste aparelho' : 'No outro aparelho' }}</span>
+                  {{ linha.texto }}
+                </p>
+              }
+            }
+          </section>
+        }
+
+        <div class="conflito-versoes">
           @for (lado of [detalhe.desteAparelho, detalhe.doOutro]; track lado.letra) {
-            <section class="version" [class.deleted]="lado.excluido" [attr.data-testid]="lado.desteAparelho ? 'versao-deste' : 'versao-do-outro'">
-              <h3>{{ lado.desteAparelho ? 'Neste aparelho' : 'No outro aparelho' }}</h3>
+            <section class="conflito-versao" [class.deleted]="lado.excluido" [attr.data-testid]="lado.desteAparelho ? 'versao-deste' : 'versao-do-outro'">
+              <header class="versao-head">
+                <h3>{{ lado.desteAparelho ? 'Neste aparelho' : 'No outro aparelho' }}</h3>
+                @if (textoDe(lado)) {
+                  <button type="button" class="text-button" (click)="copiar(lado)">Copiar texto</button>
+                }
+              </header>
               @if (lado.excluido) {
                 <p class="deleted-mark">EXCLUÍDO</p>
                 <small>Neste lado, o item foi excluído.</small>
               } @else if (lado.indisponivel) {
                 <small>O conteúdo desta versão não está disponível neste aparelho.</small>
               } @else {
-                <dl>
-                  @for (campo of lado.campos; track campo.campo) {
-                    <dt>{{ campo.rotulo }}</dt><dd>{{ mostrar(campo.valor) }}</dd>
-                  }
-                </dl>
+                @if (paragrafos(detalhe, lado).length) {
+                  <div class="versao-texto">
+                    @for (par of paragrafos(detalhe, lado); track $index) {
+                      <p [class.difere]="par.difere">{{ par.texto }}</p>
+                    }
+                  </div>
+                }
+                @if (camposQueDiferem(detalhe, lado).length) {
+                  <dl class="versao-campos">
+                    @for (campo of camposQueDiferem(detalhe, lado); track campo.campo) {
+                      <dt>{{ campo.rotulo }}</dt><dd>{{ mostrar(campo.valor) }}</dd>
+                    }
+                  </dl>
+                }
+                @if (camposIguais(detalhe, lado).length) {
+                  <details class="versao-iguais">
+                    <summary>Outros campos (iguais nos dois)</summary>
+                    <dl class="versao-campos">
+                      @for (campo of camposIguais(detalhe, lado); track campo.campo) {
+                        <dt>{{ campo.rotulo }}</dt><dd>{{ mostrar(campo.valor) }}</dd>
+                      }
+                    </dl>
+                  </details>
+                }
               }
             </section>
           }
         </div>
 
-        @if (detalhe.diffDeTexto.length) {
-          <section class="text-diff" aria-label="Diferenças no texto" data-testid="diff-texto">
-            <h3>O que mudou no texto</h3>
-            @for (linha of detalhe.diffDeTexto; track $index) {
-              <p [class]="'diff-' + linha.tipo">
-                <span class="diff-mark">{{ linha.tipo === 'so_deste' ? 'Neste aparelho' : linha.tipo === 'so_do_outro' ? 'No outro' : '' }}</span>
-                {{ linha.texto }}
-              </p>
-            }
-          </section>
-        }
-
-        @if (detalhe.diferencas.length) {
+        @if (diferencasForaDoTexto(detalhe).length) {
           <section class="field-diff" aria-label="Diferenças campo a campo" data-testid="diff-campos">
             <h3>Campo a campo</h3>
             <table>
               <thead><tr><th>Campo</th><th>Neste aparelho</th><th>No outro aparelho</th></tr></thead>
               <tbody>
-                @for (dif of detalhe.diferencas; track dif.campo) {
-                  @if (dif.campo !== 'content') {
-                    <tr><th>{{ dif.rotulo }}</th><td>{{ mostrar(dif.desteAparelho) }}</td><td>{{ mostrar(dif.doOutro) }}</td></tr>
-                  }
+                @for (dif of diferencasForaDoTexto(detalhe); track dif.campo) {
+                  <tr><th>{{ dif.rotulo }}</th><td>{{ mostrar(dif.desteAparelho) }}</td><td>{{ mostrar(dif.doOutro) }}</td></tr>
                 }
               </tbody>
             </table>
@@ -137,11 +164,21 @@
                   <input [ngModel]="nomeDe(acao.tagId)" (ngModelChange)="digitarNome(acao.tagId, $event)" placeholder="Nome novo" [attr.aria-label]="acao.rotulo" />
                 }
                 <button type="button" class="primary-button" [disabled]="store.busy() || (acao.pedeNome && !nomeDe(acao.tagId).trim())"
-                        (click)="decidir(acao)" [attr.data-testid]="'acao-' + acao.acao">{{ acao.rotulo }}</button>
+                        (click)="decidir(acao)" [attr.data-testid]="'acao-' + acao.acao">{{ armado() === acao.acao + acao.tagId ? 'Confirmar: ' + acao.rotulo : acao.rotulo }}</button>
+                @if (permiteEditar(detalhe, acao)) {
+                  <button type="button" class="secondary-button" [disabled]="store.busy()"
+                          (click)="decidirEEditar(acao)" [attr.data-testid]="'acao-' + acao.acao + '-editar'">{{ armado() === acao.acao + acao.tagId + ':editar' ? 'Confirmar e abrir para editar' : '… e abrir para editar' }}</button>
+                }
                 <small>{{ acao.descricao }}</small>
+                @if (armado() === acao.acao + acao.tagId || armado() === acao.acao + acao.tagId + ':editar') {
+                  <small class="decision-warning" role="alert" data-testid="aviso-decisao">A decisão encerra o conflito nos dois aparelhos e não pode ser desfeita. Toque de novo para confirmar.</small>
+                }
               </div>
             }
           </section>
+            @if (detalhe.resumo.aggregateType === 'chapter') {
+              <p class="detail-note">Quer um texto que não é nenhum dos dois? Escolha a versão mais próxima e abra para editar — use "Copiar texto" na outra antes. A edição chega aos outros aparelhos como qualquer outra.</p>
+            }
         } @else if (detalhe.resumo.status === 'aberto') {
           <p class="detail-note">Este conflito se resolve sozinho na próxima sincronização.</p>
         }

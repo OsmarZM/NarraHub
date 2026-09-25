@@ -1,4 +1,4 @@
-import { Component, OnInit, ViewEncapsulation, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, ViewEncapsulation, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { AiMode, AiModelProfile, AiService } from '../../core/native/ai.service';
 import { BackupManifest } from '../../core/native/backup.service';
@@ -11,6 +11,7 @@ import { SettingsStore } from './state/settings.store';
 import { ConflictsStore } from '../conflicts/state/conflicts.store';
 import { LegacyRecoveryStore } from '../legacy-recovery/state/legacy-recovery.store';
 import { RouterLink } from '@angular/router';
+import { SyncSessionFeedbackService } from '../../application/sync-session-feedback.service';
 
 export type SettingsSection = 'general' | 'ai' | 'sync' | 'share' | 'updates';
 
@@ -24,10 +25,11 @@ type RestoreModal = 'restore-backup' | null;
   styleUrl: './settings-page.component.css',
   encapsulation: ViewEncapsulation.None,
 })
-export class SettingsPageComponent implements OnInit {
+export class SettingsPageComponent implements OnInit, OnDestroy {
   readonly store = inject(SettingsStore);
   /** Etapa F: o contador de conflitos e o aviso da atualização da sincronização. */
   readonly conflicts = inject(ConflictsStore);
+  private readonly syncFeedback = inject(SyncSessionFeedbackService);
   /** Etapa H (H-R3): as versões antigas que só existem neste aparelho. */
   readonly legacyRecovery = inject(LegacyRecoveryStore);
   readonly epochNoticeDismissed = signal(false);
@@ -55,7 +57,21 @@ export class SettingsPageComponent implements OnInit {
   v2Pin = '';
   restoreConfirmation = '';
 
+  /**
+   * I-BUG-04: o código vence no Rust (três minutos) sem ninguém avisar a tela. Enquanto a escuta está
+   * aberta, relê o estado de tempos em tempos para não mostrar como válido um código que já venceu.
+   */
+  private syncStatusTimer: ReturnType<typeof setInterval> | null = null;
+
+  ngOnDestroy(): void {
+    if (this.syncStatusTimer) clearInterval(this.syncStatusTimer);
+    this.syncStatusTimer = null;
+  }
+
   ngOnInit(): void {
+    this.syncStatusTimer = setInterval(() => {
+      if (this.store.syncV2State().escutando) void this.store.refreshSyncStatus();
+    }, 5000);
     this.aiSelectedProfile = (this.ai.localStatus().installedProfile as AiModelProfile['id']) || this.ai.localStatus().recommended.id;
     void this.store.refreshSyncStatus();
     void this.store.refreshBackupStatus();
@@ -286,25 +302,13 @@ export class SettingsPageComponent implements OnInit {
   async pairSyncV2(): Promise<void> {
     const result = await this.store.pairSyncV2(this.v2Address, this.v2Pin, this.deviceName);
     if (!result.ok) { if (result.error) this.showError(result.error); return; }
-    if (result.result) this.showInfo(this.describeSyncV2(result.result));
-    void this.conflicts.refreshOpenCount();
+    if (result.result) await this.syncFeedback.applied(result.result);
   }
 
   async syncNowV2(): Promise<void> {
     const result = await this.store.syncNowV2(this.v2Address, this.deviceName);
     if (!result.ok) { if (result.error) this.showError(result.error); void this.conflicts.refreshOpenCount(); return; }
-    if (result.result) this.showInfo(this.describeSyncV2(result.result));
-    void this.conflicts.refreshOpenCount();
-  }
-
-  private describeSyncV2(r: import('../../core/native/sync-v2.service').SyncSessionResult): string {
-    const papel = r.papel === 'receptor' ? 'Acervo recebido de' : r.papel === 'doador' ? 'Acervo enviado para' : 'Sincronizado com';
-    const contar = (n: number, um: string, varios: string) => `${n} ${n === 1 ? um : varios}`;
-    return `${papel} ${r.parceiro.nome}: `
-      + `${contar(r.eventosAplicados, 'alteração recebida', 'alterações recebidas')}, `
-      + `${contar(r.eventosEnviados, 'alteração enviada', 'alterações enviadas')}, `
-      + `${contar(r.blobsRecebidos, 'imagem recebida', 'imagens recebidas')}.`
-      + (r.eventosPendentes ? ` ${contar(r.eventosPendentes, 'alteração aguarda', 'alterações aguardam')} a próxima sessão.` : '');
+    if (result.result) await this.syncFeedback.applied(result.result);
   }
 
   // ── Compartilhamento e colaboração ───────────────────────

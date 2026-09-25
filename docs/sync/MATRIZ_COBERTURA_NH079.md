@@ -1034,6 +1034,43 @@ GC de tombstones, reintrodução do Sync V1, conversão automática de `sync_con
 `sync_divergences`, resolução automática do legado, qualquer uso de relógio para causalidade,
 mudança no Noise/Hello/protocolo e aumento do formato canônico.
 
+## 5.4 A etapa I: qualificação física
+
+A arquitetura ficou congelada no merge da H. A etapa I provou o Sync V2 em aparelhos reais — Windows 11
+x64 e Samsung Galaxy S23 (Android 16) na mesma LAN, instalados pelos artefatos de distribuição — e
+registrou cada gate como PASS/FAIL/BLOCKED em `docs/qualification/SYNC_V2_PHYSICAL_QUALIFICATION.md`.
+
+| Gate | O que o aparelho real provou | Status |
+| --- | --- | --- |
+| I1 | instalador NSIS e APK assinado instalam, abrem, criam banco e reabrem sem reaplicar migration | PASS |
+| I2 | pareamento por PIN entre instalações novas; identidades diferentes; segunda sessão sem PIN | PASS |
+| I3 / I4 | bootstrap nos dois sentidos, com o Android como doador; 0/0 depois da reabertura | PASS |
+| I5 | edições nos dois lados sem sessão no meio convergem; segunda sessão 0/0 | PASS |
+| I6 | A → S23 → C sem A falar com C (C = terceira instalação desktop) | PASS |
+| I7–I10 | conflito W × A resolvido em cada lado; restaurar e manter exclusão; decisões concorrentes viram conflito novo; delete × delete converge | PASS |
+| I11–I13 | blobs de 7,8 MB com Wi-Fi cortado e app morto no meio: nada pela metade, retomada completa, SHA conferido | PASS |
+| I14 | segundo plano / tela bloqueada: sessão não começa, nada se perde; volta sozinha com o app na tela | PASS (limitação) |
+| I15 | PIN errado, código morto, interrupção, cancelamento: roster intocado; retry válido funciona | PASS |
+| I16 | nenhum aparelho refaz bootstrap depois de fechado e reaberto | PASS |
+| I17 | banco 0.9.2 com conflito V1 → caixa de versões antigas → B preservado → chega ao Android como capítulo V2 | PASS |
+| I18 | 600 capítulos, 200 entidades, 14 blobs: bootstrap 58 s, sem ANR | PASS |
+| I19 | bancos finais íntegros, 0 divergências, 0 pendentes, 0 grupos incompletos | PASS |
+| I20 | reinstalação gera identidade nova e exige reparear | PASS |
+
+Gates automatizados acrescentados pela I (todos vermelhos sem a correção correspondente):
+`migration-safety` (janela dos perfis), `rust-core-contract` (evento de sessão atendida),
+`e2e/sync-session-feedback` (aviso e releitura, código vencido, escuta na tela), `e2e/sync-conflicts`
+(rolagem, fonte, identificadores, "e abrir para editar", confirmação em dois toques),
+`sync_pin_pairing::codigo_vencido_diz_que_o_codigo_nao_foi_aceito`,
+`resolucao_testes::ibug07_conflito_entre_decisoes_mostra_o_capitulo_que_cada_uma_produz`,
+`sync_wire::{falha_ao_abrir_a_conexao_diz_o_que_fazer, silencio_diz_para_deixar_o_app_do_celular_na_tela}`,
+`atualizacao_android::ibug09_tls_embutido_e_aceito_pelo_reqwest` e dois contratos em
+`android-release` (arranque procura a beta pelo canal Android; cliente HTTPS com raízes embutidas).
+
+Nada no núcleo causal mudou: protocolo 1, formato canônico 2, migration 29, wire, Hello, Noise e
+`conflict_resolution` intactos. As correções foram de tela, texto, configuração de janela e TLS do
+atualizador Android.
+
 ## 6. Legado e conversões
 
 - `blob_backfill` (imagens antigas) roda **antes** da gênese (etapa C). Desde a C isso é cobrado no

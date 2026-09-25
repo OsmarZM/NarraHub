@@ -905,3 +905,21 @@ test('ETAPA H — o aviso das versoes antigas nao pode ser silenciado enquanto h
   const componente = readFileSync(new URL('../src/app/features/settings/settings-page.component.ts', import.meta.url), 'utf8');
   assert.match(componente, /legacyRecovery\.refreshPending\(\)/u, 'a contagem precisa ser relida a cada abertura');
 });
+
+// I-BUG-03 (Etapa I, achado em aparelho físico): o aparelho que ESCUTA recebia a sessão, gravava no
+// banco e a tela seguia mostrando o acervo antigo até o app ser reaberto — ele não chamou comando
+// nenhum, então nada do frontend ficava sabendo. O aviso é um evento do Rust, e alguém tem de ouvi-lo
+// desde o arranque.
+test('a sessão atendida pela escuta chega à tela: o Rust emite e o arranque escuta o mesmo evento', () => {
+  const comandos = readFileSync(new URL('../src-tauri/src/interface/tauri/sync_v2_commands.rs', import.meta.url), 'utf8');
+  const nomeNoRust = comandos.match(/pub const EVENTO_SESSAO_ATENDIDA: &str = "([^"]+)";/u)?.[1];
+  assert.ok(nomeNoRust, 'o nome do evento sumiu do Rust');
+  const escuta = comandos.slice(comandos.indexOf('fn sync_v2_escuta_iniciar'), comandos.indexOf('fn atender('));
+  assert.match(escuta, /app\.emit\(EVENTO_SESSAO_ATENDIDA,/u, 'a escuta não emite o fim da sessão');
+
+  const porta = readFileSync(new URL('../src/app/core/native/sync-v2.service.ts', import.meta.url), 'utf8');
+  assert.equal(porta.match(/SYNC_V2_SERVED_EVENT = '([^']+)'/u)?.[1], nomeNoRust, 'frontend e Rust divergem no nome do evento');
+
+  const arranque = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
+  assert.match(arranque, /await this\.syncFeedback\.start\(\);/u, 'ninguém escuta a sessão atendida desde o arranque');
+});

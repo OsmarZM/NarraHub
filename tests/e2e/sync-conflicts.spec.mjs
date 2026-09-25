@@ -40,14 +40,18 @@ const detalhes = {
     desteAparelho: {
       letra: 'a', desteAparelho: true, excluido: false, titulo: resumoEdicao.titulo, indisponivel: false,
       campos: [
+        { campo: 'bookId', rotulo: 'bookId', valor: '06a7f83f-16d0-4d02-adcd-eef770866fba' },
         { campo: 'title', rotulo: 'Título', valor: resumoEdicao.titulo },
+        { campo: 'status', rotulo: 'Estado', valor: 'IDEIA' },
         { campo: 'content', rotulo: 'Texto', valor: '<p>Era uma noite fria.</p><p>O vento batia.</p>' },
       ],
     },
     doOutro: {
       letra: 'b', desteAparelho: false, excluido: false, titulo: 'Capítulo 1', indisponivel: false,
       campos: [
+        { campo: 'bookId', rotulo: 'bookId', valor: '06a7f83f-16d0-4d02-adcd-eef770866fba' },
         { campo: 'title', rotulo: 'Título', valor: 'Capítulo 1' },
+        { campo: 'status', rotulo: 'Estado', valor: 'IDEIA' },
         { campo: 'content', rotulo: 'Texto', valor: '<p>Era uma noite fria.</p><p>A chuva caía sem parar sobre o farol abandonado.</p>' },
       ],
     },
@@ -155,6 +159,10 @@ test('lista, detalhe com as duas versões, diff e a decisão enviada como ação
   const caixa = await botao.boundingBox();
   expect(caixa.height).toBeGreaterThanOrEqual(36);
 
+  // I-UX-04: o primeiro toque só arma e avisa; nada é enviado ainda.
+  await botao.click();
+  await expect(detalhe.getByTestId('aviso-decisao')).toContainText('não pode ser desfeita');
+  expect(await page.evaluate(() => window.__resolucoes.length)).toBe(0);
   await botao.click();
   await expect(page.locator('.conflicts-info')).toContainText('Decisão registrada');
   const enviadas = await page.evaluate(() => window.__resolucoes);
@@ -174,6 +182,7 @@ test('edição contra exclusão mostra EXCLUÍDO do lado que excluiu', async ({ 
   await expect(detalhe.getByTestId('acao-manterExclusao')).toBeVisible();
   await semRolagemHorizontal(page, 'detalhe da exclusão');
 
+  await detalhe.getByTestId('acao-manterExclusao').click();
   await detalhe.getByTestId('acao-manterExclusao').click();
   const enviadas = await page.evaluate(() => window.__resolucoes);
   expect(enviadas).toEqual([{ chave: 'k-exclusao', acao: { tipo: 'manterExclusao' } }]);
@@ -210,4 +219,55 @@ test('Configurações mostra quantos conflitos precisam de atenção e o aviso d
   await link.click();
   await page.waitForURL('**/settings/conflitos');
   await expect(page.getByTestId('conflicts-page')).toBeVisible();
+});
+
+// I-BUG-05 (Etapa I, achado em aparelho físico): a tela de conflitos não rolava — o contêiner da rota
+// tem altura fixa e overflow oculto — e os valores saíam com 9px por colisão com uma classe global.
+test('a tela de conflitos rola, lê-se sem lupa e esconde identificadores internos', async ({ page }) => {
+  await abrirConflitos(page);
+  await page.getByTestId('conflito').first().click();
+  const detalhe = page.getByTestId('conflito-detalhe');
+  await expect(detalhe).toBeVisible();
+
+  // Rolar com a roda/gesto precisa mover a página: o botão de decisão tem de ser alcançável pelo usuário.
+  const rolagem = await page.evaluate(() => {
+    const host = document.querySelector('app-conflicts-page');
+    // Conteúdo maior que a janela em qualquer viewport: a rolagem é da própria página.
+    const extra = document.createElement('div');
+    extra.style.height = '2000px';
+    host.querySelector('.conflicts-page').appendChild(extra);
+    return { overflowY: getComputedStyle(host).overflowY, cabe: host.scrollHeight <= host.clientHeight };
+  });
+  expect(rolagem.overflowY, 'a página de conflitos precisa rolar sozinha').toBe('auto');
+  expect(rolagem.cabe).toBe(false);
+  const caixa = await page.locator('app-conflicts-page').boundingBox();
+  await page.mouse.move(caixa.x + caixa.width / 2, caixa.y + Math.min(caixa.height, 300) / 2);
+  await page.mouse.wheel(0, 1200);
+  await expect.poll(() => page.evaluate(() => document.querySelector('app-conflicts-page').scrollTop)).toBeGreaterThan(0);
+
+  // Letra legível nas versões.
+  const fonte = await detalhe.getByTestId('versao-deste').locator('.versao-texto p').first().evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+  expect(fonte).toBeGreaterThanOrEqual(13);
+
+  // Identificador interno não é informação para o escritor; campo igual fica recolhido.
+  await expect(detalhe.getByTestId('versao-deste')).not.toContainText('06a7f83f');
+  await expect(detalhe.getByTestId('versao-deste')).not.toContainText('bookId');
+  await expect(detalhe.getByTestId('versao-deste').locator('.versao-iguais')).toContainText('Estado');
+  await expect(detalhe.getByTestId('versao-deste').locator('.versao-iguais')).not.toHaveAttribute('open', '');
+
+  // O parágrafo que só existe de um lado vem destacado.
+  await expect(detalhe.getByTestId('versao-deste').locator('.versao-texto p.difere')).toHaveText('O vento batia.');
+  await expect(detalhe.getByTestId('versao-do-outro').locator('.versao-texto p.difere')).toHaveText('A chuva caía sem parar sobre o farol abandonado.');
+});
+
+test('capítulo em conflito: escolher uma versão e abrir no editor para ajustar', async ({ page }) => {
+  await abrirConflitos(page);
+  await page.getByTestId('conflito').first().click();
+  const detalhe = page.getByTestId('conflito-detalhe');
+  await detalhe.getByTestId('acao-ficarComB-editar').click();
+  await expect(page).toHaveURL(/\/settings\/conflitos$/u);
+  await detalhe.getByTestId('acao-ficarComB-editar').click();
+  await expect(page).toHaveURL(/\/workspace\/u1\/writing\/c1$/u);
+  const enviadas = await page.evaluate(() => window.__resolucoes);
+  expect(enviadas).toEqual([{ chave: 'k-edicao', acao: { tipo: 'ficarComB' } }]);
 });

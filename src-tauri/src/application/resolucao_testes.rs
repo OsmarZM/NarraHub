@@ -507,6 +507,60 @@ fn f20_decisoes_concorrentes_sao_concurrent_sobre_a_decisao() {
     assert_eq!(a.conteudo(&capitulo).as_deref(), Some("<p>versão de B</p>"));
 }
 
+/// **I-BUG-07 — o conflito entre decisões se lê como capítulo, não como certificado.** Achado em
+/// aparelho físico: o detalhe mostrava "Sem título", `choice` e a lista crua de `results` com revisões.
+/// Cada lado tem de mostrar o que a decisão produz — o texto do capítulo naquela revisão.
+#[test]
+fn ibug07_conflito_entre_decisoes_mostra_o_capitulo_que_cada_uma_produz() {
+    let (a, b, capitulo, chave) = conflito_de_edicao();
+    let em_a = a.ficar_com(&chave, true);
+    let em_b = b.ficar_com(&chave, true);
+    a.resolver(&chave, em_a).expect("A");
+    b.resolver(&chave, em_b).expect("B");
+    sincronizar(&a, &b);
+    let (sobre_a_decisao, _, tipo) = a.abertas().remove(0);
+    assert_eq!(tipo, "conflict_resolution");
+
+    let detalhe =
+        crate::application::conflitos::inspecionar(&a.banco.connection(), &sobre_a_decisao)
+            .expect("inspecionar");
+    assert_eq!(
+        detalhe.resumo.titulo, "Um",
+        "o título é o do capítulo decidido"
+    );
+
+    let texto = |lado: &crate::application::conflitos::LadoDoConflito| {
+        lado.campos
+            .iter()
+            .find(|c| c.campo == "content")
+            .and_then(|c| c.valor.as_str().map(str::to_string))
+    };
+    let mut textos = [texto(&detalhe.deste_aparelho), texto(&detalhe.do_outro)];
+    textos.sort();
+    assert_eq!(
+        textos,
+        [
+            Some("<p>versão de A</p>".to_string()),
+            Some("<p>versão de B</p>".to_string())
+        ],
+        "cada lado mostra o texto que a sua decisão produz"
+    );
+    for lado in [&detalhe.deste_aparelho, &detalhe.do_outro] {
+        assert!(
+            lado.campos
+                .iter()
+                .all(|c| c.campo != "results" && c.campo != "choice"),
+            "o certificado cru vazou para a tela: {:?}",
+            lado.campos.iter().map(|c| &c.campo).collect::<Vec<_>>()
+        );
+    }
+    assert!(
+        !detalhe.diff_de_texto.is_empty(),
+        "sem diff, a tela não mostra o que muda"
+    );
+    let _ = capitulo;
+}
+
 /// **F9 — a decisão de um grupo é atômica no receptor:** uma queda no meio dos membros não deixa
 /// nenhum materializado.
 #[test]

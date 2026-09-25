@@ -37,7 +37,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::application::sync_panorama::{panorama, Panorama};
 use crate::application::sync_sessao::{
@@ -51,6 +51,20 @@ use crate::infrastructure::sync_pake::{Codigos, VALIDADE};
 /// Mais folgado que o `ESPERA_PADRAO` do fio porque um bootstrap num celular
 /// modesto passa segundos semeando antes de responder.
 const ESPERA_DA_SESSAO: Duration = Duration::from_secs(60);
+
+/// Evento que a escuta emite ao terminar cada sessão que ela atendeu (I-BUG-03).
+///
+/// Quem escuta não chamou comando nenhum: a sessão chega pela rede, grava no banco e, sem este
+/// aviso, a tela continua mostrando o acervo de antes até o app ser reaberto.
+pub const EVENTO_SESSAO_ATENDIDA: &str = "sync-v2-sessao-atendida";
+
+/// O que a tela recebe quando uma sessão atendida termina.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessaoAtendida {
+    pub resultado: Option<ResultadoDaSessao>,
+    pub erro: Option<String>,
+}
 
 /// O estado do Sync V2 neste aparelho.
 ///
@@ -236,6 +250,16 @@ pub fn sync_v2_escuta_iniciar(
                 }
                 let Ok(mut fluxo) = conexao else { continue };
                 let resultado = atender(&app, &codigos, &nome, &mut fluxo);
+                let aviso = match &resultado {
+                    Ok(r) => SessaoAtendida {
+                        resultado: Some(r.clone()),
+                        erro: None,
+                    },
+                    Err(erro) => SessaoAtendida {
+                        resultado: None,
+                        erro: Some(erro.message.clone()),
+                    },
+                };
                 if let Ok(mut interno) = estado.0.lock() {
                     match resultado {
                         Ok(r) => {
@@ -245,6 +269,9 @@ pub fn sync_v2_escuta_iniciar(
                         Err(erro) => interno.ultimo_erro = Some(erro.message),
                     }
                 }
+                // Sem janela para ouvir, o aviso se perde e o banco continua certo: falhar aqui
+                // não pode derrubar a escuta.
+                let _ = app.emit(EVENTO_SESSAO_ATENDIDA, aviso);
             }
         })
         .map_err(falha)?;

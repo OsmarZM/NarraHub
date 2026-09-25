@@ -187,6 +187,15 @@ export class SettingsStore {
     return this.updateService.isConfigured();
   }
 
+  /**
+   * Se o arranque deve procurar atualização. I-BUG-06 (Etapa I): o arranque perguntava só pelo
+   * atualizador do desktop (`updater_configured`), que o Android não tem — e o celular nunca
+   * oferecia a beta nova sozinho. O canal do Android é outro e vale por si.
+   */
+  async shouldCheckForUpdatesOnStartup(): Promise<boolean> {
+    return (await this.androidUpdate.supported()) || (await this.updateService.isConfigured());
+  }
+
   async checkForUpdates(silent: boolean): Promise<{ ok: boolean; message: string }> {
     if (!isTauri()) return { ok: false, message: silent ? '' : 'A atualização automática funciona somente no aplicativo instalado.' };
     if (this.updateBusy()) return { ok: false, message: '' };
