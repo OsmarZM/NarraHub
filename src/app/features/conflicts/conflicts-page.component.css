@@ -113,6 +113,7 @@
 .decision { display: flex; flex-direction: column; gap: 10px; }
 .decision-option { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .decision-option small { color: var(--muted); flex-basis: 100%; }
+.decision-option .decision-warning { color: var(--nh-ochre); font-weight: 600; }
 .decision-option input { min-height: var(--nh-touch-target, 40px); min-width: 0; flex: 1 1 180px; }
 
 @media (max-width: 600px) {

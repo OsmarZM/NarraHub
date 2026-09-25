@@ -32,6 +32,19 @@ export class ConflictsPageComponent implements OnInit {
   /** O nome digitado para a ação de renomear, por tag. */
   readonly novoNome = signal<Record<string, string>>({});
 
+  /**
+   * I-UX-04 (Etapa I): a decisão é definitiva — vira evento e vai para os outros aparelhos. O
+   * operador escolheu, se arrependeu, e o conflito já não existia. O primeiro toque só arma; o
+   * segundo, no mesmo botão, decide.
+   */
+  readonly armado = signal('');
+
+  armar(chave: string): boolean {
+    if (this.armado() === chave) return true;
+    this.armado.set(chave);
+    return false;
+  }
+
   readonly tipos = computed(() => this.opcoes((c) => [c.aggregateType, c.rotuloDoTipo]));
   readonly universos = computed(() => this.opcoes((c) => [c.universeId, c.universeId]));
 
@@ -44,6 +57,7 @@ export class ConflictsPageComponent implements OnInit {
   }
 
   async abrir(conflito: ConflictSummary): Promise<void> {
+    this.armado.set('');
     await this.store.open(conflito.conflictKey);
     // No celular o detalhe fica abaixo da lista; sem isso, o toque parece não ter feito nada.
     requestAnimationFrame(() =>
@@ -61,6 +75,8 @@ export class ConflictsPageComponent implements OnInit {
 
   decidir(acao: ConflictAction): void {
     if (acao.pedeNome && !this.nomeDe(acao.tagId).trim()) return;
+    if (!this.armar(acao.acao + acao.tagId)) return;
+    this.armado.set('');
     void this.store.resolve(acao.acao, acao.tagId, this.nomeDe(acao.tagId).trim());
   }
 
@@ -76,6 +92,8 @@ export class ConflictsPageComponent implements OnInit {
   async decidirEEditar(acao: ConflictAction): Promise<void> {
     const resumo = this.store.selected()?.resumo;
     if (!resumo) return;
+    if (!this.armar(acao.acao + acao.tagId + ':editar')) return;
+    this.armado.set('');
     if (!await this.store.resolve(acao.acao, acao.tagId, '')) return;
     await this.router.navigate(['/workspace', resumo.universeId, 'writing', resumo.aggregateId]);
   }

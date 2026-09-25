@@ -164,12 +164,15 @@
                   <input [ngModel]="nomeDe(acao.tagId)" (ngModelChange)="digitarNome(acao.tagId, $event)" placeholder="Nome novo" [attr.aria-label]="acao.rotulo" />
                 }
                 <button type="button" class="primary-button" [disabled]="store.busy() || (acao.pedeNome && !nomeDe(acao.tagId).trim())"
-                        (click)="decidir(acao)" [attr.data-testid]="'acao-' + acao.acao">{{ acao.rotulo }}</button>
+                        (click)="decidir(acao)" [attr.data-testid]="'acao-' + acao.acao">{{ armado() === acao.acao + acao.tagId ? 'Confirmar: ' + acao.rotulo : acao.rotulo }}</button>
                 @if (permiteEditar(detalhe, acao)) {
                   <button type="button" class="secondary-button" [disabled]="store.busy()"
-                          (click)="decidirEEditar(acao)" [attr.data-testid]="'acao-' + acao.acao + '-editar'">… e abrir para editar</button>
+                          (click)="decidirEEditar(acao)" [attr.data-testid]="'acao-' + acao.acao + '-editar'">{{ armado() === acao.acao + acao.tagId + ':editar' ? 'Confirmar e abrir para editar' : '… e abrir para editar' }}</button>
                 }
                 <small>{{ acao.descricao }}</small>
+                @if (armado() === acao.acao + acao.tagId || armado() === acao.acao + acao.tagId + ':editar') {
+                  <small class="decision-warning" role="alert" data-testid="aviso-decisao">A decisão encerra o conflito nos dois aparelhos e não pode ser desfeita. Toque de novo para confirmar.</small>
+                }
               </div>
             }
           </section>
