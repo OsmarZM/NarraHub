@@ -27,6 +27,11 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
+# I-BUG-09 (Etapa I): no Android o verificador da plataforma do reqwest exige inicialização por JNI
+# e entra em pânico sem ela. O cliente do atualizador usa as raízes da Mozilla embutidas. As duas
+# já vinham pelo reqwest; aqui só ficam nomeadas.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+webpki-roots = "1"
 sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 snow = "0.9"

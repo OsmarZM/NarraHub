@@ -98,3 +98,14 @@ test('o arranque procura atualização também pelo canal do Android', () => {
   const metodo = store.slice(store.indexOf('async shouldCheckForUpdatesOnStartup'));
   assert.match(metodo.slice(0, 300), /this\.androidUpdate\.supported\(\)/u);
 });
+
+// I-BUG-09 (Etapa I, achado em aparelho físico): o reqwest 0.13 com `rustls` usa o verificador da
+// plataforma, que no Android exige inicialização por JNI — sem ela, a primeira requisição HTTPS do
+// atualizador entra em pânico e a atualização nunca aparece. O cliente do Android usa TLS com as
+// raízes embutidas; o `cfg` não compila no desktop, então o contrato é textual.
+test('o cliente HTTPS do atualizador Android não depende do verificador da plataforma', () => {
+  const fonte = readFileSync(new URL('../src-tauri/src/application/atualizacao_android.rs', import.meta.url), 'utf8');
+  const cliente = fonte.slice(fonte.indexOf('fn cliente('), fonte.indexOf('fn tls_com_raizes_embutidas'));
+  assert.match(cliente, /#\[cfg\(target_os = "android"\)\]\s*let construtor = construtor\.tls_backend_preconfigured\(tls_com_raizes_embutidas\(\)\?\);/u);
+  assert.match(fonte, /webpki_roots::TLS_SERVER_ROOTS/u);
+});
