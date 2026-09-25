@@ -69,21 +69,21 @@ primeira escuta dele deve disparar o prompt do Windows — registrar no I2 se o 
 | I3 Windows doador → Android novo | sim | **PASS** | Windows + S23 | Windows doador | §I3 |
 | I4 Android doador → Windows novo | sim | **PASS** | S23 + Windows | Android doador | §I4 |
 | I5 bidirecional | sim | **PASS** | Windows + S23 | Android → Windows (pareado) | §I5 |
-| I6 store-and-forward | não | pendente | | | |
+| I6 store-and-forward | não | **PASS** (C = 3ª instalação desktop) | Windows A + S23 + Windows C | A → S23 → C | §I6 |
 | I7 conflito offline | sim | **PASS** | Windows + S23 | resolvido no Windows e no Android | §I7–I10 |
 | I8 update × delete | sim | **PASS** | Windows + S23 | restaurar e manter exclusão | §I7–I10 |
 | I9 decisão concorrente | sim | **PASS** | Windows + S23 | W no Windows × A no Android | §I7–I10 |
 | I10 delete × delete | sim | **PASS** | Windows + S23 | exclusão nos dois | §I7–I10 |
-| I11 blob real | sim | pendente | | | |
-| I12 queda de rede | sim | pendente | | | |
-| I13 kill / restart | sim | pendente | | | |
-| I14 background / foreground | sim | pendente | | | |
-| I15 pareamento negativo | sim | pendente | | | |
-| I16 restart após bootstrap | sim | pendente | | | |
-| I17 recovery legado | não | pendente | | | |
-| I18 dataset maior | não | pendente | | | |
+| I11 blob real | sim | **PASS** | Windows + S23 | W→A (8 × 7,8 MB) e A→W (foto) | §I11–I14 |
+| I12 queda de rede | sim | **PASS** | Windows + S23 | Wi-Fi do Android cortado na transferência | §I11–I14 |
+| I13 kill / restart | sim | **PASS** | Windows + S23 | kill do app Android e do processo Windows | §I11–I14 |
+| I14 background / foreground | sim | **PASS** (com limitação) | S23 | segundo plano, tela bloqueada, retorno | §I11–I14 |
+| I15 pareamento negativo | sim | **PASS** | Windows → S23 | PIN errado, código morto, interrupção, cancelamento, retry | §I15 |
+| I16 restart após bootstrap | sim | **PASS** | Windows + S23 | depois de I3, I4 e I18 | §I16 |
+| I17 recovery legado | não | **PASS** | Windows → S23 | banco 0.9.2 com conflito V1 | §I17 |
+| I18 dataset maior | não | **PASS** | Windows → S23 | 600 capítulos, 200 entidades, 14 blobs | §I18 |
 | I19 integridade final | sim | pendente | | | |
-| I20 reinstalação / identidade | sim | pendente | | | |
+| I20 reinstalação / identidade | sim | **PASS** | S23 | desinstalar → instalar → reparear | §I20 |
 
 ## I1 — Instalação como usuário real
 
@@ -214,6 +214,129 @@ decisões iguais.
 - Achados desta rodada: **I-BUG-07** (conflito sobre decisão mostrado como certificado cru) e **I-UX-04** (a
   decisão é definitiva e a tela não avisava — o operador escolheu "… e abrir para editar", quis voltar atrás
   e o conflito já não existia).
+
+## I6 — Store-and-forward com terceiro aparelho — PASS
+
+Sem terceiro aparelho físico, **C é uma terceira instalação desktop controlada**, como o roteiro permite:
+instalador NSIS da mesma árvore (`0.10.0-beta.7`) com identificador próprio
+(`com.narrahub.app.qualification.c`, config fora do repositório em `D:\DevTools\NarraHubTmp\etapa-i\`),
+instalado em `D:\NarraHubQualificationC`, pasta de dados e identidade separadas. **O transporte Windows ↔
+Android continua físico** (Wi-Fi da LAN, S23 escutando).
+
+1. C (fresco) pareia por PIN com o S23: `receptor`, bootstrap — C recebe o roster do S23, que inclui A.
+2. A (`7GIH6MFP…`) cria "I6 criado em A" (3 eventos) e sincroniza com o S23 (`par`, 3 enviados).
+3. C **ainda não tem** o capítulo.
+4. C sincroniza com o S23: `par`, **3 aplicados**, 0 pendentes; o capítulo está em C com o texto de A, e o
+   cursor de A em C avança (56). A nunca falou com C: C não está no roster de A.
+
+## I11–I14 — Blob, queda de rede, kill e segundo plano — PASS
+
+Build `0.10.0-beta.5`/`beta.6`. O Android escuta (tela de Sincronização aberta); o Windows inicia as sessões pelo
+comando do app; as interrupções são feitas pelo `adb` no momento exato.
+
+**Blobs grandes.** O app recusa imagem acima de 8 MB com mensagem clara (medido: 25 MB e 8,4 MB recusados antes
+de gravar qualquer coisa). Oito anexos PNG de ruído incompressível, 7,8 MB cada, foram criados no Windows em dois
+lotes; SHA-256 de cada arquivo registrado em `D:\DevTools\NarraHubTmp\etapa-i\i11\`.
+
+| Passo | Interrupção | Resultado |
+| --- | --- | --- |
+| Lote 1 (4 × 7,8 MB), sessão Windows → Android | **Wi-Fi do Android desligado a 1,5 s** (`cmd wifi set-wifi-enabled disabled`) | Windows: erro limpo em 10 s. Nada aplicado. |
+| Retomada | Wi-Fi religado | sessão completa em **63,5 s**, 8 eventos enviados; seguinte **0/0** em 1,2 s |
+| Lote 2 (4 × 7,8 MB) | **app Android morto a 20 s** (`am force-stop`), em plena transferência | Windows: erro limpo ("conexão falhou"). |
+| Reabertura do Android | — | abre sem crash, banco íntegro, 4 universos; escuta volta **desligada** (esperado) |
+| Retomada pelo Android | — | **8 alterações recebidas, 2 imagens recebidas** — as outras duas já tinham chegado inteiras antes do kill, conferidas por SHA e sem aparecer em lugar nenhum enquanto o evento não era aplicado; seguinte **0/0** |
+| Conferência visual | — | as 8 imagens abrem inteiras no Android (ruído do começo ao fim, sem corte) |
+
+Sentido Android → Windows: a foto da galeria do I4 (223 KB) chegou ao Windows com nome igual ao SHA-256 do
+conteúdo. Nenhum grupo materializou pela metade em nenhuma interrupção.
+
+**Kill do Windows (I13).** Um capítulo gravado pelo app e, segundos depois, `Stop-Process -Force` no NarraHub.
+Reaberto: o capítulo está lá com os 3 eventos; `integrity_check ok`, `foreign_key_check` vazio, 0 pendentes,
+0 divergências, **0 grupos incompletos**; a escuta volta; o capítulo chega ao Android na sessão seguinte.
+
+**Segundo plano (I14).** Com o app Android fora da tela, o Android 16 congela o processo: a porta aceita a
+conexão e ninguém responde.
+
+| Estado do Android | Windows vê |
+| --- | --- |
+| HOME há 5 s | conexão recusada |
+| HOME há 65 s | "conectou e não respondeu no tempo esperado" |
+| tela bloqueada | idem |
+| app de volta na tela | **sessão normal, sem religar a escuta** (2 enviadas, depois 0/0) |
+
+Nenhum dado se perde nem fica pela metade — a sessão nem começa —, a tela não fica presa em "sincronizando",
+e o aviso de fim de sessão aparece no Android como anfitrião. **Limitação registrada:** escutar em segundo plano
+exigiria um serviço em primeiro plano do Android (notificação fixa, permissão) — funcionalidade nova, fora da I.
+A mensagem que culpava a rede virou I-BUG-08.
+
+**Ocorrência não reproduzida.** Uma tentativa do operador (Android → Windows) falhou com "conectou e não
+respondeu" logo depois de o Windows ter sido morto e reaberto no I13. Repetida em seguida pelo `adb`, nos dois
+sentidos, funcionou. A explicação mais provável é a escuta do Windows ainda subindo, ou o app Android saindo da
+tela durante a sessão (o mesmo mecanismo do I14). Sem correção.
+
+## I15 — Pareamento negativo — PASS
+
+Android escutando; o Windows tenta parear pelo comando do app; o roster do Windows conferido antes e depois.
+
+| Tentativa | Resultado no Windows | Roster |
+| --- | --- | --- |
+| código errado × 3 | "O código não confere com o do outro aparelho…" (as três) | inalterado |
+| código **certo** depois das três | "O outro aparelho não aceitou o código… pode ter vencido ou já ter sido usado" — três erros matam o código mesmo para quem acerta | inalterado |
+| Android (anfitrião) | aviso próprio: "O código foi digitado errado três vezes e não vale mais. Gere um novo." | — |
+| código novo, **Wi-Fi do Android cortado a 150 ms** | falha limpa | inalterado |
+| **retry** com o mesmo código | pareia (`par`, 3,3 s); o código é consumido e a tela do Android passa a dizer "venceu ou já foi usado" | íntegro |
+| código novo e **"Parar escuta"** no Android | recusado (antes: "os error 10061"; corrigido no I-BUG-08) | inalterado |
+
+Nenhuma confiança parcial, nenhuma semeadura parcial, e o retry válido funciona. As mensagens são as do I-BUG-04.
+
+## I16 — Restart após bootstrap — PASS
+
+Coberto três vezes, cada uma com os dois aparelhos fechados e reabertos entre a semeadura e a sessão seguinte:
+- depois do I3 (Windows doador): o Android reaberto sincroniza como `par`, 0/0;
+- depois do I4 (Android doador): o Windows foi fechado e reaberto várias vezes, os dois editaram (I5) e as
+  sessões incrementais foram todas `par`, `houveBootstrap = false`;
+- depois do I18: incremental logo após a semeadura em 2,1 s, `par`, 0/0.
+
+Nenhum aparelho tentou bootstrap de novo.
+
+## I17 — Recovery legado — PASS
+
+- **Banco antigo controlado**: cópia do banco 0.9.2 do usuário (o mesmo do I3) com um conflito do Sync V1
+  inserido em `sync_conflicts` — capítulo "outro capiitulo", campo `content`, versão local (a do banco) × versão
+  B "VERSÃO B guardada pelo Sync V1 (I17) — só existia neste banco antigo.".
+- **Windows**: estado do I18 guardado (`*.i18-20260925`); o app aberto sobre a cópia fez backup, migrou para o
+  schema 29, adotou o acervo (identidade nova `7GIH6MFP…`) e a **caixa de versões antigas** mostrou 1 item.
+- **Preservar B como capítulo novo** (`legado_preservar`, livro original): "outro capiitulo (versão B do V1)" com
+  o texto B; o capítulo original não mudou; 0 itens pendentes.
+- **Android zerado** e semeado pelo Windows (3,5 s, `doador`). O operador viu no Android os dois capítulos — o
+  original e o "(versão B do V1)" com o texto B — e nenhum conflito. Sessão seguinte 0/0. O bundle do bootstrap
+  não carrega `sync_conflicts` (gates G da etapa G); o Android não tem de onde tirar um conflito V1.
+
+## I18 — Dataset maior — PASS
+
+Criado no Windows pelos comandos do app em 33 s: universo "I18 dataset grande" com 4 livros × 150 capítulos
+(cerca de 1.100 palavras cada) e 200 entidades, além do acervo anterior (8 anexos de 7,8 MB e demais blobs).
+
+| Medida | Valor |
+| --- | --- |
+| Banco do Windows (doador) | 15,3 MB + 14 blobs (≈ 70 MB) |
+| **Bootstrap** Windows → Android zerado | **58 s** |
+| Memória do app Android (PSS) | 193 MB antes → **pico de 259 MB** |
+| Incremental logo depois | **2,1 s**, 0/0 |
+| Transferência de blobs (I11) | ≈ 0,5 MB/s na LAN (31 MB em ~60 s) |
+| Travamento, ANR, crash, lock prolongado | nenhum; o operador navegou pelos 600 capítulos no Android sem lentidão |
+
+Observação para depois da I: a vazão de blobs (≈ 0,5 MB/s) é baixa para Wi-Fi 5 GHz; não impede o uso, mas
+merece medição dedicada.
+
+## I20 — Reinstalação / identidade — PASS
+
+Exercitado na investigação do I-BUG-01: desinstalar e instalar de novo o APK assinado no S23 gerou identidade
+nova a cada vez (`QFWEB3Z2…` → `YN4VBTJA…`); o Windows passou a ver um aparelho novo, e o pareamento foi refeito
+conscientemente. A instalação nova nunca assinou como a antiga. No Android, a reinstalação **pode trazer o
+acervo de volta pelo backup do Google** (não apaga): comportamento esperado e documentado, com identidade nova.
+Os `pm clear` usados para zerar o Android (I2, I3, I18, I17) também geraram identidades novas (`OF3D7F4N…`,
+`MW2VPXOE…`, `IFBA74ZY…`, `NYES3MLB…`).
 
 ## Bugs encontrados
 
@@ -350,6 +473,35 @@ decisões iguais.
 - O primeiro toque num botão de decisão só arma e avisa ("encerra o conflito nos dois aparelhos e não pode ser
   desfeita"); o segundo decide. Gate no E2E de conflitos. Para mudar de ideia depois de decidir: editar o
   capítulo normalmente.
+
+### I-BUG-08 — mensagens de conexão culpavam a rede — **corrigido**
+
+- **Observado** (S23, Android 16): com o NarraHub fora da tela, o Windows via "conectou e não respondeu…
+  verifique se ele continua na mesma rede" — a rede estava boa (I14). Com a escuta parada, "a máquina de
+  destino as recusou ativamente (os error 10061)" (I15).
+- **Correção** (só texto, `sync_wire.rs`): silêncio na leitura diz para deixar o app do celular aberto na
+  tela; conexão recusada diz para ligar a escuta no outro aparelho; aparelho que não aparece diz para conferir
+  rede e endereço. A escuta avisa que no celular ela só funciona com o app na tela.
+- **Gates**: `sync_wire::falha_ao_abrir_a_conexao_diz_o_que_fazer`,
+  `sync_wire::silencio_diz_para_deixar_o_app_do_celular_na_tela`, E2E do aviso na escuta.
+- Escutar em segundo plano (serviço em primeiro plano do Android) fica fora da I.
+
+### I-BUG-09 — HTTPS do Rust no Android entrava em pânico; a atualização pelo app nunca funcionava — **corrigido**
+
+- **Observado**: com a beta.6 (que já tinha a correção do I-BUG-06) e a beta.7 publicada, a atualização
+  continuou sem aparecer. `logcat` do processo: `thread 'tokio-rt-worker' panicked at
+  rustls-platform-verifier-0.7.0/src/android.rs:90:10: Expect rustls-platform-verifier to be initialized`.
+- **Causa**: o `reqwest` 0.13 com `rustls` valida certificados pelo verificador da plataforma, que no Android
+  exige inicialização por JNI (e um componente Kotlin no Gradle) — nada disso existe no app. O `reqwest` 0.13
+  está no projeto desde a 0.7.0, e o atualizador Android veio depois: somado ao I-BUG-06, **a atualização
+  pelo app nunca funcionou no Android**.
+- **Correção mínima**: o cliente do atualizador Android usa `rustls::ClientConfig` com as raízes da Mozilla
+  embutidas (`webpki-roots`) e o provedor `aws-lc-rs` — as duas bibliotecas já vinham compiladas pelo
+  `reqwest`. Desktop inalterado; os outros clientes HTTP (IA local, túnel) só rodam no desktop.
+- **Gates**: `atualizacao_android::ibug09_tls_embutido_e_aceito_pelo_reqwest` (o `reqwest` aceita a
+  configuração — pega divergência de versão do rustls antes do celular) e contrato em
+  `tests/android-release.test.mjs` (o cliente Android usa o TLS embutido; vermelho sem a correção).
+- **Repetição física**: beta.8 instalada; verificação manual e a oferta automática da beta.9 pelo app.
 
 ### Observações de UX (sem correção nesta etapa)
 
