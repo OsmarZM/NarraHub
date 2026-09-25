@@ -315,13 +315,26 @@ fn lado(
         "b"
     };
     let agregado = AggregateRef::new(&participante.aggregate_type, &participante.aggregate_id);
-    let excluido = participante.operation == "delete";
-    let payload = if excluido {
+    let mut excluido = participante.operation == "delete";
+    let mut payload = if excluido {
         None
     } else {
         payload_da_revisao(connection, &agregado, &participante.revision)?
             .and_then(|texto| serde_json::from_str::<Value>(&texto).ok())
     };
+    // I-BUG-07: um conflito entre DECISÕES mostrava o certificado cru (`choice`, `results`, revisões).
+    // O que o escritor precisa ver é o que cada decisão produz: o item afetado naquela revisão.
+    if agregado.aggregate_type == sync_codec::resolucao::TIPO {
+        if let Some(efeito) = payload.as_ref().and_then(efeito_principal) {
+            excluido = efeito.operacao == "delete";
+            payload = if excluido {
+                None
+            } else {
+                payload_da_revisao(connection, &efeito.agregado, &efeito.revisao)?
+                    .and_then(|texto| serde_json::from_str::<Value>(&texto).ok())
+            };
+        }
+    }
     let campos = match &payload {
         Some(Value::Object(mapa)) => mapa
             .iter()
@@ -351,6 +364,36 @@ fn lado(
     ))
 }
 
+/// O efeito de uma decisão que interessa a quem lê: o do próprio item, não o da posição dele.
+struct EfeitoDaDecisao {
+    agregado: AggregateRef,
+    revisao: String,
+    operacao: String,
+}
+
+fn efeito_principal(certificado: &Value) -> Option<EfeitoDaDecisao> {
+    let efeitos = certificado.get("results")?.as_array()?;
+    let ler = |efeito: &Value| -> Option<EfeitoDaDecisao> {
+        Some(EfeitoDaDecisao {
+            agregado: AggregateRef::new(
+                efeito.get("aggregateType")?.as_str()?,
+                efeito.get("aggregateId")?.as_str()?,
+            ),
+            revisao: efeito.get("resultRev")?.as_str()?.to_string(),
+            operacao: efeito
+                .get("operation")
+                .and_then(Value::as_str)
+                .unwrap_or("upsert")
+                .to_string(),
+        })
+    };
+    efeitos
+        .iter()
+        .filter_map(ler)
+        .find(|e| tipo_do_item_da_posicao(&e.agregado.aggregate_type).is_none())
+        .or_else(|| efeitos.iter().find_map(ler))
+}
+
 fn titulo_do_payload(payload: &Value) -> Option<String> {
     ["title", "name", "caption", "label", "text"]
         .iter()
@@ -368,6 +411,18 @@ fn titulo_do_agregado(
     if let Some(tipo_do_item) = tipo_do_item_da_posicao(&agregado.aggregate_type) {
         let item = AggregateRef::new(tipo_do_item, &agregado.aggregate_id);
         return titulo_do_agregado(connection, &item, divergencia);
+    }
+    if agregado.aggregate_type == sync_codec::resolucao::TIPO {
+        for revisao in [&divergencia.remote_rev, &divergencia.local_rev] {
+            let certificado = payload_da_revisao(connection, agregado, revisao)?
+                .and_then(|texto| serde_json::from_str::<Value>(&texto).ok());
+            if let Some(efeito) = certificado.as_ref().and_then(efeito_principal) {
+                let titulo = titulo_do_agregado(connection, &efeito.agregado, divergencia)?;
+                if !titulo.is_empty() {
+                    return Ok(titulo);
+                }
+            }
+        }
     }
     if let Some(estado) = sync_codec::ler_canonico(connection, agregado)? {
         if let Ok(valor) = serde_json::from_str::<Value>(&estado.payload) {
