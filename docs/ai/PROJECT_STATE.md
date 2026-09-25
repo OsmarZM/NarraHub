@@ -10,7 +10,7 @@ Atualizado em: 2026-09-25
 | Item | Valor |
 | --- | --- |
 | Versão corrente | **0.10.0-beta.9** |
-| Última versão estável | `app-v0.9.2`, em 2026-09-01 (Windows + Android) |
+| Última versão estável | `app-v0.9.2`, em 2026-09-01 (Windows) |
 | Última pré-release | `app-v0.10.0-beta.9`, em 2026-09-25 (só Android) |
 | `origin/main` | 0.9.2 — **default** do repositório, linha das versões estáveis |
 | `origin/mobile-shell` | 0.10.0-beta.9 — linha de integração do Sync V2 e do shell mobile; merge do PR #74 em `8d7562d` |
@@ -222,7 +222,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | `commands/` legado | **Removido** na Fase 3 |
 | Fronteira nativa do frontend | **Formalizada** — ADR 0008 |
 | Sync V1 sem criptografia | **Removido do runtime** (etapa G); tabelas ficam como legado histórico |
-| Sync V2 | **QUALIFIED** (Etapa I, PR #74 → `8d7562d`). ADR 0009 e ADR 0010 implementados; rede real provada em Windows ↔ Android. Congelado salvo bug comprovado. Pendências herdadas e não bloqueantes: gate de saída **NH-053** e propagação da saída (**NH-058**, parcial) |
+| Sync V2 | **Sync V2 core = QUALIFIED** (Etapa I, PR #74 → `8d7562d`), com rede real provada em Windows ↔ Android. Caminho de pareamento em produção qualificado: **PIN/PAKE**. O QR criptográfico da ADR 0009 §6.1 permanece implementado no core (`infrastructure/sync_pairing.rs`), mas sem wiring físico nem de produção (câmera, socket, wire); a integração de QR fica na Fase 4.5. Congelado salvo bug comprovado. Pendências herdadas e não bloqueantes: gate de saída **NH-053** e propagação da saída (**NH-058**, parcial) |
 | Descoberta e pareamento | **Fase 4.5, ativa.** Hoje: IP e PIN digitados. Próximo: QR, mDNS, BLE e uma tela única "Adicionar dispositivo" — **NH-084** |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
