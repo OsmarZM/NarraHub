@@ -2,7 +2,8 @@
 
 `AGENTS.md` diz **como** trabalhar. Este arquivo diz **no que** trabalhar.
 
-Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
+Fase ativa: **FASE 4.5 — Device Discovery & Pairing UX**. Ver `docs/ai/PROJECT_STATE.md` e o caminho
+até a 1.0 em `docs/ai/ROADMAP.md` (4.5 → 5 → 7; Context Engine na 1.1).
 
 ## Regras deste arquivo
 
@@ -11,18 +12,72 @@ Fase ativa: **FASE 4 — Sync V2**. Ver `docs/ai/PROJECT_STATE.md`.
 - Edite **apenas a sua entrada** e commite essa mudança sozinha, para o merge ser trivial.
 - Detalhe do trabalho não vai aqui — vai no handoff (`docs/handoffs/`).
 - `DONE` exige validação executada, não só build verde.
-- Desde a PR #5, `main` é a linha canônica: branch curta a partir de `main`, PR de volta
-  para `main`. `main` é protegida — promoção só por PR, nunca por push direto.
+- Desde a PR #5, `main` é a linha canônica das versões **estáveis** e é protegida — promoção só por
+  PR, nunca por push direto. A linha 0.10 (Sync V2, shell mobile e o caminho até a 1.0) vive em
+  `mobile-shell`: branch curta a partir dela, PR de volta para ela, nunca merge automático.
 
 ---
 
 ## ACTIVE
 
+### NH-084 — Fase 4.5: Device Discovery & Pairing UX
+
+```text
+Owner:  Claude
+Status: READY — cada fatia só começa depois de o plano dela ser revisado
+Fase:   4.5
+Branch: uma por fatia, a partir de mobile-shell
+```
+
+Pareamento simples **sem segundo protocolo**: QR, mDNS e Bluetooth LE só descobrem endpoint ou
+convite; o resto é o pareamento existente, TCP/Noise e Sync V2. Absorve a NH-078.
+
+| Fatia | Entrega | Status |
+| --- | --- | --- |
+| PR B | QR: o aparelho disponível mostra, o celular lê pela câmera | plano para revisão |
+| PR C | mDNS: lista de aparelhos na mesma rede | BACKLOG |
+| PR D | Bluetooth LE: descoberta e passagem de convite, sem dados | BACKLOG |
+| PR E | tela única "Adicionar dispositivo" / "Tornar este dispositivo disponível" | BACKLOG |
+
+Gates de segurança obrigatórios, cada um visto falhando antes de contar: descoberta ≠ confiança;
+anúncio falso não entra no roster; QR expirado falha; PIN errado falha; aparelho fora da confiança
+não sincroniza. Cada fatia repete Windows ↔ Android físico.
+
+---
+
+### NH-085 — Fase 5: Mobile UX + Product/Design Hardening
+
+```text
+Owner:  não atribuída
+Status: BACKLOG — começa quando a 4.5 fechar
+Fase:   5
+```
+
+M0 (auditoria no S23 físico → `docs/mobile/UX_AUDIT_V1.md`, antes de qualquer redesign) até M15
+(gate físico e Playwright em vários celulares). Absorve as antigas 5.1–5.5 (decomposição, gate de
+tokens, regressão visual) e a NH-050 (tokens sem definição). Detalhe em `docs/ai/ROADMAP.md`.
+
+---
+
+### NH-086 — Fase 7: Release Candidate 1.0
+
+```text
+Owner:  não atribuída
+Status: BACKLOG — começa quando a 4.5 e a 5 fecharem
+Fase:   7
+```
+
+R1 migration matrix (obrigatório `0.9.2 → 1.0` sobre cópia do acervo real), R2 security review,
+R3 recovery drill, R4 qualificação completa, R5 `1.0.0-rc.1` → canary → `rc.2` → canary → `1.0.0`.
+Nunca estável direto.
+
+---
+
 ### NH-083 — Sync V2, etapa I: qualificação física
 
 ```text
 Owner:  Claude
-Status: REVIEW (PR #74)
+Status: DONE (PR #74 → 8d7562d, 2026-09-25) — Etapa I = CLOSED, Sync V2 = QUALIFIED
 Fase:   4 — Sync V2
 Branch: sync-i-qualificacao-fisica (base: mobile-shell @ 3d29469)
 ```
@@ -248,9 +303,12 @@ autor, antes do gate físico desta tarefa; o roteiro físico continua valendo pa
 
 ```text
 Owner:  não atribuída
-Status: BACKLOG
+Status: DONE como tarefa — absorvida pela NH-084 (Fase 4.5) em 2026-09-25
 Fase:   4  (follow-up de UX; NÃO bloqueia o fechamento da etapa 14)
 ```
+
+O escopo abaixo continua valendo e segue na **NH-084**, que o amplia com Bluetooth LE e a tela única
+de pareamento.
 
 A antiga fatia 5 da etapa 14. Saiu do caminho crítico por decisão registrada: provar o
 transporte antes de envolver câmera, mDNS, multicast do Android e diferença entre roteadores.
