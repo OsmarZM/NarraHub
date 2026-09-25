@@ -171,6 +171,13 @@
             } @else {
               <small class="pin-validade">Vale três minutos e três tentativas.</small>
             }
+            @if (store.syncV2State().pin && store.syncV2Qr(); as conteudoDoQr) {
+              <!-- NH-084: açúcar sobre o PIN. O outro aparelho lê endereço e código; a validade é esta escuta. -->
+              <div class="pairing-qr-slot">
+                <app-pairing-qr [conteudo]="conteudoDoQr" />
+                <small>Ou aponte a câmera do outro aparelho para este QR.</small>
+              </div>
+            }
           </div>
           <div class="field-row">
             <button type="button" class="secondary-button" [disabled]="store.syncV2Busy()" (click)="newSyncV2Pin()">Novo código</button>
@@ -179,6 +186,13 @@
         } @else {
           <button type="button" class="primary-button" [disabled]="store.syncV2Busy()" (click)="startSyncV2()">Escutar nesta rede</button>
         }
+        @if (qrScannerAvailable()) {
+          <!-- NH-084: atalho. Os campos abaixo continuam, com ou sem câmera. -->
+          <div class="field-row">
+            <button type="button" class="primary-button" [disabled]="store.syncV2Busy()" (click)="scanPairingQr()" data-testid="escanear-qr">Escanear QR</button>
+          </div>
+        }
+        @if (qrScanMessage()) { <small class="security-note qr-scan-message" data-testid="qr-scan-message">{{ qrScanMessage() }}</small> }
         <div class="field-row"><label class="field-label">Endereço do outro aparelho<input [(ngModel)]="v2Address" placeholder="192.168.0.10:45870" /></label><label class="field-label code-field">Código<input [(ngModel)]="v2Pin" inputmode="numeric" maxlength="9" placeholder="0000 0000" /></label></div>
         <div class="field-row">
           <button type="button" class="primary-button" [disabled]="store.syncV2Busy() || !v2Address.trim()" (click)="pairSyncV2()">Parear com código</button>

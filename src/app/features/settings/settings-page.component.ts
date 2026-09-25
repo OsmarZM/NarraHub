@@ -12,6 +12,8 @@ import { ConflictsStore } from '../conflicts/state/conflicts.store';
 import { LegacyRecoveryStore } from '../legacy-recovery/state/legacy-recovery.store';
 import { RouterLink } from '@angular/router';
 import { SyncSessionFeedbackService } from '../../application/sync-session-feedback.service';
+import { QrScannerService } from '../../core/native/qr-scanner.service';
+import { PairingQrComponent } from './pairing-qr/pairing-qr.component';
 
 export type SettingsSection = 'general' | 'ai' | 'sync' | 'share' | 'updates';
 
@@ -20,7 +22,7 @@ type RestoreModal = 'restore-backup' | null;
 @Component({
   selector: 'app-settings-page',
   standalone: true,
-  imports: [FormsModule, ProductionReplicaComponent, RouterLink],
+  imports: [FormsModule, PairingQrComponent, ProductionReplicaComponent, RouterLink],
   templateUrl: './settings-page.component.html',
   styleUrl: './settings-page.component.css',
   encapsulation: ViewEncapsulation.None,
@@ -30,6 +32,11 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   /** Etapa F: o contador de conflitos e o aviso da atualização da sincronização. */
   readonly conflicts = inject(ConflictsStore);
   private readonly syncFeedback = inject(SyncSessionFeedbackService);
+  private readonly qrScanner = inject(QrScannerService);
+  /** NH-084: há leitor de QR neste aparelho. Sem ele, a tela é a de sempre. */
+  readonly qrScannerAvailable = signal(false);
+  /** O que aconteceu com a última leitura, quando não pareou (permissão, cancelamento). */
+  readonly qrScanMessage = signal('');
   /** Etapa H (H-R3): as versões antigas que só existem neste aparelho. */
   readonly legacyRecovery = inject(LegacyRecoveryStore);
   readonly epochNoticeDismissed = signal(false);
@@ -69,6 +76,7 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   }
 
   ngOnInit(): void {
+    void this.qrScanner.supported().then((ha) => this.qrScannerAvailable.set(ha));
     this.syncStatusTimer = setInterval(() => {
       if (this.store.syncV2State().escutando) void this.store.refreshSyncStatus();
     }, 5000);
@@ -297,6 +305,28 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   async newSyncV2Pin(): Promise<void> {
     const result = await this.store.newSyncV2Pin();
     if (!result.ok && result.error) this.showError(result.error);
+  }
+
+  /**
+   * NH-084: lê o QR do outro aparelho e pareia pelo caminho do PIN. A string lida vai crua para o
+   * Rust. Câmera negada, cancelamento ou leitor ausente nunca tocam nos campos digitados.
+   */
+  async scanPairingQr(): Promise<void> {
+    this.qrScanMessage.set('');
+    const leitura = await this.qrScanner.scan();
+    if (leitura.kind === 'negado') {
+      this.qrScanMessage.set('Sem permissão para a câmera. Digite o endereço e o código abaixo, ou libere a câmera nas configurações do Android.');
+      return;
+    }
+    if (leitura.kind === 'indisponivel') {
+      this.qrScanMessage.set('Leitor de QR indisponível neste aparelho. Digite o endereço e o código abaixo.');
+      return;
+    }
+    if (leitura.kind === 'cancelado') return;
+    this.saveDeviceName();
+    const result = await this.store.pairSyncV2ByQr(leitura.conteudo, this.deviceName);
+    if (!result.ok) { if (result.error) this.showError(result.error); return; }
+    if (result.result) await this.syncFeedback.applied(result.result);
   }
 
   async pairSyncV2(): Promise<void> {

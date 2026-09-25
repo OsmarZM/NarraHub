@@ -88,6 +88,10 @@ app-settings-page .pairing-panel .pin-vencido, app-settings-page .pairing-panel 
 app-settings-page .pairing-panel .pin-vencido { color: var(--nh-danger); }
 /* I-BUG-08: o aviso de que a escuta depende do app na tela ocupa a linha inteira. */
 app-settings-page .pairing-panel .escuta-na-tela { grid-column: 1 / -1; font-size: 12px; }
+/* NH-084: o QR ocupa a linha inteira do painel, centrado. */
+app-settings-page .pairing-panel .pairing-qr-slot { grid-column: 1 / -1; display: grid; justify-items: center; gap: 6px; margin-top: 6px; }
+app-settings-page .pairing-panel .pairing-qr-slot small { font-size: 12px; }
+app-settings-page .qr-scan-message { display: block; margin: 6px 0; font-size: 12px; }
 app-settings-page .pairing-panel b { color: var(--brand); font-size: 22px; letter-spacing: .16em; }
 
 app-settings-page .share-session-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; margin: 16px 0 12px; padding: 13px; border: 1px solid color-mix(in srgb, var(--green) 28%, var(--line)); border-radius: 11px; background: color-mix(in srgb, var(--green) 6%, var(--surface-2)); }

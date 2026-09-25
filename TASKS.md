@@ -34,7 +34,7 @@ convite; o resto é o pareamento existente, TCP/Noise e Sync V2. Absorve a NH-07
 
 | Fatia | Entrega | Status |
 | --- | --- | --- |
-| PR B | QR: o aparelho disponível mostra, o celular lê pela câmera | plano para revisão |
+| PR B | QR: pareamento por PIN assistido por QR (`narrahub-pair-pin:1:<endpoint>:<pin>`), sem mudança de protocolo | REVIEW — branch `nh-084-qr-pin-pairing`; falta o teste físico |
 | PR C | mDNS: lista de aparelhos na mesma rede | BACKLOG |
 | PR D | Bluetooth LE: descoberta e passagem de convite, sem dados | BACKLOG |
 | PR E | tela única "Adicionar dispositivo" / "Tornar este dispositivo disponível" | BACKLOG |

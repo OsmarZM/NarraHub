@@ -128,6 +128,24 @@ export class SyncV2Service {
     );
   }
 
+  /**
+   * O conteúdo do QR da escuta aberta (NH-084, PR B): texto opaco para virar imagem, ou `null` quando
+   * não há código válido. O formato é do Rust; a tela não o interpreta.
+   */
+  async qrContent(): Promise<string | null> {
+    if (!isTauri()) return null;
+    return this.call<string | null>('sync_v2_qr', {}, 'O QR de pareamento não pôde ser gerado.');
+  }
+
+  /** Pareia pelo texto cru que o leitor de QR devolveu. Quem interpreta e valida é o Rust. */
+  async pairByQr(conteudo: string, deviceName: string): Promise<SyncSessionResult> {
+    return this.call<SyncSessionResult>(
+      'sync_v2_parear_por_qr',
+      { conteudo, nome: deviceName },
+      'O pareamento pelo QR não pôde ser concluído.',
+    );
+  }
+
   /** Sincroniza com um aparelho já pareado. */
   async syncWith(address: string, deviceName: string): Promise<SyncSessionResult> {
     return this.call<SyncSessionResult>(

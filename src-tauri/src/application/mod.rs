@@ -39,6 +39,7 @@ pub mod sync_bootstrap;
 mod sync_manuscrito_testes;
 pub mod sync_panorama;
 pub mod sync_pin_pairing;
+pub mod sync_qr_pin;
 pub mod sync_sessao;
 pub mod universe_service;
 pub mod workspace_service;

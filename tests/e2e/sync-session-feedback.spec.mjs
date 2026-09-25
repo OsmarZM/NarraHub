@@ -85,3 +85,99 @@ test('código vencido aparece como vencido e a escuta relê o estado sozinha', a
   await expect(page.getByTestId('pin-vencido')).toContainText('Novo código');
   expect(await page.evaluate(() => window.__releituras)).toBeGreaterThan(0);
 });
+
+// ── NH-084, PR B: pareamento por PIN assistido por QR ───────────────────────────────────────────
+// A tela não interpreta o QR: desenha o conteúdo opaco que o Rust montou e devolve a leitura crua.
+// A leitura é atalho — com ou sem câmera, o endereço e o código digitados continuam.
+
+async function abrirDispositivos(page) {
+  await page.addInitScript(() => localStorage.setItem('narrahub.mobileNavigationHintSeen', '1'));
+  await page.goto('/settings');
+  await page.waitForFunction(() => Boolean(window.ng && document.querySelector('app-settings-page')));
+  await page.getByRole('button', { name: /Dispositivos/u }).click();
+}
+
+const ESCUTA = { escutando: true, porta: 45870, enderecos: ['192.168.1.145:45870'], ultimoResultado: null, ultimoErro: null };
+
+test('o QR só aparece com código válido, e some quando o código vence', async ({ page }) => {
+  await abrirDispositivos(page);
+  await page.evaluate((escuta) => {
+    const pagina = window.ng.getComponent(document.querySelector('app-settings-page'));
+    pagina.store.refreshSyncStatus = async () => undefined;
+    pagina.store.syncV2State.set({ ...escuta, pin: '1234 5678' });
+    pagina.store.syncV2Qr.set('conteudo-opaco-do-rust');
+  }, ESCUTA);
+  await expect(page.getByTestId('pairing-qr')).toBeVisible();
+  const src = await page.getByTestId('pairing-qr').getAttribute('src');
+  expect(src.startsWith('data:image/svg+xml')).toBe(true);
+
+  await page.evaluate((escuta) => {
+    const pagina = window.ng.getComponent(document.querySelector('app-settings-page'));
+    pagina.store.syncV2State.set({ ...escuta, pin: null });
+  }, ESCUTA);
+  await expect(page.getByTestId('pairing-qr')).toHaveCount(0);
+  await expect(page.getByTestId('pin-vencido')).toBeVisible();
+});
+
+async function comLeitor(page, leitura) {
+  await abrirDispositivos(page);
+  await page.evaluate((leitura) => {
+    const pagina = window.ng.getComponent(document.querySelector('app-settings-page'));
+    window.__pareamentosPorQr = [];
+    window.__pareamentosManuais = 0;
+    pagina.qrScanner = { scan: async () => leitura, supported: async () => true, cancel: async () => undefined };
+    pagina.qrScannerAvailable.set(true);
+    pagina.store.pairSyncV2ByQr = async (conteudo) => {
+      window.__pareamentosPorQr.push(conteudo);
+      return { ok: true, result: { parceiro: { deviceId: 'D', nome: 'PC do Osmar' }, papel: 'par', houveBootstrap: false, blobsRecebidos: 0, eventosEnviados: 0, eventosAplicados: 0, eventosPendentes: 0 } };
+    };
+    pagina.store.pairSyncV2 = async () => { window.__pareamentosManuais += 1; return { ok: false, error: 'manual' }; };
+    pagina.syncFeedback.workspaceSync.universeStore.load = async () => undefined;
+    pagina.syncFeedback.workspaceSync.knowledgeStore.refreshLibraryPreviewTags = async () => undefined;
+    pagina.syncFeedback.conflicts.refreshOpenCount = async () => undefined;
+  }, leitura);
+}
+
+test('escanear QR pareia repassando a leitura crua, sem interpretar nada', async ({ page }) => {
+  const cru = 'texto-cru-como-o-leitor-devolveu:1:9';
+  await comLeitor(page, { kind: 'ok', conteudo: cru });
+  await page.getByTestId('escanear-qr').click();
+  await expect(page.locator('.toast')).toContainText('Sincronizado com PC do Osmar');
+  expect(await page.evaluate(() => window.__pareamentosPorQr)).toEqual([cru]);
+  await expect(page.getByPlaceholder('192.168.0.10:45870')).toBeVisible();
+});
+
+test('câmera negada: nada é pareado e a entrada manual continua utilizável', async ({ page }) => {
+  await comLeitor(page, { kind: 'negado' });
+  await page.getByTestId('escanear-qr').click();
+  await expect(page.getByTestId('qr-scan-message')).toContainText('Sem permissão para a câmera');
+  expect(await page.evaluate(() => window.__pareamentosPorQr)).toEqual([]);
+  const endereco = page.getByPlaceholder('192.168.0.10:45870');
+  await expect(endereco).toBeEditable();
+  await endereco.fill('192.168.1.145:45870');
+  await page.getByPlaceholder('0000 0000').fill('12345678');
+  await page.getByRole('button', { name: 'Parear com código' }).click();
+  await expect.poll(() => page.evaluate(() => window.__pareamentosManuais)).toBe(1);
+});
+
+for (const [nome, leitura, mensagem] of [
+  ['cancelar o leitor', { kind: 'cancelado' }, null],
+  ['leitor indisponível', { kind: 'indisponivel' }, 'Leitor de QR indisponível'],
+]) {
+  test(`${nome} nunca remove a entrada manual`, async ({ page }) => {
+    await comLeitor(page, leitura);
+    await page.getByPlaceholder('192.168.0.10:45870').fill('192.168.1.145:45870');
+    await page.getByTestId('escanear-qr').click();
+    if (mensagem) await expect(page.getByTestId('qr-scan-message')).toContainText(mensagem);
+    expect(await page.evaluate(() => window.__pareamentosPorQr)).toEqual([]);
+    await expect(page.getByPlaceholder('192.168.0.10:45870')).toHaveValue('192.168.1.145:45870');
+    await expect(page.getByPlaceholder('0000 0000')).toBeEditable();
+    await expect(page.getByRole('button', { name: 'Parear com código' })).toBeVisible();
+  });
+}
+
+test('sem leitor de QR, a tela é a de sempre', async ({ page }) => {
+  await abrirDispositivos(page);
+  await expect(page.getByTestId('escanear-qr')).toHaveCount(0);
+  await expect(page.getByPlaceholder('192.168.0.10:45870')).toBeVisible();
+});

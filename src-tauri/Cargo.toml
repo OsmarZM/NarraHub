@@ -52,6 +52,10 @@ lol_html = "3.0.1"
 # Só nos testes: o autorizador do SQLite vigia as tabelas legadas do Sync V1 (etapa G, G10/G11).
 rusqlite = { version = "0.32", features = ["backup", "bundled", "hooks"] }
 
+# Leitor de QR (NH-084, PR B): só onde há câmera e o plugin existe.
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-barcode-scanner = "2"
+
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2"
 
