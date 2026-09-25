@@ -3,16 +3,17 @@
 > Fonte da verdade sobre "onde estamos". Qualquer agente lê este arquivo antes de agir.
 > Atualize-o ao fechar uma tarefa que mude versão, fase ou dívida conhecida.
 
-Atualizado em: 2026-09-09
+Atualizado em: 2026-09-25
 
 ## Versão
 
 | Item | Valor |
 | --- | --- |
 | Versão corrente | **0.10.0-beta.9** |
-| Última tag publicada | `app-v0.9.2`, em 2026-09-01 |
-| `origin/main` | 0.9.2 — canônica e **default** do repositório |
-| Manifests, README e CHANGELOG | 0.9.2, sob teste no CI |
+| Última versão estável | `app-v0.9.2`, em 2026-09-01 (Windows + Android) |
+| Última pré-release | `app-v0.10.0-beta.9`, em 2026-09-25 (só Android) |
+| `origin/main` | 0.9.2 — **default** do repositório, linha das versões estáveis |
+| `origin/mobile-shell` | 0.10.0-beta.9 — linha de integração do Sync V2 e do shell mobile; merge do PR #74 em `8d7562d` |
 
 A linha "Versão corrente" acima é lida por `scripts/validate-release-version.mjs`: se ela
 divergir dos manifests, o CI reprova. Este arquivo é a memória compartilhada de três agentes,
@@ -31,6 +32,11 @@ do erro ao mesmo tempo, com confiança.
 Ao verificar o estado das branches, compare sempre contra `origin/main` depois de
 `git fetch` — a `main` local pode estar atrasada e dar um diagnóstico errado. Foi assim que
 um diagnóstico de "fast-forward" saiu errado nesta sessão.
+
+**A linha 0.10 vive em `mobile-shell`.** Desde a NH-080 (shell mobile) e todo o Sync V2 (etapas
+E a I), as branches de trabalho nascem de `mobile-shell` e voltam para ela por PR. A `main`
+continua na 0.9.2 até a próxima estável; promover `mobile-shell` para `main` é decisão de release
+(Fase 7), não de uma fatia de trabalho.
 
 ## Verificação pendente da 0.9.2
 
@@ -72,8 +78,29 @@ O gate `o andaime superado não volta para o repositório` reprova se `angular-s
 ## Fase ativa
 
 ```text
-FASE 4 — Sync V2   (etapas 1 a 13 de 14 concluídas)
+FASE 4.5 — Device Discovery & Pairing UX
 ```
+
+Caminho até a 1.0, definido em 2026-09-25 (detalhe em `docs/ai/ROADMAP.md`):
+
+```text
+4.5  Device Discovery & Pairing UX     ← ativa
+5    Mobile UX + Product/Design Hardening
+7    Release Candidate 1.0
+6    Context Engine / IA                → 1.1, não bloqueia a 1.0
+```
+
+**A Fase 4 — Sync V2 — está fechada.** Etapa I = **CLOSED** (PR #74, merge `8d7562d`, 2026-09-25) e
+**Sync V2 architecture = QUALIFIED**, com I1–I20 PASS em Windows 11 e Samsung Galaxy S23 reais
+(`docs/qualification/SYNC_V2_PHYSICAL_QUALIFICATION.md`). Protocolo, Noise, identidade, causalidade,
+grupos de mutação, bootstrap, blobs, `conflict_resolution` e formato canônico estão **congelados salvo
+bug comprovado**. Todo trabalho de sync daqui em diante é classificado como `bugfix`, `performance`,
+`UX`, `feature` ou `release hardening` — nunca redesign arquitetural.
+
+A 4.5 torna o pareamento simples **sem segundo protocolo**: QR, mDNS e Bluetooth LE só descobrem o
+endpoint ou o convite; depois disso é o pareamento existente, TCP/Noise e Sync V2. Descoberta não é
+confiança. Uma fatia por PR (QR, mDNS, BLE, tela de pareamento), cada uma com plano revisado antes do
+código.
 
 As fases **3 e 3.5 fecharam em 2026-09-01**, com gates executáveis:
 
@@ -87,7 +114,9 @@ O legado era menor do que o roadmap dizia — 35 linhas, oito arquivos de placeh
 problema real era outro: um comando de domínio em `database/planning.rs`. Um gate contra o
 diretório não o pegaria; o gate contra **colocação** pega.
 
-## Antes de escrever qualquer código do Sync V2
+## Histórico do Sync V2 (Fase 4, fechada)
+
+Registro de como a fase foi construída. Não é fila de trabalho: a Fase 4 está fechada.
 
 > **O ADR 0009 foi aceito em 2026-09-02**, na terceira revisão. A implementação segue a
 > **ordem da seção 23 do ADR**: catorze etapas, uma PR e um gate por etapa. A ordem não é
@@ -193,11 +222,12 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | `commands/` legado | **Removido** na Fase 3 |
 | Fronteira nativa do frontend | **Formalizada** — ADR 0008 |
 | Sync V1 sem criptografia | **Removido do runtime** (etapa G); tabelas ficam como legado histórico |
-| Sync V2 | **ADR 0009 `Accepted`.** Etapas 1–13 concluídas (**ADR 0010** fecha os assets); falta rede real, o gate de saída **NH-053** e a propagação da saída (**NH-058**, parcial) |
+| Sync V2 | **QUALIFIED** (Etapa I, PR #74 → `8d7562d`). ADR 0009 e ADR 0010 implementados; rede real provada em Windows ↔ Android. Congelado salvo bug comprovado. Pendências herdadas e não bloqueantes: gate de saída **NH-053** e propagação da saída (**NH-058**, parcial) |
+| Descoberta e pareamento | **Fase 4.5, ativa.** Hoje: IP e PIN digitados. Próximo: QR, mDNS, BLE e uma tela única "Adicionar dispositivo" — **NH-084** |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
 | Ciclo de atualização empacotado | **Concluído.** Roteiro, checklist de release e três execuções reais |
-| Shell mobile | **ADR 0011 `Accepted`.** DesktopShell e MobileShell compartilham domínio e navegação, não a composição visual. Gates: `tests/mobile-shell.test.mjs` e Playwright (`test:mobile-e2e`, job Mobile na CI). Falta o roteiro físico (`docs/mobile/ROTEIRO_ANDROID.md`) |
+| Shell mobile | **ADR 0011 `Accepted`.** DesktopShell e MobileShell compartilham domínio e navegação, não a composição visual. Gates: `tests/mobile-shell.test.mjs` e Playwright (`test:mobile-e2e`, job Mobile na CI). A experiência mobile completa é a **Fase 5** (NH-085), que começa por uma auditoria no S23 físico |
 
 ## Versões e schema
 
@@ -211,7 +241,8 @@ migration — não pegar a versão mais recente:
 | 0.9.0 e 0.9.1 | 15 |
 | 0.9.2 (publicada) | 15 |
 | 0.10.0-beta.1 e beta.2 (pré-releases Android) | 20 — Sync V2 anterior ao `Hello`; o upgrade gira a época causal (E0-beta, `fixtures/beta2`) |
-| `main` hoje | **29** — caixa de recuperação do legado (etapa H, H-R3): `legacy_recovery_items` |
+| `main` hoje | **29** — o schema que o código desta árvore cria (`mobile-shell` e as branches dela): caixa de recuperação do legado (etapa H, H-R3), `legacy_recovery_items`. A `origin/main` publicada continua na 0.9.2, schema 15 |
+| 0.10.0-beta.3 … beta.9 (pré-releases Android da Etapa I) | 29 |
 
 Consequência prática, e ela **mudou** com a migration 16: a próxima versão publicada será a
 primeira desde a 0.9.2 a carregar migration de verdade. O par `0.9.2 → próxima` deixa de ser
@@ -340,15 +371,15 @@ conjunto começaria a escrever em `seq = 1` sobre coordenadas que já existem.
 ## Não trabalhar ainda
 
 ```text
-Context Engine / embeddings
-decomposição de features (Planning, Writing, Entities)
-design system hardening e escala de breakpoints
+redesign do Sync V2 (protocolo, Noise, causalidade, bootstrap, formato canônico)
+Fase 5 — mobile UX, design system, decomposição de features   (depois da 4.5)
+Fase 7 — release candidate 1.0                                (depois da 4.5 e da 5)
+Context Engine / embeddings / banco vetorial                  (1.1)
 colaboração em tempo real / CRDT
 ```
 
-O Sync V2 **saiu desta lista**: ele é a fase ativa. Mas há uma ordem dentro dele que continua
-valendo — **o ADR vem antes do código**, com threat model, causalidade e matriz de conflitos
-decididos primeiro.
+O Sync V2 saiu da fase ativa por estar **qualificado**, não esquecido: bug comprovado nele continua
+sendo corrigido, com gate. O que não se faz é redesenhar.
 
-O que segue bloqueado está bloqueado pela ordem do roadmap, não por falta de rede: a Fase 1
-fechou, e mudança nova já é provada contra migration, backup e restauração automaticamente.
+O que segue bloqueado está bloqueado pela ordem do roadmap. A Fase 1 fechou, e mudança nova já é
+provada contra migration, backup e restauração automaticamente.
