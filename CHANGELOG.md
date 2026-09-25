@@ -2,6 +2,14 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.8 — 2026-09-25 (pré-release)
+
+Pré-release só Android. Instala por cima da 0.10.0-beta.7 — **esta precisa ser instalada à mão**: a
+atualização pelo próprio app só funciona a partir dela.
+
+- **Atualização pelo app no Android**: a consulta às versões novas caía antes de chegar ao GitHub. Agora a
+  beta seguinte aparece sozinha ao abrir o app.
+
 ## 0.10.0-beta.7 — 2026-09-25 (pré-release)
 
 Pré-release só Android, fechamento da qualificação física do Sync V2. Instala por cima da 0.10.0-beta.6.
