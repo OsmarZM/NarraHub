@@ -2,6 +2,17 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.11 — 2026-09-25 (pré-release)
+
+Pré-release só Android, com os ajustes do teste físico da beta.10. Instala por cima da 0.10.0-beta.10.
+
+- **Depois do QR, dá para sincronizar**: o endereço lido fica preenchido (e lembrado para a próxima vez), então
+  "Sincronizar pareado" não fica mais cinza.
+- **Aviso durante a sessão**: enquanto os aparelhos conversam, a tela diz "Conectando e sincronizando…" em vez
+  de só apagar os botões.
+- **QR só quando pedido**: o QR não abre sozinho; o botão "Mostrar QR" abre uma janela maior (no celular, por
+  baixo), com endereço e código, que fecha quando o código é usado ou vence.
+
 ## 0.10.0-beta.10 — 2026-09-25 (pré-release)
 
 Pré-release só Android, para testar o pareamento por QR (Fase 4.5). Instala por cima da 0.10.0-beta.9.

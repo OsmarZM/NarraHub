@@ -9,7 +9,7 @@ Atualizado em: 2026-09-25
 
 | Item | Valor |
 | --- | --- |
-| Versão corrente | **0.10.0-beta.10** |
+| Versão corrente | **0.10.0-beta.11** |
 | Última versão estável | `app-v0.9.2`, em 2026-09-01 (Windows) |
 | Última pré-release | `app-v0.10.0-beta.9`, em 2026-09-25 (só Android) |
 | `origin/main` | 0.9.2 — **default** do repositório, linha das versões estáveis |
