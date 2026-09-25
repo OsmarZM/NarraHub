@@ -70,10 +70,10 @@ primeira escuta dele deve disparar o prompt do Windows — registrar no I2 se o 
 | I4 Android doador → Windows novo | sim | **PASS** | S23 + Windows | Android doador | §I4 |
 | I5 bidirecional | sim | **PASS** | Windows + S23 | Android → Windows (pareado) | §I5 |
 | I6 store-and-forward | não | pendente | | | |
-| I7 conflito offline | sim | pendente | | | |
-| I8 update × delete | sim | pendente | | | |
-| I9 decisão concorrente | sim | pendente | | | |
-| I10 delete × delete | sim | pendente | | | |
+| I7 conflito offline | sim | **PASS** | Windows + S23 | resolvido no Windows e no Android | §I7–I10 |
+| I8 update × delete | sim | **PASS** | Windows + S23 | restaurar e manter exclusão | §I7–I10 |
+| I9 decisão concorrente | sim | **PASS** | Windows + S23 | W no Windows × A no Android | §I7–I10 |
+| I10 delete × delete | sim | **PASS** | Windows + S23 | exclusão nos dois | §I7–I10 |
 | I11 blob real | sim | pendente | | | |
 | I12 queda de rede | sim | pendente | | | |
 | I13 kill / restart | sim | pendente | | | |
@@ -182,6 +182,39 @@ processo do NarraHub que eu tinha aberto morreu com a minha sessão e, ao reabri
 passou a ler a pasta de dados real e não a virtualizada. O estado do I5 foi levado para a pasta real e o teste
 refeito do zero.
 
+## I7–I10 — Conflitos, decisões e exclusões — PASS
+
+Build `0.10.0-beta.5` nos dois. "Offline" aqui é **sem sessão**: a sincronização só acontece quando alguém a
+inicia, e a desconexão por modo avião já tinha sido exercitada pelo operador. Lado Windows feito pelos
+comandos do app; lado Android pelo operador na interface.
+
+**Rodada 1 — conflito W × A em "Um novo capítulo"** (criado pelo operador; textos "Nesse teste…" × "Nesse
+avião…"). Os dois aparelhos mostraram o conflito com as duas versões. Esta rodada revelou **I-BUG-05** (tela
+sem rolagem, 9 px, campos técnicos); com a beta.5 a tela foi repetida e aprovada pelo operador nos dois. O
+operador resolveu nos dois aparelhos escolhendo **a mesma versão** (a do Windows): as duas decisões produzem a
+mesma revisão (determinística), chegam como já presentes, e **nenhum conflito novo** surge — convergência de
+decisões iguais.
+
+**Rodada 2 — cinco capítulos numa só sessão** (sem sincronizar entre as alterações):
+
+| Capítulo | Windows | Android | Sessão | Decisão | Final (Windows = Android) | Gate |
+| --- | --- | --- | --- | --- | --- | --- |
+| outro capiitulo | edita "VERSÃO W de X" | edita "VERSÃO A de X" | conflito | **só no Android** | versão escolhida no Android chega ao Windows | I7 |
+| teste de capitulo | edita "VERSÃO W de Y" | edita "VERSÃO A de Y" | conflito | Windows fica com W, Android fica com A | **conflito novo sobre a decisão** nos dois | I9 |
+| a primeira magia | edita | exclui | conflito | Windows: **restaurar** | restaurado com o texto W nos dois | I8 |
+| Epílogo provisório | edita | exclui | conflito | Windows: **manter exclusão** | excluído nos dois | I8 |
+| Capítulo a android | exclui | exclui | **sem conflito** | — | excluído nos dois, nunca volta | I10 |
+
+- A sessão produziu exatamente **4 conflitos nos dois aparelhos**; o delete × delete convergiu sozinho.
+- Depois das decisões e da sessão: o Android ficou com 1 conflito — o novo, "Os dois aparelhos resolveram o
+  mesmo conflito de formas diferentes" — e os dois do Windows chegaram resolvidos. O operador estranhou a conta
+  (2 → 1); é a conta certa.
+- O conflito sobre a decisão foi resolvido no Android; sessão seguinte e a próxima: **0 conflitos, 0/0**. No
+  Windows: 0 abertos, 0 pendentes, "teste de capitulo" = "VERSÃO A de Y".
+- Achados desta rodada: **I-BUG-07** (conflito sobre decisão mostrado como certificado cru) e **I-UX-04** (a
+  decisão é definitiva e a tela não avisava — o operador escolheu "… e abrir para editar", quis voltar atrás
+  e o conflito já não existia).
+
 ## Bugs encontrados
 
 ### I-BUG-01 — backup automático do Android restaura o acervo numa instalação nova — **não é defeito de identidade**
@@ -289,6 +322,34 @@ refeito do zero.
   instalador, o transporte e a rede eram reais. A partir do I5 o NarraHub roda **fora do pacote** (lançado
   pelo `explorer.exe` com um `.cmd`), com a pasta real — o ambiente de um usuário — e as leituras do banco são
   cópias feitas também fora do pacote. O banco de produção nunca foi escrito em nenhuma das duas visões.
+
+### I-BUG-06 — o Android não oferecia a beta nova sozinho — **corrigido**
+
+- **Observado**: com a beta.5 publicada, o celular na beta.4 não ofereceu a atualização, nem reaberto. A API
+  do GitHub devolvia a beta.5 corretamente (pré-release, com APK e SHA-256).
+- **Causa**: o arranque só chamava a verificação quando `updater_configured` — o atualizador do **desktop** —
+  estava configurado, o que nunca é verdade no Android. O canal do Android só rodava pela tela Configurações.
+- **Correção**: `shouldCheckForUpdatesOnStartup()` aceita o canal do Android. Gate em
+  `tests/android-release.test.mjs` (vermelho sem a correção).
+- **Repetição física**: exige duas versões seguidas — instalar a corrigida e ver o app oferecer a próxima.
+  A beta.5 foi instalada por `adb install -r` (por cima, dados preservados).
+
+### I-BUG-07 — conflito entre decisões mostrado como certificado cru — **corrigido**
+
+- **Observado** (S23): "Sem título", "Escolha a" e a lista `results` com `aggregateId`, `baseRev`,
+  `otherRev`, `resultRev`.
+- **Correção** (só apresentação, `application/conflitos.rs`): para `conflict_resolution`, cada lado mostra o
+  item que aquela decisão produz — o capítulo na revisão resultante, com texto e diff — e o título é o do
+  capítulo. Certificado, formato e protocolo intocados.
+- **Gate**: `resolucao_testes::ibug07_conflito_entre_decisoes_mostra_o_capitulo_que_cada_uma_produz`
+  (vermelho sem a correção).
+- **Repetição física**: pendente com a beta.6.
+
+### I-UX-04 — a decisão de conflito é definitiva e a tela não avisava — **corrigido**
+
+- O primeiro toque num botão de decisão só arma e avisa ("encerra o conflito nos dois aparelhos e não pode ser
+  desfeita"); o segundo decide. Gate no E2E de conflitos. Para mudar de ideia depois de decidir: editar o
+  capítulo normalmente.
 
 ### Observações de UX (sem correção nesta etapa)
 
