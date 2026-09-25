@@ -78,6 +78,8 @@ test('código vencido aparece como vencido e a escuta relê o estado sozinha', a
     pagina.store.refreshSyncStatus = async () => { window.__releituras += 1; pagina.store.syncV2State.set({ ...base, pin: null }); };
   });
   await expect(page.locator('.pairing-panel')).toContainText('1234 5678');
+  // I-BUG-08: no celular a escuta só vive com o app na tela.
+  await expect(page.getByTestId('escuta-na-tela')).toContainText('NarraHub aberto na tela');
   await expect(page.getByTestId('pin-vencido')).toHaveCount(0);
   await expect(page.getByTestId('pin-vencido')).toBeVisible({ timeout: 8000 });
   await expect(page.getByTestId('pin-vencido')).toContainText('Novo código');

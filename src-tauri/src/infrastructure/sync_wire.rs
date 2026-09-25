@@ -121,10 +121,13 @@ impl std::fmt::Display for FalhaDeFio {
                 "a conexão caiu com {faltavam} bytes ainda por receber. Nada foi aplicado — \
                  tente sincronizar de novo."
             ),
+            // I-BUG-08 (Etapa I): no Android o app em segundo plano é congelado — a porta aceita a
+            // conexão e ninguém responde. A rede costuma estar boa; a causa mais comum é o celular.
             FalhaDeFio::Silencio => write!(
                 f,
-                "o outro aparelho conectou e não respondeu no tempo esperado. Verifique se ele \
-                 continua na mesma rede."
+                "o outro aparelho aceitou a conexão e não respondeu no tempo esperado. Se ele for um \
+                 celular, deixe o NarraHub aberto na tela durante a sincronização; se não, confira se \
+                 os dois continuam na mesma rede."
             ),
             FalhaDeFio::Rede { motivo } => {
                 write!(f, "a conexão com o outro aparelho falhou: {motivo}.")
@@ -341,6 +344,17 @@ pub fn ajustar_esperas(fluxo: &TcpStream, espera: Duration) -> Result<(), FalhaD
 
 #[cfg(test)]
 mod tests {
+    /// **I-BUG-08 — silêncio aponta o celular em segundo plano, não só a rede.** Achado em aparelho
+    /// físico: com o NarraHub do Android fora da tela, a porta aceita a conexão e o app congelado não
+    /// responde; a mensagem antiga mandava conferir a rede, que estava boa.
+    #[test]
+    fn silencio_diz_para_deixar_o_app_do_celular_na_tela() {
+        let texto = FalhaDeFio::Silencio.to_string();
+        assert!(texto.contains("celular"), "{texto}");
+        assert!(texto.contains("NarraHub aberto na tela"), "{texto}");
+        assert!(texto.contains("mesma rede"), "{texto}");
+    }
+
     use super::*;
     use crate::domain::identity::DeviceIdentity;
     use crate::infrastructure::sync_transport::{
