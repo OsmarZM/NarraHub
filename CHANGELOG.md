@@ -2,6 +2,15 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.7 — 2026-09-25 (pré-release)
+
+Pré-release só Android, fechamento da qualificação física do Sync V2. Instala por cima da 0.10.0-beta.6.
+
+- **Mensagens de conexão que dizem o que fazer**: quando o outro aparelho não responde, o app avisa que o
+  celular precisa estar com o NarraHub aberto na tela; quando ninguém escuta no endereço, pede para ligar a
+  escuta; quando o aparelho não aparece na rede, pede para conferir o Wi-Fi e o endereço.
+- A tela de sincronização do celular avisa que a escuta só funciona com o app aberto.
+
 ## 0.10.0-beta.6 — 2026-09-25 (pré-release)
 
 Pré-release só Android, correções achadas na qualificação física do Sync V2. Instala por cima da 0.10.0-beta.5.
