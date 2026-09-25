@@ -2,6 +2,15 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.12 — 2026-09-25 (pré-release)
+
+Pré-release só Android, com os ajustes do teste físico da beta.11. Instala por cima da 0.10.0-beta.11.
+
+- **Dá para sair da leitura do QR**: a câmera agora tem mira e o botão "Cancelar", e o "voltar" do Android
+  também cancela — antes era preciso fechar o app.
+- **Câmera negada tem saída**: depois de negar, o Android não pergunta de novo; a tela oferece "Abrir
+  permissões do app" para liberar a câmera. Digitar endereço e código continua funcionando.
+
 ## 0.10.0-beta.11 — 2026-09-25 (pré-release)
 
 Pré-release só Android, com os ajustes do teste físico da beta.10. Instala por cima da 0.10.0-beta.10.

@@ -2649,7 +2649,7 @@ dependencies = [
 
 [[package]]
 name = "narrahub"
-version = "0.10.0-beta.11"
+version = "0.10.0-beta.12"
 dependencies = [
  "chrono",
  "ed25519-dalek",
