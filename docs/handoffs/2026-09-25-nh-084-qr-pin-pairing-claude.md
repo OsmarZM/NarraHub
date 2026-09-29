@@ -4,7 +4,7 @@
 Agente:  Claude
 Data:    2026-09-25
 Branch:  nh-084-qr-pin-pairing (base: mobile-shell @ 7f31d1f, depois do PR #75)
-Status:  BLOCKED — beta.12 falhou no cancelamento; correção para beta.13 em andamento
+Status:  READY FOR MERGE — beta.13 qualificada no S23; aguarda revisão e autorização de merge
 ```
 
 ## Contrato aprovado (Opção A)
@@ -118,11 +118,9 @@ head, base `mobile-shell` e CI 4/4 verde. Isso não qualifica o comportamento f�
 - **T2, permissão negada: não qualificado.** Foi relatada tela presa e ausência de novo prompt; esse
   cenário ainda não foi isolado fisicamente. Não atribuir a ele a causa de T1 sem reprodução.
 
-A correção para beta.13 está em andamento; ela ainda não foi publicada nem aprovada no S23. A
-qualificação física do PR B segue **BLOCKED**. Repetir apenas T1 (Cancelar e Voltar) e T2 (negar,
-abrir permissões, liberar e escanear novamente), incluindo câmera visível sem véu e entrada manual
-utilizável. Os cenários de pareamento, roster, sincronização, QR vencido/usado/alterado já passaram
-fisicamente na beta.11, como registrado acima.
+Na data desse diagnóstico, a beta.13 ainda não havia sido publicada. Os cenários de pareamento,
+roster, sincronização, QR vencido/usado/alterado já tinham passado fisicamente na beta.11, como
+registrado acima.
 
 ## Correção preparada na beta.13 (2026-09-29)
 
@@ -139,5 +137,21 @@ Android passaram; `cargo fmt --check` passou; compilação Kotlin do plugin Andr
 Os dois novos E2E do cancelamento passaram e a mutação negativa que remove a saída imediata
 fez o teste falhar. A suíte móvel completa teve 3 falhas no teste preexistente de peteleco
 curto da navegação em diferentes viewports; na repetição isolada, 3 viewports passaram e 1
-falhou. Esse teste não cobre QR e não foi alterado nesta correção. O resultado de CI e a
-qualificação no S23 ainda são necessários antes de declarar o PR pronto.
+falhou. Esse teste não cobre QR e não foi alterado nesta correção.
+
+## Qualificação física da beta.13 (2026-09-29)
+
+A pré-release `app-v0.10.0-beta.13` foi publicada como APK Android assinado com SHA-256. A tag
+aponta para `b689dbe069752c322334438818ff450360005480`; o PR #76 estava aberto, com base
+`mobile-shell`, mergeable e CI 4/4 verde nesse head. No Galaxy S23, o usuário confirmou:
+
+- **T1 PASS:** a câmera abre nítida com mira; Cancelar e Voltar do Android fecham o scanner e
+  devolvem o app utilizável. Endereço e PIN manuais permanecem editáveis, sem criar sessão.
+- **T2 PASS:** com câmera negada, aparece o aviso e o botão Abrir permissões do app. Após liberar
+  a câmera nas configurações e voltar, o scanner abre nítido, com mira, sem véu cinza nem tela
+  presa; Cancelar funciona.
+
+**PR B physical qualification = PASS; QR-assisted pairing = QUALIFIED.** Nenhum código mudou
+depois da beta.13. Este registro é documental e, se formar um novo head do PR, o SHA da beta.13
+permanece seu ancestral de código. Não fazer outra beta por essa atualização documental. PR #76
+fica **READY FOR MERGE**, aguardando revisão final e autorização explícita; não mesclar sozinho.
