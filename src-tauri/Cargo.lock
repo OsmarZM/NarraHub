@@ -2649,7 +2649,7 @@ dependencies = [
 
 [[package]]
 name = "narrahub"
-version = "0.10.0-beta.12"
+version = "0.10.0-beta.13"
 dependencies = [
  "chrono",
  "ed25519-dalek",
@@ -5117,8 +5117,6 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-barcode-scanner"
 version = "2.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81f76741c77b8213350fd37a5608f0c78f4e61fe33f0334f5dfd0e6cc8d00138"
 dependencies = [
  "log",
  "serde",

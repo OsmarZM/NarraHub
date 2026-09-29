@@ -245,6 +245,62 @@ test('durante a leitura há mira e Cancelar, e cancelar devolve a tela inteira',
   await expect(page.getByPlaceholder('192.168.0.10:45870')).toBeEditable();
 });
 
+// No Android, cancel() pode encerrar a câmera sem resolver a Promise pendente de scan().
+test('cancelar devolve a tela mesmo quando a leitura nativa permanece pendente', async ({ page }) => {
+  await comLeitor(page, { kind: 'cancelado' });
+  await page.evaluate(() => {
+    const pagina = window.ng.getComponent(document.querySelector('app-settings-page'));
+    window.__cancelamentos = 0;
+    pagina.qrScanner.scan = (aoAbrirCamera) => new Promise(() => { aoAbrirCamera?.(); });
+    pagina.qrScanner.cancel = async () => { window.__cancelamentos += 1; };
+  });
+
+  await page.getByTestId('escanear-qr').click();
+  await expect(page.getByTestId('leitura-qr')).toBeVisible();
+  await page.getByTestId('cancelar-leitura-qr').click();
+
+  await expect.poll(() => page.evaluate(() => window.__cancelamentos)).toBe(1);
+  await expect(page.getByTestId('leitura-qr')).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.classList.contains('nh-lendo-qr'))).toBe(false);
+  expect(await page.evaluate(() => window.__pareamentosPorQr)).toEqual([]);
+  const endereco = page.getByPlaceholder('192.168.0.10:45870');
+  await expect(endereco).toBeEditable();
+  await endereco.fill('192.168.1.145:45870');
+  await page.getByPlaceholder('0000 0000').fill('12345678');
+  await page.getByRole('button', { name: 'Parear com código' }).click();
+  await expect.poll(() => page.evaluate(() => window.__pareamentosManuais)).toBe(1);
+});
+
+test('QR entregue depois de Cancelar é ignorado e o leitor pode abrir de novo', async ({ page }) => {
+  await comLeitor(page, { kind: 'cancelado' });
+  await page.evaluate(() => {
+    const pagina = window.ng.getComponent(document.querySelector('app-settings-page'));
+    window.__concluirLeituras = [];
+    pagina.qrScanner.scan = (aoAbrirCamera) => new Promise((resolve) => {
+      window.__concluirLeituras.push(resolve);
+      aoAbrirCamera?.();
+    });
+    pagina.qrScanner.cancel = async () => undefined;
+  });
+
+  await page.getByTestId('escanear-qr').click();
+  await expect(page.getByTestId('leitura-qr')).toBeVisible();
+  await page.getByTestId('cancelar-leitura-qr').click();
+  await expect(page.getByTestId('leitura-qr')).toHaveCount(0);
+  await expect(page.getByTestId('escanear-qr')).toBeDisabled();
+
+  await page.evaluate(() => window.__concluirLeituras[0]({ kind: 'ok', conteudo: 'qr-antigo' }));
+  await expect(page.getByTestId('escanear-qr')).toBeEnabled();
+  expect(await page.evaluate(() => window.__pareamentosPorQr)).toEqual([]);
+
+  await page.getByTestId('escanear-qr').click();
+  await expect(page.getByTestId('leitura-qr')).toBeVisible();
+  expect(await page.evaluate(() => window.__concluirLeituras.length)).toBe(2);
+  await page.evaluate(() => window.__concluirLeituras[1]({ kind: 'cancelado' }));
+  await expect(page.getByTestId('leitura-qr')).toHaveCount(0);
+  expect(await page.evaluate(() => window.__pareamentosPorQr)).toEqual([]);
+});
+
 test('sem leitor de QR, a tela é a de sempre', async ({ page }) => {
   await abrirDispositivos(page);
   await expect(page.getByTestId('escanear-qr')).toHaveCount(0);

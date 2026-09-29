@@ -11,6 +11,9 @@ export type QrScanResult =
   | { kind: 'negado' }
   | { kind: 'indisponivel' };
 
+type ScannerPlugin = typeof import('@tauri-apps/plugin-barcode-scanner');
+type ActiveScan = { cancelled: boolean; scanning: boolean; plugin: ScannerPlugin | null };
+
 /**
  * Porta de plataforma: a câmera do celular lendo um QR (NH-084, PR B).
  *
@@ -22,6 +25,8 @@ export type QrScanResult =
  */
 @Injectable({ providedIn: 'root' })
 export class QrScannerService {
+  private activeScan: ActiveScan | null = null;
+
   /** Se há leitor neste aparelho. Detecção barata, sem pedir permissão. */
   async supported(): Promise<boolean> {
     if (!isTauri()) return false;
@@ -41,28 +46,45 @@ export class QrScannerService {
    */
   async scan(aoAbrirCamera?: () => void): Promise<QrScanResult> {
     if (!isTauri()) return { kind: 'indisponivel' };
-    let plugin: typeof import('@tauri-apps/plugin-barcode-scanner');
+    if (this.activeScan) return { kind: 'cancelado' };
+    const session: ActiveScan = { cancelled: false, scanning: false, plugin: null };
+    this.activeScan = session;
     try {
-      plugin = await import('@tauri-apps/plugin-barcode-scanner');
-    } catch {
-      return { kind: 'indisponivel' };
-    }
-    try {
-      let permissao = await plugin.checkPermissions();
-      if (permissao !== 'granted') permissao = await plugin.requestPermissions();
-      if (permissao !== 'granted') return { kind: 'negado' };
-      const voltar = await this.cancelarNoVoltar(plugin);
+      let plugin: ScannerPlugin;
       try {
+        plugin = await import('@tauri-apps/plugin-barcode-scanner');
+      } catch {
+        return { kind: 'indisponivel' };
+      }
+      session.plugin = plugin;
+      if (session.cancelled) return { kind: 'cancelado' };
+      let permissao = await plugin.checkPermissions();
+      if (session.cancelled) return { kind: 'cancelado' };
+      if (permissao !== 'granted') permissao = await plugin.requestPermissions();
+      if (session.cancelled) return { kind: 'cancelado' };
+      if (permissao !== 'granted') return { kind: 'negado' };
+      const voltar = await this.cancelarNoVoltar();
+      let conteudo = '';
+      try {
+        if (session.cancelled) return { kind: 'cancelado' };
         aoAbrirCamera?.();
+        if (session.cancelled) return { kind: 'cancelado' };
+        session.scanning = true;
         const lido = await plugin.scan({ formats: [plugin.Format.QRCode], windowed: true });
-        const conteudo = lido?.content ?? '';
-        return conteudo ? { kind: 'ok', conteudo } : { kind: 'cancelado' };
+        conteudo = lido?.content ?? '';
       } finally {
+        session.scanning = false;
         await voltar?.unregister().catch(() => undefined);
       }
+      if (session.cancelled) return { kind: 'cancelado' };
+      return conteudo ? { kind: 'ok', conteudo } : { kind: 'cancelado' };
     } catch (error) {
       // O plugin rejeita quando o usuário volta sem ler; sem código lido, é cancelamento.
-      return String(error ?? '').toLowerCase().includes('permission') ? { kind: 'negado' } : { kind: 'cancelado' };
+      return !session.cancelled && String(error ?? '').toLowerCase().includes('permission')
+        ? { kind: 'negado' }
+        : { kind: 'cancelado' };
+    } finally {
+      if (this.activeScan === session) this.activeScan = null;
     }
   }
 
@@ -80,22 +102,22 @@ export class QrScannerService {
     }
   }
 
-  private async cancelarNoVoltar(
-    plugin: typeof import('@tauri-apps/plugin-barcode-scanner'),
-  ): Promise<{ unregister(): Promise<void> } | null> {
+  private async cancelarNoVoltar(): Promise<{ unregister(): Promise<void> } | null> {
     try {
       const { onBackButtonPress } = await import('@tauri-apps/api/app');
-      return await onBackButtonPress(() => { void plugin.cancel(); });
+      return await onBackButtonPress(() => { void this.cancel(); });
     } catch {
       return null;
     }
   }
 
   async cancel(): Promise<void> {
-    if (!isTauri()) return;
+    const session = this.activeScan;
+    if (!session || session.cancelled) return;
+    session.cancelled = true;
+    if (!session.scanning || !session.plugin) return;
     try {
-      const plugin = await import('@tauri-apps/plugin-barcode-scanner');
-      await plugin.cancel();
+      await session.plugin.cancel();
     } catch {
       // Sem leitor aberto, não há o que cancelar.
     }

@@ -961,7 +961,7 @@ test('o leitor de QR só é acionado pela porta nativa e só no celular', () => 
   // baixo (a página desenha "Cancelar") e o "voltar" do Android cancela.
   assert.match(porta, /windowed:\s*true/u);
   assert.doesNotMatch(porta, /windowed:\s*false/u);
-  assert.match(porta, /onBackButtonPress\(\(\) => \{ void plugin\.cancel\(\); \}\)/u);
+  assert.match(porta, /onBackButtonPress\(\(\) => \{ void this\.cancel\(\); \}\)/u);
   const cargo = readFileSync(new URL('../src-tauri/Cargo.toml', import.meta.url), 'utf8');
   const bloco = cargo.slice(cargo.indexOf('target_os = "android", target_os = "ios"'));
   assert.match(bloco.slice(0, 200), /tauri-plugin-barcode-scanner/u, 'o plugin precisa ser dependência só de mobile');
@@ -974,4 +974,15 @@ test('o leitor de QR só é acionado pela porta nativa e só no celular', () => 
     'barcode-scanner:allow-request-permissions',
     'barcode-scanner:allow-scan',
   ]);
+});
+
+test('o cancelamento nativo do QR conclui a leitura pendente', () => {
+  const kotlin = readFileSync(new URL('../src-tauri/vendor/tauri-plugin-barcode-scanner/android/src/main/java/BarcodeScannerPlugin.kt', import.meta.url), 'utf8');
+  const cancel = kotlin.match(/fun cancel\(invoke: Invoke\) \{(?<body>[\s\S]*?)\n    \}/u)?.groups?.body;
+  assert.ok(cancel, 'o plugin Android precisa expor cancel()');
+  const pending = cancel.match(/val\s+(\w+)\s*=\s*savedInvoke/u);
+  assert.ok(pending, 'preservar a leitura antes que destroy() limpe savedInvoke');
+  const destroyIndex = cancel.indexOf('destroy()', pending.index + pending[0].length);
+  assert.ok(destroyIndex > pending.index, 'preservar a leitura antes de desmontar a câmera');
+  assert.match(cancel.slice(destroyIndex), new RegExp(`${pending[1]}\\?\\.reject\\("cancelled"\\)`, 'u'));
 });

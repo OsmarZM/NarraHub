@@ -66,6 +66,9 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   readonly qrAberto = signal(false);
   /** NH-084: a câmera está lendo por baixo da tela; a página mostra só a mira e "Cancelar". */
   readonly lendoQr = signal(false);
+  /** Mantém uma única leitura ativa até a chamada nativa terminar. */
+  readonly qrScanInProgress = signal(false);
+  private qrScanGeneration = 0;
   /** NH-084: o Android não pergunta de novo depois de negar; oferecemos as permissões do app. */
   readonly cameraNegada = signal(false);
   private readonly fecharQrSemCodigo = effect(() => {
@@ -83,7 +86,8 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     if (this.syncStatusTimer) clearInterval(this.syncStatusTimer);
     this.syncStatusTimer = null;
-    if (this.lendoQr()) void this.qrScanner.cancel();
+    this.qrScanGeneration++;
+    if (this.qrScanInProgress()) void this.qrScanner.cancel();
     document.documentElement.classList.remove('nh-lendo-qr');
   }
 
@@ -325,14 +329,21 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
    * Rust. Câmera negada, cancelamento ou leitor ausente nunca tocam nos campos digitados.
    */
   async scanPairingQr(): Promise<void> {
+    if (this.qrScanInProgress()) return;
+    const generation = ++this.qrScanGeneration;
+    this.qrScanInProgress.set(true);
     this.qrScanMessage.set('');
     this.cameraNegada.set(false);
     let leitura: QrScanResult;
     try {
-      leitura = await this.qrScanner.scan(() => this.mostrarLeitura(true));
+      leitura = await this.qrScanner.scan(() => {
+        if (generation === this.qrScanGeneration) this.mostrarLeitura(true);
+      });
     } finally {
-      this.mostrarLeitura(false);
+      this.qrScanInProgress.set(false);
+      if (generation === this.qrScanGeneration) this.mostrarLeitura(false);
     }
+    if (generation !== this.qrScanGeneration) return;
     if (leitura.kind === 'negado') {
       this.cameraNegada.set(true);
       this.qrScanMessage.set('Sem permissão para a câmera. Libere a câmera nas permissões do NarraHub, ou digite o endereço e o código abaixo.');
@@ -352,6 +363,9 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
   }
 
   cancelarLeitura(): void {
+    if (!this.lendoQr()) return;
+    this.qrScanGeneration++;
+    this.mostrarLeitura(false);
     void this.qrScanner.cancel();
   }
 

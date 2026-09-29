@@ -186,7 +186,7 @@
         @if (qrScannerAvailable()) {
           <!-- NH-084: atalho. Os campos abaixo continuam, com ou sem câmera. -->
           <div class="field-row">
-            <button type="button" class="primary-button" [disabled]="store.syncV2Busy()" (click)="scanPairingQr()" data-testid="escanear-qr">Escanear QR</button>
+            <button type="button" class="primary-button" [disabled]="store.syncV2Busy() || qrScanInProgress()" (click)="scanPairingQr()" data-testid="escanear-qr">Escanear QR</button>
           </div>
         }
         @if (store.syncV2Busy()) {

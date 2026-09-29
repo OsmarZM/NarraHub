@@ -4,7 +4,7 @@
 Agente:  Claude
 Data:    2026-09-25
 Branch:  nh-084-qr-pin-pairing (base: mobile-shell @ 7f31d1f, depois do PR #75)
-Status:  REVIEW — falta o teste físico Windows ↔ S23
+Status:  BLOCKED — beta.12 falhou no cancelamento; correção para beta.13 em andamento
 ```
 
 ## Contrato aprovado (Opção A)
@@ -104,8 +104,40 @@ gravado"), QR vencido some da tela e pede código novo. Dois bugs:
 Fundo medido transparente nos 5 viewports durante a leitura (a transição de fundo foi desligada; antes a
 câmera apareceria atrás de um véu de 78%).
 
-## Falta
+## Diagnóstico físico da beta.12 (2026-09-28)
 
-Teste físico: Windows mostra o QR → S23 escaneia → nenhum IP/PIN digitado → pareia → identidade
-certa no roster → incremental funciona. Depois: QR vencido, QR já usado, QR alterado, câmera negada,
-cancelamento. Exige uma beta Android com o plugin.
+A pré-release Android `app-v0.10.0-beta.12` foi publicada no commit
+`744b74f900d6696cf697f55f70c3e7ac0f0f2c7f`. No diagnóstico, o PR #76 estava aberto com esse
+head, base `mobile-shell` e CI 4/4 verde. Isso não qualifica o comportamento físico.
+
+- **T1, Cancelar: FAIL.** No S23, a câmera abre e fecha após tocar Cancelar; o processo continua vivo,
+  mas a camada da leitura permanece e a tela fica presa. O Voltar do Android ainda precisa ser repetido.
+  No `tauri-plugin-barcode-scanner` 2.4.6, `cancel()` chama `destroy()` antes de rejeitar a leitura;
+  `destroy()` limpa `savedInvoke`, portanto a promessa de `scan()` fica pendente e a tela não sai do
+  `await`. Essa é a causa identificada para o Cancelar.
+- **T2, permissão negada: não qualificado.** Foi relatada tela presa e ausência de novo prompt; esse
+  cenário ainda não foi isolado fisicamente. Não atribuir a ele a causa de T1 sem reprodução.
+
+A correção para beta.13 está em andamento; ela ainda não foi publicada nem aprovada no S23. A
+qualificação física do PR B segue **BLOCKED**. Repetir apenas T1 (Cancelar e Voltar) e T2 (negar,
+abrir permissões, liberar e escanear novamente), incluindo câmera visível sem véu e entrada manual
+utilizável. Os cenários de pareamento, roster, sincronização, QR vencido/usado/alterado já passaram
+fisicamente na beta.11, como registrado acima.
+
+## Correção preparada na beta.13 (2026-09-29)
+
+O plugin 2.4.6 está fixado como crate local em `src-tauri/vendor/tauri-plugin-barcode-scanner`.
+Em `cancel()`, a referência de `savedInvoke` é preservada antes de `destroy()` e rejeitada em
+seguida. A tela sai da leitura imediatamente ao tocar Cancelar, sem esperar a Promise nativa;
+uma leitura tardia é ignorada. O Voltar do Android usa o mesmo caminho de cancelamento. O serviço
+também verifica cancelamento após carregamento do plugin, permissões e registro do Voltar, para
+não abrir a câmera depois que a página já saiu.
+
+Validação local: preflight verde (build, 105 testes de arquitetura, 5 de IA, 4 de planning,
+4 de share API, validações de release e 893 testes Rust com 3 ignorados); 7 testes de release
+Android passaram; `cargo fmt --check` passou; compilação Kotlin do plugin Android passou.
+Os dois novos E2E do cancelamento passaram e a mutação negativa que remove a saída imediata
+fez o teste falhar. A suíte móvel completa teve 3 falhas no teste preexistente de peteleco
+curto da navegação em diferentes viewports; na repetição isolada, 3 viewports passaram e 1
+falhou. Esse teste não cobre QR e não foi alterado nesta correção. O resultado de CI e a
+qualificação no S23 ainda são necessários antes de declarar o PR pronto.

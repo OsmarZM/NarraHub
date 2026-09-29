@@ -2,6 +2,16 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.13 — 2026-09-29 (pré-release Android)
+
+Correção do cancelamento do leitor QR após a falha física da beta.12. A qualificação no Galaxy S23
+continua pendente.
+
+- **Leitura nativa encerrada**: ao cancelar, o plugin preserva a referência à leitura antes de fechar a
+  câmera e rejeita a promessa de `scan()` pendente.
+- **Saída imediata**: Cancelar devolve a tela e a entrada manual sem depender da resposta do scanner.
+- **QR tardio ignorado**: um resultado recebido depois de Cancelar não inicia pareamento.
+
 ## 0.10.0-beta.12 — 2026-09-25 (pré-release)
 
 Pré-release só Android, com os ajustes do teste físico da beta.11. Instala por cima da 0.10.0-beta.11.
