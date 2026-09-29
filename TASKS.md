@@ -23,8 +23,8 @@ até a 1.0 em `docs/ai/ROADMAP.md` (4.5 → 5 → 7; Context Engine na 1.1).
 ### NH-084 — Fase 4.5: Device Discovery & Pairing UX
 
 ```text
-Owner:  Claude
-Status: READY — cada fatia só começa depois de o plano dela ser revisado
+Owner:  Codex
+Status: IN_PROGRESS — PR B em correção; qualificação física BLOCKED
 Fase:   4.5
 Branch: uma por fatia, a partir de mobile-shell
 ```
@@ -34,7 +34,7 @@ convite; o resto é o pareamento existente, TCP/Noise e Sync V2. Absorve a NH-07
 
 | Fatia | Entrega | Status |
 | --- | --- | --- |
-| PR B | QR: pareamento por PIN assistido por QR (`narrahub-pair-pin:1:<endpoint>:<pin>`), sem mudança de protocolo | REVIEW — branch `nh-084-qr-pin-pairing`; falta o teste físico |
+| PR B | QR: pareamento por PIN assistido por QR (`narrahub-pair-pin:1:<endpoint>:<pin>`), sem mudança de protocolo | BLOCKED — beta.12 falhou em T1; correção para beta.13 em andamento; repetir T1/T2 no S23 |
 | PR C | mDNS: lista de aparelhos na mesma rede | BACKLOG |
 | PR D | Bluetooth LE: descoberta e passagem de convite, sem dados | BACKLOG |
 | PR E | tela única "Adicionar dispositivo" / "Tornar este dispositivo disponível" | BACKLOG |
