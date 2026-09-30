@@ -1,3 +1,4 @@
+import { selecionarDispositivos } from './support/settings-navigation.mjs';
 import { expect, test } from '@playwright/test';
 
 /**
@@ -193,7 +194,7 @@ test('Configurações mostra quantos conflitos precisam de atenção e o aviso d
   await page.goto('/settings');
   await page.waitForFunction(() => Boolean(window.ng && document.querySelector('app-settings-page')));
   // A sincronização vive numa aba; o cartão do Sync V2 fica nela.
-  await page.getByRole('button', { name: /Dispositivos/u }).click();
+  await selecionarDispositivos(page);
   // Sem Tauri, a leitura inicial do aviso falha e zera o sinal; semeia depois dela.
   await page.waitForTimeout(300);
   await page.evaluate(() => {

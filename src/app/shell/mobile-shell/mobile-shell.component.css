@@ -57,6 +57,8 @@
   min-height: 0;
   flex: 1 1 auto;
   overflow: hidden;
+  /* A alça do relógio tem alvo de 48px. Nenhuma ação de página fica debaixo dele. */
+  margin-right: 48px;
   transform-origin: 0% 50%;
 }
 

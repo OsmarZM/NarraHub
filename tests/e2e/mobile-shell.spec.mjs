@@ -69,17 +69,21 @@ async function estadoDaNavegacao(page) {
 }
 
 /** Toque real (eventos de toque do Chromium, que viram pointer events com pointerType "touch"). */
-async function arrastarComDedo(page, de, para, passos = 12, intervalo = 16) {
+async function arrastarComDedo(page, de, para, passos = 12, intervalo = 16, duracaoDoGesto = null) {
   const cdp = await page.context().newCDPSession(page);
   const ponto = (x, y) => [{ x, y, id: 1, radiusX: 4, radiusY: 4, force: 1 }];
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: ponto(de.x, de.y) });
+  // O relógio do gesto é independente da latência do protocolo. Sob carga, duas chamadas
+  // sem pausa podem levar centenas de ms e deixam de representar um peteleco rápido.
+  const inicio = Date.now() / 1000;
+  const tempo = (fracao) => duracaoDoGesto === null ? {} : { timestamp: inicio + duracaoDoGesto * fracao / 1000 };
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: ponto(de.x, de.y), ...tempo(0) });
   for (let i = 1; i <= passos; i += 1) {
     const x = de.x + ((para.x - de.x) * i) / passos;
     const y = de.y + ((para.y - de.y) * i) / passos;
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: ponto(x, y) });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: ponto(x, y), ...tempo(i / passos) });
     await page.waitForTimeout(intervalo);
   }
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [], ...tempo(1) });
   await cdp.detach();
 }
 
@@ -149,9 +153,8 @@ test.describe('celular Android', () => {
   test('peteleco curto e rápido na alça abre', async ({ page }) => {
     await abrirBiblioteca(page);
     const alca = await centroDaAlca(page);
-    // Curto: 70px, abaixo do limiar de distância que abriria mesmo devagar. Rápido: dois
-    // movimentos sem pausa (o protocolo de teste já leva ~40ms por evento).
-    await arrastarComDedo(page, alca, { x: alca.x - 70, y: alca.y }, 2, 0);
+    // Curto: 70px, abaixo do limiar de distância. Rápido: dois movimentos em 40ms.
+    await arrastarComDedo(page, alca, { x: alca.x - 70, y: alca.y }, 2, 0, 40);
     await expect.poll(async () => (await estadoDaNavegacao(page)).aberto).toBe(true);
   });
 

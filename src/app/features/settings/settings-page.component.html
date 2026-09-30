@@ -3,6 +3,15 @@
   @if (infoMessage()) { <div class="settings-feedback info" role="status"><span>{{ infoMessage() }}</span><button type="button" (click)="infoMessage.set('')">×</button></div> }
   <header class="feature-heading"><div><span class="eyebrow">PREFERÊNCIAS</span><h1>Configurações</h1><p>Escolha uma área para ajustar sem misturar recursos diferentes.</p></div></header>
   <div class="settings-shell">
+    <label class="settings-mobile-section">Área das configurações
+      <select [ngModel]="section()" (ngModelChange)="selectSection($event)">
+        <option value="general">Geral · aparência e backup</option>
+        <option value="ai">Inteligência artificial</option>
+        <option value="sync">Dispositivos · sincronização</option>
+        <option value="share">Compartilhar</option>
+        <option value="updates">Atualizações</option>
+      </select>
+    </label>
     <nav class="settings-nav" aria-label="Seções das configurações">
       <button type="button" [class.active]="section() === 'general'" (click)="selectSection('general')"><span>◐</span><strong>Geral</strong><small>Aparência</small></button>
       <button type="button" [class.active]="section() === 'ai'" (click)="selectSection('ai')"><span>✦</span><strong>Inteligência</strong><small>Modelo e memória</small></button>
@@ -24,7 +33,7 @@
 
       <article class="surface-card settings-wide-card backup-card" [hidden]="section() !== 'general'">
         <div class="card-head"><div><div class="card-icon">▣</div><h2>Backup e integridade</h2></div><span class="status-badge" [class.online]="store.databaseHealth()?.healthy" [class.error]="store.databaseHealth() && !store.databaseHealth()?.healthy">@if (store.backupBusy()) { Verificando… } @else if (store.databaseHealth()?.healthy) { Banco íntegro } @else if (store.databaseHealth()) { Atenção necessária } @else { Não verificado }</span></div>
-        <p>Cria um snapshot consistente do SQLite, mesmo com WAL ativo, e só publica o backup depois de gerar manifesto e hashes.</p>
+        <p>Guarde uma cópia dos seus universos, textos e imagens. O NarraHub verifica os arquivos antes de concluir o backup.</p>
         <div class="backup-actions"><button type="button" class="primary-button" [disabled]="store.backupBusy()" (click)="requestManualBackup()">{{ store.backupBusy() ? 'Processando…' : 'Criar backup agora' }}</button><button type="button" class="secondary-button" [disabled]="store.backupBusy()" (click)="store.refreshBackupStatus()">Verificar banco</button></div>
         @if (store.databaseHealth(); as health) {
           <dl class="backup-health"><div><dt>Schema</dt><dd>v{{ health.schemaVersion }}</dd></div><div><dt>SQLite</dt><dd>{{ health.integrityResult }}</dd></div><div><dt>Foreign keys</dt><dd>{{ health.foreignKeyViolations }}</dd></div><div><dt>Última verificação</dt><dd>{{ formatDate(health.checkedAt) }}</dd></div></dl>
@@ -43,18 +52,22 @@
       </article>
 
       <article class="surface-card settings-wide-card ai-settings-card" [hidden]="section() !== 'ai'">
-        <div class="card-head"><div><div class="card-icon">✦</div><h2>Inteligência local</h2></div><span class="status-badge" [class.online]="ai.localStatus().state === 'ready'" [class.error]="ai.localStatus().state === 'error'">@switch (ai.localStatus().state) { @case ('ready') { Disponível } @case ('installing') { Instalando } @case ('starting') { Iniciando } @case ('error') { Atenção } @default { {{ ai.localStatus().installed ? 'Instalada' : 'Não instalada' }} } }</span></div>
-        <p>O NarraHub gerencia um motor privado para escrita. Ele inicia com o aplicativo, recebe somente o contexto necessário e libera o modelo da memória após alguns minutos sem uso.</p>
+        <div class="card-head"><div><div class="card-icon">✦</div><h2>Assistência de escrita</h2></div><span class="status-badge" [class.online]="ai.localStatus().state === 'ready'" [class.error]="ai.localStatus().state === 'error'">@if (!ai.localStatus().supported) { {{ aiMode === 'custom' ? 'API própria' : aiMode === 'local' ? 'IA local indisponível' : 'Desativada' }} } @else { @switch (ai.localStatus().state) { @case ('ready') { Disponível } @case ('installing') { Instalando } @case ('starting') { Iniciando } @case ('error') { Atenção } @default { {{ ai.localStatus().installed ? 'Instalada' : 'Não instalada' }} } } }</span></div>
+        <p>Escolha como a IA ajuda a revisar textos e desenvolver ideias. Você continua no controle das alterações.</p>
+        @if (ai.localStatus().supported) {
         <div class="ai-recommendation-hero">
           <div><span>RECOMENDADA PARA ESTE COMPUTADOR</span><strong>{{ ai.localStatus().recommended.name }}</strong><p>{{ aiRecommendationReason() }}</p></div>
           <button type="button" class="primary-button" (click)="useRecommendedAi()">{{ ai.localStatus().installed ? 'Usar recomendada' : 'Ver instalação recomendada' }}</button>
         </div>
+        } @else {
+          <div class="ai-platform-note"><strong>IA local no Windows 64 bits</strong><span>A instalação gerenciada está disponível no Windows. Neste aparelho, você pode configurar uma API própria ou manter a assistência desativada.</span></div>
+        }
         <div class="ai-mode-picker" role="group" aria-label="Modo da inteligência artificial">
           <button type="button" [class.active]="aiMode === 'off'" (click)="setAiMode('off')">Desativada</button>
-          <button type="button" [class.active]="aiMode === 'local'" (click)="setAiMode('local')">Neste computador</button>
+          @if (ai.localStatus().supported) { <button type="button" [class.active]="aiMode === 'local'" (click)="setAiMode('local')">Neste computador</button> }
           <button type="button" [class.active]="aiMode === 'custom'" (click)="setAiMode('custom')">API própria</button>
         </div>
-        @if (aiMode === 'local') {
+        @if (aiMode === 'local' && ai.localStatus().supported) {
           <section class="local-ai-manager" aria-live="polite">
             <div class="ai-device-summary">
               <div><small>ANÁLISE DO DISPOSITIVO</small><strong>{{ ai.localStatus().hardware.score || '—' }}<span>/100</span></strong></div>
@@ -115,7 +128,7 @@
           <label class="field-label">Chave da API <span>(mantida somente nesta sessão)</span><input type="password" [(ngModel)]="aiApiKey" placeholder="Não será salva no banco" autocomplete="off" /></label>
           <button type="button" class="secondary-button" (click)="saveAiSettings()">Usar esta API</button>
         }
-        @if (aiMode !== 'local') { <small class="security-note">A IA local permanece neste computador. APIs remotas precisam usar HTTPS.</small> }
+        @if (aiMode === 'custom') { <small class="security-note">Ao usar uma API, o contexto necessário à sua solicitação é enviado ao provedor configurado. APIs remotas precisam usar HTTPS.</small> }
         <section class="ai-creative-profile">
           <header><div><span>ORIENTAÇÃO GLOBAL LOCAL</span><strong>Como a IA deve colaborar com você?</strong></div><small>Válido neste dispositivo</small></header>
           <textarea [(ngModel)]="aiWriterGuidance" maxlength="2000" placeholder="Ex.: Prefiro nomes curtos, conflitos moralmente ambíguos e desenvolvimento gradual. Evite soluções convenientes."></textarea>
