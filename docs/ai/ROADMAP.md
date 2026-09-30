@@ -189,6 +189,10 @@ comprovado; trabalho de sync daqui em diante é `bugfix`, `performance`, `UX`, `
 
 ## FASE 4.5 — Device Discovery & Pairing UX
 
+**Decisão de escopo — 2026-09-30:** QR assistido por PIN concluído (#76). O usuário adiou
+mDNS, BLE e a tela unificada de dispositivos e autorizou iniciar a Fase 5. A 4.5 não está
+integralmente concluída; os gates de descoberta permanecem pendentes para retomada.
+
 Objetivo: tornar o pareamento simples **sem criar um segundo protocolo**. O sync continua
 `Noise + identidade + Sync V2`. Descoberta só encontra o endpoint ou o convite:
 
@@ -235,8 +239,8 @@ hierarquia visual, densidade, navegação, composição nem interação.
 | Item | Conteúdo |
 | --- | --- |
 | M0 | **auditoria no S23 físico**, screenshots de todas as páginas classificadas em OK / desconfortável / desktop espremido / inutilizável → `docs/mobile/UX_AUDIT_V1.md`. Nenhum redesign antes dela |
-| M1 | linguagem visual mobile: tipografia, espaçamento, raio, cards, sheets, navegação inferior, topbar, alvos de toque (44–48px+), iconografia, movimento, háptica, claro/escuro; inputs nunca abaixo de 16px |
-| M2 | navegação primária descobrível (Início · Escrever · Mundo · Planejar · Mais); a alça lateral vira *Quick Switcher*; nada essencial só por gesto escondido |
+| M1 | linguagem visual mobile: tipografia, espaçamento, raio, cards, sheets, menu de relógio lateral, topbar, alvos de toque (44–48px+), iconografia, movimento, háptica, claro/escuro; inputs nunca abaixo de 16px |
+| M2 | manter o **menu de relógio lateral**, por decisão explícita do usuário em 2026-09-30; alça acionável por toque e gestos existentes, rótulos legíveis e espaço que não cubra conteúdo; **sem navegação inferior** |
 | M3 | Home: continuar escrevendo em um toque, universos e objetos recentes, atividade e sync |
 | M4 | escrita (prioridade máxima): título, editor em tela cheia, barra junto do teclado; capítulos, resumo, notas, histórico e propriedades em sheets; teclado real, seleção, copiar/colar, paisagem, texto longo |
 | M5 | personagens e entidades: seções, acordeões, chips, sheets — não o formulário do desktop comprimido |
@@ -275,7 +279,9 @@ embeddings durante o hardening da 1.0.
 
 ## FASE 7 — Release Candidate 1.0
 
-Só começa com a 4.5 e a 5 fechadas. Tarefa: **NH-086**.
+Só começa com a Fase 5 qualificada e o escopo adiado da 4.5 resolvido: implementar/qualificar
+as entregas ou registrar decisão explícita sobre o escopo da 1.0. Adiar a 4.5 para começar
+a Fase 5 não dispensa automaticamente seus gates de release. Tarefa: **NH-086**.
 
 - **R1 Migration matrix** — todos os upgrades suportados até a 1.0. Obrigatório `0.9.2 → 1.0`
   sobre uma **cópia** do acervo real do usuário, nunca o original.
