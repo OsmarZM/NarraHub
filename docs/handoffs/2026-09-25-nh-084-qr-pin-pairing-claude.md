@@ -4,7 +4,7 @@
 Agente:  Claude
 Data:    2026-09-25
 Branch:  nh-084-qr-pin-pairing (base: mobile-shell @ 7f31d1f, depois do PR #75)
-Status:  READY FOR MERGE — beta.13 qualificada no S23; aguarda revisão e autorização de merge
+Status:  DONE — beta.13 qualificada no S23; PR #76 mesclado em 2026-09-30
 ```
 
 ## Contrato aprovado (Opção A)
@@ -154,4 +154,19 @@ aponta para `b689dbe069752c322334438818ff450360005480`; o PR #76 estava aberto, 
 **PR B physical qualification = PASS; QR-assisted pairing = QUALIFIED.** Nenhum código mudou
 depois da beta.13. Este registro é documental e, se formar um novo head do PR, o SHA da beta.13
 permanece seu ancestral de código. Não fazer outra beta por essa atualização documental. PR #76
-fica **READY FOR MERGE**, aguardando revisão final e autorização explícita; não mesclar sozinho.
+ficou **READY FOR MERGE** após essa confirmação física.
+
+## Fechamento do PR B (2026-09-30)
+
+O usuário autorizou explicitamente o merge quando os checks passassem. Angular, Mobile
+(Playwright), Core Rust e Android estavam concluídos com sucesso no head
+`2b64623265d8b9e67ab38c5c486addbccde210c6`. O PR #76 foi mesclado em `mobile-shell`,
+com conferência desse head no comando de merge, às 11:50:06 UTC de 2026-09-30.
+
+- Merge: `2e9c3810ea8527b52d7f226e1a9346e983fa83df`.
+- Estado remoto confirmado: `MERGED`; base `mobile-shell`.
+- Base local atualizada por fast-forward para o merge.
+- Beta.13 continua sendo o APK qualificado; o fechamento não muda código nem gera outra beta.
+- PR B: **DONE**. NH-084 continua **IN_PROGRESS**.
+- Próxima fatia: PR C (mDNS). O plano apresentado aguarda revisão antes de implementar código,
+  conforme o contrato de uma fatia por PR e plano revisado antes do código.

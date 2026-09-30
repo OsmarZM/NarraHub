@@ -3,7 +3,7 @@
 > Fonte da verdade sobre "onde estamos". Qualquer agente lê este arquivo antes de agir.
 > Atualize-o ao fechar uma tarefa que mude versão, fase ou dívida conhecida.
 
-Atualizado em: 2026-09-29
+Atualizado em: 2026-09-30
 
 ## Versão
 
@@ -13,7 +13,7 @@ Atualizado em: 2026-09-29
 | Última versão estável | `app-v0.9.2`, em 2026-09-01 (Windows) |
 | Última pré-release | `app-v0.10.0-beta.13` (só Android; T1/T2 físicos PASS no S23) |
 | `origin/main` | 0.9.2 — **default** do repositório, linha das versões estáveis |
-| `origin/mobile-shell` | 0.10.0-beta.9 — linha de integração do Sync V2 e do shell mobile; merge do PR #74 em `8d7562d` |
+| `origin/mobile-shell` | 0.10.0-beta.13 — linha de integração do Sync V2 e do shell mobile; merge do PR #76 em `2e9c381` |
 
 A linha "Versão corrente" acima é lida por `scripts/validate-release-version.mjs`: se ela
 divergir dos manifests, o CI reprova. Este arquivo é a memória compartilhada de três agentes,
@@ -102,12 +102,14 @@ endpoint ou o convite; depois disso é o pareamento existente, TCP/Noise e Sync 
 confiança. Uma fatia por PR (QR, mDNS, BLE, tela de pareamento), cada uma com plano revisado antes do
 código.
 
-**NH-084, PR B (#76): READY FOR MERGE, sem merge automático.** A beta.12 falhou no S23 porque o
+**NH-084, PR B (#76): DONE, mesclado em 2026-09-30 com autorização explícita do usuário.** A beta.12 falhou no S23 porque o
 plugin 2.4.6 limpava `savedInvoke` antes de rejeitar a leitura. A beta.13 corrigiu o cancelamento;
 seu APK Android assinado aponta para `b689dbe069752c322334438818ff450360005480`, com CI
 4/4 verde. O usuário confirmou T1 (Cancelar e Voltar) e T2 (permissões e retorno ao scanner),
 incluindo app utilizável, entrada manual, câmera nítida e ausência de sessão indevida. O PR
-aguarda revisão final e autorização explícita de merge. Ver o handoff do PR B.
+foi mesclado após CI 4/4 verde no head `2b64623265d8b9e67ab38c5c486addbccde210c6`.
+Merge: `2e9c3810ea8527b52d7f226e1a9346e983fa83df`. PR C (mDNS) é a próxima fatia;
+seu plano aguarda revisão antes de implementar código. Ver o handoff do PR B.
 
 As fases **3 e 3.5 fecharam em 2026-09-01**, com gates executáveis:
 
@@ -230,7 +232,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | Fronteira nativa do frontend | **Formalizada** — ADR 0008 |
 | Sync V1 sem criptografia | **Removido do runtime** (etapa G); tabelas ficam como legado histórico |
 | Sync V2 | **Sync V2 core = QUALIFIED** (Etapa I, PR #74 → `8d7562d`), com rede real provada em Windows ↔ Android. Caminho de pareamento em produção qualificado: **PIN/PAKE**. O QR criptográfico da ADR 0009 §6.1 permanece implementado no core (`infrastructure/sync_pairing.rs`), mas sem wiring físico nem de produção (câmera, socket, wire); a integração de QR fica na Fase 4.5. Congelado salvo bug comprovado. Pendências herdadas e não bloqueantes: gate de saída **NH-053** e propagação da saída (**NH-058**, parcial) |
-| Descoberta e pareamento | **Fase 4.5, ativa.** IP e PIN manuais continuam; PR B QR assistido por PIN está fisicamente qualificado e aguarda merge. Depois: mDNS, BLE e tela única "Adicionar dispositivo" — **NH-084** |
+| Descoberta e pareamento | **Fase 4.5, ativa.** IP e PIN manuais continuam; PR B QR assistido por PIN está fisicamente qualificado e mesclado (#76, `2e9c381`). Próxima fatia: plano de mDNS para revisão; depois BLE e tela única "Adicionar dispositivo" — **NH-084** |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
 | Ciclo de atualização empacotado | **Concluído.** Roteiro, checklist de release e três execuções reais |
