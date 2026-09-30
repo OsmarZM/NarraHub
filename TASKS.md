@@ -2,8 +2,8 @@
 
 `AGENTS.md` diz **como** trabalhar. Este arquivo diz **no que** trabalhar.
 
-Fase ativa: **FASE 4.5 — Device Discovery & Pairing UX**. Ver `docs/ai/PROJECT_STATE.md` e o caminho
-até a 1.0 em `docs/ai/ROADMAP.md` (4.5 → 5 → 7; Context Engine na 1.1).
+Fase ativa: **FASE 5 — Mobile UX + Product/Design Hardening**. Em 2026-09-30 o usuário adiou
+mDNS, BLE e a tela unificada da 4.5. Ver `docs/ai/PROJECT_STATE.md` e `docs/ai/ROADMAP.md`.
 
 ## Regras deste arquivo
 
@@ -23,8 +23,8 @@ até a 1.0 em `docs/ai/ROADMAP.md` (4.5 → 5 → 7; Context Engine na 1.1).
 ### NH-084 — Fase 4.5: Device Discovery & Pairing UX
 
 ```text
-Owner:  Codex
-Status: IN_PROGRESS — PR B DONE; PR C aguarda revisão do plano antes do código
+Owner:  não atribuída
+Status: BACKLOG — PR B DONE; PR C/D/E adiados pelo usuário em 2026-09-30
 Fase:   4.5
 Branch: uma por fatia, a partir de mobile-shell
 ```
@@ -48,9 +48,10 @@ não sincroniza. Cada fatia repete Windows ↔ Android físico.
 ### NH-085 — Fase 5: Mobile UX + Product/Design Hardening
 
 ```text
-Owner:  não atribuída
-Status: BACKLOG — começa quando a 4.5 fechar
+Owner:  Codex
+Status: IN_PROGRESS — M0: auditoria dos prints do S23 e propostas por página; manter menu de relógio lateral
 Fase:   5
+Branch: codex/nh-085-auditoria-design-mobile
 ```
 
 M0 (auditoria no S23 físico → `docs/mobile/UX_AUDIT_V1.md`, antes de qualquer redesign) até M15
