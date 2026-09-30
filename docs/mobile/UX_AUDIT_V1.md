@@ -17,6 +17,8 @@ não qualificação M15 nem avaliação de todas as rotas existentes.
 - Gerar uma proposta de design por página/estado enviado.
 - Manter o **menu de relógio lateral**, sem menus inferiores. A primeira exploração com
   navegação inferior foi descartada após a correção explícita do usuário.
+- Revisão posterior: V1 considerada simples demais; criar V2 com composição mais moderna e
+  uma proposta de cada página em **claro e escuro**. V2 passa a ser a direção visual atual.
 
 ## Achados por página
 
@@ -60,11 +62,17 @@ o defeito de composição, mas precisamos executar o fluxo para afirmar bloqueio
 
 ## Imagens e aplicação
 
-14 propostas em `design-v1/`, índice `design-v1/index.html`. Geradas pela ferramenta integrada
+14 propostas iniciais em `design-v1/`, índice `design-v1/index.html`. Geradas pela ferramenta integrada
 de imagens, com prompts preservados em `design-v1/PROMPTS.md`. A imagem 01 é referência de
 paleta/card; demais propostas usam a própria página e essa referência. Arquivos finais preservados
 no workspace. Algumas palavras, ícones e proporções podem variar na rasterização: os critérios
 textuais deste documento prevalecem sobre artefatos do gerador.
+
+**Direção atual: V2**, em `design-v2/index.html`. Uma prancha por página com duas telas,
+escuro à esquerda e claro à direita: 14 pranchas, 28 apresentações. Critérios e prompts em
+`design-v2/DESIGN.md` e `design-v2/PROMPTS.md`. V1 preservada para comparação.
+V2 inclui exemplos fictícios preenchidos em entidades, relações, timeline, planejamento e
+histórico para avaliar densidade; esses exemplos não são novos prints nem alterações no acervo.
 
 As propostas são referência de composição, não telas funcionais. Implementar por fatias sobre
 o ADR 0011: apresentação própria no mobile, handlers/stores/rotas compartilhados; nenhuma duplicação

@@ -57,3 +57,23 @@ teclado, tema claro, paisagem, erros e outros detalhes de rotas. M15 não execut
 componente do aplicativo foi modificado, nenhuma beta foi gerada e nenhum novo fluxo foi
 qualificado por este trabalho. Commits de design são locais; não houve publicação remota
 dos prints ou das propostas.
+
+## Revisão V2 — composição moderna e dois temas
+
+O usuário considerou V1 simples demais e pediu um visual mais moderno, lembrando o suporte
+existente a tema claro e escuro. V2 passa a ser a referência atual: 14 pranchas em
+`docs/mobile/design-v2/`, cada uma com escuro à esquerda e claro à direita (28 apresentações).
+Menu de relógio lateral preservado; nenhuma navegação inferior.
+
+Mudanças de direção: headers compactos em sans-serif nos controles, cards com hierarquia
+variada, capas/miniaturas, escolhas de tema com previews e composição preenchida com exemplos
+fictícios em entidades/relações/timeline/planejamento/histórico. Tema claro com fundo perolado,
+cards brancos, sombras suaves e texto azul-escuro; escuro mantém azul profundo e superfícies
+de ardósia. Dados/ações pretendidos iguais entre temas. Rasterização pode variar pequenos
+detalhes: implementar pelos critérios de `design-v2/DESIGN.md`, não copiar artefatos do gerador.
+
+`design-v2/index.html` permite selecionar página, ampliar prancha e comparar com V1.
+`PROMPTS.md` registra as especificações; V1 e os prints permanecem preservados.
+Não há alteração em componente, token CSS do produto, backend ou manifesto. Não gerar beta
+por mudança de referência de design. A qualificação física de claro/escuro e modo Sistema
+continua pendente para implementação. Commits continuam locais.

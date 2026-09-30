@@ -115,7 +115,8 @@ A 4.5 permanece parcialmente concluída; as entregas adiadas não estão qualifi
 **NH-085: IN_PROGRESS.** M0 começou com 14 prints enviados pelo usuário no S23, cobrindo
 biblioteca, menu lateral, criação de universo, escrita, entidades, relações, timeline,
 planejamento, histórico e cinco seções de configurações. Auditoria: `docs/mobile/UX_AUDIT_V1.md`.
-Propostas visuais: `docs/mobile/design-v1/`. Decisão explícita: manter o menu de relógio lateral;
+Propostas visuais: `docs/mobile/design-v2/` (direção atual, claro/escuro); V1 preservada como exploração.
+O usuário pediu V2 mais moderna, com composição mais rica e ambos os temas. Decisão explícita: manter o menu de relógio lateral;
 não introduzir navegação inferior. Prints não qualificam teclado, gestos, persistência ou desempenho.
 
 As fases **3 e 3.5 fecharam em 2026-09-01**, com gates executáveis:
