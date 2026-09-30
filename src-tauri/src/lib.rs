@@ -60,6 +60,10 @@ pub fn run() {
                 app.handle()
                     .plugin(tauri_plugin_updater::Builder::new().build())?;
             }
+            // Leitor de QR para o pareamento por PIN assistido por QR (NH-084, PR B). Só no celular:
+            // é ele que tem câmera, e a capability `mobile-qr-scanner` só existe lá.
+            #[cfg(mobile)]
+            app.handle().plugin(tauri_plugin_barcode_scanner::init())?;
             #[cfg(desktop)]
             {
                 use tauri::Manager;
@@ -309,6 +313,8 @@ pub fn run() {
             interface::tauri::sync_v2_commands::sync_v2_escuta_parar,
             interface::tauri::sync_v2_commands::sync_v2_pin_novo,
             interface::tauri::sync_v2_commands::sync_v2_parear,
+            interface::tauri::sync_v2_commands::sync_v2_qr,
+            interface::tauri::sync_v2_commands::sync_v2_parear_por_qr,
             interface::tauri::sync_v2_commands::sync_v2_sincronizar,
             interface::tauri::android_update_commands::android_update_supported,
             interface::tauri::android_update_commands::android_update_check,

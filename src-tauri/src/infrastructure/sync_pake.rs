@@ -351,12 +351,12 @@ impl Codigos {
     }
 
     #[cfg(test)]
-    fn pin_de(&self, id: &str) -> String {
+    pub(crate) fn pin_de(&self, id: &str) -> String {
         self.abertos[id].pin.clone()
     }
 
     #[cfg(test)]
-    fn envelhecer(&mut self, id: &str, quanto: Duration) {
+    pub(crate) fn envelhecer(&mut self, id: &str, quanto: Duration) {
         if let Some(codigo) = self.abertos.get_mut(id) {
             codigo.envelhecer(quanto);
         }

@@ -40,6 +40,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::application::sync_panorama::{panorama, Panorama};
+use crate::application::sync_qr_pin;
 use crate::application::sync_sessao::{
     atender_conexao, parear_por_pin, sincronizar_com, Contexto, ResultadoDaSessao,
 };
@@ -344,6 +345,51 @@ pub fn sync_v2_pin_novo(estado: State<'_, EstadoV2>) -> DatabaseCommandResult<Es
     };
     escuta.pin = Some((legivel, Instant::now()));
     Ok(retrato(&interno))
+}
+
+/// O conteúdo do QR da escuta aberta — pareamento por PIN assistido por QR (NH-084, PR B).
+///
+/// `None` quando não há o que mostrar: escuta fechada, código vencido ou já usado, ou nenhum endereço
+/// local. O QR só existe enquanto o PIN vale; quem decide isso é a escuta, e é ela que recusa depois.
+/// O conteúdo carrega o PIN: nunca vai para log.
+#[tauri::command]
+pub fn sync_v2_qr(estado: State<'_, EstadoV2>) -> DatabaseCommandResult<Option<String>> {
+    let interno = trancar(&estado)?;
+    let retrato = retrato(&interno);
+    let (Some(pin), Some(endereco)) = (retrato.pin, retrato.enderecos.first()) else {
+        return Ok(None);
+    };
+    let digitos: String = pin.chars().filter(char::is_ascii_digit).collect();
+    Ok(sync_qr_pin::montar(endereco, &digitos).ok())
+}
+
+/// Pareia pelo texto cru que o leitor de QR devolveu. O Rust interpreta; conteúdo recusado não chega
+/// à rede. Depois disso é o pareamento por PIN, sem atalho nenhum.
+#[tauri::command]
+pub async fn sync_v2_parear_por_qr(
+    app: AppHandle,
+    estado: State<'_, EstadoV2>,
+    conteudo: String,
+    nome: String,
+) -> DatabaseCommandResult<sync_qr_pin::PareadoPorQr> {
+    let app_da_sessao = app.clone();
+    let resultado = tauri::async_runtime::spawn_blocking(move || {
+        let database = super::database(&app_da_sessao)?;
+        let store = super::blob_store(&app_da_sessao)?;
+        let identidade = super::sync_identity(&app_da_sessao)?;
+        sync_qr_pin::parear_por_qr(
+            &conteudo,
+            &contexto_de(&database, &store, &identidade, &nome),
+        )
+    })
+    .await
+    .map_err(|erro| DatabaseCommandError::storage(erro.to_string()))?;
+    let para_registro = resultado
+        .as_ref()
+        .map(|p| p.resultado.clone())
+        .map_err(Clone::clone);
+    registrar(&estado, &para_registro)?;
+    resultado
 }
 
 /// Pareia com o aparelho que mostra o PIN. Pode terminar em bootstrap.
