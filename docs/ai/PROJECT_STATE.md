@@ -119,6 +119,12 @@ Propostas visuais: `docs/mobile/design-v2/` (direção atual, claro/escuro); V1 
 O usuário pediu V2 mais moderna, com composição mais rica e ambos os temas. Decisão explícita: manter o menu de relógio lateral;
 não introduzir navegação inferior. Prints não qualificam teclado, gestos, persistência ou desempenho.
 
+V2 aprovada pelo usuário; implementação iniciada na branch `codex/nh-085-mobile-v2-configuracoes`.
+A primeira fatia aplica a apresentação mobile às cinco áreas de configurações, separa filtros e
+criação de entidades e reserva a margem de 48px da alça lateral. Usa a capacidade nativa existente
+para exibir instalação de IA local apenas em plataforma suportada; não altera Sync V2 nem o núcleo.
+O gate físico da NH-085 e a modernização completa das demais páginas continuam pendentes.
+
 As fases **3 e 3.5 fecharam em 2026-09-01**, com gates executáveis:
 
 | Gate | Reprova quando |
