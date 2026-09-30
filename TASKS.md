@@ -49,9 +49,9 @@ não sincroniza. Cada fatia repete Windows ↔ Android físico.
 
 ```text
 Owner:  Codex
-Status: IN_PROGRESS — M0 parcial; design V2 mais moderno por página em claro/escuro; manter menu de relógio lateral
+Status: IN_PROGRESS — V2 aprovada; fatia 1: configurações claro/escuro, controles de entidades e margem do relógio; qualificação em andamento
 Fase:   5
-Branch: codex/nh-085-auditoria-design-mobile
+Branch: codex/nh-085-mobile-v2-configuracoes
 ```
 
 M0 (auditoria no S23 físico → `docs/mobile/UX_AUDIT_V1.md`, antes de qualquer redesign) até M15
