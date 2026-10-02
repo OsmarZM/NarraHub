@@ -1,0 +1,147 @@
+{
+  "versao": "V2",
+  "data": "2026-09-30",
+  "ferramenta": "image_gen integrada",
+  "paginas": [
+    {
+      "id": "01",
+      "pagina": "Biblioteca",
+      "arquivo": "01-biblioteca-temas.png",
+      "temas": [
+        "escuro",
+        "claro"
+      ],
+      "origem": "C:\\Users\\FortaTech\\.codex\\generated_images\\01a0e937-e7bf-70c0-91f8-63f995bcce68\\exec-3864eb05-0074-4cd4-b4b3-80ecc83fd9d0.png"
+    },
+    {
+      "id": "02",
+      "pagina": "Menu de relógio",
+      "arquivo": "02-navegacao-temas.png",
+      "temas": [
+        "escuro",
+        "claro"
+      ],
+      "origem": "C:\\Users\\FortaTech\\.codex\\generated_images\\01a0e937-e7bf-70c0-91f8-63f995bcce68\\exec-cb04f9ae-5d00-48c2-8cda-9e337265f705.png"
+    },
+    {
+      "id": "03",
+      "pagina": "Criar universo",
+      "arquivo": "03-criar-universo-temas.png",
+      "temas": [
+        "escuro",
+        "claro"
+      ],
+      "origem": "C:\\Users\\FortaTech\\.codex\\generated_images\\01a0e937-e7bf-70c0-91f8-63f995bcce68\\exec-97ad00ef-efba-4107-be10-a18fff3093ec.png"
+    },
+    {
+      "id": "04",
+      "pagina": "Escrita",
+      "arquivo": "04-escrita-temas.png",
+      "temas": [
+        "escuro",
+        "claro"
+      ],
+      "origem": "C:\\Users\\FortaTech\\.codex\\generated_images\\01a0e937-e7bf-70c0-91f8-63f995bcce68\\exec-fdea3444-d13f-4537-ac7c-49b739957c32.png"
+    },
+    {
+      "id": "05",
+      "pagina": "Personagens e lugares",
+      "arquivo": "05-entidades-temas.png",
+      "temas": [
+        "escuro",
+        "claro"
+      ],
+      "origem": "C:\\Users\\FortaTech\\.codex\\generated_images\\01a0e937-e7bf-70c0-91f8-63f995bcce68\\exec-387af046-8c58-4426-9364-7be66c798dfa.png"
+    },
+    {
+      "id": "06",
+      "pagina": "Relações",
+      "arquivo": "06-relacoes-temas.png",
+      "temas": [
+        "escuro",
+        "claro"
+      ],
+      "origem": "C:\\Users\\FortaTech\\.codex\\generated_images\\01a0e937-e7bf-70c0-91f8-63f995bcce68\\exec-a0e0784e-c404-4a7a-bbe8-3fe306b673c8.png"
+    },
+    {
+      "id": "07",
+      "pagina": "Linha do tempo",
+      "arquivo": "07-timeline-temas.png",
+      "temas": [
+        "escuro",
+        "claro"
+      ],
+      "origem": "C:\\Users\\FortaTech\\.codex\\generated_images\\01a0e937-e7bf-70c0-91f8-63f995bcce68\\exec-539a6269-7c63-490f-ab35-907052ecb0d7.png"
+    },
+    {
+      "id": "08",
+      "pagina": "Planejamento",
+      "arquivo": "08-planejamento-temas.png",
+      "temas": [
+        "escuro",
+        "claro"
+      ],
+      "origem": "C:\\Users\\FortaTech\\.codex\\generated_images\\01a0e937-e7bf-70c0-91f8-63f995bcce68\\exec-cdd22b4a-2837-4515-a1d4-8c6eb4745e36.png"
+    },
+    {
+      "id": "09",
+      "pagina": "Histórico",
+      "arquivo": "09-historico-temas.png",
+      "temas": [
+        "escuro",
+        "claro"
+      ],
+      "origem": "C:\\Users\\FortaTech\\.codex\\generated_images\\01a0e937-e7bf-70c0-91f8-63f995bcce68\\exec-71b233c8-7a3f-41cb-9965-b46a6e3a87b4.png"
+    },
+    {
+      "id": "10",
+      "pagina": "Configurações · Geral",
+      "arquivo": "10-configuracoes-geral-temas.png",
+      "temas": [
+        "escuro",
+        "claro"
+      ],
+      "origem": "C:\\Users\\FortaTech\\.codex\\generated_images\\01a0e937-e7bf-70c0-91f8-63f995bcce68\\exec-df418e0b-6a6b-4a6c-9476-99874391b220.png"
+    },
+    {
+      "id": "11",
+      "pagina": "Configurações · Inteligência",
+      "arquivo": "11-configuracoes-ia-temas.png",
+      "temas": [
+        "escuro",
+        "claro"
+      ],
+      "origem": "C:\\Users\\FortaTech\\.codex\\generated_images\\01a0e937-e7bf-70c0-91f8-63f995bcce68\\exec-e33dbfae-f7c7-4874-8f33-1105fd133f64.png"
+    },
+    {
+      "id": "12",
+      "pagina": "Configurações · Sincronização",
+      "arquivo": "12-configuracoes-sync-temas.png",
+      "temas": [
+        "escuro",
+        "claro"
+      ],
+      "origem": "C:\\Users\\FortaTech\\.codex\\generated_images\\01a0e937-e7bf-70c0-91f8-63f995bcce68\\exec-1f0507b2-0e5a-4ce3-959d-dc904b36593f.png"
+    },
+    {
+      "id": "13",
+      "pagina": "Configurações · Compartilhar",
+      "arquivo": "13-configuracoes-compartilhar-temas.png",
+      "temas": [
+        "escuro",
+        "claro"
+      ],
+      "origem": "C:\\Users\\FortaTech\\.codex\\generated_images\\01a0e937-e7bf-70c0-91f8-63f995bcce68\\exec-1ca5108c-e3c0-4c2e-84c8-30089419d992.png"
+    },
+    {
+      "id": "14",
+      "pagina": "Configurações · Atualizações",
+      "arquivo": "14-configuracoes-atualizacoes-temas.png",
+      "temas": [
+        "escuro",
+        "claro"
+      ],
+      "origem": "C:\\Users\\FortaTech\\.codex\\generated_images\\01a0e937-e7bf-70c0-91f8-63f995bcce68\\exec-f1aa9a90-1069-4e61-bab7-4a8abf2bc868.png"
+    }
+  ]
+}

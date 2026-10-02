@@ -1,3 +1,4 @@
+import { selecionarDispositivos } from './support/settings-navigation.mjs';
 import { expect, test } from '@playwright/test';
 
 /**
@@ -68,7 +69,7 @@ test('código vencido aparece como vencido e a escuta relê o estado sozinha', a
   await page.addInitScript(() => localStorage.setItem('narrahub.mobileNavigationHintSeen', '1'));
   await page.goto('/settings');
   await page.waitForFunction(() => Boolean(window.ng && document.querySelector('app-settings-page')));
-  await page.getByRole('button', { name: /Dispositivos/u }).click();
+  await selecionarDispositivos(page);
   await page.evaluate(() => {
     const pagina = window.ng.getComponent(document.querySelector('app-settings-page'));
     window.__releituras = 0;
@@ -94,7 +95,7 @@ async function abrirDispositivos(page) {
   await page.addInitScript(() => localStorage.setItem('narrahub.mobileNavigationHintSeen', '1'));
   await page.goto('/settings');
   await page.waitForFunction(() => Boolean(window.ng && document.querySelector('app-settings-page')));
-  await page.getByRole('button', { name: /Dispositivos/u }).click();
+  await selecionarDispositivos(page);
 }
 
 const ESCUTA = { escutando: true, porta: 45870, enderecos: ['192.168.1.145:45870'], ultimoResultado: null, ultimoErro: null };

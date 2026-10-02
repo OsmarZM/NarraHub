@@ -22,6 +22,10 @@
 
   /* Margem lateral das telas no celular. */
   --nh-mobile-gutter: 16px;
+  /* Ação principal da V2: texto escuro legível nos dois temas. */
+  --nh-mobile-action-start: #f3b797;
+  --nh-mobile-action-end: #e6a9ba;
+  --nh-mobile-action-ink: #172238;
 }
 
 /*

@@ -207,3 +207,13 @@ html.nh-mobile app-entities-page .entity-list-open { min-height: 56px; font-size
 html.nh-mobile app-entities-page .entity-tab-pill { min-height: 40px; padding: 0 14px; font-size: 14px; }
 html.nh-mobile app-entities-page :is(.primary-button, .secondary-button) { min-height: var(--nh-touch-target); font-size: 15px; }
 html.nh-mobile app-entities-page .recent-carousel > button { min-height: var(--nh-touch-target); }
+/* Grupos em linhas próprias: o botão de criação não disputa espaço com os filtros. */
+html.nh-mobile app-entities-page .entity-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin-bottom: 24px; }
+html.nh-mobile app-entities-page .toolbar-left { width: 100%; min-width: 0; gap: 16px; }
+html.nh-mobile app-entities-page .toolbar-heading { flex-wrap: wrap; }
+html.nh-mobile app-entities-page .toolbar-heading h2 { font-size: 24px; }
+html.nh-mobile app-entities-page app-entity-type-filter { width: 100%; min-width: 0; }
+html.nh-mobile app-entities-page .entity-tabs-compact { max-width: 100%; gap: 8px; padding: 4px 0; }
+html.nh-mobile app-entities-page .entity-tab-pill { flex: 0 0 auto; min-height: 48px; border-radius: 14px; }
+html.nh-mobile app-entities-page .toolbar-right { width: 100%; }
+html.nh-mobile app-entities-page .toolbar-right .primary-button { width: 100%; min-height: 48px; border-radius: 14px; color: var(--nh-mobile-action-ink); background: linear-gradient(120deg, var(--nh-mobile-action-start), var(--nh-mobile-action-end)); }

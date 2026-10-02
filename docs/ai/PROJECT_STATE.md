@@ -78,14 +78,14 @@ O gate `o andaime superado não volta para o repositório` reprova se `angular-s
 ## Fase ativa
 
 ```text
-FASE 4.5 — Device Discovery & Pairing UX
+FASE 5 — Mobile UX + Product/Design Hardening
 ```
 
 Caminho até a 1.0, definido em 2026-09-25 (detalhe em `docs/ai/ROADMAP.md`):
 
 ```text
-4.5  Device Discovery & Pairing UX     ← ativa
-5    Mobile UX + Product/Design Hardening
+4.5  Device Discovery & Pairing UX     → QR concluído; mDNS/BLE/tela unificada adiados
+5    Mobile UX + Product/Design Hardening  ← ativa
 7    Release Candidate 1.0
 6    Context Engine / IA                → 1.1, não bloqueia a 1.0
 ```
@@ -108,8 +108,22 @@ seu APK Android assinado aponta para `b689dbe069752c322334438818ff450360005480`,
 4/4 verde. O usuário confirmou T1 (Cancelar e Voltar) e T2 (permissões e retorno ao scanner),
 incluindo app utilizável, entrada manual, câmera nítida e ausência de sessão indevida. O PR
 foi mesclado após CI 4/4 verde no head `2b64623265d8b9e67ab38c5c486addbccde210c6`.
-Merge: `2e9c3810ea8527b52d7f226e1a9346e983fa83df`. PR C (mDNS) é a próxima fatia;
-seu plano aguarda revisão antes de implementar código. Ver o handoff do PR B.
+Merge: `2e9c3810ea8527b52d7f226e1a9346e983fa83df`. Em 2026-09-30, o usuário adiou
+PR C (mDNS), D (BLE) e E (tela unificada) e autorizou avançar para a Fase 5.
+A 4.5 permanece parcialmente concluída; as entregas adiadas não estão qualificadas.
+
+**NH-085: IN_PROGRESS.** M0 começou com 14 prints enviados pelo usuário no S23, cobrindo
+biblioteca, menu lateral, criação de universo, escrita, entidades, relações, timeline,
+planejamento, histórico e cinco seções de configurações. Auditoria: `docs/mobile/UX_AUDIT_V1.md`.
+Propostas visuais: `docs/mobile/design-v2/` (direção atual, claro/escuro); V1 preservada como exploração.
+O usuário pediu V2 mais moderna, com composição mais rica e ambos os temas. Decisão explícita: manter o menu de relógio lateral;
+não introduzir navegação inferior. Prints não qualificam teclado, gestos, persistência ou desempenho.
+
+V2 aprovada pelo usuário; implementação iniciada na branch `codex/nh-085-mobile-v2-configuracoes`.
+A primeira fatia aplica a apresentação mobile às cinco áreas de configurações, separa filtros e
+criação de entidades e reserva a margem de 48px da alça lateral. Usa a capacidade nativa existente
+para exibir instalação de IA local apenas em plataforma suportada; não altera Sync V2 nem o núcleo.
+O gate físico da NH-085 e a modernização completa das demais páginas continuam pendentes.
 
 As fases **3 e 3.5 fecharam em 2026-09-01**, com gates executáveis:
 
@@ -232,7 +246,7 @@ A mudança de fundo é `replicação de estado inteiro → replicação incremen
 | Fronteira nativa do frontend | **Formalizada** — ADR 0008 |
 | Sync V1 sem criptografia | **Removido do runtime** (etapa G); tabelas ficam como legado histórico |
 | Sync V2 | **Sync V2 core = QUALIFIED** (Etapa I, PR #74 → `8d7562d`), com rede real provada em Windows ↔ Android. Caminho de pareamento em produção qualificado: **PIN/PAKE**. O QR criptográfico da ADR 0009 §6.1 permanece implementado no core (`infrastructure/sync_pairing.rs`), mas sem wiring físico nem de produção (câmera, socket, wire); a integração de QR fica na Fase 4.5. Congelado salvo bug comprovado. Pendências herdadas e não bloqueantes: gate de saída **NH-053** e propagação da saída (**NH-058**, parcial) |
-| Descoberta e pareamento | **Fase 4.5, ativa.** IP e PIN manuais continuam; PR B QR assistido por PIN está fisicamente qualificado e mesclado (#76, `2e9c381`). Próxima fatia: plano de mDNS para revisão; depois BLE e tela única "Adicionar dispositivo" — **NH-084** |
+| Descoberta e pareamento | **Fase 4.5, parcialmente concluída.** IP/PIN e QR qualificados (#76, `2e9c381`); mDNS, BLE e tela unificada adiados pelo usuário em 2026-09-30 — **NH-084** |
 | Context Engine / IA | **Não iniciado** |
 | Qualification harness | **Concluído.** Migration, backup, restore e rollback cobertos por `cargo test` no CI |
 | Ciclo de atualização empacotado | **Concluído.** Roteiro, checklist de release e três execuções reais |
@@ -381,8 +395,8 @@ conjunto começaria a escrever em `seq = 1` sobre coordenadas que já existem.
 
 ```text
 redesign do Sync V2 (protocolo, Noise, causalidade, bootstrap, formato canônico)
-Fase 5 — mobile UX, design system, decomposição de features   (depois da 4.5)
-Fase 7 — release candidate 1.0                                (depois da 4.5 e da 5)
+Fase 4.5 — mDNS, BLE e tela unificada                         (adiados pelo usuário)
+Fase 7 — release candidate 1.0                                (depois da 5 e revisão do escopo adiado)
 Context Engine / embeddings / banco vetorial                  (1.1)
 colaboração em tempo real / CRDT
 ```

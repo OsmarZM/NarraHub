@@ -1,3 +1,4 @@
+import { selecionarDispositivos } from './support/settings-navigation.mjs';
 import { expect, test } from '@playwright/test';
 
 /**
@@ -112,7 +113,7 @@ test('o aviso em Configurações não some enquanto houver pendência', async ({
   await page.addInitScript(() => localStorage.setItem('narrahub.mobileNavigationHintSeen', '1'));
   await page.goto('/settings');
   await page.waitForFunction(() => Boolean(window.ng && document.querySelector('app-settings-page')));
-  await page.getByRole('button', { name: /Dispositivos/u }).click();
+  await selecionarDispositivos(page);
   await page.waitForTimeout(300);
   await page.evaluate(() => {
     const pagina = window.ng.getComponent(document.querySelector('app-settings-page'));
