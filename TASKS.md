@@ -49,9 +49,9 @@ não sincroniza. Cada fatia repete Windows ↔ Android físico.
 
 ```text
 Owner:  Codex
-Status: IN_PROGRESS — V2 aprovada; fatia 1: configurações claro/escuro, controles de entidades e margem do relógio; qualificação em andamento
+Status: IN_PROGRESS — fatia 1 mesclada no PR #78 (CI 4/4); fatia 2: biblioteca e criação em claro/escuro
 Fase:   5
-Branch: codex/nh-085-mobile-v2-configuracoes
+Branch: codex/nh-085-mobile-v2-biblioteca
 ```
 
 M0 (auditoria no S23 físico → `docs/mobile/UX_AUDIT_V1.md`, antes de qualquer redesign) até M15

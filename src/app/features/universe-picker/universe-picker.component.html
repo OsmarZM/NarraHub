@@ -1,7 +1,7 @@
 <section class="universe-library" (click)="openMenuId.set(null)">
   <header class="library-hero">
     <p class="library-kicker">SUA BIBLIOTECA DE MUNDOS</p>
-    <h1>Qual universo vamos explorar hoje?</h1>
+    <h1><span class="library-desktop-title">Qual universo vamos explorar hoje?</span><span class="library-mobile-title">Sua biblioteca</span></h1>
     <p>Escolha um universo para continuar escrevendo ou dê vida a um novo mundo.</p>
   </header>
 
@@ -55,25 +55,25 @@
                   <button type="button" role="menuitem" class="danger" (click)="chooseDelete(universe, $event)">Excluir universo…</button>
                 </div>
               }
-              <div class="portal-copy">
-                <h3>{{ universe.name }}</h3>
-                @if (universe.description) { <p>{{ universe.description }}</p> }
-                @if (universeTags(universe.id); as tags) {
-                  @if (tags.length) {
-                    <div class="portal-tags" aria-label="Tags do universo">
-                      @for (tag of tags.slice(0, 4); track tag.id) { <span [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</span> }
-                      @if (tags.length > 4) { <span class="tag-overflow">+{{ tags.length - 4 }}</span> }
-                    </div>
-                  }
+            </div>
+            <div class="portal-copy">
+              <h3>{{ universe.name }}</h3>
+              @if (universe.description) { <p>{{ universe.description }}</p> }
+              @if (universeTags(universe.id); as tags) {
+                @if (tags.length) {
+                  <div class="portal-tags" aria-label="Tags do universo">
+                    @for (tag of tags.slice(0, 4); track tag.id) { <span [style.--tag-color]="tag.color"><i></i>{{ tag.name }}</span> }
+                    @if (tags.length > 4) { <span class="tag-overflow">+{{ tags.length - 4 }}</span> }
+                  </div>
                 }
-                <dl>
-                  <div><dt>Livros</dt><dd>▱ {{ universe.stats.total_books }}</dd></div>
-                  <div><dt>Capítulos</dt><dd>▤ {{ universe.stats.total_chapters }}</dd></div>
-                  <div><dt>Personagens</dt><dd>♙ {{ characterCount(universe) }}</dd></div>
-                  <div><dt>Última edição</dt><dd>◷ {{ relativeDate(universe.updated_at) }}</dd></div>
-                </dl>
-                <button type="button" class="open-portal" (click)="openRequested.emit(universe); $event.stopPropagation()">Abrir universo <span>→</span></button>
-              </div>
+              }
+              <dl>
+                <div><dt>Livros</dt><dd>▱ {{ universe.stats.total_books }}</dd></div>
+                <div><dt>Capítulos</dt><dd>▤ {{ universe.stats.total_chapters }}</dd></div>
+                <div><dt>Personagens</dt><dd>♙ {{ characterCount(universe) }}</dd></div>
+                <div><dt>Última edição</dt><dd>◷ {{ relativeDate(universe.updated_at) }}</dd></div>
+              </dl>
+              <button type="button" class="open-portal" (click)="openRequested.emit(universe); $event.stopPropagation()">Abrir universo <span>→</span></button>
             </div>
           </article>
         }
@@ -86,5 +86,5 @@
     }
   }
 
-  <footer class="library-privacy"><span></span><p><strong>Seus universos ficam apenas no seu dispositivo.</strong><small>Sem nuvem. Sem contas. Só você e suas histórias.</small></p></footer>
+  <footer class="library-privacy"><span></span><p><strong>Suas histórias começam neste dispositivo.</strong><small>Você escolhe quando sincronizar ou compartilhar seu conteúdo.</small></p></footer>
 </section>

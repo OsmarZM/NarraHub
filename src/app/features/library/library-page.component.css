@@ -21,3 +21,28 @@
 .library-secondary { color: var(--text); background: var(--surface); }
 .library-primary:disabled, .library-secondary:disabled { opacity: .55; cursor: not-allowed; }
 .library-modal-error { margin: 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, #c44 35%, var(--line)); border-radius: 10px; color: #c44; background: color-mix(in srgb, #c44 8%, var(--surface)); font-size: 11px; }
+
+/* Mesmo formulário e handlers; superfície e escala de controles próprios do celular. */
+:host-context(html.nh-mobile) .library-modal {
+  --surface: var(--nh-mobile-sheet);
+  --surface-2: color-mix(in srgb, var(--nh-mobile-ink) 5%, var(--nh-mobile-sheet));
+  --text: var(--nh-mobile-ink);
+  --muted: color-mix(in srgb, var(--nh-mobile-ink) 75%, var(--nh-mobile-sheet));
+  --subtle: var(--muted);
+  --line: color-mix(in srgb, var(--nh-mobile-ink) 16%, var(--nh-mobile-sheet));
+  --brand: var(--nh-mobile-gold);
+  gap: 20px;
+  background: var(--surface);
+}
+:host-context(html.nh-mobile) .library-modal header { gap: 12px; }
+:host-context(html.nh-mobile) .library-modal header h2 { font-size: 24px; }
+:host-context(html.nh-mobile) .library-modal-eyebrow { font-size: 11px; }
+:host-context(html.nh-mobile) .library-modal header > button { flex: 0 0 48px; width: 48px; height: 48px; border-radius: 14px; font-size: 22px; }
+:host-context(html.nh-mobile) .library-modal label { font-size: 15px; }
+:host-context(html.nh-mobile) .library-modal :is(input, textarea) { padding: 12px; border-radius: 14px; font-size: 16px; font-weight: 400; }
+:host-context(html.nh-mobile) .library-image-picker { min-height: 120px; border-radius: 18px; }
+:host-context(html.nh-mobile) .library-image-picker > span { font-size: 14px; }
+:host-context(html.nh-mobile) .library-modal footer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; padding-top: 16px; }
+:host-context(html.nh-mobile) :is(.library-primary, .library-secondary) { min-height: 48px; padding: 12px; border-radius: 14px; font-size: 15px; }
+:host-context(html.nh-mobile) .library-primary:not(.library-destructive) { color: var(--nh-mobile-action-ink); background: linear-gradient(120deg, var(--nh-mobile-action-start), var(--nh-mobile-action-end)); }
+:host-context(html.nh-mobile) :is(.library-delete-warning, .library-modal-error) { font-size: 15px; line-height: 1.5; }

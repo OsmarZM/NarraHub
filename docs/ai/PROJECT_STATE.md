@@ -3,7 +3,7 @@
 > Fonte da verdade sobre "onde estamos". Qualquer agente lê este arquivo antes de agir.
 > Atualize-o ao fechar uma tarefa que mude versão, fase ou dívida conhecida.
 
-Atualizado em: 2026-09-30
+Atualizado em: 2026-10-02
 
 ## Versão
 
@@ -13,7 +13,7 @@ Atualizado em: 2026-09-30
 | Última versão estável | `app-v0.9.2`, em 2026-09-01 (Windows) |
 | Última pré-release | `app-v0.10.0-beta.13` (só Android; T1/T2 físicos PASS no S23) |
 | `origin/main` | 0.9.2 — **default** do repositório, linha das versões estáveis |
-| `origin/mobile-shell` | 0.10.0-beta.13 — linha de integração do Sync V2 e do shell mobile; merge do PR #76 em `2e9c381` |
+| `origin/mobile-shell` | 0.10.0-beta.13 — linha de integração do Sync V2 e do shell mobile; merge do PR #78 em `c9b3a10` |
 
 A linha "Versão corrente" acima é lida por `scripts/validate-release-version.mjs`: se ela
 divergir dos manifests, o CI reprova. Este arquivo é a memória compartilhada de três agentes,
@@ -119,10 +119,15 @@ Propostas visuais: `docs/mobile/design-v2/` (direção atual, claro/escuro); V1 
 O usuário pediu V2 mais moderna, com composição mais rica e ambos os temas. Decisão explícita: manter o menu de relógio lateral;
 não introduzir navegação inferior. Prints não qualificam teclado, gestos, persistência ou desempenho.
 
-V2 aprovada pelo usuário; implementação iniciada na branch `codex/nh-085-mobile-v2-configuracoes`.
-A primeira fatia aplica a apresentação mobile às cinco áreas de configurações, separa filtros e
-criação de entidades e reserva a margem de 48px da alça lateral. Usa a capacidade nativa existente
-para exibir instalação de IA local apenas em plataforma suportada; não altera Sync V2 nem o núcleo.
+V2 aprovada pelo usuário. A primeira fatia foi mesclada no PR #78 em 2026-10-02,
+com os quatro checks de CI aprovados; merge `c9b3a10e06ec5bce03a965722273375fe0079727`.
+Aplica a apresentação mobile às cinco áreas de configurações, separa filtros e criação de
+entidades e reserva a margem de 48px da alça lateral. Qualificação: `docs/mobile/QUALIFICACAO_V2_FATIA_1.md`.
+
+A segunda fatia está na branch `codex/nh-085-mobile-v2-biblioteca`: biblioteca com capa e
+conteúdo separados, cartões compactos e criação/edição de universo adaptada ao toque nos
+modos claro/escuro. Mantém handlers, stores e router existentes. Qualificação local:
+`docs/mobile/QUALIFICACAO_V2_FATIA_2.md`. Não foi gerado APK nem alterada a versão beta.13.
 O gate físico da NH-085 e a modernização completa das demais páginas continuam pendentes.
 
 As fases **3 e 3.5 fecharam em 2026-09-01**, com gates executáveis:
