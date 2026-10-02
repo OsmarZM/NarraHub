@@ -2,6 +2,21 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.14 — 2026-10-02 (pré-release Android)
+
+Primeiras duas fatias do mobile V2, para teste no aparelho. Atualiza a beta.13 pelo fluxo de
+APK assinado existente. A qualificação física desta apresentação permanece pendente.
+
+- **Biblioteca**: capa compacta separada de título, descrição, indicadores e ações; cartões
+  opacos e controles maiores, nos modos claro e escuro.
+- **Criar/editar universo**: formulário adaptado ao celular, campos legíveis e ações em folha.
+- **Configurações**: seletor de área no mobile, cartões, prévias de tema e alvos de toque de 48px.
+- **Entidades**: filtros e criação em linhas distintas, sem disputa com o menu lateral.
+- **Menu de relógio**: preservado, com espaço reservado para a alça; sem navegação inferior.
+- **IA local**: instalação apresentada somente em plataforma com suporte nativo existente.
+- **Compatibilidade**: correções de permissão/cancelamento do QR da beta.13 preservadas;
+  sem alteração de schema, Sync V2 ou persistência nesta atualização.
+
 ## 0.10.0-beta.13 — 2026-09-29 (pré-release Android)
 
 Correção do cancelamento do leitor QR após a falha física da beta.12. A qualificação no Galaxy S23
