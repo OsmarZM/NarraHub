@@ -1,4 +1,6 @@
 :host { display: block; height: 100%; }
+.library-mobile-title { display: none; }
+.universe-portal { position: relative; }
 .universe-library { height: 100%; overflow-y: auto; padding: 40px clamp(24px, 4vw, 64px) 36px; background: transparent; }
 .library-hero { max-width: 920px; margin: 0 auto 38px; text-align: center; }
 .library-kicker { margin: 0 0 10px; color: var(--nh-coral); font-size: 10px; font-weight: 800; letter-spacing: .2em; text-transform: uppercase; }
@@ -72,3 +74,52 @@
 :host-context(html.nh-mobile) :is(.universe-portal, .portal-art, .create-portal) { min-height: 260px; }
 /* O menu do cartão aparece só com hover no desktop; no celular fica sempre visível e tocável. */
 :host-context(html.nh-mobile) .portal-menu-button { min-width: var(--nh-touch-target, 44px); min-height: var(--nh-touch-target, 44px); opacity: 1; }
+
+/* V2: a capa tem um quadro próprio; informações e ações ficam sobre superfície opaca. */
+:host-context(html.nh-mobile) {
+  --nh-ink: var(--nh-mobile-ink);
+  --nh-ink-muted: color-mix(in srgb, var(--nh-mobile-ink) 75%, var(--nh-mobile-sheet));
+  --nh-surface: var(--nh-mobile-sheet);
+  --nh-border: color-mix(in srgb, var(--nh-mobile-ink) 16%, var(--nh-mobile-sheet));
+}
+:host-context(html.nh-mobile) .universe-library { background: var(--nh-mobile-bg-color); }
+:host-context(html.nh-mobile) .library-desktop-title { display: none; }
+:host-context(html.nh-mobile) .library-mobile-title { display: inline; }
+:host-context(html.nh-mobile) .library-hero h1 { font-family: inherit; font-size: 28px; font-weight: 700; line-height: 1.15; text-shadow: none; }
+:host-context(html.nh-mobile) .library-kicker { color: var(--nh-mobile-gold); font-size: 10px; letter-spacing: .14em; }
+:host-context(html.nh-mobile) .library-heading { gap: 12px; }
+:host-context(html.nh-mobile) .library-heading > div { grid-template-columns: auto auto; gap: 8px; }
+:host-context(html.nh-mobile) .library-heading > div > span { display: none; }
+:host-context(html.nh-mobile) .library-heading h2 { font-family: inherit; font-size: 18px; font-weight: 700; line-height: 1.3; }
+:host-context(html.nh-mobile) .library-heading :is(label, small) { font-size: 13px; }
+:host-context(html.nh-mobile) .library-heading select { min-width: 0; min-height: 48px; border-color: var(--nh-border); border-radius: 14px; background: var(--nh-surface); }
+:host-context(html.nh-mobile) .portal-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+:host-context(html.nh-mobile) .universe-portal { min-height: 0; border: 1px solid var(--nh-border); border-radius: 24px; background: var(--nh-surface); box-shadow: 0 8px 24px rgb(0 0 0 / 10%); }
+:host-context(html.nh-mobile) .portal-art { height: 150px; min-height: 0; overflow: visible; border-radius: 24px 24px 0 0; }
+:host-context(html.nh-mobile) :is(.portal-placeholder, .portal-shade) { border-radius: inherit; }
+:host-context(html.nh-mobile) .portal-placeholder span { margin-top: 0; font-size: 64px; }
+:host-context(html.nh-mobile) .portal-shade { background: linear-gradient(180deg, rgb(0 0 0 / 15%), rgb(0 0 0 / 8%)); }
+:host-context(html.nh-mobile) .recent-badge { max-width: calc(100% - 80px); padding: 8px; font-size: 10px; letter-spacing: 0; }
+:host-context(html.nh-mobile) .portal-menu-button { width: 48px; height: 48px; border-radius: 14px; }
+:host-context(html.nh-mobile) .portal-menu { top: 64px; max-width: calc(100% - 22px); border-color: var(--nh-border); border-radius: 14px; }
+:host-context(html.nh-mobile) .portal-menu button { min-height: 48px; font-size: 14px; }
+:host-context(html.nh-mobile) .portal-copy { position: relative; padding: 18px; color: var(--nh-ink); }
+:host-context(html.nh-mobile) .portal-copy h3 { color: var(--nh-ink); font: 600 25px/1.15 Georgia, serif; overflow-wrap: anywhere; }
+:host-context(html.nh-mobile) .portal-copy > p { max-height: 44px; margin: 8px 0; color: var(--nh-ink-muted); font-size: 14px; }
+:host-context(html.nh-mobile) .portal-copy dl { gap: 12px; }
+:host-context(html.nh-mobile) .portal-copy dl div { min-width: 0; display: grid; gap: 4px; }
+:host-context(html.nh-mobile) .portal-copy dt { color: var(--nh-ink-muted); font-size: 12px; }
+:host-context(html.nh-mobile) .portal-copy dd { color: var(--nh-ink); font-size: 14px; overflow-wrap: anywhere; }
+:host-context(html.nh-mobile) .portal-tags span { max-width: 100%; color: var(--nh-ink); background: color-mix(in srgb, var(--tag-color) 12%, var(--nh-surface)); font-size: 12px; }
+:host-context(html.nh-mobile) :is(.open-portal, .library-primary) { min-height: 48px; height: auto; padding: 12px; border: 0; border-radius: 14px; color: var(--nh-mobile-action-ink); background: linear-gradient(120deg, var(--nh-mobile-action-start), var(--nh-mobile-action-end)); font-size: 15px; }
+:host-context(html.nh-mobile) .create-portal { min-height: 0; display: flex; flex-wrap: wrap; gap: 10px; padding: 20px; border-color: var(--nh-border); border-radius: 24px; background: var(--nh-surface); text-align: left; }
+:host-context(html.nh-mobile) .create-illustration { width: 48px; height: 48px; margin: 0; border: 0; }
+:host-context(html.nh-mobile) .create-illustration span { width: 44px; height: 44px; font-size: 28px; color: var(--nh-ink); border-color: var(--nh-border); }
+:host-context(html.nh-mobile) .create-portal strong { color: var(--nh-ink); font-family: inherit; font-size: 18px; font-weight: 700; line-height: 1.3; }
+:host-context(html.nh-mobile) .create-portal small { width: 100%; max-width: none; margin: 0; font-size: 14px; }
+:host-context(html.nh-mobile) :is(.library-empty, .library-no-results) { min-height: 0; padding: 28px 18px; border: 1px solid var(--nh-border); border-radius: 24px; background: var(--nh-surface); }
+:host-context(html.nh-mobile) :is(.library-empty h2, .library-no-results h2) { font-size: 25px; }
+:host-context(html.nh-mobile) :is(.library-empty > p:not(.library-kicker), .library-no-results p) { font-size: 15px; overflow-wrap: anywhere; }
+:host-context(html.nh-mobile) .empty-flow { flex-wrap: wrap; justify-content: center; font-size: 12px; }
+:host-context(html.nh-mobile) .library-privacy { margin-top: 24px; }
+:host-context(html.nh-mobile) .library-privacy :is(strong, small) { font-size: 13px; line-height: 1.5; }
