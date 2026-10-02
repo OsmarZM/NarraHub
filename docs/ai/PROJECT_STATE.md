@@ -9,11 +9,11 @@ Atualizado em: 2026-10-02
 
 | Item | Valor |
 | --- | --- |
-| Versão corrente | **0.10.0-beta.13** |
+| Versão corrente | **0.10.0-beta.14** |
 | Última versão estável | `app-v0.9.2`, em 2026-09-01 (Windows) |
 | Última pré-release | `app-v0.10.0-beta.13` (só Android; T1/T2 físicos PASS no S23) |
 | `origin/main` | 0.9.2 — **default** do repositório, linha das versões estáveis |
-| `origin/mobile-shell` | 0.10.0-beta.13 — linha de integração do Sync V2 e do shell mobile; merge do PR #78 em `c9b3a10` |
+| `origin/mobile-shell` | 0.10.0-beta.13 — linha de integração do Sync V2 e do shell mobile; merge do PR #79 em `fe210d1` |
 
 A linha "Versão corrente" acima é lida por `scripts/validate-release-version.mjs`: se ela
 divergir dos manifests, o CI reprova. Este arquivo é a memória compartilhada de três agentes,
@@ -124,10 +124,12 @@ com os quatro checks de CI aprovados; merge `c9b3a10e06ec5bce03a965722273375fe00
 Aplica a apresentação mobile às cinco áreas de configurações, separa filtros e criação de
 entidades e reserva a margem de 48px da alça lateral. Qualificação: `docs/mobile/QUALIFICACAO_V2_FATIA_1.md`.
 
-A segunda fatia está na branch `codex/nh-085-mobile-v2-biblioteca`: biblioteca com capa e
+A segunda fatia foi mesclada no PR #79 em `fe210d1`, com CI 4/4 aprovado: biblioteca com capa e
 conteúdo separados, cartões compactos e criação/edição de universo adaptada ao toque nos
 modos claro/escuro. Mantém handlers, stores e router existentes. Qualificação local:
-`docs/mobile/QUALIFICACAO_V2_FATIA_2.md`. Não foi gerado APK nem alterada a versão beta.13.
+`docs/mobile/QUALIFICACAO_V2_FATIA_2.md`. Em 2026-10-02 o usuário solicitou publicação para teste da beta: a beta.14 está em preparação
+na branch `codex/release-0.10.0-beta.14`. Última release publicada continua beta.13 até confirmação
+do workflow oficial; a beta.14 não tem PASS físico ainda.
 O gate físico da NH-085 e a modernização completa das demais páginas continuam pendentes.
 
 As fases **3 e 3.5 fecharam em 2026-09-01**, com gates executáveis:
