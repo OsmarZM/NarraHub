@@ -66,6 +66,12 @@ pub const DIRETORIO_DOS_BLOBS: [&str; 3] = ["assets", "blobs", "sha256"];
 /// Onde os arquivos em construção moram. Irmão de `assets/`, não filho.
 pub const DIRETORIO_DE_STAGING: &str = "blob-staging";
 
+/// Idade a partir da qual um `.part` em staging é lixo de uma escrita que não terminou.
+///
+/// Uma escrita viva leva segundos; uma hora de folga garante que a limpeza nunca apaga o
+/// temporário de um `put` em andamento, mesmo num celular lento.
+pub const STAGING_ABANDONADO_APOS: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
 /// Um hash canônico tem 64 caracteres, porque `SHA-256` tem 32 bytes.
 const TAMANHO_DO_HASH: usize = 64;
 
@@ -254,6 +260,49 @@ impl BlobStore {
         Ok(calculado)
     }
 
+    /// Remove de `blob-staging/` os `.part` mais velhos que `idade_minima`. Devolve quantos saíram.
+    ///
+    /// É a única limpeza automática do store. Blob **publicado** nunca é apagado aqui, nem quando
+    /// nenhuma linha o referencia: pode ser o arquivo de uma transação que ainda vai ser repetida,
+    /// de um backup, ou de um evento que outro aparelho ainda vai pedir (ADR 0010 §11).
+    pub fn limpar_staging_abandonado(
+        &self,
+        idade_minima: std::time::Duration,
+    ) -> DatabaseCommandResult<usize> {
+        let staging = self.app_data.join(DIRETORIO_DE_STAGING);
+        let filhos = match fs::read_dir(&staging) {
+            Ok(filhos) => filhos,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(DatabaseCommandError::storage(error.to_string())),
+        };
+        let agora = std::time::SystemTime::now();
+        let mut removidos = 0;
+        for filho in filhos.flatten() {
+            let caminho = filho.path();
+            if caminho
+                .extension()
+                .is_none_or(|extensao| extensao != "part")
+            {
+                continue;
+            }
+            let Ok(metadados) = filho.metadata() else {
+                continue;
+            };
+            if !metadados.is_file() {
+                continue;
+            }
+            let idade = metadados
+                .modified()
+                .ok()
+                .and_then(|quando| agora.duration_since(quando).ok())
+                .unwrap_or_default();
+            if idade >= idade_minima && fs::remove_file(&caminho).is_ok() {
+                removidos += 1;
+            }
+        }
+        Ok(removidos)
+    }
+
     fn escrever_temporario(&self, bytes: &[u8]) -> DatabaseCommandResult<PathBuf> {
         let staging = self.app_data.join(DIRETORIO_DE_STAGING);
         fs::create_dir_all(&staging).map_err(|error| {
@@ -368,6 +417,56 @@ mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.raiz).ok();
         }
+    }
+
+    #[test]
+    fn limpeza_de_staging_so_leva_part_abandonado() {
+        let loja = Loja::nova();
+        let staging = loja.raiz.join(DIRETORIO_DE_STAGING);
+        fs::create_dir_all(&staging).expect("staging");
+        let velho = staging.join("velho.part");
+        let recente = staging.join("recente.part");
+        let outro = staging.join("nao-e-part.txt");
+        for caminho in [&velho, &recente, &outro] {
+            fs::write(caminho, b"x").expect("arquivo");
+        }
+        let duas_horas = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
+        for caminho in [&velho, &outro] {
+            fs::File::options()
+                .write(true)
+                .open(caminho)
+                .expect("abrir")
+                .set_modified(duas_horas)
+                .expect("envelhecer");
+        }
+        let publicado = loja.store.put(b"abc").expect("publicar");
+
+        let removidos = loja
+            .store
+            .limpar_staging_abandonado(STAGING_ABANDONADO_APOS)
+            .expect("limpar");
+
+        assert_eq!(removidos, 1);
+        assert!(!velho.exists(), "o abandonado ficou");
+        assert!(
+            recente.exists(),
+            "apagou o temporário de uma escrita em andamento"
+        );
+        assert!(outro.exists(), "apagou o que não é temporário de blob");
+        assert!(
+            loja.store.verify(&publicado).expect("conferir"),
+            "blob publicado nunca sai"
+        );
+
+        // Sem staging nenhum, não é erro.
+        let vazia = Loja::nova();
+        assert_eq!(
+            vazia
+                .store
+                .limpar_staging_abandonado(STAGING_ABANDONADO_APOS)
+                .expect("limpar"),
+            0
+        );
     }
 
     fn varrer(diretorio: &Path, encontrados: &mut Vec<PathBuf>) {

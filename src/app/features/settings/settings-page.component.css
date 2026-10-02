@@ -3,6 +3,9 @@ app-settings-page *, app-settings-page *::before, app-settings-page *::after { b
 app-settings-page button, app-settings-page input, app-settings-page select, app-settings-page textarea { font: inherit; }
 app-settings-page button, app-settings-page label { cursor: pointer; }
 app-settings-page button:disabled { cursor: not-allowed; opacity: .5; }
+app-settings-page .settings-mobile-section { display: none; }
+app-settings-page .ai-platform-note { display: grid; gap: 6px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; color: var(--muted); background: var(--surface-2); font-size: 14px; line-height: 1.5; }
+app-settings-page .ai-platform-note strong { color: var(--text); }
 
 app-settings-page .feature-page { min-height: 0; flex: 1; display: flex; flex-direction: column; }
 app-settings-page .settings-page { max-width: 1200px; margin: auto; padding: 28px clamp(16px, 3vw, 40px) 48px; animation: page-enter .42s cubic-bezier(.16, 1, .3, 1) both; }
@@ -83,6 +86,27 @@ app-settings-page .ai-fields { margin-top: 0; }
 app-settings-page .pairing-panel { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px 15px; margin: 16px 0; padding: 14px; border: 1px solid color-mix(in srgb, var(--brand) 20%, var(--line)); border-radius: 11px; background: var(--brand-soft); }
 app-settings-page .pairing-panel small { color: var(--muted); font-size: 8px; }
 app-settings-page .pairing-panel strong { font-size: 11px; }
+/* I-BUG-04: a situação do código ocupa a linha inteira e se lê sem lupa. */
+app-settings-page .pairing-panel .pin-vencido, app-settings-page .pairing-panel .pin-validade { grid-column: 1 / -1; font-size: 12px; }
+app-settings-page .pairing-panel .pin-vencido { color: var(--nh-danger); }
+/* I-BUG-08: o aviso de que a escuta depende do app na tela ocupa a linha inteira. */
+app-settings-page .pairing-panel .escuta-na-tela { grid-column: 1 / -1; font-size: 12px; }
+/* NH-084: o QR ocupa a linha inteira do painel, centrado. */
+app-settings-page .sync-busy { display: flex; align-items: center; gap: 8px; margin: 8px 0; padding: 9px 12px; border-radius: 9px; font-size: 12px; color: var(--text); background: color-mix(in srgb, var(--brand) 10%, var(--surface)); }
+app-settings-page .sync-busy-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--brand); animation: sync-busy-pulse 1s ease-in-out infinite; }
+@keyframes sync-busy-pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { app-settings-page .sync-busy-dot { animation: none; } }
+app-settings-page .pairing-qr-code { display: grid; place-items: center; }
+app-settings-page .pairing-qr-dialog .modal-guidance { margin: 14px 0 10px; font-size: 12px; }
+app-settings-page .pairing-qr-dados { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 10px; }
+app-settings-page .pairing-qr-dados dt { color: var(--muted); font-size: 11px; }
+app-settings-page .pairing-qr-dados dd { margin: 2px 0 0; font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }
+app-settings-page .pairing-qr-validade { display: block; color: var(--muted); font-size: 11px; }
+@media (max-width: 640px) {
+  app-settings-page .pairing-qr-backdrop { place-items: end center; padding: 0; }
+  app-settings-page .pairing-qr-dialog { width: 100%; border-radius: 17px 17px 0 0; padding-bottom: calc(22px + env(safe-area-inset-bottom)); }
+}
+app-settings-page .qr-scan-message { display: block; margin: 6px 0; font-size: 12px; }
 app-settings-page .pairing-panel b { color: var(--brand); font-size: 22px; letter-spacing: .16em; }
 
 app-settings-page .share-session-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; margin: 16px 0 12px; padding: 13px; border: 1px solid color-mix(in srgb, var(--green) 28%, var(--line)); border-radius: 11px; background: color-mix(in srgb, var(--green) 6%, var(--surface-2)); }
@@ -163,3 +187,109 @@ app-settings-page .delete-warning { padding: 12px; border: 1px solid color-mix(i
   app-settings-page .backup-row { align-items: flex-start; flex-direction: column; }
   app-settings-page .backup-row-actions { align-self: flex-end; }
 }
+
+/* ── celular ─────────────────────────────────────────────────────────────────────
+ * Configurações no celular: uma coluna, seletor de área, campos de 16px e botões de dedo.
+ * Componente com ViewEncapsulation.None: os seletores são prefixados pelo elemento. */
+/* V2: superfícies opacas, hierarquia compacta e seletor de área dentro da largura útil.
+ * Os tokens mobile já seguem Claro/Escuro/Sistema. A apresentação não altera os serviços. */
+html.nh-mobile app-settings-page {
+  --surface: var(--nh-mobile-sheet);
+  --surface-2: color-mix(in srgb, var(--nh-mobile-ink) 5%, var(--nh-mobile-sheet));
+  --text: var(--nh-mobile-ink);
+  --muted: color-mix(in srgb, var(--nh-mobile-ink) 75%, var(--nh-mobile-sheet));
+  --subtle: var(--muted);
+  --line: color-mix(in srgb, var(--nh-mobile-ink) 16%, var(--nh-mobile-sheet));
+  --brand: var(--nh-mobile-gold);
+  --brand-soft: color-mix(in srgb, var(--nh-mobile-gold) 12%, var(--nh-mobile-sheet));
+  color: var(--text);
+}
+html.nh-mobile app-settings-page .settings-page { min-height: 100%; padding: 20px var(--nh-mobile-gutter) 40px; background: var(--nh-mobile-bg-color); }
+html.nh-mobile app-settings-page .feature-heading { width: 100%; margin: 0 0 16px; }
+html.nh-mobile app-settings-page .feature-heading h1 { margin: 4px 0 0; font-size: 24px; letter-spacing: -.04em; }
+html.nh-mobile app-settings-page .feature-heading p { display: none; }
+html.nh-mobile app-settings-page .eyebrow { font-size: 11px; }
+html.nh-mobile app-settings-page .settings-shell { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
+html.nh-mobile app-settings-page .settings-nav { display: none; }
+html.nh-mobile app-settings-page .settings-mobile-section { display: grid; gap: 8px; color: var(--muted); font-size: 13px; }
+html.nh-mobile app-settings-page .settings-mobile-section select { width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 14px; color: var(--text); background: var(--surface); }
+html.nh-mobile app-settings-page .settings-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+html.nh-mobile app-settings-page .settings-grid .surface-card { min-width: 0; padding: 20px; border-radius: 24px; box-shadow: 0 8px 24px rgb(0 0 0 / 8%); }
+html.nh-mobile app-settings-page .surface-card h2 { font-size: 20px; letter-spacing: -.025em; }
+html.nh-mobile app-settings-page .card-head { flex-wrap: wrap; gap: 12px; }
+html.nh-mobile app-settings-page .card-head > div { min-width: 0; }
+html.nh-mobile app-settings-page .card-icon { flex: 0 0 40px; width: 40px; height: 40px; border-radius: 14px; }
+html.nh-mobile app-settings-page .status-badge { padding: 7px 10px; font-size: 12px; }
+html.nh-mobile app-settings-page :is(.field-row, .pairing-panel, .share-session-panel) { grid-template-columns: minmax(0, 1fr); }
+html.nh-mobile app-settings-page :is(.primary-button, .secondary-button, .text-button) { min-height: 48px; max-width: 100%; padding: 10px 14px; border-radius: 14px; font-size: 15px; line-height: 1.4; }
+html.nh-mobile app-settings-page .primary-button:not(.destructive) { color: var(--nh-mobile-action-ink); background: linear-gradient(120deg, var(--nh-mobile-action-start), var(--nh-mobile-action-end)); box-shadow: 0 6px 16px rgb(0 0 0 / 10%); }
+html.nh-mobile app-settings-page :is(input, select, textarea) { min-width: 0; min-height: 48px; max-width: 100%; font-size: 16px; border-radius: 14px; }
+html.nh-mobile app-settings-page :is(.security-note, .field-label, .modal-guidance, .security-callout) { font-size: 14px; line-height: 1.5; }
+html.nh-mobile app-settings-page .surface-card p { font-size: 16px; line-height: 1.6; }
+html.nh-mobile app-settings-page .theme-picker { gap: 8px; }
+html.nh-mobile app-settings-page .theme-picker button { height: 112px; gap: 10px; border-radius: 18px; color: var(--text); font-size: 14px; }
+html.nh-mobile app-settings-page .theme-picker button span { width: 52px; height: 40px; display: grid; place-content: center; border-radius: 10px; color: #172238; background: #f4f6fb; box-shadow: 0 3px 10px rgb(0 0 0 / 10%); }
+html.nh-mobile app-settings-page .theme-picker button:nth-child(2) span { color: #f4f2ec; background: #171f34; }
+html.nh-mobile app-settings-page .theme-picker button:nth-child(3) span { color: var(--text); background: linear-gradient(90deg, #171f34 50%, #f4f6fb 50%); text-shadow: 0 0 3px var(--surface); }
+html.nh-mobile app-settings-page .ai-mode-picker { width: 100%; }
+html.nh-mobile app-settings-page .ai-mode-picker button { flex: 1; min-width: 0; min-height: 48px; padding: 8px; font-size: 14px; }
+html.nh-mobile app-settings-page .ai-creative-profile { padding: 16px; border-radius: 18px; }
+html.nh-mobile app-settings-page .ai-creative-profile header { display: grid; gap: 8px; }
+html.nh-mobile app-settings-page .ai-creative-profile :is(strong, textarea) { font-size: 16px; }
+html.nh-mobile app-settings-page .ai-creative-profile :is(small, header span) { font-size: 12px; }
+html.nh-mobile app-settings-page .ai-creative-profile textarea { padding: 12px; line-height: 1.5; }
+html.nh-mobile app-settings-page .backup-health { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+html.nh-mobile app-settings-page .backup-health :is(dt, dd) { font-size: 13px; }
+html.nh-mobile app-settings-page .backup-row { flex-wrap: wrap; }
+html.nh-mobile app-settings-page .backup-row :is(b, small) { font-size: 13px; }
+html.nh-mobile app-settings-page :is(.review-empty strong, .review-empty p) { font-size: 15px; }
+html.nh-mobile app-settings-page :is(.pairing-panel small, .pairing-panel label, .share-session-panel small, .share-session-panel strong, .share-history-row b, .share-history-row small, .share-history > strong, .review-count, .collaboration-sessions strong, .collaboration-sessions small, .collaboration-sessions span, .contribution-card b, .contribution-card small, .contribution-card em, .contribution-content, .contribution-actions, .settings-feedback) { font-size: 13px; line-height: 1.5; }
+html.nh-mobile app-settings-page .collaboration-layout { grid-template-columns: minmax(0, 1fr); }
+html.nh-mobile app-settings-page :is(.collaboration-review > header, .share-history-row, .contribution-card > header) { flex-wrap: wrap; }
+
+/* Etapa F: aviso da atualização da sincronização e atalho para os conflitos. */
+.sync-epoch-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--nh-ochre, var(--line));
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+.sync-epoch-notice small { color: var(--muted); }
+.sync-epoch-notice button { align-self: flex-start; }
+.sync-conflicts-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--nh-touch-target, 40px);
+  color: var(--muted);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.sync-conflicts-link.attention { color: var(--nh-danger); font-weight: 600; }
+
+/* Etapa H (H-R3): o aviso das versões antigas. Enquanto houver pendência ele volta a cada
+   abertura — não existe "não mostrar mais", porque o que está em jogo é texto que só existe aqui. */
+app-settings-page .legacy-recovery-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--nh-danger);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+app-settings-page .legacy-recovery-notice span { color: var(--muted); }
+app-settings-page .legacy-recovery-notice a { align-self: flex-start; text-decoration: none; }
+
+/* NH-084: durante a leitura a câmera fica por baixo da WebView; tudo some, menos a camada da leitura. */
+html.nh-lendo-qr, html.nh-lendo-qr body { background: transparent !important; transition: none !important; }
+html.nh-lendo-qr body { visibility: hidden; }
+app-settings-page .qr-leitura { visibility: visible; position: fixed; z-index: 2000; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: calc(24px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom)); color: #fff; }
+app-settings-page .qr-leitura p { margin: 0; padding: 10px 14px; border-radius: 10px; background: rgba(0, 0, 0, .6); font-size: 14px; text-align: center; }
+app-settings-page .qr-leitura-mira { width: min(70vw, 280px); aspect-ratio: 1; border: 3px solid rgba(255, 255, 255, .9); border-radius: 18px; box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .35); }
+app-settings-page .qr-leitura button { position: relative; min-width: 180px; min-height: 48px; font-size: 15px; }

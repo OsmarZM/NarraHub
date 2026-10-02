@@ -1,4 +1,5 @@
 import { Component, HostListener, OnDestroy, ViewEncapsulation, computed, inject } from '@angular/core';
+import { NgTemplateOutlet } from '@angular/common';
 import { RouterOutlet } from '@angular/router';
 import { isTauri } from '@tauri-apps/api/core';
 import { AppBootstrapService } from './bootstrap/app-bootstrap.service';
@@ -8,7 +9,7 @@ import { AppNavigationService } from './core/navigation/app-navigation.service';
 import { AppNavigationId } from './core/navigation/app-navigation';
 import { MobileNavigationComponent } from './shell/mobile-navigation/mobile-navigation.component';
 import { MobileNavigationOption } from './shell/mobile-navigation/mobile-navigation.model';
-import { MobileTopbarComponent } from './shell/mobile-topbar/mobile-topbar.component';
+import { MobileShellComponent } from './shell/mobile-shell/mobile-shell.component';
 import { ViewportState } from './shell/state/viewport.state';
 import { AppState } from './core/state/app.state';
 import { CollaborationStore } from './features/collaboration/state/collaboration.store';
@@ -21,11 +22,10 @@ import { TitlebarComponent } from './shell/titlebar/titlebar.component';
 @Component({
   selector: 'app-root-layout',
   standalone: true,
-  imports: [RouterOutlet, AppShellComponent, TitlebarComponent, MobileTopbarComponent, SchemaRecoveryComponent, MobileNavigationComponent],
+  imports: [RouterOutlet, NgTemplateOutlet, AppShellComponent, TitlebarComponent, MobileShellComponent, SchemaRecoveryComponent, MobileNavigationComponent],
   templateUrl: './root-layout.component.html',
-  styleUrls: ['./root-layout.component.css', './shell/android/android-shell.css'],
+  styleUrl: './root-layout.component.css',
   encapsulation: ViewEncapsulation.None,
-  host: { '[class.nh-mobile]': 'viewport.isMobile()' },
 })
 export class RootLayoutComponent implements OnDestroy {
   readonly bootstrap = inject(AppBootstrapService);
@@ -51,9 +51,19 @@ export class RootLayoutComponent implements OnDestroy {
   );
 
   readonly mobileActiveId = computed(() => this.navigation.route().navId);
-  readonly mobileContextLabel = computed(() => (this.workspaceMode() ? this.appState.activeUniverse()?.name ?? '' : ''));
-  /** O nome da tela na barra de cima do Android: o mesmo texto do cartão da navegação gestual. */
-  readonly mobileTitle = computed(() => MOBILE_PRESENTATION[this.navigation.route().navId]?.label ?? 'NarraHub');
+  readonly mobileContextLabel = computed(() => this.appState.activeUniverse()?.name ?? '');
+  /** A área atual, com o mesmo nome do cartão da navegação gestual. */
+  private readonly mobileSection = computed(() => MOBILE_PRESENTATION[this.navigation.route().navId]?.label ?? '');
+
+  /**
+   * Barra de cima do celular. Dentro de um universo: a área em cima, o universo em destaque, e o
+   * "‹" volta à biblioteca. Fora: a marca, e o nome da tela quando não é a biblioteca.
+   */
+  readonly mobileTitle = computed(() => {
+    if (this.workspaceMode()) return this.appState.activeUniverse()?.name || this.mobileSection();
+    return this.navigation.route().navId === 'inicio' ? 'NarraHub' : this.mobileSection();
+  });
+  readonly mobileEyebrow = computed(() => (this.workspaceMode() ? this.mobileSection() : ''));
 
   readonly mobileOptions = computed<MobileNavigationOption[]>(() => {
     const universe = this.navigationUniverseId();

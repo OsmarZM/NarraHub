@@ -1,4 +1,6 @@
+use crate::application::mutacao::Mutacao;
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
+use crate::domain::identity::DeviceIdentity;
 use crate::domain::ids::{new_id, now_timestamp};
 use crate::domain::workspace::{HistoryEntry, NewTimelineEvent, RelationCard, TimelineEvent};
 use crate::infrastructure::sqlite::{workspace_repository, SqliteDatabase};
@@ -29,6 +31,7 @@ pub fn list_history(
 
 pub fn create_timeline_event(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     universe_id: &str,
     event: NewTimelineEvent,
 ) -> DatabaseCommandResult<String> {
@@ -38,19 +41,22 @@ pub fn create_timeline_event(
         ));
     }
     let id = new_id();
-    let connection = database.write()?;
-    workspace_repository::insert_timeline_event(
-        &connection,
-        &id,
-        universe_id,
-        &event,
-        &now_timestamp(),
-    )?;
+    Mutacao::executar(database, identidade, |m| {
+        workspace_repository::insert_timeline_event(
+            m.tx(),
+            &id,
+            universe_id,
+            &event,
+            &now_timestamp(),
+        )?;
+        m.gravou("timeline_event", &id)
+    })?;
     Ok(id)
 }
 
 pub fn rename_timeline_event(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     id: &str,
     title: &str,
 ) -> DatabaseCommandResult<()> {
@@ -60,23 +66,37 @@ pub fn rename_timeline_event(
             "O evento precisa de um título.",
         ));
     }
-    let connection = database.write()?;
-    if !workspace_repository::rename_timeline_event(&connection, id, title, &now_timestamp())? {
-        return Err(DatabaseCommandError::not_found("Evento não encontrado."));
-    }
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        if !workspace_repository::rename_timeline_event(m.tx(), id, title, &now_timestamp())? {
+            return Err(DatabaseCommandError::not_found("Evento não encontrado."));
+        }
+        m.gravou("timeline_event", id)
+    })
 }
 
-pub fn delete_timeline_event(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    if !workspace_repository::delete_timeline_event(&connection, id)? {
-        return Err(DatabaseCommandError::not_found("Evento não encontrado."));
-    }
-    Ok(())
+pub fn delete_timeline_event(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    id: &str,
+) -> DatabaseCommandResult<()> {
+    Mutacao::executar(database, identidade, |m| {
+        m.excluir("timeline_event", id).map_err(|erro| {
+            if erro.kind == crate::database::error::DatabaseErrorKind::NotFound {
+                DatabaseCommandError::not_found("Evento não encontrado.")
+            } else {
+                erro
+            }
+        })?;
+        if !workspace_repository::delete_timeline_event(m.tx(), id)? {
+            return Err(DatabaseCommandError::not_found("Evento não encontrado."));
+        }
+        Ok(())
+    })
 }
 
 pub fn create_relation(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     universe_id: &str,
     source_id: &str,
     target_id: &str,
@@ -88,23 +108,37 @@ pub fn create_relation(
         ));
     }
     let id = new_id();
-    let connection = database.write()?;
-    workspace_repository::insert_relation(
-        &connection,
-        &id,
-        universe_id,
-        source_id,
-        target_id,
-        label.trim(),
-        &now_timestamp(),
-    )?;
+    Mutacao::executar(database, identidade, |m| {
+        workspace_repository::insert_relation(
+            m.tx(),
+            &id,
+            universe_id,
+            source_id,
+            target_id,
+            label.trim(),
+            &now_timestamp(),
+        )?;
+        m.gravou("relation", &id)
+    })?;
     Ok(id)
 }
 
-pub fn delete_relation(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    if !workspace_repository::delete_relation(&connection, id)? {
-        return Err(DatabaseCommandError::not_found("Relação não encontrada."));
-    }
-    Ok(())
+pub fn delete_relation(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    id: &str,
+) -> DatabaseCommandResult<()> {
+    Mutacao::executar(database, identidade, |m| {
+        m.excluir("relation", id).map_err(|erro| {
+            if erro.kind == crate::database::error::DatabaseErrorKind::NotFound {
+                DatabaseCommandError::not_found("Relação não encontrada.")
+            } else {
+                erro
+            }
+        })?;
+        if !workspace_repository::delete_relation(m.tx(), id)? {
+            return Err(DatabaseCommandError::not_found("Relação não encontrada."));
+        }
+        Ok(())
+    })
 }

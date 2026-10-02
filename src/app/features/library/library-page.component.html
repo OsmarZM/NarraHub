@@ -10,8 +10,8 @@
 />
 
 @if (modal()) {
-  <div class="library-modal-backdrop" (mousedown)="closeModal()">
-    <form class="library-modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="library-modal-backdrop" data-nh-dialog (mousedown)="closeModal()">
+    <form class="library-modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       @if (modal() === 'create' || modal() === 'edit') {
         <header>
           <div><span class="library-modal-eyebrow">{{ editingUniverseId ? 'BIBLIOTECA' : 'NOVO MUNDO' }}</span><h2>{{ editingUniverseId ? 'Editar universo' : 'Criar universo' }}</h2></div>
@@ -32,7 +32,7 @@
           <div><span class="library-modal-eyebrow danger">AÇÃO DESTRUTIVA</span><h2>Excluir {{ universe.name }}?</h2></div>
           <button type="button" (click)="closeModal()">×</button>
         </header>
-        <p class="library-delete-warning">Todos os livros, capítulos, personagens, lugares e eventos deste universo serão removidos do banco local. Backup e exportação ainda não estão disponíveis nesta fase.</p>
+        <p class="library-delete-warning">Todos os livros, capítulos, personagens, lugares e eventos serão excluídos deste universo. Antes de excluir, você pode criar um backup em Configurações → Geral.</p>
         <label>Digite <strong>{{ universe.name }}</strong> para confirmar<input name="libraryDeleteConfirmation" [(ngModel)]="deleteConfirmation" autocomplete="off" /></label>
         <footer>
           <button type="button" class="library-secondary" (click)="closeModal()">Cancelar</button>

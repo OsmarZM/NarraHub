@@ -2649,7 +2649,7 @@ dependencies = [
 
 [[package]]
 name = "narrahub"
-version = "0.10.0-beta.1"
+version = "0.10.0-beta.14"
 dependencies = [
  "chrono",
  "ed25519-dalek",
@@ -2659,6 +2659,7 @@ dependencies = [
  "rand_core 0.6.4",
  "reqwest 0.13.4",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
@@ -2667,6 +2668,7 @@ dependencies = [
  "sysinfo",
  "tauri",
  "tauri-build",
+ "tauri-plugin-barcode-scanner",
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
  "tauri-plugin-http",
@@ -2675,6 +2677,7 @@ dependencies = [
  "tauri-plugin-sql",
  "tauri-plugin-updater",
  "uuid",
+ "webpki-roots",
  "x25519-dalek",
  "zip",
 ]
@@ -5109,6 +5112,18 @@ dependencies = [
  "serde_json",
  "tauri-utils",
  "walkdir",
+]
+
+[[package]]
+name = "tauri-plugin-barcode-scanner"
+version = "2.4.6"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

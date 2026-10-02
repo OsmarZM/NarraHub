@@ -13,6 +13,7 @@ import { EntityStore } from '../entities/state/entity.store';
 import { KnowledgeStore } from '../knowledge/state/knowledge.store';
 import { ShellState } from '../../shell/state/shell.state';
 import { ViewportState } from '../../shell/state/viewport.state';
+import { MobileSheetComponent } from '../../shell/mobile-sheet/mobile-sheet.component';
 import { fileToDataUrl } from '../../shared/utils/file-to-data-url';
 import { ContextualInspectorComponent } from '../../shell/contextual-inspector/contextual-inspector.component';
 import { AiWritingRequest, WritingEditorComponent } from '../writing/writing-editor.component';
@@ -36,11 +37,12 @@ type RenameKind = 'story' | 'book' | 'chapter';
 
 interface PendingDelete { kind: DeleteKind; id: string; name: string; detail: string }
 interface PendingRename { kind: RenameKind; id: string; name: string }
+interface MobileTreeItem { kind: DeleteKind; id: string; name: string; chapter?: ChapterOption; first: boolean; last: boolean }
 
 @Component({
   selector: 'app-writing-page',
   standalone: true,
-  imports: [CommonModule, FormsModule, DragDropModule, WritingEditorComponent, ContextualInspectorComponent],
+  imports: [CommonModule, FormsModule, DragDropModule, WritingEditorComponent, ContextualInspectorComponent, MobileSheetComponent],
   templateUrl: './writing-page.component.html',
   styleUrl: './writing-page.component.css',
 })
@@ -71,6 +73,26 @@ export class WritingPageComponent implements OnChanges {
    * ele cobre o texto que a pessoa veio escrever.
    */
   readonly mobileTreeOpen = signal(false);
+
+  /** Celular: o item cujo "⋯" foi tocado na árvore. As ações são as mesmas dos botões do desktop. */
+  readonly itemMenu = signal<MobileTreeItem | null>(null);
+
+  openItemMenu(kind: DeleteKind, id: string, name: string, event: Event, chapter?: ChapterOption, first = false, last = false): void {
+    event.stopPropagation();
+    this.itemMenu.set({ kind, id, name, chapter, first, last });
+  }
+
+  /** Fecha a folha do item e executa a ação com o mesmo handler dos botões do desktop. */
+  runItemAction(action: 'up' | 'down' | 'rename' | 'tags' | 'delete', event: Event): void {
+    event.stopPropagation();
+    const item = this.itemMenu();
+    this.itemMenu.set(null);
+    if (!item) return;
+    if ((action === 'up' || action === 'down') && item.chapter) void this.moveTreeChapter(item.chapter, action === 'up' ? -1 : 1, event);
+    else if (action === 'rename') this.requestRename(item.kind, item.id, item.name);
+    else if (action === 'tags') this.requestMetadata(item.kind, item.id, item.name);
+    else if (action === 'delete') this.requestDelete(item.kind, item.id, item.name);
+  }
 
   mobileBarTitle(): string {
     return this.store.activeChapter()?.title || this.store.activeBook()?.name || this.store.activeStory()?.name || 'Escolha um capítulo';

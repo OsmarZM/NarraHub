@@ -106,6 +106,21 @@ pub fn writable_column(target_type: &str, field: &str) -> Option<(&'static str, 
     Some((table, column))
 }
 
+/// O agregado do Sync V2 que uma proposta aprovada revisa.
+///
+/// A aprovação escreve no domínio, e desde a B6 ela passa pela `Mutacao` como qualquer escrita: o
+/// que o convidado propôs vira revisão assinada do agregado alvo, não uma alteração muda que só o
+/// aparelho do anfitrião conhece. O atributo de ficha revisa a **entidade** — ele é parte do
+/// payload dela, não um agregado próprio.
+pub fn agregado_da_proposta(target_type: &str) -> Option<&'static str> {
+    match target_type {
+        "universe" => Some("universe"),
+        "chapter" => Some("chapter"),
+        "entity" => Some("entity"),
+        _ => None,
+    }
+}
+
 /// Nome do atributo de ficha que a proposta quer mexer, se for esse o caso.
 pub fn attribute_key<'a>(target_type: &str, field: &'a str) -> Option<&'a str> {
     if target_type != "entity" {

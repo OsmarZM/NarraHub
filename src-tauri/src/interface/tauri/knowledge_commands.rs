@@ -33,7 +33,29 @@ pub fn tag_create(
     name: String,
     color: String,
 ) -> DatabaseCommandResult<ContentTag> {
-    knowledge_service::create_tag(&super::database(&app)?, &universe_id, &name, &color)
+    knowledge_service::create_tag(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        &universe_id,
+        &name,
+        &color,
+    )
+}
+
+#[tauri::command]
+pub fn tag_update(
+    app: AppHandle,
+    id: String,
+    name: String,
+    color: String,
+) -> DatabaseCommandResult<()> {
+    knowledge_service::update_tag(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        &id,
+        &name,
+        &color,
+    )
 }
 
 #[tauri::command]
@@ -46,6 +68,7 @@ pub fn tag_set(
 ) -> DatabaseCommandResult<()> {
     knowledge_service::set_tag(
         &super::database(&app)?,
+        &super::sync_identity(&app)?,
         &owner_type,
         &owner_id,
         &tag_id,
@@ -55,7 +78,7 @@ pub fn tag_set(
 
 #[tauri::command]
 pub fn tag_delete(app: AppHandle, id: String) -> DatabaseCommandResult<()> {
-    knowledge_service::delete_tag(&super::database(&app)?, &id)
+    knowledge_service::delete_tag(&super::database(&app)?, &super::sync_identity(&app)?, &id)
 }
 
 #[tauri::command]

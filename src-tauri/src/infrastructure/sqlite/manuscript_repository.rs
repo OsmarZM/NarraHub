@@ -2,7 +2,7 @@ use crate::database::error::DatabaseCommandResult;
 use crate::domain::manuscript::{
     Book, BookOption, BookUpdate, Chapter, ChapterOption, ChapterUpdate, Story, StoryUpdate,
 };
-use rusqlite::{Connection, Row, Transaction};
+use rusqlite::{Connection, Row};
 
 use super::connection::map_sqlite_error;
 
@@ -61,7 +61,7 @@ pub fn list_stories(
     let mut statement = connection
         .prepare(
             "SELECT id, universe_id, name, description, sort_order, created_at, updated_at
-               FROM stories WHERE universe_id = ?1 ORDER BY sort_order",
+               FROM stories WHERE universe_id = ?1 ORDER BY sort_order, id",
         )
         .map_err(map_sqlite_error)?;
     let rows = statement
@@ -147,7 +147,7 @@ pub fn list_books_by_story(
     let mut statement = connection
         .prepare(
             "SELECT id, story_id, name, description, cover_image, sort_order, created_at, updated_at
-               FROM books WHERE story_id = ?1 ORDER BY sort_order",
+               FROM books WHERE story_id = ?1 ORDER BY sort_order, id",
         )
         .map_err(map_sqlite_error)?;
     let rows = statement
@@ -168,7 +168,7 @@ pub fn list_books_by_universe(
                FROM books b
                JOIN stories s ON s.id = b.story_id
               WHERE s.universe_id = ?1
-              ORDER BY s.sort_order, b.sort_order",
+              ORDER BY s.sort_order, s.id, b.sort_order, b.id",
         )
         .map_err(map_sqlite_error)?;
     let rows = statement
@@ -264,7 +264,7 @@ pub fn list_chapters_by_book(
 ) -> DatabaseCommandResult<Vec<Chapter>> {
     let mut statement = connection
         .prepare(&format!(
-            "SELECT {CHAPTER_COLUMNS} FROM chapters WHERE book_id = ?1 ORDER BY sort_order ASC"
+            "SELECT {CHAPTER_COLUMNS} FROM chapters WHERE book_id = ?1 ORDER BY sort_order, id"
         ))
         .map_err(map_sqlite_error)?;
     let rows = statement
@@ -288,7 +288,7 @@ pub fn list_chapters_by_universe(
                JOIN books b ON b.id = c.book_id
                JOIN stories s ON s.id = b.story_id
               WHERE s.universe_id = ?1
-              ORDER BY s.sort_order, b.sort_order, c.sort_order",
+              ORDER BY s.sort_order, s.id, b.sort_order, b.id, c.sort_order, c.id",
         )
         .map_err(map_sqlite_error)?;
     let rows = statement
@@ -381,7 +381,7 @@ pub fn update_chapter(
 /// Reordena os capítulos de um livro. Devolve quantos foram atingidos para
 /// quem chama poder recusar a operação quando a lista não bate com o livro.
 pub fn reorder_chapters(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     book_id: &str,
     chapter_ids: &[String],
 ) -> DatabaseCommandResult<usize> {

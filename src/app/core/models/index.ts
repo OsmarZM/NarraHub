@@ -300,20 +300,6 @@ export interface HistoryEntry extends ChangeLog {
   display_name: string;
 }
 
-export interface SyncServerStatus {
-  running: boolean;
-  address: string | null;
-  pairing_code: string | null;
-  device_name: string;
-}
-
-export interface SyncResult {
-  received: number;
-  sent: number;
-  conflicts: number;
-  peer_name: string;
-}
-
 // ── Graph ───────────────────────────────────────
 
 export type GraphViewMode = 'diagrama' | 'visual' | 'misto';

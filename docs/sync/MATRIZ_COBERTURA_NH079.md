@@ -1,0 +1,1485 @@
+# NH-079 — cobertura do Sync V2: agregados, fronteira `Mutacao` e exclusão
+
+> Documento de arquitetura da etapa B. Revisão 3 (2026-09-15): modelo de impacto de exclusão
+> (`Excluido` / `Reescrito` / `Bloqueado`), auditoria completa de FK e gatilhos (seção 3), payloads
+> canônicos do manuscrito (seção 8) e B2. Revisão 2, com os ajustes da revisão humana:
+> agregado = unidade de consistência e conflito; exclusão com preflight **antes** do SQL destrutivo;
+> gatilhos classificados; canvas autoral × efêmero; negociação de canonicalização. Medido no código
+> e no schema final (20 migrations aplicadas).
+
+## 1. Onde o domínio é escrito
+
+Todo comando de escrita passa por um serviço de `application/`; nenhum comando Tauri chama repositório
+direto. **50 funções públicas de escrita em 8 serviços.** Com a B2, manuscrito, universo (exceto exclusão) e anexos geram evento.
+
+| serviço | escritas | com transação | geram evento V2 |
+| --- | --- | --- | --- |
+| `manuscript_service` | 10 | 10 (`Mutacao`, B2) | 10 |
+| `canvas_service` | 11 | 5 | 2 (anexos, B1) |
+| `entity_service` | 5 | 3 | 0 |
+| `planning_service` | 8 | 4 | 0 |
+| `universe_service` | 3 | 2 (`Mutacao`, B2) | 2 (`delete` recusa até B5) |
+| `workspace_service` | 5 | 0 | 0 |
+| `knowledge_service` | 4 | 1 | 0 |
+| `collaboration_service` | 6 | 2 | 0 |
+
+**50 escritas não são 50 emissores.** O modelo é:
+
+```text
+mutação de aplicação (uma ação do usuário ou do sistema)
+        ↓
+agregados afetados            uma ação que mexe em 5 tabelas de UM agregado = 1 revisão
+        ↓                     uma ação que muda 3 agregados independentes   = 3 revisões, mesma transação
+revisões / eventos
+```
+
+## Estado da cobertura
+
+| etapa | status | o que cobre |
+| --- | --- | --- |
+| **B1** | integrada | fronteira `Mutacao`; `attachment` create e delete; exclusão remota bloqueada e a resolução dela (4.4.1); fronteira com o blob store (4.4.2); migration 21 (`sync_divergences.kind`) |
+| **B2** | integrada (#59) | `universe` create/update; `story`, `book`, `chapter` create/update/delete; `chapter_order` (create/delete de capítulo e reorder — **substituído por `chapter_position` na B2.2**); campos personalizados dentro desses agregados; `tag_assignment` apagado pelos gatilhos do manuscrito; impacto de exclusão `Excluido`/`Reescrito`/`Bloqueado` (4.3); catálogo de efeitos com gate (3); payload canônico definitivo (8); dependência de criação pai → filho na aplicação remota; capa de livro pelo blob store |
+| **B2.1** | integrada (#60), **substituída pela B2.2** | `story_order(universe)` e `book_order(story)` com o contrato de `chapter_order`; **ponte de ordem** transacional, que destrava ordens entre três origens sem nunca confirmar revisão corrente não materializada — inclusive o travamento que existia em `chapter_order` desde a B2 |
+| **B3** | integrada (#61) | `entity` (ficha inteira: `entities` + `entity_attributes` + campos personalizados, uma revisão só), `relation`, `timeline_event` e `canvas_entity_position`; exclusão de entidade com árvore completa de efeitos, inclusive o `SET NULL` da linha do tempo como **reescrita**; `entity_service`, `workspace_service` e a posição do canvas pela `Mutacao` |
+| **B4** | integrada (#62) | `planning_item` (card inteiro: texto, imagem, capítulo, valores escalares e relações — uma revisão), `planning_order(universe)` (coluna e posição — **substituído por `planning_item_position` na B2.2**) e `planning_field_definition`; o gatilho que reescreve vários cards declarado; os bloqueios temporários de capítulo, história e entidade viraram reescrita do card |
+| **B5** | integrada (#63) | `content_tag` (create/update/delete — **`update_tag` não existia**, e foi criado aqui), `tag_assignment` create/delete pela fronteira, `canvas_node`, `canvas_node_position` e `canvas_edge`; payload **definitivo** do `attachment`; migration 22 (gatilhos que matam a aresta com a ponta + `tag_name_conflict`); `knowledge_service` entra no gate estrutural, onde **nunca esteve**; gate autoral × efêmero |
+| **B2.2** | integrada (#64) | **posição por item** no lugar das listas inteiras (`story_order`, `book_order`, `chapter_order`, `planning_order` saíram; entram `story_position`, `book_position`, `chapter_position`, `planning_field_position`, `attachment_position`, `planning_item_position`); **grupos de mutação atômicos** no envelope (migration 23): a ação que é uma transação na origem entra inteira no receptor, ou vira UMA decisão; a ponte de ordem da B2.1 saiu, sem consumidores |
+| **B6** | integrada (#65) | **identidade portátil de conflito** (migration 24: `conflict_key` + participantes canônicos ordenados, iguais nos dois aparelhos); **`entity_template_set`** (o conjunto de modelos de ficha como um agregado, identidade `(universeId, entityType)`); **`UNIQUE(entity_id)`** na posição da entidade (migration 25, com quarentena do que foi desempatado); **colaboração aprovada pela `Mutacao`**; **helper canônico de ação remota** nos testes; **gate de cobertura total** |
+| **C** | **fechada** (motor #66 + wiring no arranque) | gênese: adoção versionada do acervo legado (migration 26), enumerador canônico por tipo, ordem topológica com o ciclo do card desfeito em três eventos, transação única; ordem cobrada na captura e na sessão. A segunda fatia liga isso ao arranque: `blob_upgrade` → `genese::adotar` → `exigir_acervo_adotado` → liberar aplicação/sync |
+
+**Fora da B2, dito às claras:**
+
+- `delete_universe` **recusa sempre** com "Esta operação ainda depende de tipos que estão sendo migrados
+  para o Sync V2." A cascata do universo atinge entidades, relações, linha do tempo, planejamento, tags e
+  canvas, que ainda não têm codec. Uma exclusão de universo recebida de outro aparelho vira
+  `parent_deletion_blocked` e não apaga nada. Volta quando a última dessas etapas integrar (B5).
+- Excluir capítulo ligado a card do planejamento, ou história usada num campo de card, é **recusado**
+  (seção 3.2). Volta na B4, quando `planning_item` tiver codec e o efeito virar `Reescrito`.
+- ~~Marcar e desmarcar tag ainda não emite evento~~ — fechado na B5.
+- ~~`attachment` mantém o payload da B1~~ — fechado na B5: `createdAt` e `sortOrder` saíram do payload.
+- **Nenhum bloqueio temporário sobrou do planejamento.** Excluir capítulo, história ou entidade ligada a
+  card agora **reescreve o card** (B4). Os `Bloqueado` da B2/B3 saíram do código e do catálogo.
+- **Fora da B4:** `entity_templates` **não tem escritor no app** — é acervo legado que `create` de
+  entidade lê; precisa de codec antes da gênese (6.1). Nó e aresta do canvas continuam na B5, e as
+  funções deles estão nomeadas no gate estrutural com o motivo. Tag e marcação de tag continuam na B5:
+  excluir uma tag reescreve cards que a citam, e isso só passa pela fronteira quando o
+  `knowledge_service` entrar.
+
+## 2. Agregados
+
+**Critério:** agregado é a **unidade de consistência e de conflito** — o conjunto que precisa ser lido e
+gravado inteiro para continuar válido, e que, editado em dois aparelhos, vira **um** conflito. "O que a
+tela mostra junto" é sinal de UX, não fronteira: relação aparece na ficha da entidade, mas tem identidade
+e concorrência próprias.
+
+### 2.1 Raízes e dependências
+
+| raiz | tabelas internas | identidade | depende de (precisa existir antes) | observação |
+| --- | --- | --- | --- | --- |
+| `universe` | `universes`, `content_custom_fields` do universo | `universes.id` | — | raiz de tudo |
+| `story` | `stories`, `content_custom_fields` (owner story) | `stories.id` | universe | |
+| `book` | `books`, `content_custom_fields` (owner book) | `books.id` | story | |
+| `chapter` | `chapters` (sem `sort_order`), `content_custom_fields` (owner chapter) | `chapters.id` | book | conteúdo, título, status, resumo |
+| `story_position` | `stories.sort_order` | `stories.id` | story | **só a posição** (B2.2) |
+| `book_position` | `books.sort_order` | `books.id` | book | **só a posição** (B2.2) |
+| `chapter_position` | `chapters.sort_order` | `chapters.id` | chapter | **só a posição**; mover não conflita com texto (B2.2) |
+| `entity` | `entities`, `entity_attributes`, `content_custom_fields` (owner entity) | `entities.id` | universe | atributos são internos (B3) |
+| `relation` | `relations` | `relations.id` | 2 entities | independente da entidade |
+| `timeline_event` | `timeline_events` | `timeline_events.id` | universe; entity (opcional, `SET NULL`) | |
+| `planning_item` | `planning_items` (sem `sort_order`), valores em `custom_field_values`, `planning_field_links` | `planning_items.id` | universe; chapter (opcional) | valores e links são internos |
+| `planning_item_position` | `planning_items.status` + `sort_order` | `planning_items.id` | planning_item | etapa e posição do card (B2.2) |
+| `planning_field_position` | `planning_field_definitions.sort_order` | `planning_field_definitions.id` | planning_field_definition | posição da propriedade (B2.2) |
+| `planning_field_definition` | `planning_field_definitions` | `id` | universe; planning_item (se escopo card) | |
+| `content_tag` | `content_tags` | `id` | universe | |
+| `tag_assignment` | `content_tag_assignments` | `(tag_id, owner_type, owner_id)` | tag + dono | aresta com identidade própria |
+| `canvas_node` | `canvas_nodes` (inclui `x`, `y` persistidos) | `id` | universe | |
+| `canvas_edge` | `canvas_edges` | `id` | universe; 2 pontas | |
+| `canvas_entity_position` | `canvas_entity_positions` | `entity_id` | entity | posição persistida da entidade no grafo |
+| `attachment` | `attachments` (referência de blob) | `id` | dono (chapter / entity / node) | já sincroniza |
+| `attachment_position` | `attachments.sort_order` | `attachments.id` | attachment | posição na galeria (B2.2) |
+
+**Ordem de dependência** (criação em ordem, exclusão na ordem inversa):
+
+```text
+universe
+ ├─ story ─ book ─ chapter          cada item com a sua *_position
+ ├─ entity ─ relation, canvas_entity_position
+ ├─ timeline_event
+ ├─ content_tag ─ tag_assignment(dono)
+ ├─ planning_field_definition
+ ├─ planning_item ─ planning_item_position(item)
+ ├─ canvas_node ─ canvas_edge
+ └─ attachment(dono)
+```
+
+### 2.2 Canvas: autoral × efêmero
+
+| estado | onde vive | sincroniza |
+| --- | --- | --- |
+| posição de nó (`canvas_nodes.position_x/y`) | banco | **sim**, como `canvas_node_position` |
+| posição persistida de entidade (`canvas_entity_positions`) | banco | **sim**, como `canvas_entity_position` |
+| conteúdo de nó, arestas | banco | **sim** |
+| zoom, pan, viewport | memória do componente | não |
+| seleção, hover, painel aberto | memória do componente | não |
+
+Regra: **só o que está no banco e foi feito pelo usuário sincroniza.** O segundo grupo não sincroniza
+porque **não está no banco** — ele vive na memória do componente e morre com a tela.
+
+Isso agora é gate, não combinado (`sync_codec::efemero`):
+
+```text
+1  nenhuma coluna do banco INTEIRO com nome de estado de tela (zoom, pan, seleção, painel…)
+   sem estar declarada em ESTADO_DE_TELA_ACEITO com o motivo — a lista está vazia
+2  cada coluna das tabelas da B5 com destino declarado: payload de qual agregado, ou local com motivo
+```
+
+O gate 2 é o que morde: acrescentar coluna a `canvas_nodes` passa a exigir escrever o que ela é. O
+silêncio deixa de significar "não sincroniza e ninguém percebeu".
+
+**Conteúdo × posição do elemento livre.** `canvas_node` e `canvas_node_position` são agregados
+diferentes, pelo mesmo motivo de `entity` e `canvas_entity_position`: arrastar e escrever são ações
+diferentes e não podem colidir. A diferença é que a posição do nó mora em colunas do próprio
+`canvas_nodes` — `canvas_node_position` é de **existência derivada**, como as ordens.
+
+**A aresta e a ponta polimórfica.** Até a migration 22, apagar uma entidade deixava a aresta viva no
+banco: ela sumia da tela pelo filtro do `list_edges` e ficava no arquivo para sempre. Invisível não é
+ausente — e agora que a aresta é causal, isso seria divergência esperando para acontecer (um aparelho
+com ela, outro sem). Dois gatilhos resolvem nos dois sentidos, a migration limpa as órfãs de uma vez, e
+o catálogo da seção 3 passa a cobri-los.
+
+**Tag homônima (`tag_name_conflict`).** `content_tags` tem `UNIQUE(universe_id, name COLLATE NOCASE)` e
+a identidade causal da tag é o `id`. Criar "Mar" nos dois aparelhos produz dois agregados com o mesmo
+nome, e o segundo a chegar não cabe na tabela — o schema recusando materializar um evento válido. Nada
+é aplicado e nada é alterado: abre-se a divergência, e o escritor decide se são a mesma tag ou renomeia
+uma. Foi por isso que `update_tag` precisou existir.
+
+### 2.3 Fora do Sync, de propósito
+
+| tabela | por quê |
+| --- | --- |
+| `mentions` | derivada do texto; cada aparelho recalcula |
+| `chapter_revisions`, `change_log` | histórico local de edição |
+| `collaboration_sessions`, `collaboration_contributions` | sessão efêmera deste aparelho. **O conteúdo que uma contribuição aprovada grava** em capítulo, entidade ou universo passa pela `Mutacao` desde a B6: aprovar é uma escrita como qualquer outra, com revisão e evento assinado. As duas tabelas continuam locais, declaradas no gate de cobertura total |
+| `devices`, `blob_migration_issues` | locais |
+| `sync_*`; `sync_peers`, `sync_conflicts` (V1) | protocolo |
+
+## 3. Efeitos de exclusão: toda FK com ação e todo gatilho que escreve
+
+Medido no schema migrado (21 migrations), não no texto das migrations. A tabela é a mesma de
+`src-tauri/src/infrastructure/sqlite/sync_codec/catalogo.rs`, e o gate
+`toda_fk_com_acao_e_todo_gatilho_que_escreve_estao_no_catalogo` reprova FK ou gatilho novo sem
+classificação, ou classificação que não existe mais no schema. Não há `ON DELETE SET DEFAULT` nem
+`RESTRICT` no schema; as FKs `NO ACTION` são todas das tabelas `sync_*`.
+
+Efeito: **Delete** = o agregado atingido some; **Rewrite** = sobrevive com outro estado; **Interno** =
+estado do próprio agregado de origem, sem identidade própria; **Local** = tabela fora do sync.
+
+### 3.1 Tabela
+
+| origem da exclusão | agregado afetado | mecanismo | efeito | etapa | enquanto não coberto |
+| --- | --- | --- | --- | --- | --- |
+| universe | story | FK `stories.universe_id` CASCADE | Delete | B2 | universe delete recusado |
+| universe | attachment | FK `attachments.universe_id` CASCADE | Delete | B1 | universe delete recusado |
+| universe | (interno de universe/story/book/chapter/entity) | FK `content_custom_fields.universe_id` CASCADE | Interno | B2 / B3 | universe delete recusado |
+| universe | entity | FK `entities.universe_id` CASCADE | Delete | B3 | universe delete recusado |
+| universe | entity_template | FK `entity_templates.universe_id` CASCADE | Delete | B3 | universe delete recusado |
+| universe | relation | FK `relations.universe_id` CASCADE | Delete | B3 | universe delete recusado |
+| universe | timeline_event | FK `timeline_events.universe_id` CASCADE | Delete | B3 | universe delete recusado |
+| universe | canvas_entity_position | FK `canvas_entity_positions.universe_id` CASCADE | Delete | B3 | universe delete recusado |
+| universe | planning_item | FK `planning_items.universe_id` CASCADE | Delete | B4 | universe delete recusado |
+| universe | planning_field_definition | FK `planning_field_definitions.universe_id` CASCADE | Delete | B4 | universe delete recusado |
+| universe | content_tag | FK `content_tags.universe_id` CASCADE | Delete | B5 | universe delete recusado |
+| universe | canvas_node | FK `canvas_nodes.universe_id` CASCADE | Delete | B5 | universe delete recusado |
+| universe | canvas_edge | FK `canvas_edges.universe_id` CASCADE | Delete | B5 | universe delete recusado |
+| story | book | FK `books.story_id` CASCADE | Delete | B2 | — |
+| story | story_position(story) | sem linha própria (o número mora na linha da história) | Delete | B2.2 | — |
+| story | planning_item (link interno) | FK `planning_field_links.story_id` CASCADE | **Rewrite** | B4 | **exclusão da história recusada** enquanto houver card com a história num campo |
+| story | tag_assignment | gatilho `trg_story_metadata_delete` | Delete | B2 | — |
+| story | (interno) | gatilho `trg_story_metadata_delete` → `content_custom_fields` | Interno | B2 | — |
+| book | chapter | FK `chapters.book_id` CASCADE | Delete | B2 | — |
+| book | book_position(book) | sem linha própria | Delete | B2.2 | — |
+| book | tag_assignment | gatilho `trg_book_metadata_delete` | Delete | B2 | — |
+| book | (interno) | gatilho `trg_book_metadata_delete` → `content_custom_fields` | Interno | B2 | — |
+| chapter | planning_item | FK `planning_items.chapter_id` **SET NULL** | **Rewrite** | B4 | **exclusão do capítulo recusada** enquanto houver card ligado |
+| chapter | chapter_position(chapter) | sem linha própria | Delete | B2.2 | — |
+| chapter | attachment | gatilho `trg_chapter_attachments_delete` | Delete | B1 | — |
+| chapter | tag_assignment | gatilho `trg_chapter_metadata_delete` | Delete | B2 | — |
+| chapter | (interno) | gatilho `trg_chapter_metadata_delete` → `content_custom_fields` | Interno | B2 | — |
+| chapter | — | FK `chapter_revisions.chapter_id` CASCADE | Local | fora | — |
+| chapter | — | FK `mentions.chapter_id` CASCADE | Local | fora | — |
+| entity | (interno) | FK `entity_attributes.entity_id` CASCADE | Interno | B3 | entity_service fora da Mutacao até B3 |
+| entity | relation | FK `relations.source_id` / `target_id` CASCADE | Delete | B3 | idem |
+| entity | timeline_event | FK `timeline_events.entity_id` **SET NULL** | **Rewrite** | B3 | idem |
+| entity | canvas_entity_position | FK `canvas_entity_positions.entity_id` CASCADE | Delete | B3 | idem |
+| entity | planning_item (link interno) | FK `planning_field_links.entity_id` CASCADE | **Rewrite** | B4 | idem; na B3, recusa enquanto houver link |
+| entity | attachment | gatilho `trg_entity_attachments_delete` | Delete | B3 | idem |
+| entity | tag_assignment | gatilho `trg_entity_metadata_delete` | Delete | B3 | idem |
+| entity | (interno) | gatilho `trg_entity_metadata_delete` → `content_custom_fields` | Interno | B3 | idem |
+| entity | — | FK `mentions.entity_id` CASCADE | Local | fora | — |
+| timeline_event | tag_assignment | gatilho `trg_timeline_metadata_delete` | Delete | B3 | fora da Mutacao até B3 |
+| planning_item | (interno) | FK `planning_field_links.planning_item_id` CASCADE | Interno | B4 | planning_service fora da Mutacao até B4 |
+| planning_item | planning_field_definition | FK `planning_field_definitions.owner_item_id` CASCADE | Delete | B4 | idem |
+| planning_item | tag_assignment | gatilho `trg_planning_metadata_delete` | Delete | B4 | idem |
+| planning_field_definition | planning_item | FK `planning_field_links.field_definition_id` CASCADE | **Rewrite** | B4 | idem |
+| planning_field_definition | planning_item | gatilho `trg_planning_field_definition_delete` (`custom_field_values`) | **Rewrite** | B4 | idem |
+| content_tag | tag_assignment | FK `content_tag_assignments.tag_id` CASCADE | Delete | B5 | knowledge_service fora da Mutacao até B5 |
+| content_tag | planning_item (link interno) | FK `planning_field_links.tag_id` CASCADE | **Rewrite** | B4 | idem |
+| collaboration_session | — | FK `collaboration_contributions.session_id` CASCADE | Local | fora | — |
+
+Gatilhos que escrevem sem ser exclusão, todos locais: `trg_chapter_history_insert`/`_update`,
+`trg_chapter_revision`, `trg_entity_history_insert`/`_update`. Os demais gatilhos só validam (`RAISE`).
+
+**Referências sem FK** (ids em texto polimórfico): `attachments.owner_id`, `content_tag_assignments.owner_id`
+e `content_custom_fields.owner_id` são cobertos pelos gatilhos acima; `canvas_edges.source_id/target_id`
+(entity ou nó) não têm FK nem gatilho — a exclusão de entidade deixa aresta pendurada, e isso é da B3/B5.
+
+### 3.2 Estratégia para efeito sobre agregado ainda não coberto: fail closed
+
+Para `chapter DELETE → planning_items.chapter_id SET NULL` a escolha foi **bloquear até a B4** (opção 2),
+não trazer `planning_item` para a B2. O payload canônico de `planning_item` inclui `custom_field_values`
+(reescrito por gatilho), `planning_field_links` internos, imagem por blob e a separação entre card e
+`planning_order` (status + posição). Trazer "a parte mínima" obrigaria a fixar esse formato agora — e a
+gênese da etapa C reutiliza o formato; fixar metade dele é o que produziria revisões diferentes para o
+mesmo card. O bloqueio custa pouco ao escritor (desvincular o card antes) e não altera nada em silêncio.
+
+```text
+local   m.excluir(chapter) → Bloqueado("…ligado a N card(s) do planejamento…") → erro, nada muda, nenhum evento
+remoto  exclusão de chapter chega → mesmo impacto → parent_deletion_blocked; o card continua ligado
+```
+
+## 4. A fronteira `Mutacao`
+
+### 4.1 Invariante
+
+```text
+mutação sincronizável confirmada
+⇔
+estado de domínio + estado causal (aggregate_state, revision_history, tombstone) + evento (outbox)
+foram commitados na MESMA transação
+
+após qualquer queda: tudo existe, ou nada existe
+nunca: domínio sem evento          nunca: evento sem domínio
+```
+
+### 4.2 Contrato
+
+```text
+Mutacao::executar(database, identidade, |m| -> Result<T>) -> Result<T>
+
+  BEGIN IMMEDIATE                                   única transação; aninhar é erro
+  closure(m)
+     m.tx()                  → &Transaction          repositórios recebem ESTA transação
+     m.gravou(agregado)      → declara create/update  (lido depois, no fim)
+     m.excluir(agregado)?    → preflight AGORA, antes do SQL destrutivo (ver 4.3)
+  fim do closure
+     para cada gravou:        estado canônico relido na mesma tx → evento upsert
+     para cada exclusão:      confere que sumiu; eventos delete já preparados → persiste
+     append_event_in_transaction (assina, revisão, cursor)
+  COMMIT                                             erro em qualquer passo → ROLLBACK de tudo
+```
+
+Regras de implementação:
+
+- Os repositórios usados dentro da `Mutacao` recebem `&Transaction`/`&Connection` **da mutação**; nenhum
+  deles abre transação nem conexão própria. Gate estrutural na B1.
+- `Mutacao::executar` dentro de outra `Mutacao` é erro (não há savepoint silencioso).
+- Um agregado declarado duas vezes vira **uma** revisão (a do estado final).
+
+### 4.3 Exclusão: impactos e preflight antes do SQL
+
+**A fronteira não assume que todo agregado afetado some.** O codec devolve os impactos diretos:
+
+```text
+Excluido(agregado)    some junto (FK CASCADE, gatilho, posição sem linha própria)
+Reescrito(agregado)   sobrevive com outro estado (SET NULL, lista que perde um item)
+Bloqueado(motivo)     atinge agregado ainda não coberto → recusa a exclusão inteira
+```
+
+```text
+m.excluir(parent)
+  preflight (antes do SQL):
+    coleta recursiva pelos Excluido; Reescrito acumulado; Bloqueado em qualquer nível → erro
+    excluir vence reescrever (o mesmo agregado nos dois → só Excluido)
+    TODO afetado — Excluido e Reescrito — com divergência aberta ou evento pendente → erro
+    universe_id de todo afetado lido agora; vazio → erro
+serviço executa o DELETE
+fim da transação:
+  Reescrito com linha própria → estado canônico relido → upsert, ANTES das exclusões
+  Excluido  → precisa ter sumido → evento delete (descendentes antes do pai)
+  todos os eventos da ação → UM grupo de mutação (mesmo mutation_id, índices 0..n)   (B2.2)
+  Excluido(A) domina Reescrito(A): agregado condenado não ganha revisão intermediária
+  agregado cujo canônico já é o payload da revisão corrente → nenhum evento
+COMMIT
+```
+
+Desde a B2.2 excluir um item **não reescreve os irmãos**: a posição é por item e nada é compactado. O
+`Reescrito` que sobra é o de quem sobrevive com linha própria (card que perde ligação, evento com entidade
+em nulo).
+
+**Sobrevivente com linha própria sai antes das exclusões.** O estado dele sem o item apagado já é
+materializável, e vir primeiro faz o receptor conhecer a concorrência **antes** do SQL destrutivo: edição
+concorrente abre divergência e a exclusão seguinte é bloqueada. A regra antiga de pôr "ordens" **depois**
+das exclusões morreu com as listas inteiras (B2.2).
+
+**A posição do item sai logo antes do item.** Ela é declarada num lugar só (`impactos_da_exclusao`), para
+nenhum codec esquecer.
+
+**`Excluido(A)` domina `Reescrito(A)`.** Se um agregado já vai desaparecer nesta operação, a reescrita que a
+cascata causaria nele é absorvida — sem revisão intermediária. É o card que possui um campo exclusivo com
+valor dentro dele: apagar o card apaga o campo, e o efeito do campo sobre o card não vira evento. A regra
+está em dois lugares de propósito (`coletar` descarta, `finalizar` ignora), e um teste de mutação que
+remove as duas reprova.
+
+**Exclusão remota com sobrevivente.** Quem recebe a exclusão não bloqueia porque o sobrevivente vai mudar —
+a reescrita dele é o evento seguinte da mesma origem. Bloqueia se o sobrevivente tem **decisão aberta** ou
+**evento pendente de outra história** aqui (`estado_concorrente_para_evento`). Eventos da mesma origem com
+`seq` maior não contam: o lote é guardado inteiro antes de aplicar, e eles são a continuação da mesma
+mutação. Entre os dois eventos, o sobrevivente fica momentaneamente diferente da revisão dele; a asserção
+geral de materialização vale em repouso (8.1).
+
+**Uma ação, um grupo (B2.2).** Tudo o que a exclusão emite — posições, filhos, sobreviventes, a raiz —
+sai com o mesmo `mutation_id`, `kind = delete_tree` e a raiz declarada. No receptor, ou o grupo entra
+inteiro, ou nenhum membro entra (4.6).
+
+Depois de `DELETE FROM parent`, a cascata e os gatilhos já apagaram os descendentes — ninguém consegue mais
+lê-los. **Proibido:** descobrir os afetados depois da cascata.
+
+### 4.4 Exclusão remota: nunca deixar a FK apagar um filho concorrente
+
+Invariante:
+
+> Uma exclusão remota de um agregado pai **não executa o `DELETE` físico** enquanto algum descendente
+> que a cascata destruiria tiver estado concorrente não resolvido. A exclusão fica pendente como
+> conflito (`ParentDeletionBlockedByConcurrentDescendant`), e o filho continua existindo.
+
+```text
+evento delete do pai chega
+  preflight causal dos descendentes (antes de qualquer SQL destrutivo)
+    descendente com divergência aberta, ConcurrentComExclusao, ou evento pendente?
+      → NÃO apaga o pai
+      → registra divergência do pai: exclusão bloqueada por descendente concorrente
+      → o evento fica aplicado como decisão pendente (cursor anda; nada some)
+    nenhum?
+      → DELETE, com tombstone
+```
+
+Os eventos de exclusão dos filhos chegam **antes** do pai (ordem de emissão de 4.3). Num aparelho sem
+concorrência, cada filho é removido pela própria regra causal; quando o pai chega, não resta descendente e
+a cascata não apaga nada que tenha história.
+
+**O evento bloqueado não se repete.** Ele fica marcado como aplicado e a revisão da exclusão entra na
+história; o cursor da origem avança. A mesma exclusão chegando de novo é `JaAplicado`: nenhuma divergência
+nova, nenhum `DELETE`.
+
+#### 4.4.1 Resolução de `parent_deletion_blocked`
+
+O resolvedor (`application/resolucao_divergencia.rs`) lê o `kind` antes de qualquer coisa. Tipo sem
+contrato é recusado; em especial, divergência `concurrent` **não** é resolvida executando uma exclusão
+(a caixa de conciliação dela é a etapa F).
+
+```text
+ManterLocal     pai e descendentes ficam
+                nasce upsert do pai com base_rev = revisão da exclusão remota
+                nos outros aparelhos: base == deleted_rev → Sequential → o pai volta, tombstone sai
+                sobreviventes que a exclusão reescreveria (a ordem do livro) também são declarados:
+                a ordem daqui, que cita o capítulo, vira revisão — a do outro lado, sem ele, vira decisão
+AceitarRemoto   preflight de descendentes refeito AGORA
+                  sobrou filho vivo              → recusa; nada muda; divergência continua aberta
+                  pai alterado depois do bloqueio → recusa
+                  outra divergência/evento pendente do pai → recusa
+                  nada disso                     → DELETE + tombstone com a revisão remota;
+                                                   nenhum evento novo (a revisão já é de todos)
+```
+
+O descendente se resolve antes, por mutação normal (excluir o anexo, por exemplo). Aceitar com base no
+que era verdade no momento do bloqueio deixaria a cascata apagar trabalho criado depois.
+
+**Mudança na classificação causal:** agregado excluído aqui, evento com `base_rev == deleted_rev` é
+`Sequential` (restauração que viu a exclusão). Só a resolução explícita produz essa base; uma edição que
+não viu a exclusão continua `ConcurrentComExclusao`, e nada ressuscita sozinho.
+
+Testes: `resolucao_divergencia::tests` (6) e `domain::sync::tests::restauracao_a_partir_da_revisao_da_exclusao_e_sequencial`.
+
+#### 4.4.1.1 Árvore de efeitos da exclusão de entidade (B3)
+
+Medida no schema migrado, não suposta:
+
+```text
+delete entity
+  ├─ relation (cada uma com a entidade em qualquer ponta)   → Delete   (FK CASCADE nas duas pontas)
+  ├─ canvas_entity_position(entity)                         → Delete   (FK CASCADE)
+  ├─ attachment (owner_type = 'entity')                     → Delete   (trg_entity_attachments_delete)
+  ├─ tag_assignment (owner_type = 'entity')                 → Delete   (trg_entity_metadata_delete)
+  ├─ entity_attributes, content_custom_fields               → interno  (somem com a ficha)
+  ├─ timeline_event (entity_id = E)                         → REWRITE  (FK SET NULL → entityId nulo)
+  ├─ mentions                                               → local, fora do sync
+  └─ planning_field_links (entity_id)                       → BLOQUEADO até a B4
+```
+
+Emissão: os excluídos primeiro (relação, posição, anexo, marcação), a entidade, e por último a
+reescrita de cada evento da linha do tempo — que é relido depois do `DELETE`, já com `entityId` nulo.
+
+#### 4.4.1.2 O gatilho que reescreve vários cards (B4)
+
+```text
+delete planning_field_definition F
+  ├─ trg_planning_field_definition_delete   tira a chave de F do JSON de CADA card do universo
+  ├─ FK planning_field_links.field_definition_id CASCADE   apaga as relações de F em cada card
+  └─ efeito declarado: Rewrite(card A), Rewrite(card B), Rewrite(card C), …
+```
+
+Os dois mecanismos atingem o mesmo agregado (o card), e a união deles é declarada como `Reescrito`
+antes do `DELETE`. Cada card afetado é relido depois do SQL e ganha **revisão própria**. Card com
+divergência aberta ou evento pendente recusa a exclusão inteira, como qualquer reescrita (4.3).
+
+Sem isso, uma exclusão reescreveria quarenta cards emitindo um evento só — a escrita invisível que
+abriu a NH-079.
+
+#### 4.4.2 Fronteira SQLite × blob store
+
+O arquivo do anexo é gravado dentro da `Mutacao`, mas o sistema de arquivos não participa do `ROLLBACK`.
+
+```text
+blob publicado → linha + evento → COMMIT     ok
+blob publicado → falha → ROLLBACK            blob órfão
+linha commitada → blob ausente               PROIBIDO (por isso o arquivo vem sempre antes)
+```
+
+Política:
+
+| resto | destino |
+| --- | --- |
+| blob publicado sem referência (rollback, seed recusado) | fica. Endereçado por conteúdo: inofensivo e reaproveitado se a ação for repetida. Não há GC de blob publicado (ADR 0010 §11) — pode ser de um backup ou de evento que outro aparelho ainda vai pedir; GC só com regra causal, depois da G |
+| `.part` em `blob-staging/` (queda no meio da escrita) | removido uma vez por arranque, antes do preparo do banco, se tiver mais de 1 h (`BlobStore::limpar_staging_abandonado`) |
+
+Testes: `mutacao::tests::rollback_depois_do_blob_deixa_so_o_arquivo_orfao_e_repetir_o_reaproveita`,
+`blob_store::tests::limpeza_de_staging_so_leva_part_abandonado`.
+
+### 4.6 Grupos de mutação: a atomicidade atravessa a rede (B2.2)
+
+A `Mutacao` é uma transação na origem. Até a B2.2, na rede ela virava eventos independentes, e o receptor
+podia aplicar metade de uma ação:
+
+```text
+PC apaga o livro (c1, c2)        Android cria o capítulo "novo" offline
+Android aplica: c1 some · c2 some · o livro é bloqueado por "novo"      → livro pela metade
+```
+
+Na B2 isso não acontecia **por acidente**: a lista inteira `chapter_order` entrava em divergência e travava
+cada exclusão de capítulo. A B2.2 tirou a lista e expôs o problema real: a unidade de atomicidade era
+pequena demais.
+
+**O envelope carrega a ação** (migration 23):
+
+```text
+mutation_id      o mesmo para todo evento de uma Mutacao::executar
+mutation_index   0..count, contíguo, na ordem de emissão
+mutation_count   quantos membros a ação tem
+mutation_kind    "delete_tree" quando a ação é uma exclusão composta
+root_type/_id    a raiz da exclusão: o que a decisão apresenta ao escritor
+```
+
+**Entra na assinatura, fica fora da revisão.** O grupo descreve a ação, não o estado do agregado: apagar
+c1 sozinho ou como parte do livro é o mesmo efeito sobre c1 e dá a mesma `new_rev`. Mas reagrupar eventos
+no caminho — tirar um membro, mudar a contagem — invalida a assinatura. Evento sem grupo (anterior à v23)
+mantém os bytes assinados de antes.
+
+**A identidade de um grupo é `(origem, mutation_id)`.** Duas origens podem gerar o mesmo id; o
+receptor lê os membros pela origem e pela seq, a resolução pela origem do evento em que a decisão foi
+ancorada, e o índice é `(device_id, mutation_id)`.
+
+**A forma do grupo é conferida antes de guardar e antes de iterar.** `1 ≤ count ≤ 50 000`,
+`0 ≤ index < count`, `mutation_id` de até 128 bytes, e evento sem id tem a forma de um membro só.
+Fora disso a sessão falha fechada e nada entra no log — mesmo com assinatura válida. A drenagem
+confere de novo (`usize::try_from`, `checked_add` na seq) antes de dimensionar qualquer coisa, e a
+origem recusa emitir uma ação acima do teto.
+
+**No receptor:**
+
+```text
+grupo incompleto                   → guarda, não aplica nenhum membro, o cursor espera
+grupo completo, num SAVEPOINT, membro a membro:
+  todos entram                     → confirma
+  um membro espera dependência     → desfaz tudo, o grupo espera
+  um membro diverge ou é bloqueado → desfaz tudo; UMA decisão da ação, com o mutation_id, ancorada
+                                     na RAIZ quando é uma exclusão composta (senão no membro que
+                                     não entrou); revisões de todos os membros entram na
+                                     história e os eventos ficam aplicados (o cursor anda)
+  erro                             → a sessão inteira falha fechada
+```
+
+**Regra estrita, decidida:** membro concorrente de **qualquer** tipo — inclusive edição contra edição —
+segura o grupo inteiro. Duas reordenações que colidem num capítulo não se misturam: aplicar só a parte
+que não colidiu comporia uma ordem que nenhum dos dois escritores escolheu. Cada lado fica com a sua até
+a decisão.
+
+**A decisão vale para a ação.** `estado_concorrente` considera em decisão todo agregado que é membro de um
+grupo com decisão aberta — não só a âncora. A resolução (4.4.1):
+
+```text
+manter o local   fecha a causalidade de TODO membro (tabela abaixo)
+aceitar          refaz AGORA o preflight de cada membro, na ordem, e aplica todos numa transação;
+                 sobrevivente reescrito pela exclusão e editado aqui depois da base NÃO recebe o
+                 payload da origem: a exclusão roda sobre o estado daqui e ele ganha revisão nova,
+                 descendente da reescrita da origem (a edição local fica, a origem a recebe como
+                 sequencial)
+```
+
+**Manter o local fecha a causalidade de todo membro.** Depois dela, a revisão corrente de cada
+agregado da ação descende da revisão que a origem emitiu. Um membro deixado para trás — mesmo com o
+estado igual — faria o próximo evento de quem partiu da revisão da origem virar decisão fantasma.
+
+```text
+membro   aqui                       efeito
+upsert   existe, payload igual      adota new_rev da origem; sem evento
+upsert   existe, payload diferente  o estado daqui vira revisão nova sobre new_rev da origem
+upsert   não existe (excluído aqui) exclusão nova sobre new_rev da origem
+delete   não existe                 adota new_rev da origem como tombstone; sem evento
+delete   existe                     restauração sobre o tombstone da origem
+```
+
+A reafirmação sai **da raiz para as folhas, depois os sobreviventes** — o contrário da ação da
+origem. O card que cita o campo restaurado não materializa antes do campo; na ordem da origem, o
+receptor seguraria a ação inteira esperando uma dependência que vem dentro dela.
+
+**O lote da troca não corta uma ação ao meio.** O receptor não aplica grupo incompleto e o vetor dele só
+anda pelo aplicado: um lote que terminasse no meio de um grupo maior que ele faria a sessão seguinte pedir o
+mesmo começo para sempre. Ao atingir o limite dentro de um grupo, a resposta completa o grupo.
+
+### 4.7 Identidade de conflito × identidade de ação (B6)
+
+Duas identidades convivem no Sync V2, e **misturá-las é erro**:
+
+```text
+identidade da AÇÃO      (origem, mutation_id)          quais eventos entram juntos (B2.2)
+identidade do CONFLITO  conflict_key + participantes   qual conflito é este, visto de qualquer
+                                                       aparelho (B6, migration 24)
+```
+
+O `mutation_id` é sorteado em cada aparelho: **sozinho ele não identifica nada**, e toda leitura
+dele passa pela origem do evento âncora. A `conflict_key` é derivada do conteúdo do conflito:
+
+```text
+ConflictParticipant { aggregateType, aggregateId, revision, operation }
+participants = sort(a, b)            byte-wise, sobre a codificação canônica
+conflictKey  = SHA256("narrahub-conflict-v1" + conflictKind + canonical(participants))
+```
+
+Cada campo entra precedido do tamanho: `entityType` é texto do escritor e pode conter qualquer
+caractere, então delimitador seria ambíguo. A ordenação é o que apaga a perspectiva — cada aparelho
+vê um lado como "seu". E os participantes são **estruturalmente iguais**, o que é o que faz a chave
+funcionar para `tag_name_conflict`, onde os dois lados são agregados diferentes.
+
+`sync_divergences` continua sendo índice local: `local_rev`/`remote_rev` ficam, porque o resolvedor
+precisa deles. O fato causal replicável (`conflict_resolution`, com `aggregateId = conflictKey`) é
+da etapa F — §5.1.
+
+### 4.5 Gates
+
+1. **Estrutural:** serviços sincronizáveis não chamam `database.write()` fora da `Mutacao`; repositórios da
+   mutação não abrem transação.
+2. **Comportamental:** para cada escrita coberta, depois da operação, todo agregado sincronizável tem
+   `Codec::ler_canonico == payload da revisão corrente`; linha sem revisão, ou revisão sem linha, reprova.
+3. **Dois aparelhos:** operação no A, eventos no B, estado canônico igual.
+4. **Falha injetada** (só em build de teste): antes do evento, depois da mutação e antes do commit, durante
+   a geração do evento → nada persiste; repetir a operação produz uma revisão só.
+5. **Escopo e posse:** afetado sem `universe_id` derruba a transação inteira (nunca evento com universo
+   vazio); a coleta de descendentes marca visitado antes de descer e recusa ciclo de posse.
+6. **Catálogo de efeitos (B2):** toda FK com ação e todo gatilho que escreve está classificado
+   (`sync_codec::catalogo`); FK/gatilho novo sem classificação reprova, e efeito sobre agregado não coberto
+   precisa declarar a ação enquanto isso.
+7. **Manuscrito inteiro pela fronteira (B2):** `escritas_do_manuscrito_passam_todas_pela_mutacao` varre toda
+   função pública de `manuscript_service` e `universe_service`; a única exceção nomeada é
+   `universe_service::delete`, que recusa e não escreve.
+8. **Dois aparelhos (B2):** `application::sync_manuscrito_testes` — PC → Android e Android → PC para
+   universo, história, livro, capítulo, edição, reorder, exclusão de capítulo/livro/história; união de
+   conteúdo independente; pai excluído com filho concorrente; exclusão que reescreveria card (`SET NULL`)
+   recusada nos dois lados; reescrita de agregado em divergência recusa a exclusão; exclusão de universo
+   recusada local e remotamente; salvar o mesmo estado não gera revisão. Convergência = payload canônico
+   igual nos dois **e** igual ao payload da revisão corrente de cada um.
+9. **Entidades em dois e três aparelhos (B3):** criação/edição/exclusão de entidade, relação, evento e
+   posição PC ↔ Android; atributo como revisão da entidade; entidade editada nos dois lados (as duas
+   revisões ficam); entidade apagada num lado com relação criada no outro; com evento editado no outro;
+   `SET NULL` sem concorrência (o evento sobrevive com `entityId` nulo nos dois); relação, evento e posição
+   que chegam antes das entidades (de outra origem, contíguos — o que segura é a dependência, não a lacuna
+   de `seq`); três origens com a relação de A citando entidade de C; `clear_layout`; evento que troca de
+   entidade recusado.
+10. **Planejamento em dois e três aparelhos (B4):** card, quadro e propriedades PC ↔ Android; mover card
+    não revisa o conteúdo; excluir card leva os campos exclusivos e reescreve o quadro; excluir
+    propriedade reescreve **todos** os cards afetados (um evento por card); excluir capítulo deixa
+    `chapterId` nulo; excluir história e entidade tiram a ligação com revisão do card; card editado num
+    lado × propriedade apagada no outro (decisão, com a edição preservada no log); card movido num lado ×
+    ficha editada no outro (agregados diferentes, sem conflito); card de outra origem que depende de
+    entidade, história e propriedade que ainda não chegaram.
+11. **Conhecimento e canvas em dois e três aparelhos (B5):** mover o elemento num lado × escrever nele no
+    outro (agregados diferentes, sem conflito); excluir elemento emite ligação e posição antes do nó;
+    excluir **entidade** leva a ligação nos dois aparelhos; elemento apagado num lado × ligação criada no
+    outro (exclusão bloqueada, ligação preservada); ligação que chega antes das pontas espera por elas
+    (três origens); a mesma marcação criada dos dois lados converge sem divergência e sem duplicar linha;
+    tag renomeada num lado × marcada no outro; tag homônima dos dois lados vira `tag_name_conflict` sem
+    aplicar nem alterar nada; tag apagada num lado × card editado no outro bloqueia a exclusão.
+12. **Autoral × efêmero (B5):** `sync_codec::efemero` — nenhuma coluna do banco inteiro com nome de estado
+    de tela sem decisão escrita; toda coluna das tabelas da B5 com destino declarado (payload de qual
+    agregado, ou local com motivo).
+13. **Materialização exata (B2):** cada evento aplicado um por vez com o estado conferido
+   (`cada_aplicado_materializa_o_proprio_evento`); asserção geral em repouso depois de toda sessão dos testes
+   de dois aparelhos; causalidade cruzada A/B/C (`posicao_que_cita_capitulo_de_outra_origem_espera_o_capitulo_chegar`);
+   posição exata, empatada, de item ausente e de outro pai; pai trocado em `story`/`book`/`chapter`.
+14. **Posição por item (B2.2):** histórias, livros, capítulos, propriedades, anexos e cards criados ao mesmo
+    tempo nos dois aparelhos convergem **sem nenhuma divergência** e mostram a **mesma ordem**; o mesmo
+    capítulo movido nos dois lados diverge só nele; movido num lado e excluído no outro não perde nada;
+    mover o card e editar o conteúdo não conflitam; excluir um capítulo não revisa os irmãos. Os testes
+    rodaram contra listas e posições convivendo antes de remover as listas, e falharam pelo motivo certo.
+15. **Grupos de mutação (B2.2):** livro excluído num lado com capítulo criado no outro fica inteiro;
+    exclusão bloqueada por anexo concorrente não deixa posição órfã, e "manter o local" restaura a ação
+    inteira; ação que chega pela metade não toca o domínio até completar em outra sessão; falha injetada no
+    meio do grupo não deixa membro aplicado; lote menor que a ação entrega a ação inteira; o grupo entra na
+    assinatura, fica fora da revisão, e evento sem grupo mantém a assinatura antiga. Manter o local: com
+    três aparelhos, estado igual com revisão diferente adota a da origem e a edição seguinte de um
+    terceiro entra como sequencial; card excluído aqui vira exclusão sobre a reescrita da origem;
+    exclusão dos dois lados adota o tombstone da origem sem evento; a restauração sai da raiz para as
+    folhas. Grupo de forma absurda é recusado sem entrar no log, e o que já estiver no log não é
+    iterado; o mesmo `mutation_id` em duas origens são dois grupos, tanto na resolução quanto no
+    estado concorrente (teste isolado de `estado_concorrente`).
+16. **Gênese (C, motor):** a adoção recusa acontecer antes do backfill de mídia; adota o acervo inteiro
+    (nenhum agregado coberto fica sem revisão) e a revisão de cada um é o estado do banco; a gênese
+    **aplica inteira** num aparelho novo, sem pendência nem reconciliação — o gate que prova que
+    nenhuma dependência aponta para `seq` posterior; dois aparelhos que adotam o mesmo acervo chegam
+    às mesmas revisões e não divergem ao parear; a segunda adoção é no-op; falha no meio não deixa
+    evento, estado causal nem linha de adoção; banco novo não emite nada; órfão depois de adotado é
+    falha fechada; o card que cita campo próprio é adotado em duas revisões. Todo tipo coberto tem
+    enumerador e precedência declarados.
+17. **Arranque (C):** com pendência de mídia, o texto é lido e a escrita é recusada — comando de
+    domínio falha, nenhum evento nasce, e o sync recusa; resolvida a pendência, o arranque seguinte
+    converte, adota, libera a escrita e a revisão corrente do agregado afetado descreve o estado.
+    Banco legado abre, converte a mídia, adota sozinho e libera; banco novo adota
+    zero e registra a versão; falha de adoção não libera e cai em `RecoveryRequired` com a causa
+    real; reinício depois de adotado é no-op (nenhum evento, cursor parado); órfão em acervo
+    adotado derruba o arranque sem adotar nada; a mídia é convertida **antes** de a gênese
+    registrar o estado (provado pelo payload da revisão de gênese, não pela ordem das chamadas);
+    a migration, sozinha, não declara `Ready`.
+18. **Identidade portátil de conflito (B6):** os dois aparelhos calculam a mesma `conflict_key` e os
+    mesmos participantes, em edição×edição e em tag homônima (onde os papéis se invertem); a fixture
+    nativa de schema 24 tem as três formas de conflito, e o gate **decodifica** os participantes em
+    vez de confiar no texto; banco migrado deixa a identidade vazia em vez de inventá-la.
+19. **Cobertura total (B6):** toda escrita pública de serviço passa pela `Mutacao` ou está declarada
+    como estado local, com motivo — e declaração obsoleta derruba o gate; todo efeito de exclusão do
+    catálogo atinge agregado coberto; contribuição aprovada vira revisão e chega ao outro aparelho;
+    uma entidade tem no máximo uma posição, agora por restrição do banco.
+
+## 5. Negociação de compatibilidade (etapa E)
+
+O `Hello` é a primeira mensagem de aplicação dos dois modos: vem **depois** da `SessaoAutenticada`
+(identidade provada, canal cifrado) e **antes** de `Estado`/`Autorizacao` e de qualquer
+persistência. É a única mensagem de formato permanente.
+
+```text
+Hello { protocolo, formato_canonico, formato_do_bundle, modo, app }
+```
+
+| campo | fonte | decide |
+| --- | --- | --- |
+| `protocolo` | `sync_sessao::PROTOCOLO_DO_SYNC` = 1 | diferente ⇒ aborta no Hello |
+| `formato_canonico` | `sync_codec::FORMATO_CANONICO_ATUAL` (= `genese::VERSAO_DA_ADOCAO`, por construção) | diferente ⇒ aborta no Hello |
+| `modo` | o quadro em claro, repetido dentro do canal cifrado | diferente ⇒ aborta no Hello |
+| `formato_do_bundle` | hash das colunas (`PRAGMA`) das tabelas transferidas, na ordem de semeadura | só depois do `Estado`: Doador/Receptor ⇒ precisa bater, senão aborta **antes** de capturar; Par ⇒ irrelevante |
+| `app` | versão do pacote | nunca decide; só entra na mensagem |
+
+Igualdade exata: não há faixa enquanto só uma versão é suportada. **A versão do schema não entra:**
+o incremental não depende dela, e o bootstrap depende só das colunas das tabelas transferidas, que é o
+que `formato_do_bundle` mede. Incompatibilidade é tipada (`FalhaDaSessao::Incompativel`) e chega à
+tela como `conflict`.
+
+**Sync V2 anterior ao Hello (0.10.0-beta.1/beta.2) não interopera.** Sem decodificador antigo nem
+downgrade. Ele abre com `Estado`/`Autorizacao` onde se espera `Hello` e é classificado como
+`PeerLegado`, com zero escrita. O PIN já foi consumido quando o Hello chega: incompatibilidade depois
+da autenticação não devolve a validade do código.
+
+O estado causal que uma instalação beta carrega depois do upgrade é outro assunto (migração local, não
+fio): a atualização **gira a época causal** — identidade nova, passado pré-Hello arquivado em
+`sync_legado`, gênese canônica completa e delete-genesis das exclusões com prova. A sessão exige a
+época marcada (`epoca::exigir_epoca`). Detalhes e gates em `AUDITORIA_E0_BETA.md`.
+
+**Previsto antes e não implementado nesta etapa:** `hashAlgorithm` (hoje só existe `sha256`, que é
+parte do protocolo 1) e o **vetor de prova** — a revisão de um agregado de referência compilado nos
+dois lados, que pegaria canonicalização divergente mesmo com o mesmo `formato_canonico` declarado.
+Ficam como backlog.
+
+## 5.1 Resolução de conflito como fato causal (etapa F)
+
+Resolver um conflito é uma **`Mutacao` normal** que viaja como **um grupo atômico** de kind
+`resolution`, com raiz `conflict_resolution/<conflictKey>`:
+
+```text
+membro 0     conflict_resolution/<conflictKey>   upsert, base ROOT — o certificado
+membros 1..N os efeitos                          upsert/delete sobre os agregados do conflito
+```
+
+O certificado (payload canônico, sem timestamp, aparelho nem nada local):
+
+```text
+{ conflictKey, kind, participantA, participantB, choice,
+  results: sort([{ aggregateType, aggregateId, operation, baseRev, otherRev, resultRev }]) }
+```
+
+A mesma decisão sobre o mesmo conflito produz a mesma revisão em qualquer aparelho — é por isso que
+duas decisões iguais convergem sem conflito, e duas diferentes viram `concurrent` sobre
+`conflict_resolution/K` (resolvido pelo mesmo mecanismo, recursivamente; não existe kind
+`resolution_conflict`).
+
+**Regra de dois pais — só depois de validar o certificado inteiro** (`sync_codec::resolucao::validar_grupo`,
+antes do SAVEPOINT; qualquer falha recusa o grupo com zero materialização):
+
+- a chave recalculada de `kind` + participantes é a `conflictKey`, que é o `aggregateId` do membro 0 e
+  a raiz do grupo;
+- os participantes estão na ordem canônica e o `kind` é conhecido;
+- `results[]` tem exatamente os membros 1..N — mesma contagem, sem agregado repetido, cada um com a
+  mesma operação, `baseRev` e `resultRev`, e `resultRev = compute_revision(baseRev, agregado, op, payload)`;
+- o efeito sobre o agregado do conflito parte de uma revisão participante e, quando declara
+  `otherRev`, o par é exatamente o par de participantes;
+- a escolha casa com o efeito: `a`/`b`/`auto` ⇒ a base é a revisão escolhida e a operação é a dela;
+  `(kind, choice)` está na tabela de escolhas permitidas.
+
+Só então cada efeito aplica como **sequencial com dois pais** (`sync_apply::apply_efeito_de_resolucao`):
+R1 — `otherRev` presente, as duas revisões conhecidas e a cabeça local ∈ par; R2 — o agregado nunca
+materializou aqui e a base é conhecida (ou um pendente é superado). Fora disso o efeito cai no
+`apply_remote_event` comum: se a cabeça andou (F21: A1×B1, B1→B2, e só então chega a decisão), **B2
+não é sobrescrito** e nasce uma concorrência nova.
+
+| conflito | ações | observação |
+| --- | --- | --- |
+| upsert × upsert | `ficarComA` / `ficarComB` | payloads idênticos resolvem sozinhos, com `cr/K` e uma revisão final nova |
+| upsert × delete | `restaurar` / `manterExclusao` | `manterExclusao` refaz o preflight de exclusão |
+| delete × delete | automática | junção causal, base = participante A, uma revisão final; `classify` não mudou |
+| grupo × grupo | decisão da ação inteira | todos os efeitos no mesmo grupo |
+| `parent_deletion_blocked` | `manterLocal` / `aceitarExclusao` | o mecanismo da §4.4.1, agora sob o certificado |
+| `tag_name_conflict` | `renomear` / `mesclar` | mesclar move todas as marcações para a tag do participante A e exclui a outra, numa `Mutacao` |
+
+**Migration 28**: `conflict_resolutions(conflict_key PK, universe_id, kind, certificate)` — estado,
+bootstrap (entra no bundle depois de `attachments`), cobertura do codec e fixture nativa
+`fixtures/schema28_native.sql`; `sync_divergences.resolution_rev` guarda a revisão que fechou o
+conflito. **`FORMATO_CANONICO_ATUAL = VERSAO_DA_ADOCAO = 2`**; o protocolo continua 1. Um par no
+formato 1 é recusado no `Hello`; o histórico não é reemitido.
+
+**Fronteira da tela**: o frontend chama `sync_conflitos_listar` (filtro por universo, tipo de
+agregado, kind, estado), `sync_conflito_inspecionar`, `sync_conflito_resolver` e
+`sync_v2_aviso_de_epoca`, e recebe DTOs prontos (título legível, as duas versões com payload
+estruturado, diff de texto e campo a campo, ações permitidas). Ele nunca vê `sync_events`,
+`sync_divergences`, `conflict_resolutions` nem envelope — gate F15 em
+`tests/frontend-boundaries.test.mjs`. O panorama conta `sync_divergences` abertas, não o V1.
+
+**Gates**: F1–F21 em `application/resolucao_testes.rs`. Mutações que precisam derrubar ≥ 1 gate:
+sem conferir a chave, sem cabeça ∈ par, sem conferir `results[]`, sem atomicidade do grupo, sem
+delete × delete automático.
+
+**Limitações conhecidas**: a regra de par para efeitos irmãos/meta é de conhecimento genérico, não
+amarrada à chave; R2 poderia ressuscitar um agregado cujo tombstone o GC já podou; a superação de
+pergunta obsoleta só cobre sucessão remota; "manter local" num conflito de grupo exclui as criações
+que só existem no outro lado; mesclar tags exige que os donos das marcações existam localmente.
+
+**Riscos para o hardening** (registrados no fechamento da F; `BACKLOG`, fase *Hardening pré-release
+estável*; não bloqueiam a G e não reabrem a F — ver `TASKS.md`):
+
+| id | risco | o que precisa existir antes da release estável |
+| --- | --- | --- |
+| H-R1 | resolução antiga chegando depois de o GC coletar o tombstone participante: sem cabeça local, a R2 pode tratar como primeira materialização | gate que prove que não há ressurreição nem sobrescrita silenciosa |
+| H-R2 | efeitos irmãos/meta de um grupo `resolution`: `results[]` garante coerência estrutural, mas a regra de par desses efeitos não é amarrada à chave | restringir o que cada `(kind, choice)` pode tocar, ou provar que um certificado válido não autoriza efeitos semanticamente arbitrários |
+| H-R3 | conflito V1 legado: `sync_conflicts.remote_value` guarda uma alternativa (B) que não está no conteúdo materializado (A) e não viaja no bootstrap V2 — se o último aparelho com o legado sair de uso, B some sem decisão do usuário | banco legado com conflito A/B → upgrade → bootstrap → saída do último aparelho com o legado resulta em **B preservado em artefato/histórico transferível** ou em **aviso explícito aceito pelo usuário**; nunca perda silenciosa |
+
+**H-R3 em detalhe.** Registrado na abertura da etapa H, depois de a G (§5.2) tirar a trava que
+recusava o bootstrap com conflito V1 aberto. Status: **hardening, obrigatório antes da release
+estável**; não reabre a G, não bloqueia o desenvolvimento da H, bloqueia a release estável enquanto
+aberto. Restrições: **não** reintroduzir o Sync V1; **não** converter automaticamente
+`sync_conflicts` em `sync_divergences` V2; **não** inventar payload canônico completo a partir de
+um conflito por campo; preservar a compatibilidade de upgrade. A etapa H trata H-R1, H-R2 e H-R3
+em conjunto.
+
+## 5.2 Remoção do Sync V1 (etapa G)
+
+**Sync V1 = removido do runtime. Sync V2 = único protocolo alcançável.**
+
+Inventário (G0) — A produção alcançável · B migração/compatibilidade histórica · C só teste · D morto:
+
+| peça | classe | destino |
+| --- | --- | --- |
+| `src-tauri/src/sync.rs` (snapshot de 17 tabelas por TCP, código de 6 dígitos, LWW por `updated_at`, grava `sync_conflicts`) | A | **removido** |
+| comandos `sync_status/start/stop/connect` + `SyncState` no `lib.rs` | A | **removidos** |
+| `core/native/sync.service.ts` (`SyncService`) | A | **removido** |
+| `SyncServerStatus`, `SyncResult` (`core/models`) | A | **removidos** |
+| `SettingsStore`: `syncStatus`, `syncBusy`, `startSync/stopSync/connectSync`, travas `syncV1Blocked/syncV2Blocked` | A | **removidos** |
+| Configurações: cartões "Receber sincronização" e "Conectar a outro dispositivo"; "Não use junto com a sincronização antiga"; título "(teste de campo)" | A | **removidos** |
+| restaurar backup com "sincronização ativa" (tela e layout) | A | passa a olhar a escuta do V2 |
+| `sync_snapshot::capturar` lendo `sync_conflicts` (`ConflitoV1Aberto`) e `sync_conflicts` como `BloqueiaBootstrap` | A | **removido**; a tabela vira legado local (`LocalNaoTransferida`) |
+| `sync_panorama` | — | já lia `sync_divergences` desde a F |
+| tabelas `sync_conflicts`, `sync_peers`, `devices` (migration 1) | B | **ficam**, sem `DROP` |
+| conversão de mídia do ADR 0010 sobre `sync_conflicts` (superfície 9) no arranque | B | fica: migra banco antigo antes de `Ready` |
+| `epoca::PRESERVADAS_NA_ROTACAO`, `midia::FORA_DO_EVENTO`, catálogo do bootstrap | B | ficam: listas de classificação, sem SQL |
+| gate `estado.rs` sobre o `database_path` do V1 | C | removido junto com o V1 |
+| testes de conflito V1 na captura | C | substituídos pelos gates G9/G11 |
+| `sync_peers`, `devices` | D | nunca tiveram escritor |
+
+**Por que não há `DROP`.** `sync_conflicts` é a única cópia da versão perdedora de um conflito V1
+(o V1 gravava e nunca teve tela para resolver), e as outras duas nunca tiveram escritor: apagá-las
+exigiria uma migration nova só para remover bytes históricos, com fixture e upgrade próprios, sem
+ganho de runtime. O que importa é que nada vivo as leia ou escreva, e isso é provado.
+
+**Por que a captura deixou de recusar conflito V1 aberto.** A trava protegia a versão remota de
+ser esquecida pelo aparelho novo — mas mandava o escritor "resolver os conflitos", e não existe
+(nem nunca existiu) como resolver um conflito V1. Sem o V1, a trava viraria um aparelho que nunca
+mais doa o acervo. A linha continua no banco do doador, intacta; ela só não viaja, como nunca viajou.
+
+**Gates.**
+
+| gate | onde |
+| --- | --- |
+| G1 nenhum comando V1 registrado | `database::legado_v1::g1_…` e `ETAPA G — G1` (JS) |
+| G2 frontend sem serviço/store/API V1 | `ETAPA G — G2/G12` (JS) |
+| G3 panorama e contador leem só `sync_divergences` | `ETAPA G — G3` (JS) + `sync_panorama` (inserção V1 não conta) |
+| G4 PIN só V2 · G5 pareado só V2 | `ETAPA G — G4/G5` (JS) + `sync_sessao::g_o_fluxo_do_v2_nao_le_nem_escreve_o_legado_do_v1` |
+| G6 conflitos V2 funcionando | o mesmo gate de sessão (listar → inspecionar → resolver → propagar) + F1–F21 |
+| G7 upgrade de banco antigo | `database::legado_v1::g7_…` (schema 15 com legado V1 → 28 → arranque `Ready`, `integrity_check`, `foreign_key_check`) |
+| G8 beta.2 → atual pela E0 | `epoca_testes` (fixtures `beta2`) |
+| G9 banco novo elegível | `receptor_que_ja_passou_pelo_arranque_ainda_recebe_bootstrap`, `receptor_com_legado_v1_continua_elegivel` |
+| G10/G11 nenhuma escrita/leitura V1 em runtime | vigia pelo **autorizador do SQLite** (`legado_v1::vigia`, instalado em toda conexão por `apply_pragmas`) no fluxo inteiro sobre TCP real; `o_vigia_pega_leitura_e_escrita_do_legado` prova que ele morde |
+| G12 reintrodução impedida | `database::legado_v1::g12_…` (Rust, código de produção) e `ETAPA G — G2/G12` (JS) |
+
+**Busca global (G6).** O que resta dos termos do V1, e por quê:
+
+| referência | arquivo | motivo de ainda existir |
+| --- | --- | --- |
+| `CREATE TABLE devices/sync_peers/sync_conflicts`, comentários da v16 | `database/migrations.rs` | migration histórica |
+| `TABELAS_DO_SYNC_V1`, vigia | `database/legado_v1.rs` | catálogo do legado e gates |
+| superfície 9 (`sync_conflicts`), `Escritor::ProtocoloV1` | `infrastructure/sqlite/blob_surfaces.rs` | migração histórica de mídia (ADR 0010) |
+| `ORDEM_DOS_DOCUMENTOS` | `infrastructure/sqlite/blob_backfill.rs` | migração histórica de mídia |
+| catálogo `LocalNaoTransferida` | `infrastructure/sqlite/sync_snapshot.rs` | classificação de legado, sem SQL |
+| `PRESERVADAS_NA_ROTACAO` | `application/epoca.rs` | migração de época (E0-beta) |
+| `FORA_DO_EVENTO` | `infrastructure/sqlite/sync_codec/midia.rs` | classificação de legado, sem SQL |
+| `INSERT INTO sync_conflicts…` em `#[cfg(test)]` | `sync_snapshot`, `blob_backfill`, `blob_surfaces`, `blob_document`, `sync_panorama`, `sync_sessao`, `migrations` | teste de upgrade / gate de ausência |
+| linhas `sync_conflicts`/`sync_peers` | `fixtures/beta2/*.sql`, `fixtures/schema20_native.sql`, `schema21_native.sql` | fixture histórica |
+| "Não toca no Sync V1", guarda de símbolos | `sync_sessao.rs`, `sync_pin_pairing.rs`, `sync_v2_commands.rs` | documentação histórica e gate |
+| `sync_start` etc. em testes JS | `tests/rust-core-contract.test.mjs` | gate de ausência |
+| ADRs, levantamentos, plano de evolução | `docs/ADR/0008`, `0009`, `0010`, `docs/ETAPA_14_LEVANTAMENTO.md`, `docs/ARCHITECTURE_EVOLUTION_PLAN.md`, `docs/sync/*` | documentação histórica |
+
+Nenhuma ocorrência em caminho de produção que leia, escreva ou chame o V1.
+
+## 5.3 Hardening final (etapa H)
+
+A–G provaram que a sincronização funciona. A H prova o que os casos extremos **não** conseguem, com
+uma prioridade acima de todas: **perda silenciosa é proibida**. Conflito explícito a mais, espera e
+fail closed são respostas aceitáveis; convergência que engole edição, não.
+
+### H-R1 — ausência não é prova de "nunca existiu"
+
+O tombstone é o que separa "foi apagado" de "nunca existiu" (`AggregateHistory::deleted_rev`). Se um
+GC futuro coletasse o tombstone e deixasse a história, a regra R2 leria o agregado como nunca
+materializado e uma resolução antiga o ressuscitaria. A R2 agora exige **prova positiva**, e só
+estas duas valem:
+
+```text
+1  história VAZIA e o evento-base exato guardado como pendente, nunca aplicado
+   → a resolução o substitui no mesmo grupo atômico
+
+2  TODA revisão conhecida entrou por uma DECISÃO registrada aqui
+   (conflito de nome de tag, exclusão bloqueada, decisão de grupo)
+   → a revisão está na história e o domínio nunca foi tocado
+```
+
+A prova do caso 2 liga cada revisão ao evento que a trouxe, e esse evento a uma divergência daqui:
+ou é o `remote_event_id` dela, ou é membro do mesmo grupo (mesma origem, mesmo `mutation_id`) da
+âncora. Uma exclusão cujo tombstone sumiu deixa revisões materializadas que nenhuma decisão explica
+— R2 proibida, classificador comum, espera ou concorrência.
+
+**A barreira contra o GC futuro:** toda remoção de `sync_tombstones` passa por
+`sync_repository::remover_tombstone(_, _, RemocaoDeTombstone)`, com três motivos e nenhum de coleta:
+`SucessorCausalAplicado`, `EfeitoDeResolucao`, `RestauracaoDecidida`. O GC físico **não foi
+implementado** nesta etapa: `sync_gc::tombstones_coletaveis` continua sendo só a prova de
+coletabilidade, sem chamador de produção. Quem o implementar terá de acrescentar a variante, de
+propósito, e passar por H1–H6.
+
+### H-R2 — `other_rev` não é autoridade
+
+`validar_grupo` prova que o certificado é coerente **consigo mesmo**. Ele não prova que um efeito
+sobre um agregado que não é participante tem o direito de unir duas cabeças. Sem isso, um efeito
+auxiliar qualquer — tipo plausível, revisões válidas, `other_rev` conhecido — usaria a regra de dois
+pais para sobrescrever uma edição concorrente num agregado alheio ao conflito.
+
+O conjunto legítimo é derivado **no receptor**, do que ele sabe, e não do certificado: são os
+membros da ação original de cada participante — mesma origem, mesmo `mutation_id` do evento que
+produziu a revisão participante. Uma regra só cobre os quatro casos:
+
+```text
+grupo × grupo             os membros reais das duas ações
+upsert × delete           a posição do item, que saiu na mesma ação da exclusão
+parent_deletion_blocked   os efeitos da exclusão bloqueada (impactos_da_exclusao)
+decisão × decisão         os efeitos das duas decisões comparadas (cada uma é um grupo)
+```
+
+E o que se prova é o **par inteiro**, não uma das pontas. Conhecer uma revisão da ação não diz nada
+sobre a outra:
+
+```text
+ação legítima      X0 → X1
+o receptor andou   X1 → X2
+certificado diz    base = X1, other = X2
+```
+
+Com "base ∈ ação **ou** other ∈ ação", esse par passaria — e a R1 sobrescreveria o X2 do receptor,
+que a ação nunca viu (achado na revisão do PR #73). O par só vale quando é exatamente um destes:
+
+```text
+A  a aresta da própria ação       { membro.baseRev, membro.newRev }
+B  as cabeças das DUAS ações      { membroDeA.newRev, membroDeB.newRev }
+```
+
+A cobre o auxiliar que saiu junto na mesma ação — a posição que a exclusão levou, o descendente da
+exclusão bloqueada. B cobre o agregado que as duas ações concorrentes tocaram: grupo × grupo e
+decisão × decisão. Para isso, `membros_da_acao_de` carrega de cada membro `aggregateType`,
+`aggregateId`, `baseRev`, `newRev` e `operation` — a aresta, não só a revisão final.
+
+**E a ação é identificada pelo `event_id`, não pela revisão.** `new_rev` é determinístico e
+`sync_events` não tem `UNIQUE` por revisão: a mesma revisão R pode estar em dois envelopes, de
+mutações diferentes — uma com o auxiliar X, outra sem. Procurar por `new_rev = R` autorizaria X por
+sorte. A cadeia é:
+
+```text
+sync_revision_history.event_id  →  sync_events.event_id  →  device_id + mutation_id  →  membros
+```
+
+História sem `event_id`, envelope ausente aqui, ou revisão que este aparelho nunca registrou: **sem
+prova**, e sem prova não há junção especial.
+
+Fora disso, o `other_rev` é descartado e o efeito segue como evento comum:
+
+```text
+Sequential      → aplica
+AlreadyPresent  → idempotente
+Concurrent      → nova divergência (o grupo inteiro vira decisão)
+Unknown         → espera
+```
+
+Um terceiro aparelho sem os eventos da ação cai aqui: sem prova, sem junção especial. **Isto não
+recusa o certificado** — certificado inválido é o que `validar_grupo` recusa; aqui é falta de prova
+local, e a diferença importa justamente para o terceiro aparelho. O formato do certificado não
+mudou: `FORMATO_CANONICO_ATUAL` continua 2 e o protocolo continua 1.
+
+### H-R3 — a caixa de recuperação do legado (migration 29)
+
+`sync_conflicts` guarda uma alternativa (`remote_value`) que não está no conteúdo materializado e
+não viaja no bootstrap. A migration 29 cria `legacy_recovery_items`, **local e não causal**, com o
+inventário do que ainda precisa de decisão:
+
+```text
+migrations
+   ↓
+conversão de mídia do legado (ADR 0010)    ← a versão antiga ganha as referências de blob
+   ↓
+importar()                                  ← pré-`Ready`, idempotente por source_conflict_id
+   ↓
+Ready                                       ← depois daqui ninguém lê sync_conflicts (G11)
+```
+
+O import copia só os conflitos ainda abertos e **nunca altera** `sync_conflicts`; `ON CONFLICT DO
+NOTHING`, nunca `REPLACE`, então um item preservado ou descartado não volta a pendente. Em
+Configurações, o aviso aparece enquanto houver pendência e **não pode ser silenciado**. Na tela
+`/settings/recuperacao-sync-antigo` ("Versões antigas para recuperar" — o escritor não precisa saber
+o que era "Sync V1"), cada item tem duas saídas e nenhuma automática:
+
+| ação | o que acontece |
+| --- | --- |
+| preservar | vira um capítulo **novo** (id novo, livro confirmado pelo escritor) por `Mutacao` normal — revisão, evento, outbox, Sync V2. Criar o capítulo e marcar `preserved` é a mesma transação: ou tudo, ou nada |
+| descartar | sai da caixa, com confirmação explícita na tela; a linha histórica do V1 continua intacta |
+
+Substituir o capítulo atual **não** é oferecido: não existe causalidade V2 para uma decisão
+histórica, e inventar uma seria o oposto do que as etapas F e G construíram.
+
+### Gates
+
+| gate | prova |
+| --- | --- |
+| H1 · H2 | exclusão + tombstone coletado + resolução antiga: sem ressurreição, sem sobrescrita |
+| H3 | o caso legítimo da R2 (pendente nunca materializado) continua funcionando |
+| H4 | sem cabeça e sem tombstone, mas com história antiga: R2 proibida |
+| H5 | restauração decidida continua removendo o tombstone |
+| H6 | nenhum caminho de produção coleta tombstone; os motivos são exatamente três |
+| H7 | efeito sobre participante mantém a junção de dois pais |
+| H8 · H9 | efeito auxiliar alheio não sobrescreve, e o conflito fica explícito |
+| H10 | auxiliar ligado à ação original (a posição do item) mantém a junção |
+| H11 | terceiro aparelho sem índice local não perde edição |
+| H12 · H13 · H14 | mescla de tags, exclusão bloqueada e resolução de grupo não alcançam agregado de fora |
+| H15 | decisão concorrente continua resolvível recursivamente |
+| H28 | par auxiliar fora da ação (`{X1, X2}`, com X2 produzido depois pelo receptor) não sobrescreve: a posição nova fica, e o conflito vira pergunta |
+| H29 | duas ações produzindo a MESMA revisão: a ação é a que a história local aponta pelo `event_id`, e o auxiliar da outra não ganha junção (com a prova positiva inversa) |
+| H16 | migration 29 de 1→29 e de 28→29, `integrity_check` e `foreign_key_check` limpos |
+| H17 | o import traz a versão antiga já convertida e preserva a linha de origem |
+| H18 | dez arranques, uma pendência; decisão não volta a pendente |
+| H19 | conflito V1 já resolvido não vira pendência |
+| H20 | o aviso aparece e reaparece enquanto houver pendência (E2E) |
+| H21 | preservar cria capítulo novo que chega ao outro aparelho pelo Sync V2 |
+| H22 | queda em qualquer ponto da preservação: nem capítulo órfão, nem status falso |
+| H23 | preservar duas vezes não duplica |
+| H24 | descartar exige confirmação (E2E) e não toca no legado V1 |
+| H25 | backup e restauração preservam a caixa com os estados |
+| H26 | banco novo ou sem legado não ganha pendência nenhuma |
+| H27 | depois de `Ready`, nada lê nem escreve `sync_conflicts` (autorizador do SQLite) |
+
+Além deles: a **matriz determinística dos estados perigosos** (cabeça ausente/escolhida/outra/
+terceira, tombstone presente/ausente/coletado, história vazia/antiga, efeito com e sem par), as
+**permutações de entrega** (tudo de uma vez, decisão repetida, decisão antes dos participantes) e
+duas regressões — blob ausente segura o grupo inteiro (D12), e o legado V1 não bloqueia o bootstrap
+enquanto a divergência V2 aberta continua bloqueando.
+
+### O que a etapa H não fez, de propósito
+
+GC de tombstones, reintrodução do Sync V1, conversão automática de `sync_conflicts` em
+`sync_divergences`, resolução automática do legado, qualquer uso de relógio para causalidade,
+mudança no Noise/Hello/protocolo e aumento do formato canônico.
+
+## 5.4 A etapa I: qualificação física
+
+A arquitetura ficou congelada no merge da H. A etapa I provou o Sync V2 em aparelhos reais — Windows 11
+x64 e Samsung Galaxy S23 (Android 16) na mesma LAN, instalados pelos artefatos de distribuição — e
+registrou cada gate como PASS/FAIL/BLOCKED em `docs/qualification/SYNC_V2_PHYSICAL_QUALIFICATION.md`.
+
+| Gate | O que o aparelho real provou | Status |
+| --- | --- | --- |
+| I1 | instalador NSIS e APK assinado instalam, abrem, criam banco e reabrem sem reaplicar migration | PASS |
+| I2 | pareamento por PIN entre instalações novas; identidades diferentes; segunda sessão sem PIN | PASS |
+| I3 / I4 | bootstrap nos dois sentidos, com o Android como doador; 0/0 depois da reabertura | PASS |
+| I5 | edições nos dois lados sem sessão no meio convergem; segunda sessão 0/0 | PASS |
+| I6 | A → S23 → C sem A falar com C (C = terceira instalação desktop) | PASS |
+| I7–I10 | conflito W × A resolvido em cada lado; restaurar e manter exclusão; decisões concorrentes viram conflito novo; delete × delete converge | PASS |
+| I11–I13 | blobs de 7,8 MB com Wi-Fi cortado e app morto no meio: nada pela metade, retomada completa, SHA conferido | PASS |
+| I14 | segundo plano / tela bloqueada: sessão não começa, nada se perde; volta sozinha com o app na tela | PASS (limitação) |
+| I15 | PIN errado, código morto, interrupção, cancelamento: roster intocado; retry válido funciona | PASS |
+| I16 | nenhum aparelho refaz bootstrap depois de fechado e reaberto | PASS |
+| I17 | banco 0.9.2 com conflito V1 → caixa de versões antigas → B preservado → chega ao Android como capítulo V2 | PASS |
+| I18 | 600 capítulos, 200 entidades, 14 blobs: bootstrap 58 s, sem ANR | PASS |
+| I19 | bancos finais íntegros, 0 divergências, 0 pendentes, 0 grupos incompletos | PASS |
+| I20 | reinstalação gera identidade nova e exige reparear | PASS |
+
+Gates automatizados acrescentados pela I (todos vermelhos sem a correção correspondente):
+`migration-safety` (janela dos perfis), `rust-core-contract` (evento de sessão atendida),
+`e2e/sync-session-feedback` (aviso e releitura, código vencido, escuta na tela), `e2e/sync-conflicts`
+(rolagem, fonte, identificadores, "e abrir para editar", confirmação em dois toques),
+`sync_pin_pairing::codigo_vencido_diz_que_o_codigo_nao_foi_aceito`,
+`resolucao_testes::ibug07_conflito_entre_decisoes_mostra_o_capitulo_que_cada_uma_produz`,
+`sync_wire::{falha_ao_abrir_a_conexao_diz_o_que_fazer, silencio_diz_para_deixar_o_app_do_celular_na_tela}`,
+`atualizacao_android::ibug09_tls_embutido_e_aceito_pelo_reqwest` e dois contratos em
+`android-release` (arranque procura a beta pelo canal Android; cliente HTTPS com raízes embutidas).
+
+Nada no núcleo causal mudou: protocolo 1, formato canônico 2, migration 29, wire, Hello, Noise e
+`conflict_resolution` intactos. As correções foram de tela, texto, configuração de janela e TLS do
+atualizador Android.
+
+## 6. Legado e conversões
+
+- `blob_backfill` (imagens antigas) roda **antes** da gênese (etapa C). Desde a C isso é cobrado no
+  código: a adoção recusa acontecer com pendência de mídia aberta.
+- Depois que o banco entra no V2, toda mutação sincronizável causada por conversão ou migração de dados passa
+  pela `Mutacao` — ou por mecanismo que produza exatamente o mesmo resultado causal, documentado e testado.
+
+## 6.0 A etapa C: adoção do acervo (gênese)
+
+A ordem é obrigatória, e cada seta é uma pré-condição verificada:
+
+```text
+estado legado → backfills obrigatórios → GÊNESE → baseline / snapshot / bootstrap
+```
+
+**O que a gênese é.** Para cada agregado coberto que existe no domínio e não tem revisão corrente,
+emite a **primeira** revisão dele, com `base_rev` = raiz. Não muda domínio: escreve evento, estado
+causal e `sync_applied_events`. Não inventa história anterior nem atribui autoria a quem escreveu
+antes.
+
+**Determinismo, dito com precisão:**
+
+```text
+mesma identidade de agregado + mesmo payload canônico + base_rev = raiz  →  mesma revisão de gênese
+```
+
+É o que `compute_revision` calcula, e nada além. Dois aparelhos que adotem cópias do mesmo acervo
+produzem eventos próprios com as **mesmas** revisões, e o pareamento reconhece em vez de divergir.
+
+**Forma do evento.** Criação normal, num grupo de um membro:
+
+```text
+operation = upsert · base_rev = raiz
+mutation_id = novo · index = 0 · count = 1 · kind = "genesis" · root vazio
+```
+
+O `kind` é assinado (B2.2) e serve de registro; ele **não** muda nenhuma decisão de aplicação. Um
+grupo único com o acervo inteiro estouraria o teto de membros e transformaria a adoção numa unidade
+de decisão só.
+
+**Ordem de emissão: topológica pelas dependências reais dos codecs.** Não basta o receptor saber
+esperar: o cursor de uma origem é contíguo, então um evento que dependa de outro com `seq` posterior
+trava a origem para sempre. O único ciclo real do grafo é o card que cita um campo exclusivo dele —
+desfeito em três eventos (card sem o valor, campo, card completo), que é a mesma sequência que o
+caminho incremental produziria.
+
+**Adoção versionada.** A chave é `canonical_format_version` (`sync_adoptions`), e a etapa C conclui
+a versão 1. A linha só existe quando a adoção **conclui** — não há estado "em andamento", porque a
+adoção inteira é uma transação e a queda desfaz tudo, inclusive a linha. Recuperação: versão não
+concluída ⇒ executar de novo.
+
+**Depois de adotado, órfão é falha fechada.** Agregado coberto sem revisão num banco adotado não é
+adotado em silêncio: uma cobertura nova exige declarar uma adoção versionada nova.
+
+**Custo medido, e um defeito achado no caminho.** A adoção de 100 mil capítulos (200 mil
+agregados) leva 2min18 numa transação só — linear, então o plano B por universo não foi
+necessário. A primeira medição dava 827 s para 10 mil capítulos, e a causa era anterior à etapa C:
+o avanço de cursor usava `ON CONFLICT DO UPDATE`, e o SQLite dispara o gatilho `BEFORE INSERT`
+antes de resolver o conflito — o gatilho de contiguidade conta os eventos desde o baseline, então
+**toda escrita local** pagava O(n) no tamanho do próprio log. Trocado por UPDATE-primeiro, com gate
+textual para não voltar.
+
+**A adoção é cobrada em dois lugares, e não é redundância.** `sync_snapshot::capturar` recusa
+produzir bundle com agregado sem revisão (`FalhaDeCaptura::AcervoNaoAdotado`), e a sessão
+(`parear_por_pin`, `sincronizar_com`, `atender_conexao`) recusa antes de abrir a rede. A captura é
+a rede embaixo: ela impede qualquer chamador, inclusive um novo, de produzir bundle desonesto.
+
+**O arranque tem a ordem no código, e fases próprias no estado do banco:**
+
+```text
+migrations (database::upgrade)  → UpgradingBlobs
+  → conversão de mídia          → Adopting
+  → adoção do acervo            → Ready           → leitura e escrita liberadas, sync liberado
+                                → ReadyReadOnly   → só leitura, quando ficou pendência de mídia
+```
+
+`FaseDoBanco` ganhou `UpgradingBlobs` e `Adopting`, e as duas recusam comando de domínio como
+`Migrating` já recusava — a guarda de `interface::tauri::database` é a mesma. `Ready` deixou de ser
+declarado pela migration: quem declara é `application::arranque::preparar_acervo`, depois das duas
+etapas. Erro na mídia, na adoção ou órfão ⇒ `RecoveryRequired`, o caminho do ADR 0007: banco
+preservado, comandos recusados, causa legível.
+
+**Pendência de mídia: `ReadyReadOnly`, a fase degradada.** Imagem legada que o aplicativo não
+consegue converter não trava o acervo — o ADR 0010 diz que ela não pode tirar o escritor do texto
+dele. Mas ela também **não autoriza escrever**:
+
+```text
+leitura do acervo   permitida
+escrita de domínio  recusada (o handle nasce somente-leitura; a Mutacao pede escrita e para ali)
+sync / bundle       recusados (acervo sem adoção)
+```
+
+O motivo é causal, não cautelar. Escrever antes da conversão faria a `Mutacao` criar a revisão do
+agregado; a conversão mudaria o `coverBlobHash` logo depois; e a gênese **pularia** esse agregado,
+por ele já ter revisão corrente. O resultado seria uma revisão corrente que não descreve mais o
+banco — o estado que toda a etapa B existe para impedir.
+
+`ReadyReadOnly` não é `RecoveryRequired`: não há erro nem inconsistência, há trabalho pendente. A
+saída é resolver a mídia e abrir de novo.
+
+**Captura de bundle exige acervo adotado** (`FalhaDeCaptura::AcervoNaoAdotado`). O bundle carrega
+estado; sem gênese, o receptor nasceria com conteúdo que nenhum evento sustenta. O vetor causal
+continua sendo o vetor **por origem** — o baseline do receptor é derivado dele, e não um número
+global único.
+
+## 6.0.1 A etapa D: primeiro pareamento entre acervos
+
+Reconciliação bidirecional por evento sobre duas gêneses independentes; snapshot só semeia aparelho
+virgem. Três correções saíram do diagnóstico e entram antes de qualquer outra coisa da D:
+
+**D0 — ter aberto o aplicativo não é acervo.** `sync_adoptions` (`ProtocoloNaoTransferido`) saiu de
+`tabelas_que_bloqueiam`: o arranque adota "nada" num aparelho novo, e essa marca tornava todo aparelho
+real inelegível a bootstrap. Escrita de domínio continua tirando a virgindade.
+
+**D13 — o doador confere antes e admite depois do `Semeado { ok: true }`.**
+
+```text
+antes   admite → captura → envia → Semeado{ok:false}  →  doador pareado, receptor não
+agora   confere (só leitura) → captura → envia → Semeado{ok:true} → admite → incremental
+```
+
+Nada de admitir e desfazer: não existe instante em que o roster diga o que a sessão ainda não provou.
+As recusas da admissão (o próprio aparelho, aparelho abandonado ou aposentado) continuam antes de o
+acervo sair — `sync_trust::conferir_admissao_por_pareamento`, a mesma conferência que
+`admitir_por_pareamento` faz antes de gravar.
+
+**D12 — o blob é dependência de materialização.** Envelope válido entra em `sync_events`; se ele cita
+blob ausente ou que não confere o SHA aqui:
+
+```text
+domínio                 não muda
+revisão corrente        não muda
+sync_applied_events     não marca
+cursor                  não anda
+grupo de mutação        nenhum membro materializa
+```
+
+Blob ausente é **espera**, não divergência: nenhum conflict kind novo, nenhum evento apagado.
+
+| peça | onde |
+| --- | --- |
+| referências de blob de um payload, por tipo e propriedade | `sync_codec::midia::CAMPOS_DE_BLOB` / `blobs_do_evento` |
+| superfícies do ADR 0010 que não viajam em evento, com motivo | `sync_codec::midia::FORA_DO_EVENTO` |
+| checagem obrigatória, isolado e grupo (antes do savepoint) | `sync_session::receber_eventos(.., blobs)` → `Midia::faltam` |
+| blobs citados por pendentes, inclusive de sessões antigas | `sync_session::blobs_dos_pendentes` |
+| pedir → `put_esperando` (SHA) → drenar de novo | `sync_sessao::puxar_blobs` |
+| sobrou evento esperando blob | a sessão termina com erro "incompleta", **depois** de servir o outro lado |
+
+A checagem mora na drenagem, e não na rede: é a drenagem que reavalia pendentes de sessões antigas, e
+a rede só pré-busca. Evento que não vai materializar nada não espera blob (já aplicado por `event_id`,
+ou revisão já conhecida). Os gates que não são sobre mídia chamam
+`receber_eventos_sem_conferir_blobs`, que só existe em `cfg(test)`.
+
+Gates: `sync_session::tests::d12_*` (disponível, ausente, corrompido aqui, grupo com um blob
+ausente, pendente antigo bloqueado + retry aplica uma vez), `sync_sessao::tests::d_blob_*` (peer sem o
+blob; peer com bytes que não conferem; retry posterior), `midia::tests::toda_superficie_binaria_esta_classificada`,
+`sync_manuscrito_testes::d_extracao_de_blob_cobre_o_payload_real_de_cada_superficie` e
+`sync_sessao::tests::d_bootstrap_que_falha_nao_deixa_pareamento_pela_metade`. Mutação medida:
+desligar `Midia::faltam` reprova 6 dos 7 gates de blob (o "disponível" é o controle); admitir antes
+de doar reprova o gate da D13.
+
+## 6.1 Decisões registradas para a B6, antes da gênese
+
+Duas coisas precisam estar resolvidas **antes** de a etapa C adotar os bancos, e nenhuma delas entra na
+B3:
+
+1. ~~**`UNIQUE(entity_id)` em `canvas_entity_positions`.**~~ **Resolvido na B6 (migration 25.)** A
+   decisão, escrita antes de qualquer `DELETE`: fica a linha cujo universo é o **da entidade**;
+   empate resolve por `updated_at` e depois por `universe_id` (BINARY). A auditoria não é um
+   relatório que alguém leria uma vez — as linhas perdedoras vão para
+   `canvas_entity_positions_descartadas`, com data e motivo, e essa tabela é `LocalNaoTransferida`
+   no bootstrap: é evidência deste arquivo, não acervo. A `PRIMARY KEY (universe_id, entity_id)`
+   fica; o que entra é o índice único que faltava. A recusa por dentro do codec continua, como
+   rede para um banco que chegue sem o índice.
+2. **`entity_template_set` em vez de linha por linha.** **Implementado na B6.** `entity_templates` (fichas em branco por tipo, por
+   universo) não tem escritor no app e é consumido **em conjunto** pela criação de entidade. Sincronizar
+   cada linha pelo `id` legado faria dois aparelhos criarem "o mesmo template" com ids diferentes. A
+   modelagem a implementar na B6:
+
+   ```text
+   entity_template_set
+   identity = (universeId, entityType)
+   payload  = [ { key, defaultValue }, … ]    em ordem canônica (sort_order, key)
+   ```
+
+   Determinístico, sem id de linha no payload, e é o conjunto inteiro que vira uma revisão. (Diferente
+   de ordem: a B2.2 mostrou que ordem como conjunto inteiro conflita onde não há conflito.)
+3. ~~**`attachment_order(owner)`**~~ e 4. ~~**`planning_field_order(universe)`**~~ — **resolvidos pela
+   B2.2**, e não como agregados de lista. Os testes da B6 mostraram que lista inteira transforma criações
+   concorrentes compatíveis em divergência. A ordem da galeria e a das propriedades convergem agora por
+   `attachment_position` e `planning_field_position`, um agregado por item.
+
+## 7. Subdivisão da B
+
+Nenhuma PR declara cobertura completa; cada uma atualiza as suas linhas da seção 2.
+
+```text
+B1  infraestrutura: Mutacao, exclusão com preflight, exclusão remota bloqueada;
+    chapter (update, delete) + attachment migrados; gates 1–4        — sem cobertura nova além disso
+B2  manuscrito: universe, story, book, chapter create, chapter_order, custom fields, tag assignments por gatilho
+B2.1 story_order(universe), book_order(story) — antes da C       (substituída pela B2.2)
+B2.2 posição por item no lugar das listas inteiras; grupos de mutação atômicos  ← implementada
+B3  entidades: entity (+atributos), relation, timeline_event, canvas_entity_position  ← implementada
+B4  planejamento: planning_item, planning_order, planning_field_definition (gatilho que reescreve cards)
+B5  conhecimento e canvas: content_tag (+update_tag), tag_assignment, canvas_node,
+    canvas_node_position, canvas_edge; attachment definitivo; gate autoral × efêmero  ← implementada
+B6  identidade portátil de conflito (item 9); entity_template_set; UNIQUE(entity_id) da posição
+    com backfill auditável; conteúdo aprovado na colaboração pela Mutacao; helper canônico de
+    ação remota nos testes; gate de cobertura total
+C   gênese: adoção versionada (migration 26), enumerador canônico, ordem topológica, e o
+    arranque que a executa: migrations → mídia → adoção → Ready → sync  ← CLOSED
+```
+
+## 8. Payload canônico do manuscrito (B2)
+
+Um formato, uma função por tipo: `sync_codec::ler_canonico` é usada pela `Mutacao` e será usada pela
+gênese (etapa C). **Mesmo estado semântico ⇒ mesmo payload canônico**; a revisão, por sua vez, é
+função dos inputs causais — o payload **e** o `base_rev`. O formato está fixado por vetor em
+`manuscrito::tests::formato_canonico_fixado_por_vetor`; mudá-lo exige `canonicalFormatVersion` novo (seção 5).
+
+Regras comuns: JSON compacto de `serde_json`, campos na ordem abaixo, nomes em camelCase, strings como
+estão no banco (sem normalização Unicode), campo desconhecido **recusado** na leitura (`deny_unknown_fields`).
+Campos personalizados: `[{key, value}]` na ordem `sort_order, key`.
+
+| tipo | id do agregado | payload | fica de fora |
+| --- | --- | --- | --- |
+| `universe` | `universes.id` | `{id, name, description, coverBlobHash, coverMimeType, customFields}` | `created_at`, `updated_at`, `cover_image` (bytes legados) |
+| `story` | `stories.id` | `{id, universeId, name, description, customFields}` | `sort_order` (→ `story_position`), timestamps |
+| `book` | `books.id` | `{id, storyId, name, description, coverBlobHash, coverMimeType, customFields}` | `sort_order` (→ `book_position`), timestamps, `cover_image` |
+| `chapter` | `chapters.id` | `{id, bookId, title, content, summary, sceneOrigin, sceneDestination, status, canonStatus, customFields}` | `sort_order` (→ `chapter_position`), `word_count` (derivável), timestamps |
+| `story_position` | `stories.id` | `{storyId, universeId, sortOrder}` | timestamps |
+| `book_position` | `books.id` | `{bookId, storyId, sortOrder}` | timestamps |
+| `chapter_position` | `chapters.id` | `{chapterId, bookId, sortOrder}` | timestamps |
+| `planning_field_position` | `planning_field_definitions.id` | `{fieldId, universeId, sortOrder}` | timestamps |
+| `attachment_position` | `attachments.id` | `{attachmentId, ownerType, ownerId, sortOrder}` | `created_at` |
+| `planning_item_position` | `planning_items.id` | `{itemId, universeId, status, sortOrder}` | timestamps |
+| `tag_assignment` | `tagId:ownerType:ownerId` | `{tagId, ownerType, ownerId}` | `id` da linha (local), `created_at` |
+| `entity` | `entities.id` | `{id, universeId, type, name, description, summary, canonStatus, imageBlobHash, imageMimeType, attributes:[{key,value}], customFields:[{key,value}]}` | timestamps, `image` legada, ids e `sort_order` das linhas internas |
+| `relation` | `relations.id` | `{id, universeId, sourceId, targetId, type, label, bidirectional, importance}` | `created_at` |
+| `timeline_event` | `timeline_events.id` | `{id, universeId, title, description, eventType, startDate, endDate, entityId, displayDate, sortKey}` | timestamps |
+| `canvas_entity_position` | `entities.id` | `{entityId, universeId, positionX, positionY}` | `updated_at` |
+| `planning_item` | `planning_items.id` | `{id, universeId, chapterId, title, description, targetWords, imageBlobHash, imageMimeType, values:[{fieldId,value}], links:[{fieldId,kind,targetId}]}` | `status` e `sort_order` (→ `planning_item_position`), timestamps, `image` legada, ids das linhas de ligação |
+| `planning_field_definition` | `planning_field_definitions.id` | `{id, universeId, name, fieldType, options, scope, ownerItemId}` | timestamps, `sort_order` (→ `planning_field_position`) |
+
+Decisões que valem conferir na revisão:
+
+- **`word_count` fora.** Quem recebe recalcula em Rust com a mesma regra do editor
+  (`sync_codec/palavras.rs`); a paridade é conferida pelos dois lados sobre
+  `src-tauri/fixtures/contagem_de_palavras.json` (Rust e `tests/word-count-parity.test.mjs`).
+- **Posição por item (B2.2).** A ordem é um número por item, materializado no `sort_order` que já existe —
+  sem tabela nova. Toda listagem ordena por `sort_order, id`: empate é estado válido (duas criações offline
+  podem receber o mesmo número) e se resolve igual em todo aparelho. Nada é compactado na exclusão.
+
+  ```text
+  criar     item + posição(item)            MAX(sort_order) + 1
+  excluir   posição(item) + item            os irmãos não ganham revisão
+  mover     só as posições que mudaram      conflito na unidade certa
+  ```
+
+- **Capa legada bloqueia.** Capa ainda em base64 (`hash` vazio) não vira payload: a leitura canônica recusa
+  e a mutação falha sem alterar nada, até o backfill converter.
+
+**Decisões da B3 que valem conferir:**
+
+- **Atributos são internos.** `entity_attributes` não tem evento próprio: salvar ou remover um atributo é
+  **uma revisão da entidade**, e a lista do payload substitui a daqui inteira na aplicação.
+- **`entityId` do evento é mutável só para nulo.** É a única transição que o app produz (`SET NULL` na
+  exclusão da entidade). Apontar para outra entidade é inconsistência.
+- **A entidade de um evento se destaca, e não se reancora.** Para uma linha que já existe:
+
+  ```text
+  Some(E) → Some(E)    ok
+  Some(E) → None       ok       é o SET NULL da exclusão da entidade
+  Some(E1) → Some(E2)  recusa
+  None → Some(E)       recusa
+  None → None          ok
+  ```
+
+  Linha nova nasce com entidade ou sem, à vontade.
+- **Uma entidade tem uma posição.** O agregado é identificado só pela entidade, e a PK física é
+  `(universe_id, entity_id)`: o schema deixaria duas linhas. `ler_posicao` responde 0 → não existe,
+  1 → estado canônico, mais de uma → **erro de inconsistência** (nunca escolhe uma). Um evento que
+  criaria a segunda é recusado sem gravar.
+- **Números.** `sortKey` e `positionX/Y` são `REAL`. A serialização do `serde_json` é a representação
+  mínima que faz round-trip — determinística para os mesmos bits; valor não finito é recusado na leitura.
+  Dois aparelhos convergem no payload quando têm o mesmo `f64`, que é o que a replicação entrega.
+- **Posição do grafo é autoral e sincroniza; viewport não.** Zoom, pan, seleção e hover vivem na memória
+  do componente e não passam por serviço nenhum. `clear_layout` exclui cada posição, com evento.
+
+**Decisões da B4 que valem conferir:**
+
+- **Valores do card: duas tabelas, um conceito, sem duplicata.** `custom_field_values` (JSON) guarda os
+  **escalares**; `planning_field_links` guarda as **relações** (história, entidade, tag). A migration 13 já
+  moveu as relações que a build de desenvolvimento havia escrito no JSON para a tabela normalizada e
+  limpou o JSON — não há legado a migrar nem duas fontes de verdade. As duas coisas são estado interno do
+  card: mudar um campo é **uma revisão do `planning_item`**, nunca um evento por linha ou por link.
+- **Etapa e posição são do lugar do card, não do conteúdo.** Arrastar altera só `planning_item_position`
+  do card arrastado; o conteúdo não ganha revisão. Salvar a ficha também revisa a posição quando a etapa
+  muda — e não emite nada se ela não mudou. (Até a B2.2 isto era uma lista do universo, `planning_order`.)
+- **`ownerItemId` é dependência causal explícita.** Um campo de escopo `card` não existe sem o card dono e
+  some com ele (FK `owner_item_id ON DELETE CASCADE`), então excluir o card declara a exclusão do campo.
+  Escopo `universal` com dono, ou escopo `card` sem dono, é inconsistência.
+- **`sort_order` das definições ficou fora do payload do campo** e vive em `planning_field_position` (B2.2).
+
+### 8.1 Contrato da aplicação remota (upsert)
+
+```text
+dependencias(evento)                         ANTES de escrever
+  Err(inconsistência)   nunca fica válida    → erro; a sessão para; nada é marcado
+  Ok(Some(falta))       ainda pode chegar    → PrecisaReconciliar; não aplica, não marca, cursor espera
+  Ok(None)              → aplica
+conferir_materializacao(evento)              DEPOIS de escrever, na mesma transação
+  ler_canonico(agregado).payload == envelope.payload   (delete: ler_canonico == None)
+  diferente → erro; a transação inteira desfaz
+```
+
+| caso | resultado |
+| --- | --- |
+| pai ainda não existe (`story` sem universo, `book` sem história, `chapter` sem livro, `tag_assignment` sem tag ou dono) | `PrecisaReconciliar` |
+| posição de item que ainda não existe aqui | `PrecisaReconciliar` |
+| posição com pai diferente do item daqui | erro — o pai é imutável |
+| agregado já existe aqui com **outro pai** (`story.universeId`, `book.storyId`, `chapter.bookId`) | erro — **o pai é imutável**: nenhuma escrita do app move história, livro ou capítulo; um evento que diga outro pai descreve outra árvore |
+| posição empatada com a de um irmão | aplica — empate é válido, a listagem desempata pelo `id` |
+
+**Invariante estrutural:** `sync_aggregate_state.current_rev` só é confirmado apontando para uma revisão
+materializada — nunca para conhecimento causal apenas. Por isso nenhuma escrita local parte de uma
+revisão que o domínio nunca teve. Os envelopes continuam guardados no log; só não ficam falsamente
+aplicados. No fim de `receber_eventos`, todo agregado tocado na sessão, sem decisão aberta nem evento
+pendente, é conferido: revisão corrente presente ⇒ `ler_canonico == payload(revisão corrente)`; diferente,
+a sessão inteira não é confirmada.
+
+A **ponte de ordem** da B2.1 saiu na B2.2: ela só existia para destravar listas inteiras que citavam
+filhos de outras origens. Posição por item depende só do próprio item, que é criado antes dela na mesma
+ação.
+
+Se mover capítulo entre livros virar funcionalidade, o contrato muda para "atualiza a FK na mesma
+transação" — e a checagem de materialização continua a mesma.
+
+**Uma validação, dois lados (B3).** `sync_codec::entidades::validar` é a mesma função para o apply
+remoto (`dependencias`) e para a emissão local (`sync_codec::validar_para_emissao`, chamada pela
+`Mutacao` antes de emitir cada evento). A invariante:
+
+> Nenhum evento produzido localmente pode ser estruturalmente inválido para o próprio apply remoto.
+
+No lado remoto, dependência ausente é espera (`PrecisaReconciliar`); no lado local é **erro**, porque o
+estado já está escrito — e o erro acontece dentro da `Mutacao`, então domínio e evento voltam juntos.
+Cobre: `relation.universeId == source.universeId == target.universeId`; evento com entidade no mesmo
+universo; posição no mesmo universo da entidade.
+
+**Entidade, relação, evento e posição (B3):**
+
+| caso | resultado |
+| --- | --- |
+| `entity` com `universeId` diferente do daqui | erro — o universo da entidade é imutável (nenhuma operação do app move entidade de universo) |
+| `relation` cujo `sourceId`/`targetId` não existe aqui | `PrecisaReconciliar` |
+| `relation` cuja ponta existe **em outro universo** | erro — estado incompatível |
+| `relation` com ponta ou universo diferente do que já está aqui | erro — as pontas são imutáveis (o app só cria e exclui relação) |
+| `timeline_event` com `entityId` que não existe aqui | `PrecisaReconciliar` |
+| `timeline_event` cujo `entityId` aponta para OUTRA entidade que não a daqui | erro — trocar a entidade de um evento não é operação do app |
+| `timeline_event` com `entityId: null` sobre um evento que tinha entidade | aplica — é a reescrita do `SET NULL` |
+| `timeline_event` com `entityId` sobre um evento que **já está nulo** aqui | erro — a entidade se destaca e não se reancora |
+| `canvas_entity_position` cuja entidade não existe aqui | `PrecisaReconciliar` |
+| `canvas_entity_position` cuja entidade **já tem posição em outro universo** | erro; a segunda linha não é criada |
+| `sortKey`/`positionX`/`positionY` não finito | erro — não há payload canônico para NaN ou infinito |
+
+**Concorrência nunca altera o estado vivo antes da decisão (B4).** Uma exclusão remota que reescreveria um
+card com edição concorrente **não executa**:
+
+```text
+A edita o valor do campo F no card       B apaga o campo F
+A recebe:  reescrita do card (sem F)  → concorrente → divergência; o card de A fica intacto
+           exclusão de F              → preflight vê o card divergente → o DELETE não roda
+                                      → parent_deletion_blocked
+resolvendo: manter o local  → campo e valor continuam
+            aceitar remoto  → campo e valor somem, e o card ganha revisão por isso
+```
+
+A resolução que aceita a exclusão **declara a reescrita dos sobreviventes**: o card muda porque o campo
+deixou de existir, e isso tem de ser uma revisão dele, não uma alteração muda. A decisão sobre a
+divergência do próprio card (concorrente) continua sendo da etapa F.
+
+**Card, quadro e propriedade (B4):**
+
+| caso | resultado |
+| --- | --- |
+| `planning_item` com `universeId` diferente do daqui | erro — o universo do card é imutável |
+| `chapterId` que não existe aqui | `PrecisaReconciliar` |
+| `chapterId` de capítulo de **outro universo** | erro |
+| valor ou ligação citando `fieldId` que não existe aqui | `PrecisaReconciliar` |
+| `fieldId` de outro universo, ou exclusivo de outro card | erro |
+| ligação cujo alvo (história, entidade, tag) não existe aqui | `PrecisaReconciliar` |
+| ligação cujo alvo está em outro universo | erro |
+| `planning_item_position` de card que não existe aqui | `PrecisaReconciliar` |
+| `planning_item_position` com etapa desconhecida ou card de outro universo | erro |
+| `planning_field_definition` com escopo e dono incoerentes, ou `options` que não é lista | erro |
+
+**Asserção geral de materialização:**
+
+- **Por evento (em produção):** após todo `Applied::Aplicado`, o agregado aplicado é o payload do evento.
+  Agregado sem linha própria (a posição) é exceção só no delete: ele some com o item, que vem depois
+  na mesma ação.
+- **Em repouso (nos testes):** depois de cada sessão, todo agregado **coberto** (a lista vem de
+  `sync_codec::TIPOS_COBERTOS`, não de uma lista à mão — a primeira versão desta asserção citava só os
+  tipos da B2 e por isso não cobria B3 nem B4) com revisão corrente e sem decisão
+  aberta nem evento pendente tem `ler_canonico == payload da revisão corrente`. Não vale **entre** dois
+  eventos de uma mesma mutação para os OUTROS agregados dela (capítulo já excluído, ordem ainda por chegar):
+  uma mutação vira vários eventos. **Isso foi fechado na B2.2**: os eventos de uma mutação formam um grupo,
+  e o receptor aplica o grupo inteiro num `SAVEPOINT` ou nenhum membro dele (4.6).
+
+**Sessão com dependência entre origens.** (B2) A drenagem repete as origens até nenhuma aplicar nada. Antes,
+cada origem era drenada uma vez em ordem de `device_id`: a ordem de A que cita um capítulo de C ficava
+pendente até a sessão seguinte se A viesse antes de C. O teste de três aparelhos encontrou isso.

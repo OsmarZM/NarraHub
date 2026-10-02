@@ -62,6 +62,18 @@ export class WorkspaceSyncService {
    * domínios para coordenar um evento que não é dele.
    */
   async onCollaborationReviewApplied(universeId: string): Promise<void> {
+    await this.refreshAfterExternalWrite(universeId);
+  }
+
+  /**
+   * Efeitos de uma sessão de sincronização que aplicou algo: eventos de outro aparelho gravaram
+   * direto no banco, por fora de todos os stores — inclusive a lista de universos (I-BUG-03).
+   */
+  async onSyncSessionApplied(): Promise<void> {
+    await this.refreshAfterExternalWrite(this.appState.activeUniverseId() ?? '');
+  }
+
+  private async refreshAfterExternalWrite(universeId: string): Promise<void> {
     await this.universeStore.load();
     await this.knowledgeStore.refreshLibraryPreviewTags();
     if (!universeId || this.appState.activeUniverseId() !== universeId) return;

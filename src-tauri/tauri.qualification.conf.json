@@ -4,9 +4,16 @@
   "app": {
     "windows": [
       {
-        "title": "NarraHub — Qualification"
+        "title": "NarraHub — Qualification",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 760,
+        "minHeight": 520,
+        "center": true,
+        "maximized": true,
+        "decorations": false,
+        "resizable": true
       }
     ]
   }
 }
-

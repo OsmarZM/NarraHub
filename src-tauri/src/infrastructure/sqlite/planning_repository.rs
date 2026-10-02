@@ -28,7 +28,7 @@ pub fn list(
                          WHEN 'REVISAO' THEN 3
                          ELSE 4
                        END,
-                       p.sort_order, p.created_at",
+                       p.sort_order, p.id",
         )
         .map_err(map_sqlite_error)?;
     let rows = statement
@@ -207,7 +207,7 @@ pub fn list_field_definitions(
                FROM planning_field_definitions
               WHERE universe_id = ?1
                 AND (?2 IS NULL OR owner_item_id IS NULL OR owner_item_id = ?2)
-              ORDER BY sort_order, created_at",
+              ORDER BY sort_order, id",
         )
         .map_err(map_sqlite_error)?;
     let rows = statement

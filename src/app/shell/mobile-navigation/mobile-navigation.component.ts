@@ -79,6 +79,8 @@ export class MobileNavigationComponent implements OnDestroy {
 
   /** Só o que o template precisa: aria, foco, e se a camada recebe toque. */
   readonly isOpen = signal(false);
+  /** A dica "← Puxe para navegar" da primeira execução. */
+  readonly hintVisible = signal(false);
 
   private readonly zone = inject(NgZone);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
@@ -113,6 +115,9 @@ export class MobileNavigationComponent implements OnDestroy {
   private frame = 0;
   private animation = 0;
   private reducedMotion = false;
+  /** O cartão da frente no último quadro da roda — muda de inteiro, vibra um "clique". */
+  private detent = -1;
+  private hintTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly cleanups: Array<() => void> = [];
 
   constructor() {
@@ -145,12 +150,33 @@ export class MobileNavigationComponent implements OnDestroy {
 
       this.zone.runOutsideAngular(() => this.bindPointer());
       this.requestRender();
+      this.showHintIfNew();
     });
+  }
+
+  // ── dica de primeira execução ─────────────────────────────────────────────
+
+  /**
+   * Mostra "← Puxe para navegar" na primeira vez — e de novo só se `MOBILE_NAV_HINT_VERSION`
+   * mudar, quando o gesto mudar de um jeito que valha reensinar.
+   */
+  private showHintIfNew(): void {
+    if (lerArmazenado(MOBILE_NAV_HINT_KEY) === MOBILE_NAV_HINT_VERSION) return;
+    this.hintVisible.set(true);
+    this.hintTimer = setTimeout(() => this.dismissHint(), MOBILE_NAV_HINT_MS);
+  }
+
+  private dismissHint(): void {
+    if (this.hintTimer) clearTimeout(this.hintTimer);
+    this.hintTimer = null;
+    gravarArmazenado(MOBILE_NAV_HINT_KEY, MOBILE_NAV_HINT_VERSION);
+    if (this.hintVisible()) this.zone.run(() => this.hintVisible.set(false));
   }
 
   ngOnDestroy(): void {
     cancelAnimationFrame(this.frame);
     cancelAnimationFrame(this.animation);
+    if (this.hintTimer) clearTimeout(this.hintTimer);
     this.cleanups.forEach((cleanup) => cleanup());
     document.documentElement.classList.remove('nh-mnav-active');
     document.querySelectorAll<HTMLElement>('[data-nh-mnav-recede]').forEach((alvo) => {
@@ -219,11 +245,14 @@ export class MobileNavigationComponent implements OnDestroy {
       this.gesture = { kind: 'pulling', startX: event.clientX, pointerId: event.pointerId };
       this.samples = [{ x: event.clientX, y: event.clientY, t: event.timeStamp }];
       this.host.nativeElement.classList.add('nh-mnav-pulling');
+      vibrar(8);
       this.requestRender();
     });
 
     listen(layer, 'pointerdown', (event) => {
-      if (this.open < 0.99) return;
+      // Aceita o dedo já na segunda metade da abertura: quem começa a fechar ou girar enquanto a
+      // pilha ainda chega não pode ser ignorado. A animação em curso é cancelada e o gesto assume.
+      if (this.open < 0.5) return;
       cancelAnimationFrame(this.animation);
       // O cartão tocado é lido ANTES da captura: depois dela, todo evento do ponteiro chega
       // com a camada como alvo, e o `pointerup` não saberia mais em qual cartão o dedo estava.
@@ -261,6 +290,7 @@ export class MobileNavigationComponent implements OnDestroy {
       } else if (gesture.kind === 'wheeling') {
         const raw = gesture.startPosition - (event.clientY - gesture.startY) / CARD_SPACING;
         this.position = this.rubberBand(raw);
+        this.tickDetent();
       }
       this.requestRender();
     };
@@ -274,7 +304,10 @@ export class MobileNavigationComponent implements OnDestroy {
     const end = (event: PointerEvent) => {
       const gesture = this.gesture;
       if (gesture.kind === 'idle' || event.pointerId !== gesture.pointerId) return;
-      this.record(event);
+      // O `pointerup` só entra na amostra se o dedo ainda andou. Soltar alguns milissegundos depois
+      // do último movimento, no mesmo ponto, zerava a velocidade — e um peteleco virava toque.
+      const ultimo = this.samples[this.samples.length - 1];
+      if (!ultimo || ultimo.x !== event.clientX || ultimo.y !== event.clientY) this.record(event);
       this.gesture = { kind: 'idle' };
       this.host.nativeElement.classList.remove('nh-mnav-pulling');
       const velocity = this.velocity();
@@ -299,6 +332,14 @@ export class MobileNavigationComponent implements OnDestroy {
     };
     listenWindow('pointerup', end);
     listenWindow('pointercancel', end);
+  }
+
+  /** Cada vez que um novo cartão chega à frente da roda: um "clique" tátil, como numa coroa de relógio. */
+  private tickDetent(): void {
+    const front = Math.round(clamp(this.position, 0, this.options().length - 1));
+    if (front === this.detent) return;
+    if (this.detent >= 0) vibrar(5);
+    this.detent = front;
   }
 
   /** Além das pontas a roda resiste, em vez de parar seco. */
@@ -346,6 +387,10 @@ export class MobileNavigationComponent implements OnDestroy {
 
   private animateOpen(target: number, done?: () => void): void {
     const from = this.open;
+    if (target > 0.5 && from < 0.5) {
+      this.dismissHint();
+      vibrar(12);
+    }
     const duration = this.reducedMotion ? 0 : 320 * Math.abs(target - from) + 60;
     if (target > 0.5) this.setOpenState(true);
     this.tween(duration, (t) => {
@@ -362,6 +407,7 @@ export class MobileNavigationComponent implements OnDestroy {
     const duration = this.reducedMotion ? 0 : 260 + 40 * Math.min(3, Math.abs(target - from));
     this.tween(duration, (t) => {
       this.position = from + (target - from) * easeOutCubic(t);
+      this.tickDetent();
     }, () => {
       this.position = target;
       done?.();
@@ -468,6 +514,39 @@ export class MobileNavigationComponent implements OnDestroy {
         element.toggleAttribute('inert', pose.inert);
       }
     });
+  }
+}
+
+/** Chave e versão da dica de primeira execução. Suba a versão para mostrar a dica de novo. */
+export const MOBILE_NAV_HINT_KEY = 'narrahub.mobileNavigationHintSeen';
+export const MOBILE_NAV_HINT_VERSION = '1';
+const MOBILE_NAV_HINT_MS = 5200;
+
+function lerArmazenado(chave: string): string | null {
+  try {
+    return localStorage.getItem(chave);
+  } catch {
+    return null;
+  }
+}
+
+function gravarArmazenado(chave: string, valor: string): void {
+  try {
+    localStorage.setItem(chave, valor);
+  } catch {
+    // Sem armazenamento a dica volta na próxima abertura; não é erro.
+  }
+}
+
+/**
+ * Resposta tátil leve. `navigator.vibrate` no WebView do Android precisa da permissão
+ * VIBRATE (AndroidManifest.xml); sem ela, ou fora do Android, simplesmente não vibra.
+ */
+function vibrar(ms: number): void {
+  try {
+    navigator.vibrate?.(ms);
+  } catch {
+    // Sem vibração disponível.
   }
 }
 

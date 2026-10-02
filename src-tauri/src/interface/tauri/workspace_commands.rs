@@ -33,17 +33,31 @@ pub fn timeline_create(
     universe_id: String,
     event: NewTimelineEvent,
 ) -> DatabaseCommandResult<String> {
-    workspace_service::create_timeline_event(&super::database(&app)?, &universe_id, event)
+    workspace_service::create_timeline_event(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        &universe_id,
+        event,
+    )
 }
 
 #[tauri::command]
 pub fn timeline_rename(app: AppHandle, id: String, title: String) -> DatabaseCommandResult<()> {
-    workspace_service::rename_timeline_event(&super::database(&app)?, &id, &title)
+    workspace_service::rename_timeline_event(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        &id,
+        &title,
+    )
 }
 
 #[tauri::command]
 pub fn timeline_delete(app: AppHandle, id: String) -> DatabaseCommandResult<()> {
-    workspace_service::delete_timeline_event(&super::database(&app)?, &id)
+    workspace_service::delete_timeline_event(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        &id,
+    )
 }
 
 #[tauri::command]
@@ -56,6 +70,7 @@ pub fn relation_create(
 ) -> DatabaseCommandResult<String> {
     workspace_service::create_relation(
         &super::database(&app)?,
+        &super::sync_identity(&app)?,
         &universe_id,
         &source_id,
         &target_id,
@@ -65,5 +80,5 @@ pub fn relation_create(
 
 #[tauri::command]
 pub fn relation_delete(app: AppHandle, id: String) -> DatabaseCommandResult<()> {
-    workspace_service::delete_relation(&super::database(&app)?, &id)
+    workspace_service::delete_relation(&super::database(&app)?, &super::sync_identity(&app)?, &id)
 }

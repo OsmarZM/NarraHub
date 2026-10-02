@@ -11,9 +11,11 @@ import {
   SimpleChanges,
   ViewChild,
   ViewEncapsulation,
+  inject,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { BlobService } from '../../core/native/blob.service';
+import { ViewportState } from '../../shell/state/viewport.state';
 import { Editor, Extension, Node, mergeAttributes } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
@@ -240,6 +242,7 @@ export class WritingEditorComponent implements AfterViewInit, OnChanges, OnDestr
   private completionFrom = 0;
   private slashFrom = 0;
   private vocabulary = new Map<string, number>();
+  readonly viewport = inject(ViewportState);
   private readonly handleWindowResize = () => { this.resizeTitle(); this.positionAiBubble(); this.positionSlashMenu(); };
   private readonly handleDocumentScroll = () => { this.positionAiBubble(); this.positionSlashMenu(); };
 

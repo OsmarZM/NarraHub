@@ -270,3 +270,49 @@ app-writing-editor {
   .nh-document { width: 100%; min-height: 100%; padding: 36px 22px 80px; border-inline: 0; box-shadow: none; }
   .nh-rich-editor .ProseMirror { min-height: calc(100vh - 300px); font-size: 17px; }
 }
+
+/* ── celular ─────────────────────────────────────────────────────────────────────
+ * Editor de celular: o texto ocupa a tela. Ferramentas numa linha que rola POR DENTRO (nunca
+ * alarga a página), alvos de 40 a 44px, documento sem moldura de página de desktop. A altura vem
+ * do flex do shell mobile, que já encolhe com o teclado, e não de vh.
+ * Modo foco e tela cheia são do desktop: no celular nem são renderizados (template). */
+html.nh-mobile app-writing-editor { min-width: 0; max-width: 100%; }
+
+html.nh-mobile app-writing-editor .nh-editor-toolbar {
+  min-width: 0;
+  max-width: 100%;
+  max-height: none;
+  flex-wrap: nowrap;
+  gap: 2px;
+  margin: 0;
+  padding: 4px 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  scrollbar-width: none;
+}
+html.nh-mobile app-writing-editor .nh-editor-toolbar::-webkit-scrollbar { display: none; }
+html.nh-mobile app-writing-editor .nh-toolbar-group { flex: 0 0 auto; border-right: 0; }
+html.nh-mobile app-writing-editor :is(.nh-editor-toolbar button, .nh-editor-toolbar select) { min-width: 40px; min-height: 42px; font-size: 15px; white-space: nowrap; }
+html.nh-mobile app-writing-editor .nh-editor-toolbar select { max-width: 128px; font-size: 16px; }
+
+html.nh-mobile app-writing-editor .nh-document-scroll { padding: 0 0 24px; overscroll-behavior: contain; }
+html.nh-mobile app-writing-editor .nh-document {
+  width: 100%;
+  max-width: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 20px var(--nh-mobile-gutter, 16px) 64px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+html.nh-mobile app-writing-editor .nh-rich-editor .ProseMirror { min-height: 40vh; font-size: 18px; line-height: 1.7; }
+html.nh-mobile app-writing-editor .nh-editor-warning { margin: 6px var(--nh-mobile-gutter, 16px) 0; font-size: 13px; }

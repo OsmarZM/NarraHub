@@ -1,5 +1,7 @@
 use crate::application::blob_fields;
+use crate::application::mutacao::Mutacao;
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
+use crate::domain::identity::DeviceIdentity;
 use crate::domain::ids::{new_id, now_timestamp};
 use crate::domain::universe::{Universe, UniverseStats, UniverseUpdate, UniverseWithStats};
 use crate::infrastructure::blob_store::BlobStore;
@@ -39,13 +41,11 @@ pub fn stats(database: &SqliteDatabase, universe_id: &str) -> DatabaseCommandRes
     universe_repository::stats(&connection, universe_id)
 }
 
-/// Cria o universo numa gravação só.
-///
-/// O caminho antigo inseria e depois fazia um `UPDATE` separado quando havia
-/// capa — duas idas ao banco, e uma janela em que o universo existia sem capa.
+/// Cria o universo numa gravação só, pela `Mutacao`: linha, capa no blob store e evento.
 pub fn create(
     database: &SqliteDatabase,
     store: &BlobStore,
+    identidade: &DeviceIdentity,
     name: &str,
     description: &str,
     cover_image: &str,
@@ -65,18 +65,13 @@ pub fn create(
         created_at: timestamp.clone(),
         updated_at: timestamp,
     };
-    let mut connection = database.write()?;
-    // Numa transação: o `INSERT` do repositório grava o valor recebido na
-    // coluna legada, e a normalização o troca por referência antes do commit.
-    // Fora de transação haveria um instante — curto, mas real — em que os
-    // bytes estariam gravados.
-    let tx = connection
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    universe_repository::insert(&tx, &universe)?;
-    blob_fields::gravar_asset_direto(&tx, store, "universes", &universe.id, cover_image)?;
-    tx.commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    // O `INSERT` do repositório grava o valor recebido na coluna legada, e a normalização o troca
+    // por referência antes do commit — e antes de o estado canônico ser lido para o evento.
+    Mutacao::executar(database, identidade, |m| {
+        universe_repository::insert(m.tx(), &universe)?;
+        blob_fields::gravar_asset_direto(m.tx(), store, "universes", &universe.id, cover_image)?;
+        m.gravou("universe", &universe.id)
+    })?;
     // O que volta para a tela é o transporte, não o que ficou no banco.
     Ok(universe)
 }
@@ -84,6 +79,7 @@ pub fn create(
 pub fn update(
     database: &SqliteDatabase,
     store: &BlobStore,
+    identidade: &DeviceIdentity,
     id: &str,
     patch: UniverseUpdate,
 ) -> DatabaseCommandResult<()> {
@@ -99,30 +95,33 @@ pub fn update(
             "O universo precisa de um nome.",
         ));
     }
-    let mut connection = database.write()?;
-    let tx = connection
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    if !universe_repository::update(&tx, id, &patch, &now_timestamp())? {
-        return Err(DatabaseCommandError::not_found("Universo não encontrado."));
-    }
-    if let Some(capa) = patch.cover_image.as_deref() {
-        blob_fields::gravar_asset_direto(&tx, store, "universes", id, capa)?;
-    }
-    tx.commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        if !universe_repository::update(m.tx(), id, &patch, &now_timestamp())? {
+            return Err(DatabaseCommandError::not_found("Universo não encontrado."));
+        }
+        if let Some(capa) = patch.cover_image.as_deref() {
+            blob_fields::gravar_asset_direto(m.tx(), store, "universes", id, capa)?;
+        }
+        m.gravou("universe", id)
+    })
 }
 
-/// Exclui o universo e, por tabela em cascata, tudo que pendura nele.
+/// Mensagem da recusa temporária de `delete`.
+pub const EXCLUSAO_DE_UNIVERSO_INDISPONIVEL: &str =
+    "Esta operação ainda depende de tipos que estão sendo migrados para o Sync V2.";
+
+/// **Recusada até a árvore inteira do universo ser coberta** (NH-079).
 ///
-/// A cascata só acontece porque esta conexão liga `foreign_keys` — o
-/// `tauri-plugin-sql` não liga, então o caminho antigo deixava histórias,
-/// entidades e capítulos órfãos no arquivo depois de excluir o universo.
+/// Excluir um universo apaga, por cascata, entidades, relações, linha do tempo, planejamento, tags
+/// e canvas — agregados que ainda não têm codec. Apagar sem evento seria perda silenciosa de
+/// conteúdo causal nos outros aparelhos; recusar é o fail closed. O universo precisa existir para a
+/// recusa ser a certa: um id que não existe continua sendo "não encontrado".
 pub fn delete(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    if !universe_repository::delete(&connection, id)? {
+    let connection = database.read()?;
+    if universe_repository::get(&connection, id)?.is_none() {
         return Err(DatabaseCommandError::not_found("Universo não encontrado."));
     }
-    Ok(())
+    Err(DatabaseCommandError::conflict(
+        EXCLUSAO_DE_UNIVERSO_INDISPONIVEL,
+    ))
 }

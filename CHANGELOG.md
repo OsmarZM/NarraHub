@@ -2,6 +2,138 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.14 — 2026-10-02 (pré-release Android)
+
+Primeiras duas fatias do mobile V2, para teste no aparelho. Atualiza a beta.13 pelo fluxo de
+APK assinado existente. A qualificação física desta apresentação permanece pendente.
+
+- **Biblioteca**: capa compacta separada de título, descrição, indicadores e ações; cartões
+  opacos e controles maiores, nos modos claro e escuro.
+- **Criar/editar universo**: formulário adaptado ao celular, campos legíveis e ações em folha.
+- **Configurações**: seletor de área no mobile, cartões, prévias de tema e alvos de toque de 48px.
+- **Entidades**: filtros e criação em linhas distintas, sem disputa com o menu lateral.
+- **Menu de relógio**: preservado, com espaço reservado para a alça; sem navegação inferior.
+- **IA local**: instalação apresentada somente em plataforma com suporte nativo existente.
+- **Compatibilidade**: correções de permissão/cancelamento do QR da beta.13 preservadas;
+  sem alteração de schema, Sync V2 ou persistência nesta atualização.
+
+## 0.10.0-beta.13 — 2026-09-29 (pré-release Android)
+
+Correção do cancelamento do leitor QR após a falha física da beta.12. A qualificação no Galaxy S23
+continua pendente.
+
+- **Leitura nativa encerrada**: ao cancelar, o plugin preserva a referência à leitura antes de fechar a
+  câmera e rejeita a promessa de `scan()` pendente.
+- **Saída imediata**: Cancelar devolve a tela e a entrada manual sem depender da resposta do scanner.
+- **QR tardio ignorado**: um resultado recebido depois de Cancelar não inicia pareamento.
+
+## 0.10.0-beta.12 — 2026-09-25 (pré-release)
+
+Pré-release só Android, com os ajustes do teste físico da beta.11. Instala por cima da 0.10.0-beta.11.
+
+- **Dá para sair da leitura do QR**: a câmera agora tem mira e o botão "Cancelar", e o "voltar" do Android
+  também cancela — antes era preciso fechar o app.
+- **Câmera negada tem saída**: depois de negar, o Android não pergunta de novo; a tela oferece "Abrir
+  permissões do app" para liberar a câmera. Digitar endereço e código continua funcionando.
+
+## 0.10.0-beta.11 — 2026-09-25 (pré-release)
+
+Pré-release só Android, com os ajustes do teste físico da beta.10. Instala por cima da 0.10.0-beta.10.
+
+- **Depois do QR, dá para sincronizar**: o endereço lido fica preenchido (e lembrado para a próxima vez), então
+  "Sincronizar pareado" não fica mais cinza.
+- **Aviso durante a sessão**: enquanto os aparelhos conversam, a tela diz "Conectando e sincronizando…" em vez
+  de só apagar os botões.
+- **QR só quando pedido**: o QR não abre sozinho; o botão "Mostrar QR" abre uma janela maior (no celular, por
+  baixo), com endereço e código, que fecha quando o código é usado ou vence.
+
+## 0.10.0-beta.10 — 2026-09-25 (pré-release)
+
+Pré-release só Android, para testar o pareamento por QR (Fase 4.5). Instala por cima da 0.10.0-beta.9.
+
+- **Parear pelo QR**: o aparelho que escuta mostra um QR junto do código; no celular, "Escanear QR" lê
+  endereço e código pela câmera e pareia sem digitar nada. É o mesmo pareamento por código de antes —
+  vale três minutos, três tentativas e uma vez só. Sem câmera ou sem permissão, digitar continua funcionando.
+
+## 0.10.0-beta.9 — 2026-09-25 (pré-release)
+
+Pré-release só Android, sem mudança de funcionamento. Existe para provar em aparelho real que a atualização
+pelo próprio app funciona a partir da 0.10.0-beta.8: abrir o app, receber a oferta, baixar e instalar.
+
+## 0.10.0-beta.8 — 2026-09-25 (pré-release)
+
+Pré-release só Android. Instala por cima da 0.10.0-beta.7 — **esta precisa ser instalada à mão**: a
+atualização pelo próprio app só funciona a partir dela.
+
+- **Atualização pelo app no Android**: a consulta às versões novas caía antes de chegar ao GitHub. Agora a
+  beta seguinte aparece sozinha ao abrir o app.
+
+## 0.10.0-beta.7 — 2026-09-25 (pré-release)
+
+Pré-release só Android, fechamento da qualificação física do Sync V2. Instala por cima da 0.10.0-beta.6.
+
+- **Mensagens de conexão que dizem o que fazer**: quando o outro aparelho não responde, o app avisa que o
+  celular precisa estar com o NarraHub aberto na tela; quando ninguém escuta no endereço, pede para ligar a
+  escuta; quando o aparelho não aparece na rede, pede para conferir o Wi-Fi e o endereço.
+- A tela de sincronização do celular avisa que a escuta só funciona com o app aberto.
+
+## 0.10.0-beta.6 — 2026-09-25 (pré-release)
+
+Pré-release só Android, correções achadas na qualificação física do Sync V2. Instala por cima da 0.10.0-beta.5.
+
+- **Atualização no celular**: o app volta a procurar a beta nova sozinho ao abrir.
+- **Conflito entre decisões legível**: mostra o capítulo e o texto que cada decisão produz, em vez dos dados
+  internos da decisão.
+- **Decisão com confirmação**: escolher uma versão pede um segundo toque, porque a decisão vale para os dois
+  aparelhos e não pode ser desfeita.
+
+## 0.10.0-beta.5 — 2026-09-24 (pré-release)
+
+Pré-release só Android, correções achadas na qualificação física do Sync V2. Instala por cima da 0.10.0-beta.4.
+
+- **Conflitos legíveis**: a tela rola, o texto aparece lado a lado no computador e, no celular, só as linhas
+  que mudaram, uma seguida da outra. Sem identificadores internos à mostra. "Copiar texto" e "… e abrir para
+  editar": escolha a versão mais próxima e ajuste no editor.
+- **Pareamento mais claro**: a tela avisa quando o código venceu, e um código vencido ou errado mostra o que
+  fazer em vez de uma mensagem técnica.
+
+## 0.10.0-beta.4 — 2026-09-24 (pré-release)
+
+Pré-release só Android, correção achada na qualificação física do Sync V2. Instala por cima da 0.10.0-beta.3.
+
+- **Sincronização visível**: ao fim de cada sessão, dos dois lados, aparece o resumo (alterações recebidas
+  e enviadas) e a biblioteca é relida na hora. Antes, o aparelho que escutava só mostrava o que chegou
+  depois de reabrir o app.
+
+## 0.10.0-beta.3 — 2026-09-24 (pré-release)
+
+Pré-release só Android, para a qualificação física do Sync V2 (Etapa I). Instala por cima da 0.10.0-beta.2.
+
+### Sincronização V2
+
+- Sincronização por eventos assinados entre aparelhos pareados, com semeadura inicial de aparelho novo,
+  encaminhamento por um aparelho intermediário e conflitos que nunca apagam uma versão.
+- Resolução de conflitos propagada como decisão; decisões concorrentes viram novo conflito.
+- O Sync V1 saiu do runtime; conflitos antigos ficam numa caixa de versões antigas para recuperação.
+
+## 0.10.0-beta.2 — 2026-09-15 (pré-release)
+
+Pré-release só Android, para teste. Instala por cima da 0.10.0-beta.1 e pode ser recebida pela atualização do
+próprio app.
+
+### Um aplicativo de celular de verdade
+
+- **Sem zoom** por pinça ou toque duplo na interface.
+- **Barra de cima própria**: voltar, busca e "•••" com as ações do universo. Sem barra lateral nem
+  linha de botões espremida.
+- **Navegação gestual mais fácil de achar**: três barras douradas na borda direita, dica na primeira
+  vez, abre por toque, arrasto ou peteleco; vibração leve.
+- **Escrita**: o editor ocupa a tela; capítulos e resumo abrem em folhas; cada item da árvore tem "⋯".
+- **Diálogos** sobem de baixo e continuam acima do teclado.
+- **Planejamento** uma coluna por vez; **Timeline** em lista vertical; **Conexões** com o grafo em
+  tela cheia.
+- Mais leve: sem desfoque de fundo e com menos animação contínua.
+
 ## 0.10.0-beta.1 — 2026-09-14 (pré-release)
 
 Pré-release só Android, para teste: não há instalador Windows nesta versão, e quem usa a 0.9.2 no Windows continua nela.

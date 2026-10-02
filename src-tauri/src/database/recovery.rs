@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 const DATABASE_FILE_NAME: &str = "narrahub.db";
@@ -176,6 +176,12 @@ pub async fn backup_restore_commit(
     let task =
         tauri::async_runtime::spawn_blocking(move || commit_restore_at(&app_data, pending)).await;
     backup_state.running.store(false, Ordering::Release);
+    // O arquivo do banco foi trocado: até o próximo arranque conferir o schema dele, nenhum comando
+    // de domínio deve abri-lo. A restauração pede reinício (`requires_restart`).
+    if matches!(&task, Ok(Ok(_))) {
+        app.state::<super::estado::EstadoDoBanco>()
+            .definir(super::estado::FaseDoBanco::Unprepared);
+    }
     task.map_err(|error| {
         DatabaseCommandError::unavailable(format!("A troca recuperável do banco falhou: {error}"))
     })?
