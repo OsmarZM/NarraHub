@@ -2,6 +2,16 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.15 — 2026-10-05 (pré-release Android)
+
+Correção da faixa fixa à direita relatada pelo usuário na beta.14.
+
+- **Conteúdo com a largura disponível**: removida a margem global de 48px que deixava
+  uma coluna do fundo aparente em todas as páginas.
+- **Relógio lateral preservado**: a alça continua como sobreposição localizada, com o mesmo
+  alvo de toque e gestos. Sem navegação inferior ou alteração do Sync V2.
+- Qualificação física desta correção no S23 pendente.
+
 ## 0.10.0-beta.14 — 2026-10-02 (pré-release Android)
 
 Primeiras duas fatias do mobile V2, para teste no aparelho. Atualiza a beta.13 pelo fluxo de

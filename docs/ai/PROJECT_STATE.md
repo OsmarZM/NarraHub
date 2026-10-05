@@ -3,17 +3,17 @@
 > Fonte da verdade sobre "onde estamos". Qualquer agente lê este arquivo antes de agir.
 > Atualize-o ao fechar uma tarefa que mude versão, fase ou dívida conhecida.
 
-Atualizado em: 2026-10-02
+Atualizado em: 2026-10-05
 
 ## Versão
 
 | Item | Valor |
 | --- | --- |
-| Versão corrente | **0.10.0-beta.14** |
+| Versão corrente | **0.10.0-beta.15** |
 | Última versão estável | `app-v0.9.2`, em 2026-09-01 (Windows) |
-| Última pré-release | `app-v0.10.0-beta.13` (só Android; T1/T2 físicos PASS no S23) |
+| Última pré-release | `app-v0.10.0-beta.14` (Android; publicada em 2026-10-02; faixa lateral relatada pelo usuário) |
 | `origin/main` | 0.9.2 — **default** do repositório, linha das versões estáveis |
-| `origin/mobile-shell` | 0.10.0-beta.13 — linha de integração do Sync V2 e do shell mobile; merge do PR #79 em `fe210d1` |
+| `origin/mobile-shell` | 0.10.0-beta.14 — linha de integração; merge do PR #80 em `e8b892c` |
 
 A linha "Versão corrente" acima é lida por `scripts/validate-release-version.mjs`: se ela
 divergir dos manifests, o CI reprova. Este arquivo é a memória compartilhada de três agentes,
@@ -413,3 +413,12 @@ sendo corrigido, com gate. O que não se faz é redesenhar.
 
 O que segue bloqueado está bloqueado pela ordem do roadmap. A Fase 1 fechou, e mudança nova já é
 provada contra migration, backup e restauração automaticamente.
+
+## Correção da faixa lateral — 2026-10-05
+
+O usuário relatou a faixa fixa à direita na beta.14. Reproduzida no navegador: viewport412px,
+conteúdo364px, diferença48px causada pela margem do shell introduzida na fatia1. Removida
+a reserva global; alça permanece sobreposta só em sua região. Branch
+`codex/nh-085-corrige-faixa-lateral`, beta.15 em preparação. PASS físico pendente.
+A beta.14 foi publicada pelo workflow37018546596 no head9d352fa; checksum e assinatura
+conferidos, certificado igual ao da beta.13. NH-085 permanece IN_PROGRESS.
