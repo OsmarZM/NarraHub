@@ -24,6 +24,8 @@ export class AppBootstrapService {
   private readonly syncFeedback = inject(SyncSessionFeedbackService);
 
   readonly ready = signal(false);
+  readonly needsInitialChoice = signal(false);
+  private allowNewArchive = false;
   readonly error = signal('');
   /**
    * Preenchido quando o banco no disco é mais novo que este executável. Nesse caso o pool
@@ -50,6 +52,15 @@ export class AppBootstrapService {
     this.ai.dispose();
   }
 
+  async createNewArchive(): Promise<void> {
+    if (!this.needsInitialChoice()) return;
+    this.allowNewArchive = true;
+    this.needsInitialChoice.set(false);
+    this.ready.set(false);
+    this.initialization = this.runInitialization();
+    await this.initialization;
+  }
+
   private async runInitialization(): Promise<void> {
     this.error.set('');
     try {
@@ -63,6 +74,10 @@ export class AppBootstrapService {
       // escrever em colunas que ele não conhece. E, sem esta verificação, a falha acontece
       // dentro do initializer, antes de a interface existir: o app morre sem dizer nada.
       const compatibility = await this.backupService.compatibility();
+      if (!compatibility.databaseExists && !this.allowNewArchive) {
+        this.needsInitialChoice.set(true);
+        return;
+      }
       if (!compatibility.compatible) {
         this.schemaIncompatible.set(compatibility);
         return;
@@ -122,6 +137,7 @@ export class AppBootstrapService {
       await this.collaboration.loadReview();
       this.collaborationTimer = setInterval(() => void this.collaboration.syncIncoming(), 2500);
       await this.settings.primeCurrentVersion();
+      await this.settings.startExternalMonitor();
       if (await this.settings.shouldCheckForUpdatesOnStartup()) {
         this.updateTimer = setTimeout(() => void this.settings.checkForUpdates(true), 1800);
       }

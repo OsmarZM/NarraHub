@@ -34,7 +34,23 @@
       <article class="surface-card settings-wide-card backup-card" [hidden]="section() !== 'general'">
         <div class="card-head"><div><div class="card-icon">▣</div><h2>Backup e integridade</h2></div><span class="status-badge" [class.online]="store.databaseHealth()?.healthy" [class.error]="store.databaseHealth() && !store.databaseHealth()?.healthy">@if (store.backupBusy()) { Verificando… } @else if (store.databaseHealth()?.healthy) { Banco íntegro } @else if (store.databaseHealth()) { Atenção necessária } @else { Não verificado }</span></div>
         <p>Guarde uma cópia dos seus universos, textos e imagens. O NarraHub verifica os arquivos antes de concluir o backup.</p>
-        <div class="backup-actions"><button type="button" class="primary-button" [disabled]="store.backupBusy()" (click)="requestManualBackup()">{{ store.backupBusy() ? 'Processando…' : 'Criar backup agora' }}</button><button type="button" class="secondary-button" [disabled]="store.backupBusy()" (click)="store.refreshBackupStatus()">Verificar banco</button></div>
+        <div class="security-callout warning"><strong>Proteja o acervo fora do aplicativo</strong><span>Excluir os dados do NarraHub também exclui seus snapshots internos. Salve uma cópia em outra pasta, unidade ou documento do sistema.</span></div>
+        <div class="backup-actions"><button type="button" class="primary-button" [disabled]="store.backupBusy() || store.updateBusy()" (click)="store.exportExternal()">Salvar backup em outro local</button><button type="button" class="secondary-button" [disabled]="store.backupBusy() || store.updateBusy()" (click)="requestExternalImport()">Restaurar de arquivo</button></div>
+        <small class="security-note">O arquivo contém textos e imagens sem criptografia. Guarde em um local privado. Chaves de pareamento e credenciais de compartilhamento não são exportadas.</small>
+        @if (store.externalMessage()) { <p role="status">{{ store.externalMessage() }}</p> }
+        @if (store.externalBackup(); as external) {
+          <div class="external-backup-status">
+            <strong>Cópias externas automáticas · {{ external.enabled ? 'Ativadas' : 'Desativadas' }}</strong>
+            <p>Com o app aberto, copia alterações em intervalos de pelo menos 30 minutos e mantém as 5 cópias automáticas mais recentes deste perfil. Exportações manuais permanecem.</p>
+            @if (external.destination) { <small class="external-destination">Destino: {{ external.destination }}</small> }
+            @if (external.lastSuccess; as receipt) { <p>Última cópia externa conferida: {{ formatDate(receipt.createdAt) }} · {{ store.formatBackupSize(receipt.sizeBytes) }}</p> }
+            @else { <p>Nenhuma cópia externa confirmada neste perfil.</p> }
+            @if (external.lastError) { <div class="security-callout warning" role="alert"><strong>Cópia externa precisa de atenção</strong><span>{{ external.lastError }}</span></div> }
+            <div class="backup-actions"><button type="button" class="secondary-button" [disabled]="store.backupBusy() || store.updateBusy()" (click)="store.configureExternal(true)">{{ external.enabled ? 'Trocar pasta externa' : 'Escolher pasta e ativar' }}</button>
+            @if (external.enabled) { <button type="button" class="text-button" [disabled]="store.backupBusy()" (click)="store.configureExternal(false)">Desativar cópias automáticas</button><button type="button" class="text-button" [disabled]="store.backupBusy() || store.updateBusy()" (click)="store.runExternalBackup(true)">Copiar agora</button> }</div>
+          </div>
+        }
+        <div class="backup-actions"><button type="button" class="secondary-button" [disabled]="store.backupBusy()" (click)="requestManualBackup()">{{ store.backupBusy() ? 'Processando…' : 'Criar cópia neste dispositivo' }}</button><button type="button" class="secondary-button" [disabled]="store.backupBusy()" (click)="store.refreshBackupStatus()">Verificar banco</button></div>
         @if (store.databaseHealth(); as health) {
           <dl class="backup-health"><div><dt>Schema</dt><dd>v{{ health.schemaVersion }}</dd></div><div><dt>SQLite</dt><dd>{{ health.integrityResult }}</dd></div><div><dt>Foreign keys</dt><dd>{{ health.foreignKeyViolations }}</dd></div><div><dt>Última verificação</dt><dd>{{ formatDate(health.checkedAt) }}</dd></div></dl>
           @if (health.issues.length) { <div class="security-callout warning"><strong>Invariantes que precisam de atenção</strong><span>@for (issue of health.issues; track issue.code) { {{ issue.message }} ({{ issue.count }}){{ $last ? '' : ' · ' }} }</span></div> }
@@ -48,7 +64,7 @@
             }
           </div>
         } @else if (!store.backupBusy()) { <div class="review-empty"><strong>Nenhum backup criado</strong><p>Crie o primeiro snapshot antes da próxima atualização.</p></div> }
-        <small class="security-note">Ao restaurar, o NarraHub valida uma cópia temporária, cria um backup do estado atual, preserva rollback e reinicia o desktop.</small>
+        <small class="security-note">Ao restaurar, o NarraHub valida uma cópia temporária, cria um backup do estado atual, preserva rollback e reinicia o aplicativo. O acervo será substituído pelo conteúdo do arquivo escolhido.</small>
       </article>
 
       <article class="surface-card settings-wide-card ai-settings-card" [hidden]="section() !== 'ai'">

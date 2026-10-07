@@ -47,6 +47,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         // Abre o instalador do Android para a atualização por APK. No desktop é vazio.
         .plugin(interface::tauri::android_update_commands::plugin_instalador())
+        .plugin(interface::tauri::backup_external_commands::plugin_backup())
         .plugin(tauri_plugin_http::init())
         .setup(|app| {
             // Os dois blocos deste `setup` sao `cfg(desktop)`: updater e icone de
@@ -374,6 +375,11 @@ pub fn run() {
             database::upgrade::database_migration_finish,
             database::upgrade::database_migration_rollback,
             database::backup::backup_create,
+            interface::tauri::backup_external_commands::backup_export_external,
+            interface::tauri::backup_external_commands::backup_import_external,
+            interface::tauri::backup_external_commands::backup_external_status,
+            interface::tauri::backup_external_commands::backup_external_configure,
+            interface::tauri::backup_external_commands::backup_external_tick,
             database::backup::backup_list,
             database::backup::backup_validate,
             database::recovery::backup_restore_prepare,

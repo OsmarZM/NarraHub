@@ -293,3 +293,9 @@ app-settings-page .qr-leitura { visibility: visible; position: fixed; z-index: 2
 app-settings-page .qr-leitura p { margin: 0; padding: 10px 14px; border-radius: 10px; background: rgba(0, 0, 0, .6); font-size: 14px; text-align: center; }
 app-settings-page .qr-leitura-mira { width: min(70vw, 280px); aspect-ratio: 1; border: 3px solid rgba(255, 255, 255, .9); border-radius: 18px; box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .35); }
 app-settings-page .qr-leitura button { position: relative; min-width: 180px; min-height: 48px; font-size: 15px; }
+
+app-settings-page .external-backup-status { display: grid; gap: 8px; margin-block: 20px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-2); min-width: 0; }
+app-settings-page .external-backup-status p { margin: 0; }
+app-settings-page .external-destination { overflow-wrap: anywhere; color: var(--muted); }
+app-settings-page .backup-actions { flex-wrap: wrap; }
+app-settings-page .backup-actions button { white-space: normal; max-width: 100%; min-height: var(--nh-touch-target, 44px); }

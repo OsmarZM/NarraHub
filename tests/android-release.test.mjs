@@ -64,6 +64,7 @@ test('a release publica APK com nome estavel e o SHA-256 ao lado, antes de publi
 });
 
 function jobDoWorkflow(workflow, nome) {
+  workflow = workflow.replace(/\r\n/gu, '\n');
   const inicio = workflow.indexOf(`\n  ${nome}:\n`);
   assert.ok(inicio >= 0, `job ${nome} não existe`);
   const resto = workflow.slice(inicio + 1);

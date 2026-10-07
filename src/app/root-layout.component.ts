@@ -5,6 +5,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import { AppBootstrapService } from './bootstrap/app-bootstrap.service';
 import { NativeWindowService } from './core/native/window.service';
 import { SchemaRecoveryComponent } from './bootstrap/schema-recovery.component';
+import { InitialRecoveryComponent } from './bootstrap/initial-recovery.component';
 import { AppNavigationService } from './core/navigation/app-navigation.service';
 import { AppNavigationId } from './core/navigation/app-navigation';
 import { MobileNavigationComponent } from './shell/mobile-navigation/mobile-navigation.component';
@@ -22,7 +23,7 @@ import { TitlebarComponent } from './shell/titlebar/titlebar.component';
 @Component({
   selector: 'app-root-layout',
   standalone: true,
-  imports: [RouterOutlet, NgTemplateOutlet, AppShellComponent, TitlebarComponent, MobileShellComponent, SchemaRecoveryComponent, MobileNavigationComponent],
+  imports: [RouterOutlet, NgTemplateOutlet, AppShellComponent, TitlebarComponent, MobileShellComponent, SchemaRecoveryComponent, InitialRecoveryComponent, MobileNavigationComponent],
   templateUrl: './root-layout.component.html',
   styleUrl: './root-layout.component.css',
   encapsulation: ViewEncapsulation.None,

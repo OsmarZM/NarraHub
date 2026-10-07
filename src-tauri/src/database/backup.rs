@@ -498,7 +498,7 @@ fn copy_asset_directory(
     Ok(())
 }
 
-fn validate_assets(
+pub(crate) fn validate_assets(
     assets_root: &Path,
     expected: &BackupAssetsManifest,
     errors: &mut Vec<String>,

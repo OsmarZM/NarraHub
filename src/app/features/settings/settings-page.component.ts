@@ -234,6 +234,11 @@ export class SettingsPageComponent implements OnInit, OnDestroy {
 
   // ── Backup e integridade ─────────────────────────────────
 
+  async requestExternalImport(): Promise<void> {
+    const backup = await this.store.importExternal();
+    if (backup) this.requestRestoreBackup(backup);
+  }
+
   async requestManualBackup(): Promise<void> {
     const result = await this.store.createBackup('manual');
     if (result.ok) this.showInfo('Backup local criado e validado.');
