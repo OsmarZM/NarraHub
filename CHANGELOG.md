@@ -2,6 +2,18 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.16 — 2026-10-07 (pré-release Android)
+
+Proteção do acervo por cópia externa, para ensaio de recuperação em perfil descartável.
+
+- **Exportar e importar**: arquivo `.narrahub-backup` com banco consistente, mídias e manifesto; conferência de integridade e hashes antes de confirmar sucesso.
+- **Recuperação inicial**: uma instalação sem banco oferece recuperar o arquivo ou criar um acervo novo. Substituição de acervo exige confirmação e usa o fluxo de segurança/rollback existente.
+- **Destino externo opcional**: escolha uma pasta pelo seletor nativo; cópias por mudanças com intervalo mínimo de 30 minutos enquanto o app está aberto e visível, mantendo cinco cópias gerenciadas.
+- **Android**: seletor de documentos e permissão persistente da pasta escolhida; falhas de permissão/destino aparecem como atenção, sem confirmação falsa de cópia.
+- **Privacidade**: o pacote não é criptografado. A identidade privada do aparelho fica fora; chaves e tokens de compartilhamento são removidos da cópia portátil.
+- Mantém o design aprovado, relógio lateral, temas e correção da faixa à direita. Sem alteração de schema ou do Sync V2.
+- Validação automatizada PASS; ensaio físico de exportar/importar/reiniciar no Windows e S23 ainda pendente. Não apagar o acervo real para testar.
+
 ## 0.10.0-beta.15 — 2026-10-05 (pré-release Android)
 
 Correção da faixa fixa à direita relatada pelo usuário na beta.14.
