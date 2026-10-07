@@ -20,6 +20,23 @@ mDNS, BLE e a tela unificada da 4.5. Ver `docs/ai/PROJECT_STATE.md` e `docs/ai/R
 
 ## ACTIVE
 
+### NH-087 — Fase 5: proteção do acervo e backup externo
+
+```text
+Owner:  Codex
+Status: IN_PROGRESS — plano aprovado em 2026-10-06; implementação e qualificação
+Fase:   5
+Branch: codex/backup-externo (base mobile-shell)
+Files:  database/portable.rs, database/recovery.rs, backup_external_commands.rs,
+        BackupPlugin.kt, BackupService, SettingsStore, telas de backup e recuperação
+```
+
+Exportação/importação portátil, recuperação sem banco ativo e destino externo configurável.
+Qualificação física Windows/S23, CI e publicação são gates distintos; não marcar DONE antes
+do ensaio de recuperação. Plano: `docs/planos/2026-10-06-protecao-do-acervo-e-backup-externo.md`.
+
+---
+
 ### NH-084 — Fase 4.5: Device Discovery & Pairing UX
 
 ```text

@@ -1,6 +1,7 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { isTauri } from '@tauri-apps/api/core';
-import { BackupManifest, BackupService, BackupValidation, DatabaseHealthReport, RestorePreparation } from '../../../core/native/backup.service';
+import { BackupManifest, BackupService, BackupValidation, DatabaseHealthReport, ExternalBackupStatus, RestorePreparation } from '../../../core/native/backup.service';
+import { ManuscriptStore } from '../../manuscript/state/manuscript.store';
 // DatabaseService is injected here on purpose, unlike the domain gateways: restoring a
 // backup has to close and reopen the app's own SQLite connection pool, which is native
 // pool lifecycle, not the SQL-vs-Rust boundary the other LegacyXGateway adapters abstract.
@@ -33,6 +34,10 @@ export class SettingsStore {
   private readonly androidUpdate = inject(AndroidUpdateService);
   private readonly syncV2 = inject(SyncV2Service);
   private readonly db = inject(DatabaseService);
+  private readonly manuscript = inject(ManuscriptStore);
+  private externalTimer: ReturnType<typeof setInterval> | null = null;
+  readonly externalBackup = signal<ExternalBackupStatus | null>(null);
+  readonly externalMessage = signal('');
 
   readonly backupBusy = signal(false);
   readonly backupError = signal('');
@@ -73,7 +78,8 @@ export class SettingsStore {
     this.backupBusy.set(true);
     this.backupError.set('');
     try {
-      const [health, backups] = await Promise.all([this.backupService.health(), this.backupService.list()]);
+      const [health, backups, external] = await Promise.all([this.backupService.health(), this.backupService.list(), this.backupService.externalStatus()]);
+      this.externalBackup.set(external);
       this.databaseHealth.set(health);
       this.backups.set(backups);
     } catch (error) {
@@ -128,6 +134,7 @@ export class SettingsStore {
     this.backupBusy.set(true);
     this.backupError.set('');
     try {
+      await this.flushWriting();
       const preparation = await this.backupService.prepareRestore(backupId);
       this.restorePreparation.set(preparation);
       this.backups.set(await this.backupService.list());
@@ -148,7 +155,7 @@ export class SettingsStore {
     try {
       await this.db.close();
       await this.backupService.commitRestore(token);
-      await this.updateService.relaunch();
+      await this.backupService.restartAfterRestore();
       return { ok: true };
     } catch (error) {
       await this.db.init().catch((reopenError) => console.error('[NarraHub] Database reopen failed after restore error.', reopenError));
@@ -437,7 +444,73 @@ export class SettingsStore {
   }
 
   dispose(): void {
+    if (this.externalTimer) clearInterval(this.externalTimer);
+    this.externalTimer = null;
     this.updateService.dispose();
+  }
+
+  async exportExternal(): Promise<void> {
+    await this.externalAction(async () => {
+      await this.flushWriting();
+      const receipt = await this.backupService.exportExternal();
+      if (receipt) {
+        this.externalBackup.set(await this.backupService.externalStatus());
+        this.externalMessage.set('Backup externo salvo e conferido por SHA-256.');
+        this.backups.set(await this.backupService.list());
+      }
+    });
+  }
+
+  async importExternal(): Promise<BackupManifest | null> {
+    let manifest: BackupManifest | null = null;
+    await this.externalAction(async () => {
+      manifest = await this.backupService.importExternal();
+      if (manifest) this.backups.set(await this.backupService.list());
+    });
+    return manifest;
+  }
+
+  async configureExternal(enabled: boolean): Promise<void> {
+    await this.externalAction(async () => {
+      this.externalBackup.set(await this.backupService.configureExternal(enabled));
+    });
+    if (enabled && this.externalBackup()?.enabled) await this.runExternalBackup(true);
+  }
+
+  async startExternalMonitor(): Promise<void> {
+    if (!isTauri() || this.externalTimer) return;
+    try { this.externalBackup.set(await this.backupService.externalStatus()); }
+    catch (error) { this.backupError.set(this.messageOf(error)); }
+    this.externalTimer = setInterval(() => void this.runExternalBackup(), 60_000);
+    void this.runExternalBackup();
+  }
+
+  async runExternalBackup(force = false): Promise<void> {
+    if (!isTauri() || !this.externalBackup()?.enabled || this.backupBusy() || this.updateBusy()
+      || this.restorePreparation() || this.manuscript.isSaving() || document.visibilityState === 'hidden') return;
+    if (!force && ['Alterações pendentes', 'Erro ao salvar'].includes(this.manuscript.saveMessage())) return;
+    await this.externalAction(async () => {
+      // O timer espera o autosave terminar. Uma ação manual pode solicitar o flush;
+      // o timer não deve começar um segundo salvamento enquanto o escritor digita.
+      if (force) await this.flushWriting();
+      this.externalBackup.set(await this.backupService.externalTick(force));
+    }, false);
+  }
+
+  private async flushWriting(): Promise<void> {
+    if (this.manuscript.isSaving()) throw new Error('Aguarde o salvamento do capítulo e tente novamente.');
+    await this.manuscript.saveNow();
+    if (this.manuscript.saveMessage() === 'Erro ao salvar') throw new Error('O capítulo não foi salvo. Resolva o erro antes de copiar ou restaurar o acervo.');
+  }
+
+  private async externalAction(action: () => Promise<void>, clearMessage = true): Promise<void> {
+    if (this.backupBusy() || this.updateBusy()) return;
+    this.backupBusy.set(true);
+    this.backupError.set('');
+    if (clearMessage) this.externalMessage.set('');
+    try { await action(); }
+    catch (error) { this.backupError.set(this.messageOf(error)); }
+    finally { this.backupBusy.set(false); }
   }
 
   private messageOf(error: unknown): string {

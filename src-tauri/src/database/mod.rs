@@ -5,6 +5,7 @@ pub mod estado;
 pub mod health;
 pub mod legado_v1;
 pub mod migrations;
+pub mod portable;
 pub mod production_replica;
 pub mod recovery;
 pub mod upgrade;

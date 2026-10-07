@@ -3,7 +3,7 @@
 > Fonte da verdade sobre "onde estamos". Qualquer agente lê este arquivo antes de agir.
 > Atualize-o ao fechar uma tarefa que mude versão, fase ou dívida conhecida.
 
-Atualizado em: 2026-10-05
+Atualizado em: 2026-10-07
 
 ## Versão
 
@@ -11,9 +11,13 @@ Atualizado em: 2026-10-05
 | --- | --- |
 | Versão corrente | **0.10.0-beta.15** |
 | Última versão estável | `app-v0.9.2`, em 2026-09-01 (Windows) |
-| Última pré-release | `app-v0.10.0-beta.14` (Android; publicada em 2026-10-02; faixa lateral relatada pelo usuário) |
+| Última pré-release | `app-v0.10.0-beta.15` (Android; publicada; design mobile aprovado pelo usuário) |
 | `origin/main` | 0.9.2 — **default** do repositório, linha das versões estáveis |
-| `origin/mobile-shell` | 0.10.0-beta.14 — linha de integração; merge do PR #80 em `e8b892c` |
+| `origin/mobile-shell` | 0.10.0-beta.15 — linha de integração; merge do PR #81 em `00afff8` |
+
+NH-087: proteção do acervo/backup externo autorizada, na branch `codex/backup-externo`, em
+qualificação. Detalhe: `docs/handoffs/2026-10-07-nh087-backup-externo-codex.md`.
+A fatia de Escrita permanece no checkout original; não está incluída nesta entrega.
 
 A linha "Versão corrente" acima é lida por `scripts/validate-release-version.mjs`: se ela
 divergir dos manifests, o CI reprova. Este arquivo é a memória compartilhada de três agentes,
