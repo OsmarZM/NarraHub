@@ -2,6 +2,17 @@
 
 As alterações relevantes do NarraHub são registradas neste arquivo. O projeto segue versionamento semântico: versões menores adicionam funcionalidades compatíveis e versões de correção tratam falhas sem alterar o fluxo principal.
 
+## 0.10.0-beta.17 — 2026-10-08 (pré-release Android)
+
+Escrita e ferramentas mobile V2, para teste no aparelho.
+
+- **Formatação rápida**: estilo do texto, negrito, itálico, lista e desfazer em controles de toque; ferramentas completas acessíveis em “Mais ferramentas”.
+- **Leitura**: título e conteúdo adaptados ao telefone; contraste de títulos e ferramentas corrigido no tema claro, mantendo o modo escuro.
+- **Teclado**: barra avançada com altura limitada e rolagem; controles rápidos fora da área da alça do relógio, preservando a largura do documento.
+- **Assistentes**: painéis de IA e comandos rápidos contidos na viewport mobile; campos e ações com tamanhos adequados para toque.
+- Seleção, formatação e autosave usam os comandos e stores existentes. Desktop, imagens, voz, histórico e backup externo permanecem disponíveis.
+- Qualificação automatizada e CI exigidos; teclado, imagens, voz e persistência no S23 desta fatia aguardam ensaio físico.
+
 ## 0.10.0-beta.16 — 2026-10-07 (pré-release Android)
 
 Proteção do acervo por cópia externa, para ensaio de recuperação em perfil descartável.

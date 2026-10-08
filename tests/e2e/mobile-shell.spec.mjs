@@ -188,14 +188,48 @@ test.describe('celular Android', () => {
     expect(caixa.y + caixa.height).toBeLessThanOrEqual(page.viewportSize().height + 1);
   });
 
-  test('escrita: editor com a largura da tela, ferramentas rolam por dentro, folhas cabem', async ({ page }) => {
+  test('escrita: barra compacta e ferramentas cabem com teclado nos dois temas, folhas cabem', async ({ page }) => {
     await abrirEscrita(page);
     const tela = page.viewportSize();
     await expect(page.locator('.ProseMirror')).toBeVisible();
     const editor = await page.locator('.nh-document').boundingBox();
     expect(editor.width).toBeLessThanOrEqual(tela.width);
-    const ferramentas = await page.locator('.nh-editor-toolbar').evaluate((el) => ({ largura: el.clientWidth, conteudo: el.scrollWidth }));
-    expect(ferramentas.largura).toBeLessThanOrEqual(tela.width);
+    const quick = page.getByRole('toolbar', { name: 'Formatação rápida' });
+    await expect(quick).toBeVisible();
+    const expanded = page.getByRole('toolbar', { name: 'Ferramentas do editor' });
+    await expect(expanded).toBeHidden();
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate((value) => {
+        for (const element of [document.documentElement, document.body]) {
+          element.dataset.theme = value; element.classList.remove('light', 'dark'); element.classList.add(value);
+        }
+      }, theme);
+      await page.setViewportSize({ width: tela.width, height: Math.round(tela.height * .55) });
+      for (const control of await quick.locator('button,select').all()) {
+        const box = await control.boundingBox();
+        expect(box.width).toBeGreaterThanOrEqual(48); expect(box.height).toBeGreaterThanOrEqual(48);
+      }
+      // Clique real: não passa se a alça do relógio interceptar o botão.
+      await quick.getByRole('button', { name: 'Mais ferramentas' }).click();
+      await expect(expanded).toBeVisible();
+      const ferramentas = await expanded.evaluate((el) => ({ largura: el.clientWidth, conteudo: el.scrollWidth }));
+      expect(ferramentas.conteudo).toBeLessThanOrEqual(ferramentas.largura + 1);
+      const document = await page.locator('.nh-document-scroll').boundingBox();
+      expect(document.height).toBeGreaterThanOrEqual(48);
+      await quick.getByRole('button', { name: 'Mais ferramentas' }).click();
+      await expect(expanded).toBeHidden();
+      await page.evaluate(() => {
+        const editor = window.ng.getComponent(document.querySelector('app-writing-editor'));
+        editor.aiEnabled = true; editor.aiPanelOpen = true; editor.positionAiBubble(); window.ng.applyChanges(editor);
+      });
+      const bubble = await page.locator('.nh-ai-bubble').boundingBox();
+      expect(bubble.x).toBeGreaterThanOrEqual(0);
+      expect(bubble.x + bubble.width).toBeLessThanOrEqual(tela.width + 1);
+      expect(bubble.y + bubble.height).toBeLessThanOrEqual(page.viewportSize().height + 1);
+      await page.getByRole('button', { name: 'Fechar assistente' }).click();
+      await expect(page.locator('.nh-ai-bubble')).toHaveCount(0);
+      await page.setViewportSize(tela);
+    }
     await expect(page.locator('.view-tools')).toHaveCount(0);
     await semRolagemHorizontal(page, 'escrita');
 
@@ -211,6 +245,43 @@ test.describe('celular Android', () => {
     const mais = await arvore.locator('.tree-more').first().boundingBox();
     expect(mais.width).toBeGreaterThanOrEqual(44);
     await semRolagemHorizontal(page, 'folha de capítulos');
+  });
+
+  test('escrita: seleção formatada, título, desfazer e autosave continuam funcionais', async ({ page }) => {
+    await abrirEscrita(page);
+    await page.evaluate(() => {
+      const store = window.ng.getComponent(document.querySelector('app-writing-page')).store;
+      window.__writingSaves = [];
+      store.gateway.updateChapterContent = async (...args) => { window.__writingSaves.push(args); };
+      store.gateway.updateChapterTitle = async () => {};
+      store.gateway.updateChapterSummary = async () => {};
+      store.onChapterPersisted = null;
+      const component = window.ng.getComponent(document.querySelector('app-writing-editor'));
+      component.aiEnabled = false;
+      component.editor.commands.setContent('<p>Texto para formatar.</p>');
+      component.editor.commands.setTextSelection({ from: 1, to: 6 });
+      window.ng.applyChanges(component);
+    });
+    const quick = page.getByRole('toolbar', { name: 'Formatação rápida' });
+    await quick.getByRole('button', { name: 'Negrito', exact: true }).click();
+    await expect(page.locator('.ProseMirror strong')).toHaveText('Texto');
+    await quick.getByRole('button', { name: 'Mais ferramentas' }).click();
+    const expanded = page.getByRole('toolbar', { name: 'Ferramentas do editor' });
+    await expanded.getByRole('button', { name: 'Itálico', exact: true }).click();
+    await expect(page.locator('.ProseMirror em')).toHaveText('Texto');
+    await quick.getByRole('button', { name: 'Mais ferramentas' }).click();
+    await quick.getByRole('combobox').selectOption('2');
+    await expect(page.locator('.ProseMirror h2')).toContainText('Texto');
+    await expect(quick.getByRole('combobox')).toHaveValue('2');
+    await quick.getByRole('combobox').selectOption('0');
+    await expect(page.locator('.ProseMirror h2')).toHaveCount(0);
+    await page.locator('.ProseMirror').click();
+    await page.keyboard.press('ControlOrMeta+End');
+    await page.keyboard.type(' Continuação salva pelo autosave.');
+    await expect.poll(() => page.evaluate(() => window.__writingSaves.some((args) => args[1]?.includes('Continuação salva pelo autosave.')))).toBe(true);
+    await expect(page.locator('.editor-status')).toContainText('Salvo');
+    await quick.getByRole('button', { name: 'Desfazer', exact: true }).click();
+    await expect(page.locator('.ProseMirror')).not.toContainText('Continuação salva pelo autosave.');
   });
 
   test('diálogo vira folha e continua inteiro com o teclado aberto', async ({ page }) => {
