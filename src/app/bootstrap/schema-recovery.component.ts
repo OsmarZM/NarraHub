@@ -84,6 +84,21 @@ export class SchemaRecoveryComponent {
     }
   }
 
+  async importExternal(): Promise<void> {
+    if (this.busy()) return;
+    this.start('Validando o arquivo externo…');
+    try {
+      const imported = await this.backupService.importExternal();
+      if (imported) {
+        this.backups.set(await this.backupService.list());
+        this.backupsLoaded.set(true);
+        this.confirmingBackupId.set('');
+      }
+      this.message.set('');
+    } catch (error) { this.error.set(this.messageOf(error)); }
+    finally { this.busy.set(false); }
+  }
+
   async restore(backupId: string): Promise<void> {
     if (this.busy()) return;
     this.start('Validando e restaurando o backup…');
@@ -91,7 +106,7 @@ export class SchemaRecoveryComponent {
       const preparation = await this.backupService.prepareRestore(backupId);
       await this.backupService.commitRestore(preparation.token);
       this.message.set('Backup restaurado. Reiniciando o NarraHub…');
-      await this.updateService.relaunch();
+      await this.backupService.restartAfterRestore();
     } catch (error) {
       this.error.set(this.messageOf(error));
     } finally {

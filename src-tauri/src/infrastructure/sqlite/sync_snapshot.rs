@@ -97,6 +97,10 @@ pub const CATALOGO: &[(&str, Categoria)] = &[
     ("canvas_nodes", TransferidaNoBundle),
     ("canvas_edges", TransferidaNoBundle),
     ("canvas_entity_positions", TransferidaNoBundle),
+    // Quarentena da migration 25: o que ela descartou ao impor uma posição por entidade. É
+    // evidência do que aconteceu NESTE arquivo, não acervo — o aparelho novo nasce do estado já
+    // saneado e não teria o que fazer com ela.
+    ("canvas_entity_positions_descartadas", LocalNaoTransferida),
     ("timeline_events", TransferidaNoBundle),
     // ── sync: roster, estado causal e o vetor ──────────────────────────────
     ("sync_devices", TransferidaNoBundle),
@@ -112,9 +116,12 @@ pub const CATALOGO: &[(&str, Categoria)] = &[
     // Copiá-la no bundle faria o doador declarar, por terceiros, confirmações
     // que o receptor nunca ouviu — e essas confirmações autorizam poda.
     ("sync_peer_vectors", ProtocoloNaoTransferido),
+    // A adoção do acervo (etapa C) é um fato deste arquivo: ela registra que ESTE aparelho deu a
+    // primeira revisão a cada item daqui. O receptor semeado não adota nada — ele nasce com as
+    // revisões prontas no bundle, e o baseline substitui o log que as produziu.
+    ("sync_adoptions", ProtocoloNaoTransferido),
     // ── decisão pendente ou trabalho local: bloqueiam ──────────────────────
     ("sync_divergences", BloqueiaBootstrap),
-    ("sync_conflicts", BloqueiaBootstrap),
     ("change_log", BloqueiaBootstrap),
     ("chapter_revisions", BloqueiaBootstrap),
     ("collaboration_sessions", BloqueiaBootstrap),
@@ -131,9 +138,26 @@ pub const CATALOGO: &[(&str, Categoria)] = &[
     // A tabela não viaja: a pendência é sobre os bytes DESTE aparelho, e o
     // aparelho novo vai descobrir as próprias ao rodar o backfill.
     ("blob_migration_issues", BloqueiaBootstrap),
-    // ── V1, sem escritor vivo ──────────────────────────────────────────────
+    // A caixa de recuperação do legado (etapa H, H-R3): inventário local do que ainda precisa de
+    // decisão do escritor sobre o legado DESTE aparelho. Não é acervo e não é causalidade — o que
+    // o escritor decide preservar vira capítulo, e o capítulo, sim, viaja como conteúdo V2.
+    ("legacy_recovery_items", LocalNaoTransferida),
+    // ── legado do Sync V1: schema histórico, sem leitor nem escritor (etapa G) ──
+    // O V1 saiu do runtime. As tabelas ficam só para o upgrade de bancos antigos e para
+    // auditoria: nada as lê, nada as escreve, e elas não tiram a virgindade de ninguém. Um
+    // conflito V1 que ficou aberto num banco publicado continua guardado aqui, intacto — o V1
+    // nunca teve como resolvê-lo, e bloquear o pareamento por ele trancaria o aparelho para
+    // sempre.
     ("devices", LocalNaoTransferida),
     ("sync_peers", LocalNaoTransferida),
+    ("sync_conflicts", LocalNaoTransferida),
+    // ── a época do protocolo 1 (etapa E, E0-beta) ──────────────────────────
+    // Os três são deste arquivo e de mais ninguém, e nenhum tira a virgindade de um aparelho: todo
+    // aparelho novo nasce com o marcador de época, e o passado arquivado não é estado vivo nem
+    // acervo. Classificá-los como protocolo bloquearia o bootstrap para sempre — a D0 de novo.
+    ("sync_epoca", LocalNaoTransferida),
+    ("sync_legado", LocalNaoTransferida),
+    ("sync_rotacao_em_curso", LocalNaoTransferida),
     // ── reclassificada pela etapa 13 ───────────────────────────────────────
     //
     // Era `EtapaPosterior` porque a tabela guardava a imagem inteira em
@@ -143,6 +167,10 @@ pub const CATALOGO: &[(&str, Categoria)] = &[
     // Agora ela guarda `blob_hash`, e o arquivo viaja fora — a fatia 8 deriva
     // o manifesto de hashes daqui. A linha ficou pequena, então viaja.
     ("attachments", TransferidaNoBundle),
+    // A decisão sobre um conflito é acervo causal (etapa F): o receptor precisa nascer sabendo que
+    // o conflito foi decidido, e como — senão uma decisão concorrente que chegasse depois não teria
+    // com o que ser comparada.
+    ("conflict_resolutions", TransferidaNoBundle),
 ];
 
 /// A ordem em que as tabelas do bundle são inseridas.
@@ -187,6 +215,7 @@ pub const ORDEM_DE_SEMEADURA: &[&str] = &[
     // Reclassificada pela etapa 13: guarda `blob_hash`, e o arquivo viaja
     // fora. FK para `universes`, que vem primeiro.
     "attachments",
+    "conflict_resolutions",
     "sync_devices",
     "sync_aggregate_state",
     "sync_revision_history",
@@ -291,19 +320,54 @@ fn tabelas_copiadas() -> Vec<&'static str> {
         .collect()
 }
 
+/// A forma de `BundleNoFio` além das tabelas: roster, vetor e manifesto de blobs.
+///
+/// Sobe quando o formato de fio do bundle muda sem mudar coluna nenhuma.
+const FORMA_DO_BUNDLE_NO_FIO: &str = "narrahub.sync.bundle.1";
+
+/// **A impressão digital do bundle que este aparelho produz e aceita** (etapa E).
+///
+/// É exatamente o que [`validar_estrutura`] cobra do outro lado: a lista de tabelas copiadas, na
+/// ordem de semeadura, e as colunas de cada uma **como o `PRAGMA table_info` deste banco as
+/// devolve**, na ordem física. Dois aparelhos com a mesma impressão têm bundles que um semeia no
+/// outro; com impressões diferentes, o `semear` recusaria tudo — mas só depois de capturar,
+/// transferir e baixar blobs.
+///
+/// Derivada do banco aberto, e não de um número mantido à mão: uma migration que acrescenta coluna
+/// a uma tabela transferida muda a impressão sozinha; uma que só mexe em tabela local não muda.
+/// Não é a versão do schema, e não pode ser — schema diferente não impede incremental.
+pub fn formato_do_bundle(connection: &Connection) -> DatabaseCommandResult<String> {
+    let mut descricao = String::from(FORMA_DO_BUNDLE_NO_FIO);
+    for tabela in tabelas_copiadas() {
+        let mut statement = connection
+            .prepare(&format!("PRAGMA table_info({tabela})"))
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+        let colunas: Vec<String> = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+        descricao.push('\n');
+        descricao.push_str(tabela);
+        descricao.push(':');
+        descricao.push_str(&colunas.join(","));
+    }
+    Ok(crate::infrastructure::blob_store::hash_dos_bytes(
+        descricao.as_bytes(),
+    ))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum FalhaDeCaptura {
+    /// **O acervo tem item sem revisão: ele não foi adotado** (etapa C).
+    ///
+    /// O bundle carrega ESTADO, e o log não viaja. Um agregado coberto sem revisão viajaria como
+    /// conteúdo que nenhum evento explica: o receptor nasceria com ele e com o cursor já no
+    /// baseline, então nada jamais pediria a história que falta. A adoção acontece no arranque,
+    /// depois da conversão de mídia.
+    AcervoNaoAdotado { agregado: String },
     /// O acervo tem decisão pendente do escritor, no V2.
     DivergenciaAberta { quantas: i64 },
-    /// O acervo tem decisão pendente do escritor, no **V1**.
-    ///
-    /// Variante separada de propósito. A mensagem da divergência fala do
-    /// payload que vive em `sync_events`, e isso descreve o V2: lá o conflito
-    /// guarda duas revisões do agregado inteiro. O V1 é outra coisa — registra
-    /// conflito **por campo**, com `local_value` e `remote_value` na própria
-    /// linha. Dizer a mesma frase para os dois mandaria o escritor procurar a
-    /// versão perdida no lugar errado.
-    ConflitoV1Aberto { quantas: i64 },
     /// O acervo tem mídia que não pôde ser convertida (ADR 0010).
     ///
     /// Variante separada pelo mesmo motivo das duas de cima: aqui não há
@@ -318,20 +382,19 @@ pub enum FalhaDeCaptura {
 impl std::fmt::Display for FalhaDeCaptura {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            FalhaDeCaptura::AcervoNaoAdotado { agregado } => write!(
+                f,
+                "Este acervo ainda não foi adotado pela sincronização ({agregado} não tem \
+                 versão). A adoção acontece no arranque, depois da conversão de mídia, e é ela \
+                 que dá a cada item a primeira versão. Abra o aplicativo uma vez com este acervo \
+                 e pareie de novo."
+            ),
             FalhaDeCaptura::AssetNaoConvertido { quantas } => write!(
                 f,
                 "Este acervo tem {quantas} imagem(ns) que o aplicativo não conseguiu converter \
                  para o formato novo. Elas continuam preservadas neste aparelho, mas não \
                  viajam no pareamento: o aparelho novo nasceria sem elas. Veja a lista de \
                  pendências de mídia, resolva o que der, e pareie de novo."
-            ),
-            FalhaDeCaptura::ConflitoV1Aberto { quantas } => write!(
-                f,
-                "Este acervo tem {quantas} conflito(s) do sistema antigo esperando decisão. O \
-                 bootstrap não pode acontecer agora: a versão que veio do outro aparelho está \
-                 guardada só naquela linha de conflito, e não no conteúdo. Ela não viaja no \
-                 pareamento, então o aparelho novo nasceria sem ela — sem ninguém ter \
-                 escolhido. Resolva os conflitos e pareie de novo."
             ),
             FalhaDeCaptura::DivergenciaAberta { quantas } => write!(
                 f,
@@ -443,7 +506,19 @@ fn tabelas_que_bloqueiam() -> Vec<&'static str> {
         // identidade ali antes de semear. A coerência dele é checada à parte.
         .filter(|t| *t != "sync_devices")
         .collect();
-    tabelas.extend(tabelas_de(ProtocoloNaoTransferido));
+    tabelas.extend(
+        tabelas_de(ProtocoloNaoTransferido)
+            .into_iter()
+            // **`sync_adoptions` é a segunda exceção justificada.** Ela registra que a adoção da
+            // etapa C rodou neste arquivo — e num aparelho recém-instalado ela roda sobre NADA,
+            // adotando zero agregados. Virgem é não ter acervo nem passado causal; ter aberto o
+            // aplicativo uma vez não é acervo.
+            //
+            // Sem esta linha, todo aparelho real deixa de poder ser semeado: o arranque acontece
+            // antes de qualquer pareamento, e a marca dele bloquearia o bootstrap para sempre.
+            // A tabela continua fora do bundle: ela não viaja, e também não suja o receptor.
+            .filter(|t| *t != "sync_adoptions"),
+    );
     tabelas.extend(tabelas_de(BloqueiaBootstrap));
     tabelas.sort_unstable();
     tabelas
@@ -771,6 +846,15 @@ pub fn capturar(
     // bastava o escritor ter resolvido uma divergência **uma vez na vida** para
     // o bootstrap ficar impossível para sempre naquele acervo. Divergência
     // resolvida é decisão tomada, e decisão tomada já está no conteúdo.
+    // **A ordem da etapa C, cobrada na própria captura.** O pareamento também cobra, e as duas
+    // checagens não são redundância: esta é a que impede QUALQUER caminho de produzir um bundle
+    // com conteúdo sem passado causal — inclusive um chamador novo, amanhã.
+    if let Some(orfao) = crate::application::genese::primeiro_orfao(&tx)? {
+        return Ok(Err(FalhaDeCaptura::AcervoNaoAdotado {
+            agregado: format!("{} {}", orfao.aggregate_type, orfao.aggregate_id),
+        }));
+    }
+
     let divergencias: i64 = tx
         .query_row(
             "SELECT COUNT(*) FROM sync_divergences WHERE resolved_at = ''",
@@ -781,35 +865,6 @@ pub fn capturar(
     if divergencias > 0 {
         return Ok(Err(FalhaDeCaptura::DivergenciaAberta {
             quantas: divergencias,
-        }));
-    }
-
-    // O V1 ainda está em produção, e `sync.rs` ainda escreve `sync_conflicts`.
-    //
-    // Aqui havia uma assimetria: `sync_conflicts` é `BloqueiaBootstrap` no
-    // catálogo, o que impede o **receptor** de ser semeado com conflito V1
-    // pendente — e nada impedia o **doador** de capturar com um. O efeito é o
-    // mesmo da divergência V2, por um caminho que ninguém estava olhando:
-    //
-    // ```text
-    // sync_conflicts   campo, local_value, remote_value
-    //                                      └─ a versão do outro aparelho,
-    //                                         que só existe nesta linha
-    // ```
-    //
-    // O conteúdo materializado tem o lado local. O `remote_value` não está no
-    // acervo e não viaja no bundle: capturar agora faria a versão pendente
-    // desaparecer do mundo do aparelho novo, sem decisão de ninguém.
-    let conflitos_v1: i64 = tx
-        .query_row(
-            "SELECT COUNT(*) FROM sync_conflicts WHERE resolved_at = ''",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    if conflitos_v1 > 0 {
-        return Ok(Err(FalhaDeCaptura::ConflitoV1Aberto {
-            quantas: conflitos_v1,
         }));
     }
 
@@ -951,15 +1006,16 @@ pub fn semear(
 ) -> DatabaseCommandResult<Result<(), FalhaDeSemeadura>> {
     // **Os blobs primeiro, antes de qualquer escrita no banco.**
     //
-    // A ordem é a exigência da fatia 8, e ela é o oposto da do incremental:
+    // A ordem é a exigência da fatia 8, e desde a etapa D (item 12) é a mesma
+    // do incremental:
     //
-    //   incremental   evento aplica, blob chega depois, cursor avança
+    //   incremental   evento espera no log até o blob chegar verificado
     //   bootstrap     blob verificado, e SÓ ENTÃO o banco é semeado
     //
-    // O motivo é que o bootstrap não se repete. Depois de semeado, o cursor
-    // está no baseline: o que faltou não é reenviado por ninguém, e a imagem
-    // ausente fica ausente para sempre. No incremental há sempre uma próxima
-    // sessão.
+    // A diferença é o que acontece quando falta: o evento incremental fica
+    // pendente e a próxima sessão tenta de novo; o bootstrap não se repete —
+    // depois de semeado, o cursor está no baseline e o que faltou não é
+    // reenviado por ninguém. Por isso aqui a falta recusa a semeadura inteira.
     let faltantes = blob_backfill::blobs_faltantes(store, &bundle.blobs)?;
     if !faltantes.is_empty() {
         return Ok(Err(FalhaDeSemeadura::BlobObrigatorioAusente {
@@ -1282,7 +1338,7 @@ mod tests {
     use crate::infrastructure::sqlite::sync_repository::{
         append_event_in_transaction, LocalChange,
     };
-    use crate::infrastructure::sqlite::sync_session::receber_eventos;
+    use crate::infrastructure::sqlite::sync_session::receber_eventos_sem_conferir_blobs as receber_eventos;
     use crate::infrastructure::sqlite::test_support::{seed_universe, TemporaryDatabase};
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1338,12 +1394,17 @@ mod tests {
             for i in 1..=capitulos {
                 aparelho.escrever(&format!("cap-{i}"), &format!("Capítulo {i}"));
             }
+            // O universo, a história e o livro entraram por SQL, como num acervo anterior ao Sync
+            // V2 — e a captura recusa acervo com item sem versão (etapa C). A adoção é o que os
+            // torna explicáveis, e é o que o arranque do aplicativo faz.
+            crate::application::genese::adotar(&aparelho.banco.database, &aparelho.identidade)
+                .expect("adotar o acervo do doador");
             aparelho
         }
 
         fn escrever(&self, id: &str, titulo: &str) -> EventEnvelope {
             let payload = format!(
-                r#"{{"id":"{id}","book_id":"b1","title":"{titulo}","content":"texto","summary":"","scene_origin":"","scene_destination":"","word_count":1,"status":"rascunho","canon_status":"canon","sort_order":0,"created_at":"2026-01-01 00:00:00","updated_at":"2026-01-02 00:00:00"}}"#
+                r#"{{"id":"{id}","bookId":"b1","title":"{titulo}","content":"texto","summary":"","sceneOrigin":"","sceneDestination":"","status":"rascunho","canonStatus":"canon","customFields":[]}}"#
             );
             // Dado e evento na MESMA transação, como `update_chapter` faz.
             //
@@ -1371,9 +1432,26 @@ mod tests {
                     aggregate: AggregateRef::new("chapter", id),
                     operation: Operation::Upsert,
                     payload: &payload,
+                    grupo: Default::default(),
                 },
             )
             .expect("evento");
+            // A posição é agregado próprio desde a B2.2, e o serviço real emite os dois na mesma
+            // ação. Sem ela, o capítulo nasceria com a posição órfã — e a captura recusaria o
+            // acervo, com razão (etapa C).
+            let posicao = format!(r#"{{"chapterId":"{id}","bookId":"b1","sortOrder":0}}"#);
+            append_event_in_transaction(
+                &tx,
+                &self.identidade,
+                &LocalChange {
+                    universe_id: "u1",
+                    aggregate: AggregateRef::new("chapter_position", id),
+                    operation: Operation::Upsert,
+                    payload: &posicao,
+                    grupo: Default::default(),
+                },
+            )
+            .expect("evento da posição");
             tx.commit().expect("commit");
             envelope
         }
@@ -1401,7 +1479,31 @@ mod tests {
         }
     }
 
+    /// O último `seq` da origem do doador — o ponto de partida que o receptor herda.
+    ///
+    /// Derivado, e não escrito à mão: a fixture emite mais de um evento por capítulo (o capítulo e
+    /// a posição dele, como o serviço real) e a adoção do acervo legado emite os dela. Um literal
+    /// aqui testaria a aritmética da fixture, não o contrato do baseline.
+    fn ultimo_seq(aparelho: &Aparelho) -> i64 {
+        let connection = aparelho.banco.database.write().expect("escrita");
+        connection
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) FROM sync_events WHERE device_id = ?1",
+                [aparelho.identidade.device_id()],
+                |row| row.get(0),
+            )
+            .expect("último seq")
+    }
+
     fn capturar_de(doador: &Aparelho) -> BootstrapBundle {
+        // As fixtures daqui inserem domínio por SQL, que é como um acervo legado nasce. No produto,
+        // quem torna isso explicável é a adoção do arranque, antes de qualquer pareamento; aqui ela
+        // acontece neste helper, no mesmo ponto do fluxo.
+        crate::application::genese::adotar_orfaos_de_teste(
+            &doador.banco.database,
+            &doador.identidade,
+        )
+        .expect("adotar o que a fixture criou");
         let mut connection = doador.banco.database.write().expect("escrita");
         capturar(&mut connection)
             .expect("capturar")
@@ -1455,9 +1557,10 @@ mod tests {
 
         semear_sem_blobs(&receptor, &bundle).expect("o receptor está vazio");
 
+        let baseline = ultimo_seq(&doador);
         assert_eq!(
             receptor.cursor(doador.identidade.device_id()),
-            Some((40, 40)),
+            Some((baseline, baseline)),
             "o baseline do doador precisa ser o ponto de partida do incremental"
         );
         assert_eq!(
@@ -1472,7 +1575,9 @@ mod tests {
         let connection = receptor.banco.database.write().expect("escrita");
         let vetor =
             crate::infrastructure::sqlite::sync_exchange::vetor_local(&connection).expect("vetor");
-        assert_eq!(vetor.get(receptor.identidade.device_id()).copied(), Some(1));
+        // A escrita emite o capítulo e a posição dele: o vetor do receptor vale 2. O que este
+        // gate diz é que ele começou do zero, e não em cima do passado do doador.
+        assert_eq!(vetor.get(receptor.identidade.device_id()).copied(), Some(2));
     }
 
     /// Zero no vetor é ausência, não passado.
@@ -1618,9 +1723,10 @@ mod tests {
         assert_eq!(doador_la, 0, "o doador assumiu a identidade do receptor");
 
         drop(connection);
+        let baseline = ultimo_seq(&doador);
         assert_eq!(
             receptor.cursor(doador.identidade.device_id()),
-            Some((40, 40))
+            Some((baseline, baseline))
         );
         assert_eq!(receptor.cursor(receptor.identidade.device_id()), None);
     }
@@ -1788,7 +1894,7 @@ mod tests {
                 while !parar.load(std::sync::atomic::Ordering::Relaxed) {
                     let id = format!("cap-conc-{i}");
                     let payload = format!(
-                        r#"{{"id":"{id}","book_id":"b1","title":"Concorrente","content":"texto","summary":"","scene_origin":"","scene_destination":"","word_count":1,"status":"rascunho","canon_status":"canon","sort_order":0,"created_at":"2026-01-01 00:00:00","updated_at":"2026-01-02 00:00:00"}}"#
+                        r#"{{"id":"{id}","bookId":"b1","title":"Concorrente","content":"texto","summary":"","sceneOrigin":"","sceneDestination":"","status":"rascunho","canonStatus":"canon","customFields":[]}}"#
                     );
                     let mut connection = banco.write().expect("escrita concorrente");
                     let tx = connection.transaction().expect("transação");
@@ -1806,9 +1912,27 @@ mod tests {
                             aggregate: AggregateRef::new("chapter", &id),
                             operation: Operation::Upsert,
                             payload: &payload,
+                            grupo: Default::default(),
                         },
                     )
                     .expect("evento concorrente");
+                    // O serviço real emite o capítulo e a posição dele na mesma ação; o escritor
+                    // concorrente faz o mesmo, senão criaria posição órfã e a captura recusaria o
+                    // acervo no meio da corrida (etapa C).
+                    let posicao_concorrente =
+                        format!(r#"{{"chapterId":"{id}","bookId":"b1","sortOrder":0}}"#);
+                    append_event_in_transaction(
+                        &tx,
+                        &identidade,
+                        &LocalChange {
+                            universe_id: "u1",
+                            aggregate: AggregateRef::new("chapter_position", &id),
+                            operation: Operation::Upsert,
+                            payload: &posicao_concorrente,
+                            grupo: Default::default(),
+                        },
+                    )
+                    .expect("posição concorrente");
                     tx.commit().expect("commit concorrente");
                     i += 1;
                 }
@@ -1824,17 +1948,28 @@ mod tests {
                 .find(|t| t.nome == "chapters")
                 .map(|t| t.linhas.len() as i64)
                 .expect("chapters no bundle");
+            let revisoes = bundle
+                .tabelas
+                .iter()
+                .find(|t| t.nome == "sync_aggregate_state")
+                .map(|t| t.linhas.len() as i64)
+                .expect("estado no bundle");
             let anunciado = bundle
                 .vetor
                 .get(doador.identidade.device_id())
                 .copied()
                 .unwrap_or(0);
 
+            // Cada evento desta fixture cria exatamente um agregado, então vetor e revisões
+            // correntes têm de casar. Comparar com o número de capítulos deixaria de valer no dia
+            // em que a fixture emitisse mais de um evento por capítulo — e é o que ela faz desde a
+            // B2.2, com a posição, e desde a C, com a adoção.
             assert_eq!(
-                anunciado, capitulos,
-                "captura {tentativa}: o vetor anuncia {anunciado} e o bundle traz {capitulos} \
-                 capítulos. Conteúdo de um instante com vetor de outro — o receptor nasceria \
-                 com um cursor à frente do que recebeu, e o que faltou nunca seria pedido."
+                anunciado, revisoes,
+                "captura {tentativa}: o vetor anuncia {anunciado} e o bundle traz {revisoes} \
+                 revisões ({capitulos} capítulos). Conteúdo de um instante com vetor de outro — o \
+                 receptor nasceria com um cursor à frente do que recebeu, e o que faltou nunca \
+                 seria pedido."
             );
 
             // E o estado causal veio do mesmo instante que o conteúdo.
@@ -1844,9 +1979,12 @@ mod tests {
                 .find(|t| t.nome == "sync_aggregate_state")
                 .map(|t| t.linhas.len() as i64)
                 .expect("estado no bundle");
-            assert_eq!(
-                estados, capitulos,
-                "captura {tentativa}: {capitulos} capítulos e {estados} revisões correntes. \
+            // Cada capítulo são dois agregados (ele e a posição dele, desde a B2.2), mais os do
+            // acervo. O que este gate cobra é que nenhum deles fique sem revisão corrente:
+            // agregado sem revisão cai em `Unknown` no primeiro incremental.
+            assert!(
+                estados >= capitulos * 2,
+                "captura {tentativa}: {capitulos} capítulos e só {estados} revisões correntes. \
                  Um agregado sem revisão corrente cai em Unknown no primeiro incremental."
             );
         }
@@ -2002,12 +2140,16 @@ mod tests {
         let receptor = Aparelho::novo();
         let bundle = capturar_de(&doador);
         semear_sem_blobs(&receptor, &bundle).expect("semear");
+        let baseline = ultimo_seq(&doador);
         assert_eq!(
             receptor.cursor(doador.identidade.device_id()),
-            Some((40, 40))
+            Some((baseline, baseline))
         );
 
         let quarenta_e_um = doador.escrever("cap-41", "Depois da semente");
+        // O `seq` do capítulo 41; a posição dele vem logo depois, e é ela que fica sendo o "42"
+        // que nunca é entregue neste teste.
+        let quarenta_e_um_seq = quarenta_e_um.seq;
         let _quarenta_e_dois = doador.escrever("cap-42", "Nunca entregue");
         let quarenta_e_tres = doador.escrever("cap-43", "Fora de ordem");
 
@@ -2017,7 +2159,7 @@ mod tests {
         }
         assert_eq!(
             receptor.cursor(doador.identidade.device_id()),
-            Some((40, 41)),
+            Some((baseline, quarenta_e_um_seq)),
             "o primeiro incremental acima do baseline precisa aplicar e avançar"
         );
 
@@ -2027,7 +2169,7 @@ mod tests {
         }
         assert_eq!(
             receptor.cursor(doador.identidade.device_id()),
-            Some((40, 41)),
+            Some((baseline, quarenta_e_um_seq)),
             "o cursor passou por cima de uma lacuna: o 42 nunca mais seria pedido"
         );
     }
@@ -2056,6 +2198,7 @@ mod tests {
                     aggregate: AggregateRef::new("chapter", "cap-condenado"),
                     operation: Operation::Delete,
                     payload: "",
+                    grupo: Default::default(),
                 },
             )
             .expect("evento de exclusão");
@@ -2191,6 +2334,7 @@ mod tests {
                     aggregate: AggregateRef::new("chapter", "cap-morto"),
                     operation: Operation::Delete,
                     payload: "",
+                    grupo: Default::default(),
                 },
             )
             .expect("exclusão");
@@ -2308,6 +2452,7 @@ mod tests {
                     aggregate: AggregateRef::new("chapter", "cap-morto"),
                     operation: Operation::Delete,
                     payload: "",
+                    grupo: Default::default(),
                 },
             )
             .expect("exclusão");
@@ -2351,6 +2496,7 @@ mod tests {
                     aggregate: AggregateRef::new("chapter", "cap-morto"),
                     operation: Operation::Delete,
                     payload: "",
+                    grupo: Default::default(),
                 },
             )
             .expect("exclusão");
@@ -2701,81 +2847,15 @@ mod tests {
         );
     }
 
-    /// Conflito do V1 **já resolvido** não bloqueia.
+    /// **G9/G11 — conflito V1 legado, aberto ou resolvido, não bloqueia nem é lido.**
     ///
-    /// Decisão tomada já está no conteúdo, como no V2.
+    /// Antes da etapa G, conflito V1 aberto recusava a captura. O V1 nunca teve como resolver um
+    /// conflito, e depois da G nem existe mais: a trava viraria um aparelho trancado para
+    /// sempre. A linha continua no banco do doador, intacta — ela só não viaja, como nunca viajou.
     #[test]
-    fn conflito_v1_resolvido_nao_bloqueia_a_captura() {
+    fn conflito_v1_legado_nao_bloqueia_a_captura_e_fica_intacto() {
         let doador = Aparelho::doador_com_acervo(2);
-        {
-            let connection = doador.banco.database.write().expect("escrita");
-            connection
-                .execute(
-                    "INSERT INTO sync_conflicts
-                        (id, aggregate_type, aggregate_id, field, local_value, remote_value,
-                         resolved_at)
-                     VALUES ('c-velho','chapter','cap-1','title','Meu','Dele',
-                             '2026-09-01 10:00:00')",
-                    [],
-                )
-                .expect("conflito V1 já resolvido");
-        }
-
-        let mut connection = doador.banco.database.write().expect("escrita");
-        capturar(&mut connection)
-            .expect("consultar")
-            .expect("decisão já tomada não impede o bootstrap");
-    }
-
-    /// **O conflito V1 aberto guarda uma versão que não está no acervo.**
-    ///
-    /// O caso completo: o capítulo materializado diz "A", e a linha de conflito
-    /// guarda `remote_value = "B"` — a versão que veio do outro aparelho e que
-    /// o escritor ainda não escolheu.
-    ///
-    /// ```text
-    /// chapters.title        "A"          viaja no bundle
-    /// sync_conflicts        local "A"    NÃO viaja
-    ///                       remote "B"   ← some do mundo do aparelho novo
-    /// ```
-    ///
-    /// A tabela é `BloqueiaBootstrap` no catálogo, o que impedia o receptor de
-    /// ser semeado tendo um conflito. Faltava a outra ponta: impedir o doador
-    /// de capturar tendo um.
-    #[test]
-    fn conflito_v1_aberto_recusa_a_captura() {
-        let doador = Aparelho::doador_com_acervo(1);
         doador.escrever("cap-disputado", "A");
-        {
-            let connection = doador.banco.database.write().expect("escrita");
-            connection
-                .execute(
-                    "INSERT INTO sync_conflicts
-                        (id, aggregate_type, aggregate_id, field, local_value, remote_value)
-                     VALUES ('c-aberto','chapter','cap-disputado','title','A','B')",
-                    [],
-                )
-                .expect("conflito V1 aberto");
-        }
-
-        let mut connection = doador.banco.database.write().expect("escrita");
-        let falha = capturar(&mut connection)
-            .expect("consultar")
-            .expect_err("há uma versão pendente que não viaja");
-        assert_eq!(falha, FalhaDeCaptura::ConflitoV1Aberto { quantas: 1 });
-
-        // E a mensagem fala do V1, não do log de eventos do V2.
-        let texto = falha.to_string();
-        assert!(
-            texto.contains("sistema antigo"),
-            "a mensagem precisa mandar o escritor procurar no lugar certo: {texto}"
-        );
-    }
-
-    /// E a contagem ignora os já resolvidos.
-    #[test]
-    fn a_captura_conta_apenas_os_conflitos_v1_abertos() {
-        let doador = Aparelho::doador_com_acervo(2);
         {
             let connection = doador.banco.database.write().expect("escrita");
             connection
@@ -2787,19 +2867,51 @@ mod tests {
                              '2026-09-01 10:00:00');
                      INSERT INTO sync_conflicts
                         (id, aggregate_type, aggregate_id, field, local_value, remote_value)
-                     VALUES ('c-aberto','chapter','cap-2','title','Meu','Dele');",
+                     VALUES ('c-aberto','chapter','cap-disputado','title','A','B');",
                 )
-                .expect("um resolvido e um aberto");
+                .expect("conflitos V1 legados");
         }
 
         let mut connection = doador.banco.database.write().expect("escrita");
-        let falha = capturar(&mut connection)
+        capturar(&mut connection)
             .expect("consultar")
-            .expect_err("há um conflito pendente");
+            .expect("o legado do V1 não impede o bootstrap");
+        let preservadas: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sync_conflicts WHERE remote_value IN ('Dele', 'B')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("contar");
+        assert_eq!(preservadas, 2, "a captura mexeu no legado do V1");
+    }
+
+    /// **G9 — receptor com linha V1 legada continua elegível**: o legado não tira a virgindade.
+    #[test]
+    fn receptor_com_legado_v1_continua_elegivel() {
+        let doador = Aparelho::doador_com_acervo(2);
+        let receptor = Aparelho::novo();
+        receptor
+            .banco
+            .database
+            .write()
+            .expect("escrita")
+            .execute_batch(
+                "INSERT INTO sync_conflicts
+                    (id, aggregate_type, aggregate_id, field, local_value, remote_value)
+                 VALUES ('c-antigo','chapter','sumiu','title','x','y');
+                 INSERT INTO sync_peers (id, name, trusted_at) VALUES ('p1','Velho','2025-01-01');
+                 INSERT INTO devices (id, name, created_at, last_seen_at)
+                 VALUES ('d1','Velho','2025-01-01','2025-01-01');",
+            )
+            .expect("legado V1 no receptor");
+        let bundle = capturar_de(&doador);
+        semear_sem_blobs(&receptor, &bundle).expect("o legado do V1 não bloqueia a semeadura");
+        assert_eq!(receptor.conta("chapters"), 2);
         assert_eq!(
-            falha,
-            FalhaDeCaptura::ConflitoV1Aberto { quantas: 1 },
-            "a contagem precisa ignorar os já resolvidos"
+            receptor.conta("sync_conflicts"),
+            1,
+            "a semeadura mexeu no legado do V1"
         );
     }
 
@@ -3171,9 +3283,6 @@ mod tests {
     /// ver aquela linha — exigir o arquivo dela travaria um pareamento por uma
     /// imagem que não vai chegar a lugar nenhum.
     ///
-    /// (Na prática conflito aberto já bloqueia a captura; este gate fixa a
-    /// regra do manifesto de forma independente disso, com o conflito
-    /// **resolvido**.)
     #[test]
     fn blob_so_do_conflito_v1_nao_entra_no_manifesto() {
         let doador = Aparelho::doador_com_acervo(2);
@@ -3268,5 +3377,48 @@ mod tests {
         )
         .expect("a transferência não estoura");
         assert_eq!(resumo.falharam, std::collections::BTreeSet::from([hash]));
+    }
+
+    /// **E4 — a impressão do bundle segue as colunas transferidas, e só elas.**
+    ///
+    /// Coluna nova numa tabela que viaja no bundle muda a impressão (o `semear` do outro lado
+    /// recusaria). Tabela local nova, ou coluna nova numa tabela que não viaja, não muda: schema
+    /// diferente não é, por si, protocolo diferente.
+    #[test]
+    fn formato_do_bundle_muda_com_coluna_transferida_e_nao_com_tabela_local() {
+        let fixture = TemporaryDatabase::new();
+        let connection = fixture.database.write().expect("escrita");
+        let original = formato_do_bundle(&connection).expect("impressão");
+        assert_eq!(
+            original,
+            formato_do_bundle(&connection).expect("de novo"),
+            "não é estável"
+        );
+
+        connection
+            .execute_batch(
+                "CREATE TABLE preferencia_local (chave TEXT, valor TEXT);
+                 ALTER TABLE sync_adoptions ADD COLUMN observacao TEXT NOT NULL DEFAULT '';",
+            )
+            .expect("mudança só local");
+        assert!(
+            tabelas_de(Categoria::ProtocoloNaoTransferido).contains(&"sync_adoptions"),
+            "o cenário exige que sync_adoptions não viaje"
+        );
+        assert_eq!(
+            formato_do_bundle(&connection).expect("impressão"),
+            original,
+            "uma mudança que não toca o bundle mudou a impressão"
+        );
+
+        assert!(tabelas_copiadas().contains(&"universes"));
+        connection
+            .execute_batch("ALTER TABLE universes ADD COLUMN subtitulo TEXT NOT NULL DEFAULT '';")
+            .expect("coluna transferida");
+        assert_ne!(
+            formato_do_bundle(&connection).expect("impressão"),
+            original,
+            "coluna nova numa tabela transferida não mudou a impressão"
+        );
     }
 }

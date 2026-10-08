@@ -1,14 +1,35 @@
+//! Manuscrito: universo → história → livro → capítulo, e as ordens de cada nível.
+//!
+//! **Toda escrita sincronizável daqui passa pela `Mutacao`** (NH-079, B2). O gate
+//! `mutacao::gate_estrutural::escritas_do_manuscrito_passam_todas_pela_mutacao` confere cada
+//! função pública que escreve.
+//!
+//! ```text
+//! create_story                           story + story_order(universo) + book_order(história)
+//! update_story                           story
+//! delete_story                           story + livros, capítulos, ordens, anexos, marcações;
+//!                                        story_order(universo) reescrita
+//! create_book                            book + book_order(história) + chapter_order(livro)
+//! update_book                            book (capa pelo blob store)
+//! delete_book                            book + capítulos, ordem, anexos, marcações;
+//!                                        book_order(história) reescrita
+//! create_chapter                         chapter + chapter_order(livro)
+//! update_chapter                         chapter
+//! reorder_chapters                       chapter_order(livro) — nenhuma revisão de capítulo
+//! delete_chapter                         chapter + anexos, marcações; chapter_order reescrita
+//! ```
+
+use crate::application::blob_fields;
+use crate::application::mutacao::Mutacao;
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::identity::DeviceIdentity;
 use crate::domain::ids::{new_id, now_timestamp};
 use crate::domain::manuscript::{
     Book, BookOption, BookUpdate, Chapter, ChapterOption, ChapterUpdate, Story, StoryUpdate,
 };
-use crate::domain::sync::{AggregateRef, Operation};
 use crate::infrastructure::blob_document;
-use crate::infrastructure::sqlite::sync_repository::{append_event_in_transaction, LocalChange};
+use crate::infrastructure::blob_store::BlobStore;
 use crate::infrastructure::sqlite::{manuscript_repository, SqliteDatabase};
-use rusqlite::TransactionBehavior;
 
 // ── História ─────────────────────────────────────────────────────────────
 
@@ -22,23 +43,29 @@ pub fn list_stories(
 
 pub fn create_story(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     universe_id: &str,
     name: &str,
 ) -> DatabaseCommandResult<Story> {
     let name = require_name(name, "A história precisa de um nome.")?;
-    let connection = database.write()?;
-    manuscript_repository::insert_story(
-        &connection,
-        &new_id(),
-        universe_id,
-        &name,
-        "",
-        &now_timestamp(),
-    )
+    Mutacao::executar(database, identidade, |m| {
+        let story = manuscript_repository::insert_story(
+            m.tx(),
+            &new_id(),
+            universe_id,
+            &name,
+            "",
+            &now_timestamp(),
+        )?;
+        m.gravou("story", &story.id)?;
+        m.gravou("story_position", &story.id)?;
+        Ok(story)
+    })
 }
 
 pub fn update_story(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     id: &str,
     patch: StoryUpdate,
 ) -> DatabaseCommandResult<()> {
@@ -54,58 +81,93 @@ pub fn update_story(
             "A história precisa de um nome.",
         ));
     }
-    let connection = database.write()?;
-    if !manuscript_repository::update_story(&connection, id, &patch, &now_timestamp())? {
-        return Err(DatabaseCommandError::not_found("História não encontrada."));
-    }
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        if !manuscript_repository::update_story(m.tx(), id, &patch, &now_timestamp())? {
+            return Err(DatabaseCommandError::not_found("História não encontrada."));
+        }
+        m.gravou("story", id)
+    })
 }
 
-pub fn delete_story(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    if !manuscript_repository::delete_story(&connection, id)? {
-        return Err(DatabaseCommandError::not_found("História não encontrada."));
-    }
-    Ok(())
+/// Exclui a história e tudo o que pendura nela. Recusa inteira se algum efeito atingir agregado
+/// ainda não coberto (card do planejamento com a história num campo).
+pub fn delete_story(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    id: &str,
+) -> DatabaseCommandResult<()> {
+    Mutacao::executar(database, identidade, |m| {
+        m.excluir("story", id).map_err(|erro| {
+            if erro.kind == crate::database::error::DatabaseErrorKind::NotFound {
+                DatabaseCommandError::not_found("História não encontrada.")
+            } else {
+                erro
+            }
+        })?;
+        if !manuscript_repository::delete_story(m.tx(), id)? {
+            return Err(DatabaseCommandError::not_found("História não encontrada."));
+        }
+        Ok(())
+    })
 }
 
 // ── Livro ────────────────────────────────────────────────────────────────
 
 pub fn list_books_by_story(
     database: &SqliteDatabase,
+    store: &BlobStore,
     story_id: &str,
 ) -> DatabaseCommandResult<Vec<Book>> {
     let connection = database.read()?;
-    manuscript_repository::list_books_by_story(&connection, story_id)
+    let mut livros = manuscript_repository::list_books_by_story(&connection, story_id)?;
+    for livro in livros.iter_mut() {
+        livro.cover_image = blob_fields::ler_asset_direto(&connection, store, "books", &livro.id)?;
+    }
+    Ok(livros)
 }
 
 pub fn list_books_by_universe(
     database: &SqliteDatabase,
+    store: &BlobStore,
     universe_id: &str,
 ) -> DatabaseCommandResult<Vec<BookOption>> {
     let connection = database.read()?;
-    manuscript_repository::list_books_by_universe(&connection, universe_id)
+    let mut livros = manuscript_repository::list_books_by_universe(&connection, universe_id)?;
+    for opcao in livros.iter_mut() {
+        opcao.book.cover_image =
+            blob_fields::ler_asset_direto(&connection, store, "books", &opcao.book.id)?;
+    }
+    Ok(livros)
 }
 
+/// Cria o livro e a ordem (vazia) dos capítulos dele, na mesma mutação.
 pub fn create_book(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     story_id: &str,
     name: &str,
 ) -> DatabaseCommandResult<Book> {
     let name = require_name(name, "O livro precisa de um nome.")?;
-    let connection = database.write()?;
-    manuscript_repository::insert_book(
-        &connection,
-        &new_id(),
-        story_id,
-        &name,
-        "",
-        &now_timestamp(),
-    )
+    Mutacao::executar(database, identidade, |m| {
+        let book = manuscript_repository::insert_book(
+            m.tx(),
+            &new_id(),
+            story_id,
+            &name,
+            "",
+            &now_timestamp(),
+        )?;
+        m.gravou("book", &book.id)?;
+        m.gravou("book_position", &book.id)?;
+        Ok(book)
+    })
 }
 
+/// A capa passa pelo blob store: o que fica no banco — e no evento — é a referência.
 pub fn update_book(
     database: &SqliteDatabase,
+    store: &BlobStore,
+    identidade: &DeviceIdentity,
     id: &str,
     patch: BookUpdate,
 ) -> DatabaseCommandResult<()> {
@@ -121,19 +183,40 @@ pub fn update_book(
             "O livro precisa de um nome.",
         ));
     }
-    let connection = database.write()?;
-    if !manuscript_repository::update_book(&connection, id, &patch, &now_timestamp())? {
-        return Err(DatabaseCommandError::not_found("Livro não encontrado."));
-    }
-    Ok(())
+    let capa = patch.cover_image.clone();
+    let sem_capa = BookUpdate {
+        cover_image: None,
+        ..patch
+    };
+    Mutacao::executar(database, identidade, |m| {
+        if !manuscript_repository::update_book(m.tx(), id, &sem_capa, &now_timestamp())? {
+            return Err(DatabaseCommandError::not_found("Livro não encontrado."));
+        }
+        if let Some(capa) = capa.as_deref() {
+            blob_fields::gravar_asset_direto(m.tx(), store, "books", id, capa)?;
+        }
+        m.gravou("book", id)
+    })
 }
 
-pub fn delete_book(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    if !manuscript_repository::delete_book(&connection, id)? {
-        return Err(DatabaseCommandError::not_found("Livro não encontrado."));
-    }
-    Ok(())
+pub fn delete_book(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    id: &str,
+) -> DatabaseCommandResult<()> {
+    Mutacao::executar(database, identidade, |m| {
+        m.excluir("book", id).map_err(|erro| {
+            if erro.kind == crate::database::error::DatabaseErrorKind::NotFound {
+                DatabaseCommandError::not_found("Livro não encontrado.")
+            } else {
+                erro
+            }
+        })?;
+        if !manuscript_repository::delete_book(m.tx(), id)? {
+            return Err(DatabaseCommandError::not_found("Livro não encontrado."));
+        }
+        Ok(())
+    })
 }
 
 // ── Capítulo ─────────────────────────────────────────────────────────────
@@ -159,14 +242,26 @@ pub fn get_chapter(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult
     manuscript_repository::get_chapter(&connection, id)
 }
 
+/// Cria o capítulo e reescreve a ordem do livro, na mesma mutação.
 pub fn create_chapter(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     book_id: &str,
     title: &str,
 ) -> DatabaseCommandResult<Chapter> {
     let title = require_name(title, "O capítulo precisa de um título.")?;
-    let connection = database.write()?;
-    manuscript_repository::insert_chapter(&connection, &new_id(), book_id, &title, &now_timestamp())
+    Mutacao::executar(database, identidade, |m| {
+        let chapter = manuscript_repository::insert_chapter(
+            m.tx(),
+            &new_id(),
+            book_id,
+            &title,
+            &now_timestamp(),
+        )?;
+        m.gravou("chapter", &chapter.id)?;
+        m.gravou("chapter_position", &chapter.id)?;
+        Ok(chapter)
+    })
 }
 
 /// Grava só os campos que a tela mexeu.
@@ -219,80 +314,67 @@ pub fn update_chapter(
             return Err(DatabaseCommandError::validation(motivo.to_string()));
         }
     }
-    let mut connection = database.write()?;
-
-    // `IMMEDIATE`, e uma transação só para o dado E o evento. Duas transações
-    // — salvar e depois registrar — reconstroem o buraco que o outbox existe
-    // para fechar: uma queda no meio deixa o capítulo salvo neste aparelho e
-    // invisível para todos os outros, sem nada registrando que faltou.
-    let tx = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-
-    if !manuscript_repository::update_chapter(&tx, id, &patch, &now_timestamp())? {
-        return Err(DatabaseCommandError::not_found("Capítulo não encontrado."));
-    }
-
-    // O payload é o estado NOVO do agregado, lido depois da escrita e dentro
-    // da mesma transação. Montá-lo a partir do patch descreveria só o que a
-    // tela mexeu, e quem recebe precisa do capítulo inteiro para convergir.
-    let chapter = manuscript_repository::get_chapter(&tx, id)?
-        .ok_or_else(|| DatabaseCommandError::not_found("Capítulo não encontrado."))?;
-    let universe_id = universo_do_capitulo(&tx, id)?;
-    let payload = serde_json::to_string(&chapter)
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-
-    append_event_in_transaction(
-        &tx,
-        identidade,
-        &LocalChange {
-            universe_id: &universe_id,
-            aggregate: AggregateRef::new("chapter", id),
-            operation: Operation::Upsert,
-            payload: &payload,
-        },
-    )?;
-
-    tx.commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+    // Uma transação `IMMEDIATE` só para o dado E o evento, pela fronteira `Mutacao`: duas
+    // transações — salvar e depois registrar — reconstroem o buraco que o outbox existe para
+    // fechar. O payload é o estado NOVO do capítulo, lido pela fronteira depois da escrita.
+    Mutacao::executar(database, identidade, |m| {
+        if !manuscript_repository::update_chapter(m.tx(), id, &patch, &now_timestamp())? {
+            return Err(DatabaseCommandError::not_found("Capítulo não encontrado."));
+        }
+        m.gravou("chapter", id)
+    })
 }
 
-/// Reordena os capítulos do livro numa transação.
+/// Reordena os capítulos do livro. Altera **só** `chapter_order(livro)`: nenhum capítulo ganha
+/// revisão, porque a posição não faz parte do payload dele.
 ///
-/// Se a lista não bater com o livro, nada é gravado: reordenar metade
-/// deixaria capítulos com a mesma posição, e a árvore passaria a mostrar uma
-/// ordem que ninguém pediu.
+/// Se a lista não bater com o livro, nada é gravado: reordenar metade deixaria capítulos com a
+/// mesma posição, e a árvore passaria a mostrar uma ordem que ninguém pediu.
 pub fn reorder_chapters(
     database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
     book_id: &str,
     chapter_ids: &[String],
 ) -> DatabaseCommandResult<()> {
     if chapter_ids.is_empty() {
         return Ok(());
     }
-    let mut connection = database.write()?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    let affected = manuscript_repository::reorder_chapters(&transaction, book_id, chapter_ids)?;
-    if affected != chapter_ids.len() {
-        return Err(DatabaseCommandError::conflict(
-            "A lista de capítulos mudou. Atualize e tente novamente.",
-        ));
-    }
-    transaction
-        .commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+    Mutacao::executar(database, identidade, |m| {
+        let affected = manuscript_repository::reorder_chapters(m.tx(), book_id, chapter_ids)?;
+        if affected != chapter_ids.len() {
+            return Err(DatabaseCommandError::conflict(
+                "A lista de capítulos mudou. Atualize e tente novamente.",
+            ));
+        }
+        // Declara a posição de cada capítulo da lista. Os que não mudaram não geram evento: a
+        // Mutacao descarta revisão idêntica à corrente, e o conflito fica só em quem se moveu.
+        for chapter_id in chapter_ids {
+            m.gravou("chapter_position", chapter_id)?;
+        }
+        Ok(())
+    })
 }
 
-pub fn delete_chapter(database: &SqliteDatabase, id: &str) -> DatabaseCommandResult<()> {
-    let connection = database.write()?;
-    if !manuscript_repository::delete_chapter(&connection, id)? {
-        return Err(DatabaseCommandError::not_found("Capítulo não encontrado."));
-    }
-    Ok(())
+/// Exclui o capítulo — e, por gatilho, os anexos e as marcações dele; a ordem do livro é reescrita.
+///
+/// A exclusão é declarada **antes** do `DELETE`: depois dele, os gatilhos já apagaram anexos e
+/// marcações e ninguém saberia quais eram. Card do planejamento ligado ao capítulo recusa a
+/// exclusão inteira: o `SET NULL` reescreveria um agregado que só entra na B4.
+pub fn delete_chapter(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    id: &str,
+) -> DatabaseCommandResult<()> {
+    Mutacao::executar(database, identidade, |m| {
+        if manuscript_repository::get_chapter(m.tx(), id)?.is_none() {
+            return Err(DatabaseCommandError::not_found("Capítulo não encontrado."));
+        }
+        m.excluir("chapter", id)?;
+        if !manuscript_repository::delete_chapter(m.tx(), id)? {
+            return Err(DatabaseCommandError::not_found("Capítulo não encontrado."));
+        }
+        Ok(())
+    })
 }
 
 fn require_name(value: &str, message: &str) -> DatabaseCommandResult<String> {
@@ -301,31 +383,6 @@ fn require_name(value: &str, message: &str) -> DatabaseCommandResult<String> {
         return Err(DatabaseCommandError::validation(message));
     }
     Ok(value.to_string())
-}
-
-/// O universo a que um capítulo pertence, pela cadeia livro → história.
-///
-/// O evento carrega `universe_id` porque ele é o escopo da replicação, e o
-/// capítulo não guarda essa coluna — a informação vive na história.
-fn universo_do_capitulo(
-    connection: &rusqlite::Connection,
-    chapter_id: &str,
-) -> DatabaseCommandResult<String> {
-    connection
-        .query_row(
-            "SELECT s.universe_id
-               FROM chapters c
-               JOIN books b ON b.id = c.book_id
-               JOIN stories s ON s.id = b.story_id
-              WHERE c.id = ?1",
-            [chapter_id],
-            |row| row.get(0),
-        )
-        .map_err(|error| {
-            DatabaseCommandError::storage(format!(
-                "Não foi possível descobrir o universo do capítulo: {error}"
-            ))
-        })
 }
 
 #[cfg(test)]
@@ -361,11 +418,22 @@ mod tests {
         (dados, identidade)
     }
 
-    fn seed_tree(fixture: &TemporaryDatabase) -> (Story, Book) {
+    /// Universo semeado, identidade pronta, história e livro criados pela fronteira.
+    fn seed_tree(fixture: &TemporaryDatabase) -> (Story, Book, DadosDoApp, DeviceIdentity) {
         seed_universe(&fixture.connection(), "u1");
-        let story = create_story(&fixture.database, "u1", "Historia").expect("criar historia");
-        let book = create_book(&fixture.database, &story.id, "Livro").expect("criar livro");
-        (story, book)
+        let (dados, identidade) = arrancar(fixture);
+        let story =
+            create_story(&fixture.database, &identidade, "u1", "Historia").expect("criar historia");
+        let book =
+            create_book(&fixture.database, &identidade, &story.id, "Livro").expect("criar livro");
+        (story, book, dados, identidade)
+    }
+
+    fn contar_eventos(fixture: &TemporaryDatabase) -> i64 {
+        fixture
+            .connection()
+            .query_row("SELECT COUNT(*) FROM sync_events", [], |row| row.get(0))
+            .expect("contar eventos")
     }
 
     /// GATE DA ETAPA 3, primeiro sentido: falhou o dado, o evento não existe.
@@ -409,9 +477,11 @@ mod tests {
     #[test]
     fn evento_recusado_desfaz_a_alteracao_do_dado() {
         let fixture = TemporaryDatabase::new();
-        let (_, book) = seed_tree(&fixture);
-        let chapter = create_chapter(&fixture.database, &book.id, "Cap 1").expect("criar");
-        let (_dados, identidade) = arrancar(&fixture);
+        let (_, book, _dados, identidade) = seed_tree(&fixture);
+        let chapter =
+            create_chapter(&fixture.database, &identidade, &book.id, "Cap 1").expect("criar");
+
+        let eventos_antes = contar_eventos(&fixture);
 
         // O banco passa a declarar outro aparelho como `self`.
         {
@@ -442,12 +512,7 @@ mod tests {
             salvo.title, "Cap 1",
             "o título mudou apesar de o evento ter falhado: o dado ficaria preso neste aparelho"
         );
-
-        let eventos: i64 = fixture
-            .connection()
-            .query_row("SELECT COUNT(*) FROM sync_events", [], |row| row.get(0))
-            .expect("contar eventos");
-        assert_eq!(eventos, 0);
+        assert_eq!(contar_eventos(&fixture), eventos_antes);
     }
 
     /// A escrita real produz o evento certo: agregado, universo e payload com
@@ -455,9 +520,9 @@ mod tests {
     #[test]
     fn salvar_capitulo_produz_evento_assinado_com_o_estado_novo() {
         let fixture = TemporaryDatabase::new();
-        let (_, book) = seed_tree(&fixture);
-        let chapter = create_chapter(&fixture.database, &book.id, "Cap 1").expect("criar");
-        let (_dados, identidade) = arrancar(&fixture);
+        let (_, book, _dados, identidade) = seed_tree(&fixture);
+        let chapter =
+            create_chapter(&fixture.database, &identidade, &book.id, "Cap 1").expect("criar");
 
         update_chapter(
             &fixture.database,
@@ -474,7 +539,8 @@ mod tests {
         let connection = fixture.connection();
         let (tipo, agregado, universo, payload): (String, String, String, String) = connection
             .query_row(
-                "SELECT aggregate_type, aggregate_id, universe_id, payload FROM sync_events",
+                "SELECT aggregate_type, aggregate_id, universe_id, payload FROM sync_events
+                  ORDER BY seq DESC LIMIT 1",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
@@ -502,9 +568,11 @@ mod tests {
             0,
         )
         .expect("ler outbox");
-        assert_eq!(saida.len(), 1);
+        assert!(!saida.is_empty());
         assert!(
-            crate::domain::identity::verify(&saida[0], &identidade.public_base32()),
+            saida
+                .iter()
+                .all(|evento| crate::domain::identity::verify(evento, &identidade.public_base32())),
             "o evento que sai pelo outbox não verifica"
         );
     }
@@ -517,9 +585,10 @@ mod tests {
     #[test]
     fn patch_vazio_nao_gera_evento() {
         let fixture = TemporaryDatabase::new();
-        let (_, book) = seed_tree(&fixture);
-        let chapter = create_chapter(&fixture.database, &book.id, "Cap 1").expect("criar");
-        let (_dados, identidade) = arrancar(&fixture);
+        let (_, book, _dados, identidade) = seed_tree(&fixture);
+        let chapter =
+            create_chapter(&fixture.database, &identidade, &book.id, "Cap 1").expect("criar");
+        let eventos_antes = contar_eventos(&fixture);
 
         update_chapter(
             &fixture.database,
@@ -528,12 +597,7 @@ mod tests {
             ChapterUpdate::default(),
         )
         .expect("no-op");
-
-        let eventos: i64 = fixture
-            .connection()
-            .query_row("SELECT COUNT(*) FROM sync_events", [], |row| row.get(0))
-            .expect("contar");
-        assert_eq!(eventos, 0);
+        assert_eq!(contar_eventos(&fixture), eventos_antes);
     }
 
     #[test]
@@ -541,10 +605,10 @@ mod tests {
         // A estatistica do universo soma word_count. Gravar o texto sem
         // recontar faz o total mentir ate o proximo salvamento.
         let fixture = TemporaryDatabase::new();
-        let (_, book) = seed_tree(&fixture);
-        let chapter = create_chapter(&fixture.database, &book.id, "Cap 1").expect("criar");
+        let (_, book, _dados, identidade) = seed_tree(&fixture);
+        let chapter =
+            create_chapter(&fixture.database, &identidade, &book.id, "Cap 1").expect("criar");
 
-        let (_dados, identidade) = arrancar(&fixture);
         let error = update_chapter(
             &fixture.database,
             &identidade,
@@ -561,9 +625,9 @@ mod tests {
     #[test]
     fn autosave_sucessivo_nao_perde_o_resumo_nem_o_titulo() {
         let fixture = TemporaryDatabase::new();
-        let (_, book) = seed_tree(&fixture);
-        let chapter = create_chapter(&fixture.database, &book.id, "Cap 1").expect("criar");
-        let (_dados, identidade) = arrancar(&fixture);
+        let (_, book, _dados, identidade) = seed_tree(&fixture);
+        let chapter =
+            create_chapter(&fixture.database, &identidade, &book.id, "Cap 1").expect("criar");
 
         update_chapter(
             &fixture.database,
@@ -603,12 +667,15 @@ mod tests {
         // Exigencia do plano: transacao revertida no meio nao pode deixar a
         // arvore com capitulos na mesma posicao.
         let fixture = TemporaryDatabase::new();
-        let (_, book) = seed_tree(&fixture);
-        let primeiro = create_chapter(&fixture.database, &book.id, "Cap 1").expect("criar");
-        let segundo = create_chapter(&fixture.database, &book.id, "Cap 2").expect("criar");
+        let (_, book, _dados, identidade) = seed_tree(&fixture);
+        let primeiro =
+            create_chapter(&fixture.database, &identidade, &book.id, "Cap 1").expect("criar");
+        let segundo =
+            create_chapter(&fixture.database, &identidade, &book.id, "Cap 2").expect("criar");
 
         let error = reorder_chapters(
             &fixture.database,
+            &identidade,
             &book.id,
             &[segundo.id.clone(), primeiro.id.clone(), "fantasma".into()],
         )
@@ -646,10 +713,10 @@ mod tests {
         // A tela chama o salvamento mesmo quando nada mudou. Carimbar ali
         // faria a sincronizacao achar que o capitulo mudou a cada foco.
         let fixture = TemporaryDatabase::new();
-        let (_, book) = seed_tree(&fixture);
-        let chapter = create_chapter(&fixture.database, &book.id, "Cap 1").expect("criar");
+        let (_, book, _dados, identidade) = seed_tree(&fixture);
+        let chapter =
+            create_chapter(&fixture.database, &identidade, &book.id, "Cap 1").expect("criar");
 
-        let (_dados, identidade) = arrancar(&fixture);
         update_chapter(
             &fixture.database,
             &identidade,

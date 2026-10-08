@@ -62,10 +62,19 @@ pub fn collaboration_review(
     id: String,
     decision: String,
 ) -> DatabaseCommandResult<()> {
-    collaboration_service::review(&super::database(&app)?, &id, &decision)
+    collaboration_service::review(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        &id,
+        &decision,
+    )
 }
 
 #[tauri::command]
 pub fn collaboration_approve_all(app: AppHandle, session_id: String) -> DatabaseCommandResult<i64> {
-    collaboration_service::approve_all(&super::database(&app)?, &session_id)
+    collaboration_service::approve_all(
+        &super::database(&app)?,
+        &super::sync_identity(&app)?,
+        &session_id,
+    )
 }

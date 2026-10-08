@@ -69,8 +69,8 @@
 </div>
 
 @if (modal()) {
-  <div class="entity-modal-backdrop" (mousedown)="closeModal()">
-    <form class="entity-modal" (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
+  <div class="entity-modal-backdrop" data-nh-dialog (mousedown)="closeModal()">
+    <form class="entity-modal" data-nh-dialog-panel (mousedown)="$event.stopPropagation()" (submit)="$event.preventDefault()">
       @if (modal() === 'create') {
         <header><div><span class="eyebrow">WORLDBUILDING</span><h2>Novo {{ newEntityType.toLocaleLowerCase('pt-BR') }}</h2></div><button type="button" (click)="closeModal()">×</button></header>
         <p class="modal-guidance">Descreva a ideia ou preencha manualmente. A IA usa somente o universo atual para propor uma ficha editável.</p>

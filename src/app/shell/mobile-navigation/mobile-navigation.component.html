@@ -7,8 +7,12 @@
   aria-controls="nh-mnav-layer"
   (click)="onHandleClick($event)"
 >
-  <span class="nh-mnav-grip" aria-hidden="true"></span>
+  <span class="nh-mnav-grip" aria-hidden="true"><i></i><i></i><i></i></span>
 </button>
+
+@if (hintVisible()) {
+  <div class="nh-mnav-coach" role="status"><b aria-hidden="true">←</b> Puxe para navegar</div>
+}
 
 <div
   #layer

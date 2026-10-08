@@ -164,6 +164,26 @@ pub fn canonical_bytes(envelope: &EventEnvelope) -> Vec<u8> {
         saida.extend_from_slice(&(campo.len() as u64).to_be_bytes());
         saida.extend_from_slice(campo.as_bytes());
     }
+    // O grupo da ação entra na assinatura quando existe (B2.2): reagrupar eventos no caminho — tirar
+    // um membro do grupo, mudar a contagem — invalida a assinatura. Evento sem grupo mantém os bytes
+    // de antes, e a assinatura dele continua válida.
+    let grupo = &envelope.grupo;
+    if !grupo.mutation_id.is_empty() {
+        let indice = grupo.index.to_string();
+        let total = grupo.count.to_string();
+        for campo in [
+            "mutation",
+            grupo.mutation_id.as_str(),
+            indice.as_str(),
+            total.as_str(),
+            grupo.kind.as_str(),
+            grupo.root_type.as_str(),
+            grupo.root_id.as_str(),
+        ] {
+            saida.extend_from_slice(&(campo.len() as u64).to_be_bytes());
+            saida.extend_from_slice(campo.as_bytes());
+        }
+    }
     saida
 }
 
@@ -257,6 +277,7 @@ mod tests {
             base_rev: "r0".into(),
             new_rev: "r1".into(),
             signature: String::new(),
+            grupo: Default::default(),
         }
     }
 
@@ -396,5 +417,97 @@ mod tests {
                 Some(bytes.as_slice())
             );
         }
+    }
+
+    /// **O grupo da ação é assinado** (B2.2): tirar um evento do grupo, renumerar, mudar a contagem
+    /// ou a raiz invalida a assinatura. Sem isto, um relay poderia reagrupar eventos e fazer o
+    /// receptor aplicar uma ação pela metade.
+    #[test]
+    fn o_grupo_da_acao_entra_na_assinatura() {
+        let identidade = DeviceIdentity::generate();
+        let mut original = envelope();
+        original.grupo = crate::domain::sync::GrupoDeMutacao {
+            mutation_id: "m1".into(),
+            index: 1,
+            count: 3,
+            kind: "delete_tree".into(),
+            root_type: "book".into(),
+            root_id: "b1".into(),
+        };
+        original.signature = identidade.sign(&original);
+        assert!(verify(&original, &identidade.public_base32()));
+
+        let adulteracoes: Vec<Adulteracao> = vec![
+            (
+                "mutation_id",
+                Box::new(|e| e.grupo.mutation_id = "m2".into()),
+            ),
+            ("index", Box::new(|e| e.grupo.index = 0)),
+            ("count", Box::new(|e| e.grupo.count = 2)),
+            ("kind", Box::new(|e| e.grupo.kind = String::new())),
+            (
+                "root_type",
+                Box::new(|e| e.grupo.root_type = "story".into()),
+            ),
+            ("root_id", Box::new(|e| e.grupo.root_id = "b2".into())),
+            (
+                "grupo inteiro removido",
+                Box::new(|e| e.grupo = Default::default()),
+            ),
+        ];
+        for (campo, adulterar) in adulteracoes {
+            let mut copia = original.clone();
+            adulterar(&mut copia);
+            assert!(
+                !verify(&copia, &identidade.public_base32()),
+                "adulterar {campo} do grupo não invalidou a assinatura"
+            );
+        }
+    }
+
+    /// Evento sem grupo — anterior à B2.2 — mantém exatamente os bytes assinados de antes.
+    #[test]
+    fn evento_sem_grupo_mantem_a_assinatura_de_antes() {
+        let sem_grupo = envelope();
+        let mut antigo = Vec::new();
+        antigo.extend_from_slice(SIGNATURE_DOMAIN);
+        let seq = sem_grupo.seq.to_string();
+        for campo in [
+            sem_grupo.event_id.as_str(),
+            sem_grupo.device_id.as_str(),
+            seq.as_str(),
+            sem_grupo.universe_id.as_str(),
+            sem_grupo.aggregate_type.as_str(),
+            sem_grupo.aggregate_id.as_str(),
+            sem_grupo.operation.as_str(),
+            sem_grupo.payload.as_str(),
+            sem_grupo.base_rev.as_str(),
+            sem_grupo.new_rev.as_str(),
+        ] {
+            antigo.extend_from_slice(&(campo.len() as u64).to_be_bytes());
+            antigo.extend_from_slice(campo.as_bytes());
+        }
+        assert_eq!(canonical_bytes(&sem_grupo), antigo);
+    }
+
+    /// **O grupo não entra na revisão.** Apagar c1 sozinho ou como parte da exclusão do livro é o mesmo
+    /// efeito sobre c1, e tem de produzir a mesma revisão.
+    #[test]
+    fn o_grupo_nao_entra_na_revisao() {
+        let agregado = crate::domain::sync::AggregateRef::new("chapter", "c1");
+        let sozinho = crate::domain::sync::compute_revision("r0", &agregado, Operation::Delete, "");
+        let mut via_livro = envelope();
+        via_livro.grupo.mutation_id = "m-livro".into();
+        via_livro.grupo.count = 5;
+        // A revisão é função só de (base, agregado, operação, payload): nenhum campo do grupo existe
+        // na assinatura de `compute_revision`.
+        let pelo_livro =
+            crate::domain::sync::compute_revision("r0", &agregado, Operation::Delete, "");
+        assert_eq!(sozinho, pelo_livro);
+        assert_ne!(
+            canonical_bytes(&envelope()),
+            canonical_bytes(&via_livro),
+            "a assinatura, ao contrário da revisão, distingue a ação"
+        );
     }
 }

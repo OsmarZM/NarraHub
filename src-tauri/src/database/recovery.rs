@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 const DATABASE_FILE_NAME: &str = "narrahub.db";
@@ -32,6 +32,7 @@ struct PendingRestore {
     safety_backup_id: String,
     staging: PathBuf,
     expected_database_sha256: String,
+    expected_assets: super::backup::BackupAssetsManifest,
     schema_version: i64,
     prepared_at: SystemTime,
 }
@@ -176,6 +177,12 @@ pub async fn backup_restore_commit(
     let task =
         tauri::async_runtime::spawn_blocking(move || commit_restore_at(&app_data, pending)).await;
     backup_state.running.store(false, Ordering::Release);
+    // O arquivo do banco foi trocado: até o próximo arranque conferir o schema dele, nenhum comando
+    // de domínio deve abri-lo. A restauração pede reinício (`requires_restart`).
+    if matches!(&task, Ok(Ok(_))) {
+        app.state::<super::estado::EstadoDoBanco>()
+            .definir(super::estado::FaseDoBanco::Unprepared);
+    }
     task.map_err(|error| {
         DatabaseCommandError::unavailable(format!("A troca recuperável do banco falhou: {error}"))
     })?
@@ -223,20 +230,25 @@ fn prepare_restore_at(
 
     let active_database = app_data.join(DATABASE_FILE_NAME);
     let active_assets = app_data.join("assets");
-    let safety_backup = create_backup_at(
-        &active_database,
-        active_assets.is_dir().then_some(active_assets.as_path()),
-        &backups_root,
-        app_version,
-        BackupReason::PreRestore,
-    )?;
-    let safety_validation = validate_backup_at(&backups_root, &safety_backup.backup_id)?;
-    if !safety_validation.valid {
-        return Err(format!(
-            "O backup de segurança anterior à restauração não foi validado: {}",
-            safety_validation.errors.join(" ")
-        ));
-    }
+    let safety_backup_id = if active_database.is_file() {
+        let safety_backup = create_backup_at(
+            &active_database,
+            active_assets.is_dir().then_some(active_assets.as_path()),
+            &backups_root,
+            app_version,
+            BackupReason::PreRestore,
+        )?;
+        let safety_validation = validate_backup_at(&backups_root, &safety_backup.backup_id)?;
+        if !safety_validation.valid {
+            return Err(format!(
+                "O backup de segurança anterior à restauração não foi validado: {}",
+                safety_validation.errors.join(" ")
+            ));
+        }
+        safety_backup.backup_id
+    } else {
+        String::new()
+    };
 
     let token = Uuid::new_v4().simple().to_string();
     let staging = app_data.join(format!(".restore-{token}"));
@@ -277,16 +289,17 @@ fn prepare_restore_at(
     let pending = PendingRestore {
         token: token.clone(),
         backup_id: backup_id.into(),
-        safety_backup_id: safety_backup.backup_id.clone(),
+        safety_backup_id: safety_backup_id.clone(),
         staging,
         expected_database_sha256: manifest.database.sha256,
+        expected_assets: manifest.assets,
         schema_version: manifest.schema_version,
         prepared_at: SystemTime::now(),
     };
     let preparation = RestorePreparation {
         token,
         backup_id: backup_id.into(),
-        safety_backup_id: safety_backup.backup_id,
+        safety_backup_id,
         schema_version: manifest.schema_version,
         created_at: manifest.created_at,
         warnings: validation.warnings,
@@ -340,6 +353,19 @@ fn commit_restore_at_internal(
         return Err("O banco preparado deixou de ser íntegro ou compatível.".into());
     }
 
+    let mut asset_errors = Vec::new();
+    if let Err(error) = super::backup::validate_assets(
+        &pending.staging.join("assets"),
+        &pending.expected_assets,
+        &mut asset_errors,
+    ) {
+        remove_restore_staging(&pending.staging);
+        return Err(error);
+    }
+    if !asset_errors.is_empty() {
+        remove_restore_staging(&pending.staging);
+        return Err("As mídias preparadas foram alteradas antes da restauração.".into());
+    }
     let recovery_root = app_data.join("recovery");
     fs::create_dir_all(&recovery_root).map_err(|error| error.to_string())?;
     let rollback_id = format!(
@@ -369,14 +395,16 @@ fn commit_restore_at_internal(
     let staged_assets = pending.staging.join("assets");
     let mut progress = SwapProgress::default();
     let swap_result = (|| {
-        fs::rename(&active_database, rollback_directory.join(DATABASE_FILE_NAME)).map_err(
+        if active_database.exists() {
+            fs::rename(&active_database, rollback_directory.join(DATABASE_FILE_NAME)).map_err(
             |error| {
                 format!(
                     "Não foi possível retirar o banco ativo. Confirme que todas as conexões foram encerradas: {error}"
                 )
             },
         )?;
-        progress.original_database_moved = true;
+            progress.original_database_moved = true;
+        }
 
         for sidecar in ["narrahub.db-wal", "narrahub.db-shm"] {
             let source = app_data.join(sidecar);
@@ -737,6 +765,70 @@ mod tests {
             fs::read(rollback.join("assets/cover.bin")).unwrap(),
             b"current-cover"
         );
+    }
+
+    #[test]
+    fn external_package_restores_an_installation_without_an_active_database() {
+        let app = TestAppData::new();
+        app.insert_universe("u", "Acervo recuperado");
+        fs::create_dir(app.root.join("assets")).unwrap();
+        fs::write(app.root.join("assets/image"), b"media").unwrap();
+        let backup = create_backup_at(
+            &app.database(),
+            Some(&app.root.join("assets")),
+            &app.root.join("backups"),
+            "test",
+            BackupReason::Manual,
+        )
+        .unwrap();
+        let package = app.root.join("external.narrahub-backup");
+        crate::database::portable::write_package(
+            &app.root.join("backups").join(&backup.backup_id),
+            &package,
+            &backup,
+        )
+        .unwrap();
+        let fresh = app.root.join("fresh");
+        fs::create_dir(&fresh).unwrap();
+        let imported = crate::database::portable::import_package(
+            fs::File::open(&package).unwrap(),
+            &fresh.join("backups"),
+        )
+        .unwrap();
+        let (preparation, pending) =
+            prepare_restore_at(&fresh, &imported.backup_id, "test").unwrap();
+        assert!(preparation.safety_backup_id.is_empty());
+        assert!(!fresh.join(DATABASE_FILE_NAME).exists());
+        commit_restore_at(&fresh, pending).unwrap();
+        let name: String = Connection::open(fresh.join(DATABASE_FILE_NAME))
+            .unwrap()
+            .query_row("SELECT name FROM universes WHERE id='u'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(name, "Acervo recuperado");
+        assert_eq!(fs::read(fresh.join("assets/image")).unwrap(), b"media");
+    }
+
+    #[test]
+    fn changed_staged_media_is_refused_without_changing_active_state() {
+        let app = TestAppData::new();
+        app.insert_universe("u", "Ativo");
+        fs::create_dir(app.root.join("assets")).unwrap();
+        fs::write(app.root.join("assets/image"), b"media").unwrap();
+        let backup = create_backup_at(
+            &app.database(),
+            Some(&app.root.join("assets")),
+            &app.root.join("backups"),
+            "test",
+            BackupReason::Manual,
+        )
+        .unwrap();
+        let (_, pending) = prepare_restore_at(&app.root, &backup.backup_id, "test").unwrap();
+        fs::write(pending.staging.join("assets/image"), b"tamper").unwrap();
+        assert!(commit_restore_at(&app.root, pending)
+            .unwrap_err()
+            .contains("mídias"));
+        assert_eq!(app.universe_names(), vec!["Ativo"]);
+        assert_eq!(fs::read(app.root.join("assets/image")).unwrap(), b"media");
     }
 
     #[test]

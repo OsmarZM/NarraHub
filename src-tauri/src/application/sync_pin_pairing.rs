@@ -69,7 +69,8 @@ use crate::infrastructure::sync_transport::{
     autenticar, provar_identidade, Handshake, ProvaDeIdentidade, SessaoAutenticada, Transporte,
 };
 use crate::infrastructure::sync_wire::{
-    ajustar_esperas, escrever_mensagem, escrever_quadro, ler_mensagem, ler_quadro, ESPERA_PADRAO,
+    ajustar_esperas, escrever_mensagem, escrever_quadro, ler_mensagem, ler_quadro, FalhaDeFio,
+    ESPERA_PADRAO,
 };
 use serde::{Deserialize, Serialize};
 
@@ -144,6 +145,30 @@ fn falha(motivo: impl std::fmt::Display) -> DatabaseCommandError {
     DatabaseCommandError::validation(motivo.to_string())
 }
 
+// I-BUG-04 (Etapa I, achado em aparelho físico): nas primeiras mensagens do pareamento por código, o
+// usuário lia "a conexão caiu com 4 bytes…" ou "handshake: decrypt error". O protocolo não muda — só o
+// que se diz a quem está com o celular na mão.
+
+/// O anfitrião encerrou antes de responder ao código: não havia código aberto (venceu ou já foi usado).
+const CODIGO_RECUSADO: &str = concat!(
+    "O outro aparelho não aceitou o código. Ele vale três minutos e três tentativas, e pode ter ",
+    "vencido ou já ter sido usado. Gere um código novo no outro aparelho e tente de novo."
+);
+/// O canal com a chave derivada do código não se formou: os dois lados usaram códigos diferentes.
+const CODIGO_NAO_CONFERE: &str =
+    "O código não confere com o do outro aparelho. Confira os oito dígitos ou gere um código novo.";
+/// Do lado de quem mostra o código.
+const TENTATIVA_COM_CODIGO_ERRADO: &str =
+    "Um aparelho tentou parear com um código que não confere. Nada foi gravado.";
+
+/// Conexão encerrada antes de qualquer resposta vira a mensagem de código; o resto segue como era.
+fn fim_antes_da_resposta(erro: FalhaDeFio, mensagem: &str) -> DatabaseCommandError {
+    match erro {
+        FalhaDeFio::FimNoMeio { .. } | FalhaDeFio::Rede { .. } => falha(mensagem),
+        outro => falha(outro),
+    }
+}
+
 /// O prólogo: rótulo mais as duas mensagens do SPAKE2, sempre na mesma ordem.
 fn prologo(do_visitante: &[u8], do_anfitriao: &[u8]) -> Vec<u8> {
     let mut bytes =
@@ -214,7 +239,9 @@ pub fn anfitriao_autentica(
     )?;
 
     let m1 = ler_quadro(fluxo).map_err(falha)?;
-    aperto.ler(&m1)?;
+    aperto
+        .ler(&m1)
+        .map_err(|_| falha(TENTATIVA_COM_CODIGO_ERRADO))?;
     let m2 = aperto.escrever(&[])?;
     escrever_quadro(fluxo, &m2).map_err(falha)?;
     let m3 = ler_quadro(fluxo).map_err(falha)?;
@@ -255,8 +282,11 @@ pub fn visitante_autentica(
 
     let troca = TrocaPendente::visitante(&pin);
     let do_visitante = troca.mensagem.clone();
-    escrever_quadro(fluxo, &do_visitante).map_err(falha)?;
-    let do_anfitriao = ler_quadro(fluxo).map_err(falha)?;
+    // Anfitrião sem código aberto encerra na hora: às vezes a primeira escrita já encontra a porta fechada.
+    escrever_quadro(fluxo, &do_visitante)
+        .map_err(|erro| fim_antes_da_resposta(erro, CODIGO_RECUSADO))?;
+    let do_anfitriao =
+        ler_quadro(fluxo).map_err(|erro| fim_antes_da_resposta(erro, CODIGO_RECUSADO))?;
 
     let psk = troca.concluir(&do_anfitriao).map_err(falha)?.psk_do_noise();
 
@@ -270,8 +300,9 @@ pub fn visitante_autentica(
 
     let m1 = aperto.escrever(&[])?;
     escrever_quadro(fluxo, &m1).map_err(falha)?;
-    let m2 = ler_quadro(fluxo).map_err(falha)?;
-    aperto.ler(&m2)?;
+    // Código diferente: o anfitrião não decifra o m1 e encerra — o m2 nunca chega.
+    let m2 = ler_quadro(fluxo).map_err(|erro| fim_antes_da_resposta(erro, CODIGO_NAO_CONFERE))?;
+    aperto.ler(&m2).map_err(|_| falha(CODIGO_NAO_CONFERE))?;
     let m3 = aperto.escrever(&[])?;
     escrever_quadro(fluxo, &m3).map_err(falha)?;
 
@@ -591,6 +622,12 @@ mod tests {
         let (do_anfitriao, do_visitante) = parear(&anfitriao, &visitante, true);
         assert!(do_anfitriao.is_err(), "o anfitrião não podia ter pareado");
         assert!(do_visitante.is_err(), "o visitante não podia ter pareado");
+        // I-BUG-04: cada lado diz o que aconteceu em português de gente, não "decrypt error".
+        assert_eq!(do_visitante.unwrap_err().message, CODIGO_NAO_CONFERE);
+        assert_eq!(
+            do_anfitriao.unwrap_err().message,
+            TENTATIVA_COM_CODIGO_ERRADO
+        );
 
         assert!(
             anfitriao.roster().is_empty(),
@@ -602,6 +639,50 @@ mod tests {
             "o roster do visitante ficou com {:?}",
             visitante.roster()
         );
+    }
+
+    /// **I-BUG-04: código vencido não vira "a conexão caiu com 4 bytes".**
+    ///
+    /// Achado em aparelho físico: a tela do Windows ainda mostrava o código, ele já tinha vencido, e o
+    /// celular leu só o fim do fluxo. Sem código aberto, o anfitrião encerra antes de responder; o
+    /// visitante tem de dizer que o código não foi aceito e o que fazer.
+    #[test]
+    fn codigo_vencido_diz_que_o_codigo_nao_foi_aceito() {
+        let anfitriao = Aparelho::novo();
+        let visitante = Aparelho::novo();
+        let escuta = escutar(0).expect("escutar");
+        let endereco = destino(&escuta);
+        // Nenhum código emitido: é o estado do anfitrião depois que o código vence.
+        let mut codigos = Codigos::default();
+
+        let do_visitante = std::thread::scope(|escopo| {
+            let servidor = escopo.spawn(|| {
+                let (mut fluxo, _) = escuta.accept().expect("aceitar");
+                anfitriao_atende(
+                    &mut fluxo,
+                    &mut codigos,
+                    &anfitriao.identidade,
+                    "Desktop da Ana",
+                    &anfitriao.banco.database,
+                    Duration::from_secs(20),
+                )
+            });
+            let mut fluxo = conectar(&endereco).expect("conectar");
+            let do_visitante = visitante_pareia(
+                &mut fluxo,
+                "12345678",
+                &visitante.identidade,
+                "Celular da Ana",
+                &visitante.banco.database,
+                Duration::from_secs(20),
+            );
+            assert!(servidor.join().expect("thread do anfitrião").is_err());
+            do_visitante
+        });
+
+        assert_eq!(do_visitante.unwrap_err().message, CODIGO_RECUSADO);
+        assert!(anfitriao.roster().is_empty());
+        assert!(visitante.roster().is_empty());
     }
 
     /// **Três tentativas, e o código morre.**

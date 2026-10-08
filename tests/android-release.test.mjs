@@ -64,6 +64,7 @@ test('a release publica APK com nome estavel e o SHA-256 ao lado, antes de publi
 });
 
 function jobDoWorkflow(workflow, nome) {
+  workflow = workflow.replace(/\r\n/gu, '\n');
   const inicio = workflow.indexOf(`\n  ${nome}:\n`);
   assert.ok(inicio >= 0, `job ${nome} não existe`);
   const resto = workflow.slice(inicio + 1);
@@ -85,4 +86,27 @@ test('pré-release é só Android; Windows só recebe versão estável', () => {
   assert.doesNotMatch(pre, /tauri-action|TAURI_SIGNING|latest\.json|msi|nsis/iu, 'a pré-release não pode gerar nada do Windows');
   assert.match(pre, /\*\) echo "::error::\$VERSAO é estável/u, 'o job de pré-release recusa versão estável');
   assert.doesNotMatch(workflow, /wix/iu, 'nenhum ajuste de versão do MSI: beta não passa pelo Windows');
+});
+
+// I-BUG-06 (Etapa I, achado em aparelho físico): o arranque só procurava atualização quando o
+// atualizador do DESKTOP estava configurado, o que nunca é verdade no Android — a beta nova só
+// aparecia indo em Configurações. O canal do Android tem de bastar para o arranque procurar.
+test('o arranque procura atualização também pelo canal do Android', () => {
+  const arranque = readFileSync(new URL('../src/app/bootstrap/app-bootstrap.service.ts', import.meta.url), 'utf8');
+  assert.match(arranque, /if \(await this\.settings\.shouldCheckForUpdatesOnStartup\(\)\)/u);
+  assert.doesNotMatch(arranque, /if \(await this\.settings\.isUpdateConfigured\(\)\)/u);
+  const store = readFileSync(new URL('../src/app/features/settings/state/settings.store.ts', import.meta.url), 'utf8');
+  const metodo = store.slice(store.indexOf('async shouldCheckForUpdatesOnStartup'));
+  assert.match(metodo.slice(0, 300), /this\.androidUpdate\.supported\(\)/u);
+});
+
+// I-BUG-09 (Etapa I, achado em aparelho físico): o reqwest 0.13 com `rustls` usa o verificador da
+// plataforma, que no Android exige inicialização por JNI — sem ela, a primeira requisição HTTPS do
+// atualizador entra em pânico e a atualização nunca aparece. O cliente do Android usa TLS com as
+// raízes embutidas; o `cfg` não compila no desktop, então o contrato é textual.
+test('o cliente HTTPS do atualizador Android não depende do verificador da plataforma', () => {
+  const fonte = readFileSync(new URL('../src-tauri/src/application/atualizacao_android.rs', import.meta.url), 'utf8');
+  const cliente = fonte.slice(fonte.indexOf('fn cliente('), fonte.indexOf('fn tls_com_raizes_embutidas'));
+  assert.match(cliente, /#\[cfg\(target_os = "android"\)\]\s*let construtor = construtor\.tls_backend_preconfigured\(tls_com_raizes_embutidas\(\)\?\);/u);
+  assert.match(fonte, /webpki_roots::TLS_SERVER_ROOTS/u);
 });

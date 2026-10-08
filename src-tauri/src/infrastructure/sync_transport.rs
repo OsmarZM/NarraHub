@@ -492,6 +492,7 @@ mod tests {
             new_rev: "rev".into(),
             // A assinatura do handshake, apresentada como se fosse do evento.
             signature: prova.assinatura.clone(),
+            grupo: Default::default(),
         };
         let _ = AggregateRef::new("chapter", "cap-1");
 

@@ -30,6 +30,7 @@
   @if (error()) { <p class="recovery-error">{{ error() }}</p> }
 
   <div class="recovery-actions">
+    <button type="button" class="recovery-secondary" [disabled]="busy()" (click)="importExternal()">Abrir backup externo</button>
     <button type="button" class="recovery-primary" [disabled]="busy()" (click)="searchUpdate()">
       Atualizar o NarraHub
     </button>
@@ -51,8 +52,8 @@
 
       @if (compatibleBackups().length === 0) {
         <p class="recovery-empty">
-          Nenhum backup deste dispositivo é compatível com esta versão. Atualizar o NarraHub
-          é o único caminho — e continua sendo o que preserva todo o seu trabalho.
+          Nenhum backup deste dispositivo é compatível com esta versão. Abra um arquivo externo
+          compatível ou atualize o NarraHub para preservar o trabalho mais recente.
         </p>
       } @else {
         <ul class="recovery-backup-list">

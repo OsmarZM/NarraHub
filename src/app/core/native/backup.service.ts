@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { relaunch } from '@tauri-apps/plugin-process';
 import { DatabaseCompatibility } from '../../bootstrap/database-compatibility';
 import { normalizeNativeCommandError } from '../errors/native-command-error';
 
@@ -49,6 +50,20 @@ export interface RestorePreparation {
   warnings: string[];
 }
 
+export interface ExportReceipt {
+  createdAt: string;
+  fileName: string;
+  sizeBytes: number;
+  sha256: string;
+}
+
+export interface ExternalBackupStatus {
+  destination: string | null;
+  enabled: boolean;
+  lastSuccess: ExportReceipt | null;
+  lastError: string;
+}
+
 export interface RestoreCommitResult {
   restoredBackupId: string;
   safetyBackupId: string;
@@ -57,8 +72,55 @@ export interface RestoreCommitResult {
   requiresRestart: boolean;
 }
 
+/** O que o arranque decidiu sobre a migration de schema. Espelha `MigrationPreparation` do Rust. */
+export interface MigrationPreparation {
+  needed: boolean;
+  fromVersion: number;
+  toVersion: number;
+  backup: BackupManifest | null;
+  recoveredInterrupted: boolean;
+}
+
+/** Espelha `MigrationRollback` do Rust. */
+export interface MigrationRollback {
+  restored: boolean;
+  backupId: string | null;
+  schemaVersion: number;
+}
+
 @Injectable({ providedIn: 'root' })
 export class BackupService {
+  async restartAfterRestore(): Promise<void> {
+    this.ensureDesktop();
+    // O pool já foi fechado e o Rust marcou o banco Unprepared. No Android, recarregar
+    // a WebView refaz o bootstrap; process.restart tentaria executar o processo Java.
+    if (await this.invokeDatabase<boolean>('android_update_supported')) window.location.reload();
+    else await relaunch();
+  }
+  externalStatus(): Promise<ExternalBackupStatus> {
+    this.ensureDesktop();
+    return this.invokeDatabase('backup_external_status');
+  }
+
+  exportExternal(): Promise<ExportReceipt | null> {
+    this.ensureDesktop();
+    return this.invokeDatabase('backup_export_external');
+  }
+
+  importExternal(): Promise<BackupManifest | null> {
+    this.ensureDesktop();
+    return this.invokeDatabase('backup_import_external');
+  }
+
+  configureExternal(enabled: boolean): Promise<ExternalBackupStatus> {
+    this.ensureDesktop();
+    return this.invokeDatabase('backup_external_configure', { enabled });
+  }
+
+  externalTick(force = false): Promise<ExternalBackupStatus> {
+    this.ensureDesktop();
+    return this.invokeDatabase('backup_external_tick', { force });
+  }
   /**
    * Portão de compatibilidade do boot. Diferente de `health()`, não roda `integrity_check`
    * nem as consultas de invariante — precisa ser barato — e não falha quando o banco ainda
@@ -67,6 +129,27 @@ export class BackupService {
   async compatibility(): Promise<DatabaseCompatibility> {
     this.ensureDesktop();
     return this.invokeDatabase<DatabaseCompatibility>('database_compatibility');
+  }
+
+  /**
+   * Antes de abrir o pool: devolve uma migration interrompida e faz o backup da que vai rodar.
+   * Se o backup falhar, rejeita — e o arranque não abre o banco. Ver `database/upgrade.rs`.
+   */
+  async prepareMigration(): Promise<MigrationPreparation> {
+    this.ensureDesktop();
+    return this.invokeDatabase<MigrationPreparation>('database_migration_prepare');
+  }
+
+  /** Depois de o plugin migrar: confere versão e integridade e encerra o registro da migration. */
+  async finishMigration(): Promise<number> {
+    this.ensureDesktop();
+    return this.invokeDatabase<number>('database_migration_finish');
+  }
+
+  /** A migration falhou: devolve o banco que existia antes, a partir do backup. */
+  async rollbackMigration(): Promise<MigrationRollback> {
+    this.ensureDesktop();
+    return this.invokeDatabase<MigrationRollback>('database_migration_rollback');
   }
 
   async health(): Promise<DatabaseHealthReport> {
@@ -108,6 +191,6 @@ export class BackupService {
   }
 
   private ensureDesktop(): void {
-    if (!isTauri()) throw new Error('Backups locais estão disponíveis somente no aplicativo desktop.');
+    if (!isTauri()) throw new Error('Backups estão disponíveis no aplicativo instalado.');
   }
 }

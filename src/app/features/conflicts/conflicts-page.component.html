@@ -1,0 +1,188 @@
+<section class="conflicts-page" data-testid="conflicts-page">
+  <header class="conflicts-head">
+    <a class="secondary-button back-link" routerLink="/settings">← Configurações</a>
+    <div>
+      <h1>Conflitos de sincronização</h1>
+      <p class="conflicts-sub">
+        @if (store.openCount() === 1) { 1 conflito precisa da sua decisão. }
+        @else if (store.openCount() > 1) { {{ store.openCount() }} conflitos precisam da sua decisão. }
+        @else { Nenhum conflito esperando decisão. }
+      </p>
+    </div>
+  </header>
+
+  @if (store.info()) { <p class="conflicts-info" role="status">{{ store.info() }}</p> }
+  @if (store.error()) { <p class="conflicts-error" role="alert">{{ store.error() }}</p> }
+
+  <div class="conflicts-filters" role="group" aria-label="Filtrar conflitos">
+    <label>Estado
+      <select [ngModel]="store.filter().status" (ngModelChange)="filtrar('status', $event)" data-testid="filtro-status">
+        <option value="aberto">Precisam de decisão</option>
+        <option value="resolvido">Resolvidos</option>
+        <option value="">Todos</option>
+      </select>
+    </label>
+    <label>Tipo de conflito
+      <select [ngModel]="store.filter().kind" (ngModelChange)="filtrar('kind', $event)">
+        <option value="">Todos</option>
+        <option value="concurrent">Versões diferentes</option>
+        <option value="parent_deletion_blocked">Exclusão bloqueada</option>
+        <option value="tag_name_conflict">Tag com o mesmo nome</option>
+      </select>
+    </label>
+    <label>Item
+      <select [ngModel]="store.filter().aggregateType" (ngModelChange)="filtrar('aggregateType', $event)">
+        <option value="">Todos</option>
+        @for (tipo of tipos(); track tipo.valor) { <option [value]="tipo.valor">{{ tipo.rotulo }}</option> }
+      </select>
+    </label>
+    @if (universos().length > 1) {
+      <label>Universo
+        <select [ngModel]="store.filter().universeId" (ngModelChange)="filtrar('universeId', $event)">
+          <option value="">Todos</option>
+          @for (universo of universos(); track universo.valor) { <option [value]="universo.valor">{{ universo.rotulo }}</option> }
+        </select>
+      </label>
+    }
+  </div>
+
+  <div class="conflicts-body" [class.com-detalhe]="store.selected()">
+    <ul class="conflicts-list" aria-label="Conflitos">
+      @for (conflito of store.conflicts(); track conflito.conflictKey) {
+        <li>
+          <button type="button" class="conflict-item surface-card"
+                  [class.ativo]="store.selected()?.resumo?.conflictKey === conflito.conflictKey"
+                  (click)="abrir(conflito)" data-testid="conflito">
+            <span class="conflict-type">{{ conflito.rotuloDoTipo }} · {{ rotuloDoKind(conflito.kind) }}</span>
+            <strong>{{ conflito.titulo || 'Sem título' }}</strong>
+            <small>{{ conflito.descricao }}</small>
+            <span class="status-badge" [class.online]="conflito.status === 'resolvido'">
+              {{ conflito.status === 'aberto' ? 'Precisa de decisão' : 'Resolvido' }}
+            </span>
+          </button>
+        </li>
+      } @empty {
+        @if (!store.loading()) { <li class="conflicts-empty">Nada por aqui.</li> }
+      }
+    </ul>
+
+    @if (store.selected(); as detalhe) {
+      <article class="conflict-detail surface-card" data-testid="conflito-detalhe">
+        <div class="detail-head">
+          <div>
+            <span class="conflict-type">{{ detalhe.resumo.rotuloDoTipo }}</span>
+            <h2>{{ detalhe.resumo.titulo || 'Sem título' }}</h2>
+            <p>{{ detalhe.resumo.descricao }}</p>
+            @if (detalhe.resumo.acaoInteira) {
+              <p class="detail-note">A decisão vale para a ação inteira do outro aparelho, não só para este item.</p>
+            }
+          </div>
+          <button type="button" class="secondary-button" (click)="store.close()">Fechar</button>
+        </div>
+
+        @if (linhasQueMudaram(detalhe).length) {
+          <!-- Celular: só as linhas em conflito, uma seguida da outra (no desktop o lado a lado já mostra). -->
+          <section class="text-diff" aria-label="Diferenças no texto" data-testid="diff-texto">
+            <h3>O que mudou no texto</h3>
+            @for (linha of linhasQueMudaram(detalhe); track $index) {
+              @if (linha.tipo === 'igual') {
+                <p class="diff-igual diff-resumo">{{ linha.texto }}</p>
+              } @else {
+                <p [class]="'diff-' + linha.tipo">
+                  <span class="diff-mark">{{ linha.tipo === 'so_deste' ? 'Neste aparelho' : 'No outro aparelho' }}</span>
+                  {{ linha.texto }}
+                </p>
+              }
+            }
+          </section>
+        }
+
+        <div class="conflito-versoes">
+          @for (lado of [detalhe.desteAparelho, detalhe.doOutro]; track lado.letra) {
+            <section class="conflito-versao" [class.deleted]="lado.excluido" [attr.data-testid]="lado.desteAparelho ? 'versao-deste' : 'versao-do-outro'">
+              <header class="versao-head">
+                <h3>{{ lado.desteAparelho ? 'Neste aparelho' : 'No outro aparelho' }}</h3>
+                @if (textoDe(lado)) {
+                  <button type="button" class="text-button" (click)="copiar(lado)">Copiar texto</button>
+                }
+              </header>
+              @if (lado.excluido) {
+                <p class="deleted-mark">EXCLUÍDO</p>
+                <small>Neste lado, o item foi excluído.</small>
+              } @else if (lado.indisponivel) {
+                <small>O conteúdo desta versão não está disponível neste aparelho.</small>
+              } @else {
+                @if (paragrafos(detalhe, lado).length) {
+                  <div class="versao-texto">
+                    @for (par of paragrafos(detalhe, lado); track $index) {
+                      <p [class.difere]="par.difere">{{ par.texto }}</p>
+                    }
+                  </div>
+                }
+                @if (camposQueDiferem(detalhe, lado).length) {
+                  <dl class="versao-campos">
+                    @for (campo of camposQueDiferem(detalhe, lado); track campo.campo) {
+                      <dt>{{ campo.rotulo }}</dt><dd>{{ mostrar(campo.valor) }}</dd>
+                    }
+                  </dl>
+                }
+                @if (camposIguais(detalhe, lado).length) {
+                  <details class="versao-iguais">
+                    <summary>Outros campos (iguais nos dois)</summary>
+                    <dl class="versao-campos">
+                      @for (campo of camposIguais(detalhe, lado); track campo.campo) {
+                        <dt>{{ campo.rotulo }}</dt><dd>{{ mostrar(campo.valor) }}</dd>
+                      }
+                    </dl>
+                  </details>
+                }
+              }
+            </section>
+          }
+        </div>
+
+        @if (diferencasForaDoTexto(detalhe).length) {
+          <section class="field-diff" aria-label="Diferenças campo a campo" data-testid="diff-campos">
+            <h3>Campo a campo</h3>
+            <table>
+              <thead><tr><th>Campo</th><th>Neste aparelho</th><th>No outro aparelho</th></tr></thead>
+              <tbody>
+                @for (dif of diferencasForaDoTexto(detalhe); track dif.campo) {
+                  <tr><th>{{ dif.rotulo }}</th><td>{{ mostrar(dif.desteAparelho) }}</td><td>{{ mostrar(dif.doOutro) }}</td></tr>
+                }
+              </tbody>
+            </table>
+          </section>
+        }
+
+        @if (detalhe.acoes.length) {
+          <section class="decision" aria-label="Decisão">
+            <h3>Sua decisão</h3>
+            @for (acao of detalhe.acoes; track acao.acao + acao.tagId) {
+              <div class="decision-option">
+                @if (acao.pedeNome) {
+                  <input [ngModel]="nomeDe(acao.tagId)" (ngModelChange)="digitarNome(acao.tagId, $event)" placeholder="Nome novo" [attr.aria-label]="acao.rotulo" />
+                }
+                <button type="button" class="primary-button" [disabled]="store.busy() || (acao.pedeNome && !nomeDe(acao.tagId).trim())"
+                        (click)="decidir(acao)" [attr.data-testid]="'acao-' + acao.acao">{{ armado() === acao.acao + acao.tagId ? 'Confirmar: ' + acao.rotulo : acao.rotulo }}</button>
+                @if (permiteEditar(detalhe, acao)) {
+                  <button type="button" class="secondary-button" [disabled]="store.busy()"
+                          (click)="decidirEEditar(acao)" [attr.data-testid]="'acao-' + acao.acao + '-editar'">{{ armado() === acao.acao + acao.tagId + ':editar' ? 'Confirmar e abrir para editar' : '… e abrir para editar' }}</button>
+                }
+                <small>{{ acao.descricao }}</small>
+                @if (armado() === acao.acao + acao.tagId || armado() === acao.acao + acao.tagId + ':editar') {
+                  <small class="decision-warning" role="alert" data-testid="aviso-decisao">A decisão encerra o conflito nos dois aparelhos e não pode ser desfeita. Toque de novo para confirmar.</small>
+                }
+              </div>
+            }
+          </section>
+            @if (detalhe.resumo.aggregateType === 'chapter') {
+              <p class="detail-note">Quer um texto que não é nenhum dos dois? Escolha a versão mais próxima e abra para editar — use "Copiar texto" na outra antes. A edição chega aos outros aparelhos como qualquer outra.</p>
+            }
+        } @else if (detalhe.resumo.status === 'aberto') {
+          <p class="detail-note">Este conflito se resolve sozinho na próxima sincronização.</p>
+        }
+      </article>
+    }
+  </div>
+</section>

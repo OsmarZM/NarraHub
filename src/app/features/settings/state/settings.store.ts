@@ -1,12 +1,11 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { isTauri } from '@tauri-apps/api/core';
-import { SyncResult, SyncServerStatus } from '../../../core/models';
-import { BackupManifest, BackupService, BackupValidation, DatabaseHealthReport, RestorePreparation } from '../../../core/native/backup.service';
+import { BackupManifest, BackupService, BackupValidation, DatabaseHealthReport, ExternalBackupStatus, RestorePreparation } from '../../../core/native/backup.service';
+import { ManuscriptStore } from '../../manuscript/state/manuscript.store';
 // DatabaseService is injected here on purpose, unlike the domain gateways: restoring a
 // backup has to close and reopen the app's own SQLite connection pool, which is native
 // pool lifecycle, not the SQL-vs-Rust boundary the other LegacyXGateway adapters abstract.
 import { DatabaseService } from '../../../core/services/database.service';
-import { SyncService } from '../../../core/native/sync.service';
 import {
   SYNC_V2_DEFAULT_PORT,
   SyncSessionResult,
@@ -33,9 +32,12 @@ export class SettingsStore {
   private readonly backupService = inject(BackupService);
   private readonly updateService = inject(UpdateService);
   private readonly androidUpdate = inject(AndroidUpdateService);
-  private readonly syncService = inject(SyncService);
   private readonly syncV2 = inject(SyncV2Service);
   private readonly db = inject(DatabaseService);
+  private readonly manuscript = inject(ManuscriptStore);
+  private externalTimer: ReturnType<typeof setInterval> | null = null;
+  readonly externalBackup = signal<ExternalBackupStatus | null>(null);
+  readonly externalMessage = signal('');
 
   readonly backupBusy = signal(false);
   readonly backupError = signal('');
@@ -57,11 +59,9 @@ export class SettingsStore {
    */
   readonly updateChannel = signal<'desktop' | 'android'>('desktop');
 
-  readonly syncStatus = signal<SyncServerStatus>({ running: false, address: null, pairing_code: null, device_name: 'Meu computador' });
-  readonly syncBusy = signal(false);
-
-  // Sync V2 (etapa 14). O V1 acima continua no código só até o E2E físico
-  // fechar; os dois nunca ficam ativos juntos — ver `syncV2Blocked`.
+  // Sync V2: o único protocolo de sincronização (o V1 saiu na etapa G).
+  /** Conteúdo do QR da escuta aberta (NH-084): opaco, só para virar imagem; `null` sem código válido. */
+  readonly syncV2Qr = signal<string | null>(null);
   readonly syncV2State = signal<SyncV2ListenState>({
     escutando: false,
     porta: null,
@@ -78,7 +78,8 @@ export class SettingsStore {
     this.backupBusy.set(true);
     this.backupError.set('');
     try {
-      const [health, backups] = await Promise.all([this.backupService.health(), this.backupService.list()]);
+      const [health, backups, external] = await Promise.all([this.backupService.health(), this.backupService.list(), this.backupService.externalStatus()]);
+      this.externalBackup.set(external);
       this.databaseHealth.set(health);
       this.backups.set(backups);
     } catch (error) {
@@ -133,6 +134,7 @@ export class SettingsStore {
     this.backupBusy.set(true);
     this.backupError.set('');
     try {
+      await this.flushWriting();
       const preparation = await this.backupService.prepareRestore(backupId);
       this.restorePreparation.set(preparation);
       this.backups.set(await this.backupService.list());
@@ -153,7 +155,7 @@ export class SettingsStore {
     try {
       await this.db.close();
       await this.backupService.commitRestore(token);
-      await this.updateService.relaunch();
+      await this.backupService.restartAfterRestore();
       return { ok: true };
     } catch (error) {
       await this.db.init().catch((reopenError) => console.error('[NarraHub] Database reopen failed after restore error.', reopenError));
@@ -192,6 +194,15 @@ export class SettingsStore {
 
   isUpdateConfigured(): Promise<boolean> {
     return this.updateService.isConfigured();
+  }
+
+  /**
+   * Se o arranque deve procurar atualização. I-BUG-06 (Etapa I): o arranque perguntava só pelo
+   * atualizador do desktop (`updater_configured`), que o Android não tem — e o celular nunca
+   * oferecia a beta nova sozinho. O canal do Android é outro e vale por si.
+   */
+  async shouldCheckForUpdatesOnStartup(): Promise<boolean> {
+    return (await this.androidUpdate.supported()) || (await this.updateService.isConfigured());
   }
 
   async checkForUpdates(silent: boolean): Promise<{ ok: boolean; message: string }> {
@@ -349,43 +360,46 @@ export class SettingsStore {
   }
 
   async refreshSyncStatus(): Promise<void> {
-    this.syncStatus.set(await this.syncService.status());
     const v2 = await this.syncV2.listenState();
-    if (v2) this.syncV2State.set(v2);
-  }
-
-  /**
-   * V1 e V2 não podem estar ativos ao mesmo tempo no mesmo acervo.
-   *
-   * Decisão registrada: congelar o V1 e substituí-lo, sem coexistir. Um acervo
-   * com parte das escritas vindas do snapshot do V1 e parte da causalidade do
-   * V2 teria estado cuja origem o V2 não explica. A trava fica na tela, e não
-   * no Rust, porque o código do V2 não pode depender do V1.
-   */
-  syncV1Blocked(): boolean {
-    return this.syncV2State().escutando;
-  }
-
-  syncV2Blocked(): boolean {
-    return this.syncStatus().running;
+    if (v2) await this.aplicarEstadoDaEscuta(v2);
   }
 
   async startSyncV2(deviceName: string): Promise<SettingsActionResult> {
     return this.runSyncV2(async () => {
-      this.syncV2State.set(await this.syncV2.startListening(this.syncV2Port, deviceName));
+      await this.aplicarEstadoDaEscuta(await this.syncV2.startListening(this.syncV2Port, deviceName));
     });
   }
 
   async stopSyncV2(): Promise<SettingsActionResult> {
     return this.runSyncV2(async () => {
-      this.syncV2State.set(await this.syncV2.stopListening());
+      await this.aplicarEstadoDaEscuta(await this.syncV2.stopListening());
     });
   }
 
   async newSyncV2Pin(): Promise<SettingsActionResult> {
     return this.runSyncV2(async () => {
-      this.syncV2State.set(await this.syncV2.newPin());
+      await this.aplicarEstadoDaEscuta(await this.syncV2.newPin());
     });
+  }
+
+  /** Pareia pelo texto cru lido no QR. Nada é interpretado aqui: o Rust valida e recusa. */
+  async pairSyncV2ByQr(conteudo: string, deviceName: string): Promise<{ ok: boolean; result?: SyncSessionResult; error?: string; endereco?: string }> {
+    let endereco = '';
+    const resultado = await this.sessionSyncV2(async () => {
+      const pareado = await this.syncV2.pairByQr(conteudo, deviceName);
+      endereco = pareado.endereco;
+      return pareado.resultado;
+    });
+    return resultado.ok ? { ...resultado, endereco } : resultado;
+  }
+
+  /**
+   * O estado da escuta e o QR andam juntos: o QR só existe enquanto há código válido, e quem diz se
+   * há é a escuta (NH-084). Falha ao gerar o QR não derruba nada — o código digitado continua.
+   */
+  private async aplicarEstadoDaEscuta(estado: SyncV2ListenState): Promise<void> {
+    this.syncV2State.set(estado);
+    this.syncV2Qr.set(estado.escutando && estado.pin ? await this.syncV2.qrContent().catch(() => null) : null);
   }
 
   async pairSyncV2(address: string, pin: string, deviceName: string): Promise<{ ok: boolean; result?: SyncSessionResult; error?: string }> {
@@ -403,7 +417,6 @@ export class SettingsStore {
 
   private async runSyncV2(action: () => Promise<void>): Promise<SettingsActionResult> {
     if (!isTauri()) return { ok: false, error: 'A sincronização de rede só funciona no aplicativo instalado.' };
-    if (this.syncV2Blocked()) return { ok: false, error: 'Pare a sincronização antiga antes de usar a nova.' };
     this.syncV2Busy.set(true);
     try {
       await action();
@@ -417,7 +430,6 @@ export class SettingsStore {
 
   private async sessionSyncV2(run: () => Promise<SyncSessionResult>): Promise<{ ok: boolean; result?: SyncSessionResult; error?: string }> {
     if (!isTauri()) return { ok: false, error: 'A sincronização de rede só funciona no aplicativo instalado.' };
-    if (this.syncV2Blocked()) return { ok: false, error: 'Pare a sincronização antiga antes de usar a nova.' };
     this.syncV2Busy.set(true);
     try {
       const result = await run();
@@ -427,51 +439,78 @@ export class SettingsStore {
     } finally {
       this.syncV2Busy.set(false);
       const v2 = await this.syncV2.listenState().catch(() => null);
-      if (v2) this.syncV2State.set(v2);
-    }
-  }
-
-  async startSync(deviceName: string): Promise<SettingsActionResult> {
-    if (!isTauri()) return { ok: false, error: 'A sincronização de rede só funciona no aplicativo instalado.' };
-    this.syncBusy.set(true);
-    try {
-      this.syncStatus.set(await this.syncService.start(deviceName));
-      return { ok: true };
-    } catch (error) {
-      return { ok: false, error: this.messageOf(error) };
-    } finally {
-      this.syncBusy.set(false);
-    }
-  }
-
-  async stopSync(): Promise<SettingsActionResult> {
-    this.syncBusy.set(true);
-    try {
-      this.syncStatus.set(await this.syncService.stop());
-      return { ok: true };
-    } catch (error) {
-      return { ok: false, error: this.messageOf(error) };
-    } finally {
-      this.syncBusy.set(false);
-    }
-  }
-
-  async connectSync(address: string, code: string, deviceName: string): Promise<{ ok: boolean; result?: SyncResult; error?: string }> {
-    if (!isTauri()) return { ok: false, error: 'A sincronização de rede só funciona no aplicativo instalado.' };
-    if (!address.trim() || !/^\d{6}$/.test(code.trim())) return { ok: false, error: 'Informe endereço e código de seis dígitos.' };
-    this.syncBusy.set(true);
-    try {
-      const result = await this.syncService.connect(address.trim(), code.trim(), deviceName);
-      return { ok: true, result };
-    } catch (error) {
-      return { ok: false, error: this.messageOf(error) };
-    } finally {
-      this.syncBusy.set(false);
+      if (v2) await this.aplicarEstadoDaEscuta(v2);
     }
   }
 
   dispose(): void {
+    if (this.externalTimer) clearInterval(this.externalTimer);
+    this.externalTimer = null;
     this.updateService.dispose();
+  }
+
+  async exportExternal(): Promise<void> {
+    await this.externalAction(async () => {
+      await this.flushWriting();
+      const receipt = await this.backupService.exportExternal();
+      if (receipt) {
+        this.externalBackup.set(await this.backupService.externalStatus());
+        this.externalMessage.set('Backup externo salvo e conferido por SHA-256.');
+        this.backups.set(await this.backupService.list());
+      }
+    });
+  }
+
+  async importExternal(): Promise<BackupManifest | null> {
+    let manifest: BackupManifest | null = null;
+    await this.externalAction(async () => {
+      manifest = await this.backupService.importExternal();
+      if (manifest) this.backups.set(await this.backupService.list());
+    });
+    return manifest;
+  }
+
+  async configureExternal(enabled: boolean): Promise<void> {
+    await this.externalAction(async () => {
+      this.externalBackup.set(await this.backupService.configureExternal(enabled));
+    });
+    if (enabled && this.externalBackup()?.enabled) await this.runExternalBackup(true);
+  }
+
+  async startExternalMonitor(): Promise<void> {
+    if (!isTauri() || this.externalTimer) return;
+    try { this.externalBackup.set(await this.backupService.externalStatus()); }
+    catch (error) { this.backupError.set(this.messageOf(error)); }
+    this.externalTimer = setInterval(() => void this.runExternalBackup(), 60_000);
+    void this.runExternalBackup();
+  }
+
+  async runExternalBackup(force = false): Promise<void> {
+    if (!isTauri() || !this.externalBackup()?.enabled || this.backupBusy() || this.updateBusy()
+      || this.restorePreparation() || this.manuscript.isSaving() || document.visibilityState === 'hidden') return;
+    if (!force && ['Alterações pendentes', 'Erro ao salvar'].includes(this.manuscript.saveMessage())) return;
+    await this.externalAction(async () => {
+      // O timer espera o autosave terminar. Uma ação manual pode solicitar o flush;
+      // o timer não deve começar um segundo salvamento enquanto o escritor digita.
+      if (force) await this.flushWriting();
+      this.externalBackup.set(await this.backupService.externalTick(force));
+    }, false);
+  }
+
+  private async flushWriting(): Promise<void> {
+    if (this.manuscript.isSaving()) throw new Error('Aguarde o salvamento do capítulo e tente novamente.');
+    await this.manuscript.saveNow();
+    if (this.manuscript.saveMessage() === 'Erro ao salvar') throw new Error('O capítulo não foi salvo. Resolva o erro antes de copiar ou restaurar o acervo.');
+  }
+
+  private async externalAction(action: () => Promise<void>, clearMessage = true): Promise<void> {
+    if (this.backupBusy() || this.updateBusy()) return;
+    this.backupBusy.set(true);
+    this.backupError.set('');
+    if (clearMessage) this.externalMessage.set('');
+    try { await action(); }
+    catch (error) { this.backupError.set(this.messageOf(error)); }
+    finally { this.backupBusy.set(false); }
   }
 
   private messageOf(error: unknown): string {

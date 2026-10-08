@@ -1,8 +1,10 @@
+use crate::application::mutacao::Mutacao;
 use crate::database::error::{DatabaseCommandError, DatabaseCommandResult};
 use crate::domain::collaboration::{
-    attribute_key, writable_column, CollaborationContribution, CollaborationSession,
-    IncomingContribution, NewCollaborationSession, MAX_ATTRIBUTE_KEY,
+    agregado_da_proposta, attribute_key, writable_column, CollaborationContribution,
+    CollaborationSession, IncomingContribution, NewCollaborationSession, MAX_ATTRIBUTE_KEY,
 };
+use crate::domain::identity::DeviceIdentity;
 use crate::domain::ids::{new_id, now_timestamp};
 use crate::infrastructure::blob_document;
 use crate::infrastructure::blob_store::BlobStore;
@@ -163,67 +165,77 @@ pub fn end_session(database: &SqliteDatabase, id: &str, status: &str) -> Databas
     Ok(())
 }
 
-/// Aprova ou recusa uma proposta.
+/// Aprova ou recusa uma proposta: aprovar **escreve no domínio pela `Mutacao`** (B6).
 ///
-/// Tudo numa transação: aplicar a mudança, registrar no histórico e marcar a
-/// proposta como decidida. O caminho antigo fazia as três coisas em comandos
-/// soltos — se a marcação falhasse depois de aplicar, a proposta continuava
-/// pendente e podia ser aplicada de novo, sobrescrevendo o que o autor tivesse
-/// escrito no meio.
+/// Tudo numa transação: aplicar a mudança, registrar no histórico, marcar a proposta como decidida
+/// e emitir o evento. O caminho antigo fazia as primeiras em comandos soltos — se a marcação
+/// falhasse depois de aplicar, a proposta continuava pendente e podia ser aplicada de novo,
+/// sobrescrevendo o que o autor tivesse escrito no meio.
 ///
-/// Proposta que não está mais pendente é silêncio, não erro: dois cliques no
-/// mesmo botão não devem virar mensagem de falha.
-pub fn review(database: &SqliteDatabase, id: &str, decision: &str) -> DatabaseCommandResult<()> {
+/// Proposta que não está mais pendente é silêncio, não erro: dois cliques no mesmo botão não devem
+/// virar mensagem de falha.
+///
+/// ```text
+/// aprovar   aplica a proposta + declara o agregado alvo → revisão e evento assinado
+/// recusar   marca a decisão; o domínio não muda e nada é emitido
+/// ```
+///
+/// Antes da B6 a aprovação escrevia por fora: o capítulo mudava no arquivo do anfitrião e **nenhum
+/// evento nascia** — o outro aparelho do próprio escritor nunca via o texto aprovado.
+///
+/// O que a `Mutacao` garante aqui é o que ela garante em toda escrita local: domínio, estado causal
+/// e evento assinado na MESMA transação. Ela não faz preflight de concorrência em upsert (isso é do
+/// caminho de exclusão): se o alvo tiver decisão aberta, a aprovação nasce como mais uma revisão
+/// local, e a decisão continua sendo do escritor.
+pub fn review(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    id: &str,
+    decision: &str,
+) -> DatabaseCommandResult<()> {
     if decision != "approved" && decision != "rejected" {
         return Err(DatabaseCommandError::validation(
             "Decisão inválida para uma proposta.",
         ));
     }
 
-    let mut connection = database.write()?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
+    Mutacao::executar(database, identidade, |m| {
+        let Some(contribution) = collaboration_repository::pending_edit(m.tx(), id)? else {
+            return Ok(());
+        };
 
-    let Some(contribution) = collaboration_repository::pending_edit(&transaction, id)? else {
-        return Ok(());
-    };
-
-    let timestamp = now_timestamp();
-    if decision == "approved" {
-        // SEGUNDA BARREIRA (ADR 0010). Fail-closed, e não é redundante.
-        //
-        // A proposta pode ter entrado antes da barreira existir, ter vindo de
-        // um banco importado, ou ter sido adulterada na linha. Aprovar é
-        // copiar `proposed_value` para `chapters.content`, e dali o gatilho de
-        // revisão e o evento assinado seguem sozinhos.
-        //
-        // O erro desfaz a transação: a contribuição continua `pending`, o
-        // capítulo não muda, nenhuma revisão é criada e nenhum evento nasce.
-        // Não normaliza aqui de propósito — publicar blob no meio de uma
-        // aprovação transformaria "revisar" em "migrar", e o escritor não pediu
-        // isso. A proposta fica pendente com a mensagem dizendo por quê.
-        if e_documento_de_capitulo(&contribution.target_type, &contribution.field) {
-            if let Err(motivo) = blob_document::exigir_blob_safe(&contribution.proposed_value) {
-                return Err(DatabaseCommandError::validation(format!(
-                    "Esta proposta não pode ser aplicada: {motivo}"
-                )));
+        let timestamp = now_timestamp();
+        if decision == "approved" {
+            // SEGUNDA BARREIRA (ADR 0010). Fail-closed, e não é redundante.
+            //
+            // A proposta pode ter entrado antes da barreira existir, ter vindo de
+            // um banco importado, ou ter sido adulterada na linha. Aprovar é
+            // copiar `proposed_value` para `chapters.content`, e dali o gatilho de
+            // revisão e o evento assinado seguem sozinhos.
+            //
+            // O erro desfaz a transação: a contribuição continua `pending`, o
+            // capítulo não muda, nenhuma revisão é criada e nenhum evento nasce.
+            // Não normaliza aqui de propósito — publicar blob no meio de uma
+            // aprovação transformaria "revisar" em "migrar", e o escritor não pediu
+            // isso. A proposta fica pendente com a mensagem dizendo por quê.
+            if e_documento_de_capitulo(&contribution.target_type, &contribution.field) {
+                if let Err(motivo) = blob_document::exigir_blob_safe(&contribution.proposed_value) {
+                    return Err(DatabaseCommandError::validation(format!(
+                        "Esta proposta não pode ser aplicada: {motivo}"
+                    )));
+                }
             }
+            apply(m, &contribution, &timestamp)?;
+            collaboration_repository::log_applied_change(
+                m.tx(),
+                &new_id(),
+                &contribution,
+                &timestamp,
+            )?;
         }
-        apply(&transaction, &contribution, &timestamp)?;
-        collaboration_repository::log_applied_change(
-            &transaction,
-            &new_id(),
-            &contribution,
-            &timestamp,
-        )?;
-    }
-    collaboration_repository::mark_reviewed(&transaction, id, decision, &timestamp)?;
-
-    transaction
-        .commit()
-        .map_err(|error| DatabaseCommandError::storage(error.to_string()))?;
-    Ok(())
+        collaboration_repository::mark_reviewed(m.tx(), id, decision, &timestamp)?;
+        Ok(())
+    })
 }
 
 /// Aprova todas as pendentes da sessão e devolve quantas foram.
@@ -231,7 +243,11 @@ pub fn review(database: &SqliteDatabase, id: &str, decision: &str) -> DatabaseCo
 /// Cada proposta tem a própria transação, de propósito: uma proposta que
 /// aponta para um capítulo já excluído não pode derrubar a aprovação das
 /// outras. Quem não passou continua pendente e visível na tela.
-pub fn approve_all(database: &SqliteDatabase, session_id: &str) -> DatabaseCommandResult<i64> {
+pub fn approve_all(
+    database: &SqliteDatabase,
+    identidade: &DeviceIdentity,
+    session_id: &str,
+) -> DatabaseCommandResult<i64> {
     let pending = {
         let connection = database.read()?;
         collaboration_repository::pending_edits_of_session(&connection, session_id)?
@@ -239,30 +255,43 @@ pub fn approve_all(database: &SqliteDatabase, session_id: &str) -> DatabaseComma
 
     let mut approved = 0;
     for id in pending {
-        if review(database, &id, "approved").is_ok() {
+        if review(database, identidade, &id, "approved").is_ok() {
             approved += 1;
         }
     }
     Ok(approved)
 }
 
+/// Escreve a proposta no domínio e **declara o agregado revisado**.
+///
+/// A declaração não é opcional: sem ela a `Mutacao` confirmaria a transação sem emitir nada, e o
+/// texto aprovado ficaria só neste aparelho. O alvo sai de `agregado_da_proposta`, que só conhece
+/// os três tipos da superfície colaborativa — tipo fora dela é recusado antes de qualquer escrita.
 fn apply(
-    transaction: &rusqlite::Transaction<'_>,
+    m: &mut Mutacao<'_, '_>,
     contribution: &CollaborationContribution,
     timestamp: &str,
 ) -> DatabaseCommandResult<()> {
+    let Some(agregado) = agregado_da_proposta(&contribution.target_type) else {
+        return Err(DatabaseCommandError::validation(
+            "Alteração colaborativa fora do escopo permitido.",
+        ));
+    };
+
     if let Some(key) = attribute_key(&contribution.target_type, &contribution.field) {
         if key.is_empty() || key.chars().count() > MAX_ATTRIBUTE_KEY {
             return Err(DatabaseCommandError::validation("Campo de ficha inválido."));
         }
-        return collaboration_repository::apply_attribute_change(
-            transaction,
+        collaboration_repository::apply_attribute_change(
+            m.tx(),
             &new_id(),
             &contribution.target_id,
             key,
             &contribution.proposed_value,
             timestamp,
-        );
+        )?;
+        // O atributo é parte do payload da entidade: quem ganha revisão é ela.
+        return m.gravou(agregado, &contribution.target_id);
     }
 
     let Some((table, column)) = writable_column(&contribution.target_type, &contribution.field)
@@ -273,7 +302,7 @@ fn apply(
     };
 
     if !collaboration_repository::apply_column_change(
-        transaction,
+        m.tx(),
         table,
         column,
         &contribution.proposed_value,
@@ -284,7 +313,7 @@ fn apply(
             "O item da proposta não existe mais.",
         ));
     }
-    Ok(())
+    m.gravou(agregado, &contribution.target_id)
 }
 
 fn ensure_end_status(status: &str) -> DatabaseCommandResult<()> {
@@ -302,6 +331,13 @@ mod tests {
     use crate::database::error::DatabaseErrorKind;
     use crate::infrastructure::blob_store::BlobStore;
     use crate::infrastructure::sqlite::test_support::{seed_universe, TemporaryDatabase};
+
+    /// O `self` deste aparelho, registrado no banco do teste: desde a B6 aprovar é uma `Mutacao`,
+    /// e mutação exige identidade de sincronização.
+    fn eu(fixture: &TemporaryDatabase) -> crate::domain::identity::DeviceIdentity {
+        let connection = fixture.database.write().expect("escrita");
+        crate::infrastructure::sqlite::test_support::self_de_teste(&connection)
+    }
 
     fn seed_session(fixture: &TemporaryDatabase) {
         seed_universe(&fixture.connection(), "u1");
@@ -440,7 +476,7 @@ mod tests {
         )
         .expect("guardar");
 
-        review(&fixture.database, "c1", "approved").expect("aprovar");
+        review(&fixture.database, &eu(&fixture), "c1", "approved").expect("aprovar");
 
         let connection = fixture.connection();
         let name: String = connection
@@ -474,7 +510,10 @@ mod tests {
             incoming("c1", "name", "Renomeado", "u1"),
         )
         .expect("guardar");
-        review(&fixture.database, "c1", "approved").expect("aprovar");
+        // A mesma identidade nas duas revisões: registrar um `self` novo no meio seria trocar o
+        // aparelho de baixo do teste.
+        let eu = eu(&fixture);
+        review(&fixture.database, &eu, "c1", "approved").expect("aprovar");
 
         fixture
             .connection()
@@ -484,7 +523,7 @@ mod tests {
             )
             .expect("autor edita depois");
 
-        review(&fixture.database, "c1", "approved").expect("segundo clique e silencio");
+        review(&fixture.database, &eu, "c1", "approved").expect("segundo clique e silencio");
 
         let name: String = fixture
             .connection()
@@ -508,7 +547,7 @@ mod tests {
         )
         .expect("guardar");
 
-        review(&fixture.database, "c1", "rejected").expect("recusar");
+        review(&fixture.database, &eu(&fixture), "c1", "rejected").expect("recusar");
 
         let name: String = fixture
             .connection()
@@ -538,7 +577,8 @@ mod tests {
         )
         .expect("guardar");
 
-        let error = review(&fixture.database, "c1", "approved").expect_err("deveria recusar");
+        let error = review(&fixture.database, &eu(&fixture), "c1", "approved")
+            .expect_err("deveria recusar");
         assert_eq!(error.kind, DatabaseErrorKind::Validation);
 
         let contributions = list_contributions(&fixture.database, Some("sess")).expect("listar");
@@ -561,7 +601,8 @@ mod tests {
         )
         .expect("guardar");
 
-        let error = review(&fixture.database, "c1", "approved").expect_err("deveria falhar");
+        let error =
+            review(&fixture.database, &eu(&fixture), "c1", "approved").expect_err("deveria falhar");
         assert_eq!(error.kind, DatabaseErrorKind::NotFound);
 
         let contributions = list_contributions(&fixture.database, Some("sess")).expect("listar");
@@ -599,7 +640,7 @@ mod tests {
         )
         .expect("guardar");
 
-        let approved = approve_all(&fixture.database, "sess").expect("aprovar tudo");
+        let approved = approve_all(&fixture.database, &eu(&fixture), "sess").expect("aprovar tudo");
         assert_eq!(approved, 2);
 
         let contributions = list_contributions(&fixture.database, Some("sess")).expect("listar");
@@ -633,7 +674,7 @@ mod tests {
         )
         .expect("guardar");
 
-        review(&fixture.database, "c1", "approved").expect("aprovar");
+        review(&fixture.database, &eu(&fixture), "c1", "approved").expect("aprovar");
 
         let value: String = fixture
             .connection()
@@ -661,7 +702,8 @@ mod tests {
         )
         .expect("guardar");
 
-        let error = review(&fixture.database, "c1", "approved").expect_err("deveria recusar");
+        let error = review(&fixture.database, &eu(&fixture), "c1", "approved")
+            .expect_err("deveria recusar");
         assert_eq!(error.kind, DatabaseErrorKind::Validation);
     }
 
@@ -934,7 +976,8 @@ mod tests {
             )
             .expect("legado gravado direto");
 
-        let erro = review(&fixture.database, "c1", "approved").expect_err("não pode aplicar");
+        let erro = review(&fixture.database, &eu(&fixture), "c1", "approved")
+            .expect_err("não pode aplicar");
         assert_eq!(erro.kind, DatabaseErrorKind::Validation);
 
         let conexao = fixture.connection();
@@ -1000,7 +1043,7 @@ mod tests {
         )
         .expect("guardar");
 
-        review(&fixture.database, "c1", "approved").expect("aprovar");
+        review(&fixture.database, &eu(&fixture), "c1", "approved").expect("aprovar");
 
         let conteudo: String = fixture
             .connection()

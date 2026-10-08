@@ -270,3 +270,133 @@ app-writing-editor {
   .nh-document { width: 100%; min-height: 100%; padding: 36px 22px 80px; border-inline: 0; box-shadow: none; }
   .nh-rich-editor .ProseMirror { min-height: calc(100vh - 300px); font-size: 17px; }
 }
+
+/* ── celular ─────────────────────────────────────────────────────────────────────
+ * O texto ocupa a tela; a barra compacta fica junto ao teclado quando o shell encolhe.
+ * Ferramentas avançadas continuam disponíveis sob "Mais ferramentas".
+ * Modo foco e tela cheia são do desktop: no celular nem são renderizados (template). */
+html.nh-mobile app-writing-editor {
+  --nh-surface: var(--nh-mobile-sheet);
+  --nh-ink: var(--nh-mobile-ink);
+  --nh-ink-muted: var(--nh-mobile-muted);
+  --nh-border: var(--nh-mobile-line);
+  min-width: 0;
+  max-width: 100%;
+  background: var(--nh-surface);
+}
+
+html.nh-mobile app-writing-editor .nh-editor-toolbar {
+  min-width: 0;
+  max-width: 100%;
+  max-height: none;
+  flex-wrap: nowrap;
+  gap: 2px;
+  margin: 0;
+  padding: 4px 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  scrollbar-width: none;
+}
+html.nh-mobile app-writing-editor .nh-editor-toolbar:not(.mobile-expanded) { display: none; }
+html.nh-mobile app-writing-editor .nh-editor-toolbar.mobile-expanded {
+  display: flex;
+  flex-wrap: wrap;
+  max-height: min(26dvh, 180px);
+  overflow: auto;
+  border: 1px solid var(--nh-border);
+  border-radius: 14px;
+  background: var(--nh-surface);
+  box-shadow: var(--nh-shadow-soft);
+}
+html.nh-mobile app-writing-editor .nh-editor-toolbar.mobile-expanded .nh-toolbar-group { flex-wrap: wrap; max-width: 100%; gap: 4px; }
+html.nh-mobile app-writing-editor .nh-editor-toolbar::-webkit-scrollbar { display: none; }
+html.nh-mobile app-writing-editor .nh-editor-toolbar.mobile-expanded { scrollbar-width: thin; }
+html.nh-mobile app-writing-editor .nh-editor-toolbar.mobile-expanded::-webkit-scrollbar { display: block; width: 5px; }
+html.nh-mobile app-writing-editor .nh-toolbar-group { flex: 0 0 auto; border-right: 0; }
+html.nh-mobile app-writing-editor :is(.nh-editor-toolbar button, .nh-editor-toolbar select) { min-width: 48px; min-height: 48px; font-size: 15px; white-space: nowrap; }
+html.nh-mobile app-writing-editor .nh-editor-toolbar select { max-width: 128px; font-size: 16px; }
+html.nh-mobile app-writing-editor .nh-editor-toolbar :is(button, select) { color: var(--nh-ink); background: var(--nh-surface-muted); }
+html.nh-mobile app-writing-editor .nh-editor-toolbar button.active { color: var(--nh-wine); }
+
+html.nh-mobile app-writing-editor .nh-mobile-writing-toolbar {
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(48px, 1fr));
+  gap: 3px;
+  padding: 8px max(56px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  border-top: 1px solid var(--nh-border);
+  background: var(--nh-surface);
+}
+html.nh-mobile app-writing-editor .nh-mobile-writing-toolbar button,
+html.nh-mobile app-writing-editor .nh-mobile-writing-toolbar select {
+  min-width: 0;
+  min-height: 48px;
+  padding: 0 7px;
+  border: 1px solid var(--nh-border);
+  border-radius: 13px;
+  color: var(--nh-ink);
+  background: var(--nh-surface-muted);
+  font-size: 16px;
+  text-align: center;
+}
+html.nh-mobile app-writing-editor .nh-mobile-writing-toolbar button.active { color: var(--nh-wine); border-color: color-mix(in srgb, var(--nh-wine) 45%, var(--nh-border)); background: color-mix(in srgb, var(--nh-wine) 10%, var(--nh-surface)); }
+html.nh-mobile app-writing-editor :is(.nh-mobile-writing-toolbar, .nh-editor-toolbar) :is(button, select):focus-visible { outline: 2px solid var(--nh-wine); outline-offset: -3px; }
+html.nh-mobile app-writing-editor .nh-mobile-writing-toolbar button:disabled { opacity: .4; }
+html.nh-mobile app-writing-editor .nh-mobile-writing-toolbar .more-tools { font-size: 24px; line-height: 1; }
+
+html.nh-mobile app-writing-editor .nh-document-scroll { padding: 0 0 24px; overscroll-behavior: contain; }
+html.nh-mobile app-writing-editor .nh-document {
+  width: 100%;
+  max-width: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 12px var(--nh-mobile-gutter, 16px) 28px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+html.nh-mobile app-writing-editor .celestial-corner,
+html.nh-mobile app-writing-editor .celestial-header-emblem,
+html.nh-mobile app-writing-editor .celestial-title-divider { display: none; }
+html.nh-mobile app-writing-editor .nh-document.celestial-manuscript::before { display: none; }
+html.nh-mobile app-writing-editor .nh-chapter-title {
+  min-height: 34px;
+  max-height: 120px;
+  padding: 0 0 8px;
+  color: var(--nh-ink);
+  font: 600 clamp(20px, 5.5vw, 23px)/1.3 var(--nh-font-sans, system-ui, sans-serif);
+  letter-spacing: -.02em;
+  text-align: left;
+}
+html.nh-mobile app-writing-editor .nh-rich-editor .ProseMirror { min-height: 40vh; color: var(--nh-ink); font: 17px/1.7 var(--nh-font-serif, Georgia, serif); }
+html.nh-mobile app-writing-editor .nh-rich-editor .ProseMirror :is(h1, h2, h3) { color: var(--nh-ink); }
+html.nh-mobile app-writing-editor .nh-voice-note :is(strong, textarea) { font-size: 16px; }
+html.nh-mobile app-writing-editor .nh-voice-note :is(small, p, header > span) { font-size: 13px; }
+html.nh-mobile app-writing-editor .nh-voice-note footer button { min-height: 48px; font-size: 14px; }
+html.nh-mobile app-writing-editor :is(.nh-ai-bubble, .nh-slash-menu) { max-height: calc(100dvh - 24px); background: var(--nh-surface); }
+html.nh-mobile app-writing-editor .nh-ai-bubble { max-height: min(60dvh, 480px); overflow-y: auto; }
+html.nh-mobile app-writing-editor .nh-ai-bubble :is(header span, nav button, footer button, .nh-ai-result p, .nh-ai-error p, .nh-ai-error strong, .nh-ai-busy span) { font-size: 14px; }
+html.nh-mobile app-writing-editor .nh-ai-custom small { font-size: 12px; }
+html.nh-mobile app-writing-editor .nh-ai-bubble :is(header button, nav button, footer button) { min-width: 48px; min-height: 48px; }
+html.nh-mobile app-writing-editor .nh-ai-bubble :is(textarea, .nh-shortcut-editor input) { font-size: 16px; }
+html.nh-mobile app-writing-editor .nh-ai-bubble :is(.nh-ai-custom footer, .nh-ai-result footer) { flex-wrap: wrap; }
+html.nh-mobile app-writing-editor .nh-slash-menu { width: calc(100vw - 24px); }
+html.nh-mobile app-writing-editor .nh-slash-menu :is(header, strong, button) { font-size: 14px; }
+html.nh-mobile app-writing-editor .nh-slash-menu :is(small, kbd, label) { font-size: 12px; }
+html.nh-mobile app-writing-editor .nh-slash-menu button { min-height: 48px; }
+html.nh-mobile app-writing-editor .nh-shortcut-editor { max-height: 55dvh; overflow-y: auto; }
+html.nh-mobile app-writing-editor .nh-shortcut-editor :is(input, textarea) { font-size: 16px; }
+html.nh-mobile app-writing-editor .nh-autocomplete > button { min-height: 48px; }
+html.nh-mobile app-writing-editor .nh-autocomplete strong { font-size: 14px; }
+html.nh-mobile app-writing-editor .nh-autocomplete :is(small, span) { font-size: 12px; }
+html.nh-mobile app-writing-editor .nh-editor-warning { margin: 6px var(--nh-mobile-gutter, 16px) 0; font-size: 13px; }

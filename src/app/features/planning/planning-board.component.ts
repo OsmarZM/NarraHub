@@ -1,6 +1,6 @@
 import { CommonModule } from '@angular/common';
 import { CdkDragDrop, DragDropModule } from '@angular/cdk/drag-drop';
-import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges, computed, inject, signal } from '@angular/core';
+import { Component, ElementRef, EventEmitter, Input, OnChanges, Output, SimpleChanges, computed, inject, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { ManuscriptStore } from '../manuscript/state/manuscript.store';
@@ -21,6 +21,7 @@ import {
 } from '../../core/models';
 import { KnowledgeStore } from '../knowledge/state/knowledge.store';
 import { PlanningStore } from './state/planning.store';
+import { ViewportState } from '../../shell/state/viewport.state';
 import {
   PLANNING_STATUSES,
   parsePlanningFieldValues,
@@ -122,6 +123,46 @@ export class PlanningBoardComponent implements OnChanges {
   private readonly manuscriptStore = inject(ManuscriptStore);
   private readonly entityStore = inject(EntityStore);
   private readonly router = inject(Router);
+  readonly viewport = inject(ViewportState);
+
+  /**
+   * Celular: o quadro mostra UMA coluna por vez, e desliza entre elas (scroll-snap). As pílulas de
+   * etapa viram abas — tocar leva à coluna, e a coluna visível acende a pílula. No desktop a
+   * pílula continua sendo filtro.
+   */
+  readonly mobileColumn = signal(0);
+  private readonly board = viewChild<ElementRef<HTMLElement>>('board');
+  private boardFrame = 0;
+
+  onMetricPill(status: PlanningStatus, index: number): void {
+    if (!this.viewport.isMobile()) {
+      this.toggleStatusFilter(status);
+      return;
+    }
+    const board = this.board()?.nativeElement;
+    const column = board?.querySelectorAll<HTMLElement>('.kanban-column')[index];
+    if (!board || !column) return;
+    board.scrollTo({ left: column.offsetLeft - board.offsetLeft, behavior: 'smooth' });
+    this.setMobileColumn(index);
+  }
+
+  /** A pílula da coluna visível acende e rola para dentro da faixa de pílulas. */
+  private setMobileColumn(index: number): void {
+    if (this.mobileColumn() === index) return;
+    this.mobileColumn.set(index);
+    const pill = document.querySelectorAll<HTMLElement>('app-planning-board .metric-pill')[index];
+    pill?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+  }
+
+  onBoardScroll(event: Event): void {
+    if (!this.viewport.isMobile()) return;
+    const board = event.currentTarget as HTMLElement;
+    cancelAnimationFrame(this.boardFrame);
+    this.boardFrame = requestAnimationFrame(() => {
+      const largura = board.querySelector<HTMLElement>('.kanban-column')?.offsetWidth ?? board.clientWidth;
+      this.setMobileColumn(Math.round(board.scrollLeft / Math.max(1, largura + 10)));
+    });
+  }
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['universeId'] && this.universeId) void this.reload();

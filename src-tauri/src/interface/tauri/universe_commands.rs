@@ -28,6 +28,7 @@ pub fn universe_create(
     universe_service::create(
         &super::database(&app)?,
         &super::blob_store(&app)?,
+        &super::sync_identity(&app)?,
         &name,
         &description,
         &cover_image,
@@ -43,6 +44,7 @@ pub fn universe_update(
     universe_service::update(
         &super::database(&app)?,
         &super::blob_store(&app)?,
+        &super::sync_identity(&app)?,
         &id,
         patch,
     )

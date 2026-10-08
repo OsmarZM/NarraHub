@@ -523,7 +523,7 @@ mod tests {
     use crate::domain::identity::DeviceIdentity;
     use crate::domain::sync::{AggregateRef, Operation};
     use crate::infrastructure::sqlite::sync_apply::envelope_de_origem;
-    use crate::infrastructure::sqlite::sync_session::receber_eventos;
+    use crate::infrastructure::sqlite::sync_session::receber_eventos_sem_conferir_blobs as receber_eventos;
     use crate::infrastructure::sqlite::test_support::{
         origem_remota_confiavel, seed_universe, self_de_teste, TemporaryDatabase,
     };
@@ -567,7 +567,7 @@ mod tests {
 
     fn capitulo(id: &str, titulo: &str) -> String {
         format!(
-            r#"{{"id":"{id}","book_id":"b1","title":"{titulo}","content":"texto","summary":"","scene_origin":"","scene_destination":"","word_count":1,"status":"rascunho","canon_status":"canon","sort_order":0,"created_at":"2026-01-01 00:00:00","updated_at":"2026-01-02 00:00:00"}}"#
+            r#"{{"id":"{id}","bookId":"b1","title":"{titulo}","content":"texto","summary":"","sceneOrigin":"","sceneDestination":"","status":"rascunho","canonStatus":"canon","customFields":[]}}"#
         )
     }
 

@@ -199,6 +199,140 @@ pub fn self_de_teste(connection: &Connection) -> crate::domain::identity::Device
     identidade
 }
 
+/// **Uma ação remota assinada, montada como a origem a montaria** (B6, item 8).
+///
+/// Antes disto, cada teste montava os eventos à mão: `envelope_de_origem`, preencher o grupo,
+/// assinar. Trinta e seis lugares repetindo a mesma sequência, e cada um com a chance de esquecer
+/// um pedaço — o esquecimento silencioso é sempre o mesmo, deixar o grupo pela metade e, com ele,
+/// testar um formato que nenhuma origem legítima produz.
+///
+/// ```text
+/// AcaoRemota::da(&origem)              o próximo seq sai daqui, contíguo
+///     .upsert(agregado, payload, base)
+///     .delete(agregado, base)
+///     .exclusao_de(raiz)               marca o grupo como delete_tree com raiz
+///     .assinada()                      todos os membros, com índices 0..n e a mesma assinatura
+/// ```
+///
+/// **A identidade da ação é `(origem, mutation_id)`.** O `mutation_id` nasce aqui, sorteado por
+/// ação, e o helper nunca reaproveita um entre origens diferentes: reaproveitar é um cenário
+/// legítimo de teste (duas origens podem sortear o mesmo id), mas ele precisa ser escrito de
+/// propósito, com [`AcaoRemota::com_mutation_id`], e não acontecer por descuido do helper.
+pub struct AcaoRemota<'a> {
+    origem: &'a crate::domain::identity::DeviceIdentity,
+    primeiro_seq: i64,
+    universo: String,
+    mutation_id: String,
+    raiz: Option<crate::domain::sync::AggregateRef>,
+    membros: Vec<(
+        crate::domain::sync::AggregateRef,
+        crate::domain::sync::Operation,
+        String,
+        String,
+    )>,
+}
+
+impl<'a> AcaoRemota<'a> {
+    /// A ação começa no `seq` 1 da origem. Use [`AcaoRemota::a_partir_do_seq`] para continuar uma
+    /// sequência já usada — o cursor de uma origem é contíguo, e pular seq trava a origem inteira.
+    pub fn da(origem: &'a crate::domain::identity::DeviceIdentity) -> Self {
+        Self {
+            origem,
+            primeiro_seq: 1,
+            universo: "u1".to_string(),
+            mutation_id: crate::domain::ids::new_id(),
+            raiz: None,
+            membros: Vec::new(),
+        }
+    }
+
+    pub fn a_partir_do_seq(mut self, seq: i64) -> Self {
+        self.primeiro_seq = seq;
+        self
+    }
+
+    pub fn no_universo(mut self, universo: &str) -> Self {
+        self.universo = universo.to_string();
+        self
+    }
+
+    /// O `mutation_id` desta ação, escolhido à mão. Só para o teste que precisa de duas origens com
+    /// o mesmo id — o que **não** as torna a mesma ação.
+    pub fn com_mutation_id(mut self, mutation_id: &str) -> Self {
+        self.mutation_id = mutation_id.to_string();
+        self
+    }
+
+    pub fn upsert(
+        mut self,
+        agregado: crate::domain::sync::AggregateRef,
+        payload: &str,
+        base_rev: &str,
+    ) -> Self {
+        self.membros.push((
+            agregado,
+            crate::domain::sync::Operation::Upsert,
+            payload.to_string(),
+            base_rev.to_string(),
+        ));
+        self
+    }
+
+    pub fn delete(mut self, agregado: crate::domain::sync::AggregateRef, base_rev: &str) -> Self {
+        self.membros.push((
+            agregado,
+            crate::domain::sync::Operation::Delete,
+            String::new(),
+            base_rev.to_string(),
+        ));
+        self
+    }
+
+    /// Marca a ação como uma exclusão composta, com a raiz que a decisão vai apresentar.
+    pub fn exclusao_de(mut self, raiz: crate::domain::sync::AggregateRef) -> Self {
+        self.raiz = Some(raiz);
+        self
+    }
+
+    /// Os envelopes prontos: seq contíguo, grupo coerente e assinatura de cada membro.
+    pub fn assinada(self) -> Vec<crate::domain::sync::EventEnvelope> {
+        let total = self.membros.len() as i64;
+        let (kind, root_type, root_id) = match &self.raiz {
+            Some(raiz) => (
+                "delete_tree".to_string(),
+                raiz.aggregate_type.clone(),
+                raiz.aggregate_id.clone(),
+            ),
+            None => (String::new(), String::new(), String::new()),
+        };
+        self.membros
+            .iter()
+            .enumerate()
+            .map(|(indice, (agregado, operacao, payload, base))| {
+                let mut envelope = crate::infrastructure::sqlite::sync_apply::envelope_de_origem(
+                    self.origem.device_id(),
+                    self.primeiro_seq + indice as i64,
+                    &self.universo,
+                    agregado,
+                    *operacao,
+                    payload,
+                    base,
+                );
+                envelope.grupo = crate::domain::sync::GrupoDeMutacao {
+                    mutation_id: self.mutation_id.clone(),
+                    index: indice as i64,
+                    count: total,
+                    kind: kind.clone(),
+                    root_type: root_type.clone(),
+                    root_id: root_id.clone(),
+                };
+                envelope.signature = self.origem.sign(&envelope);
+                envelope
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod testes_da_fixture {
     use super::*;

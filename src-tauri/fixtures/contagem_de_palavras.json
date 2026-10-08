@@ -1,0 +1,74 @@
+[
+  {
+    "content": "",
+    "palavras": 0
+  },
+  {
+    "content": "   ",
+    "palavras": 0
+  },
+  {
+    "content": "uma",
+    "palavras": 1
+  },
+  {
+    "content": "duas palavras",
+    "palavras": 2
+  },
+  {
+    "content": "<p>Ela entrou na cidade.</p>",
+    "palavras": 4
+  },
+  {
+    "content": "<p>um</p><p>dois</p>",
+    "palavras": 2
+  },
+  {
+    "content": "colado<b>junto</b>aqui",
+    "palavras": 3
+  },
+  {
+    "content": "<>não é tag",
+    "palavras": 3
+  },
+  {
+    "content": "a < b > c",
+    "palavras": 2
+  },
+  {
+    "content": "<p>sem fim",
+    "palavras": 2
+  },
+  {
+    "content": "<a<b>c",
+    "palavras": 1
+  },
+  {
+    "content": "quebra\nde\r\nlinha\tcom tab",
+    "palavras": 5
+  },
+  {
+    "content": "nbsp separa",
+    "palavras": 2
+  },
+  {
+    "content": "nelnão separa no js",
+    "palavras": 4
+  },
+  {
+    "content": "bom﻿dia",
+    "palavras": 2
+  },
+  {
+    "content": "ideográfico　espaço",
+    "palavras": 2
+  },
+  {
+    "content": "<p data-narrahub-blob=\"abc\">imagem</p> texto",
+    "palavras": 2
+  },
+  {
+    "content": "emoji 🎉 conta",
+    "palavras": 3
+  }
+]

@@ -95,19 +95,12 @@ pub fn update_node(
     Ok(affected > 0)
 }
 
-/// Apaga o elemento e as ligações dele — o que a FK faria se as pontas não
-/// fossem polimórficas. Recebe a transação porque as duas coisas precisam
-/// acontecer juntas: sem isso, uma falha no meio deixaria ligação apontando
-/// para elemento que não existe mais.
+/// Apaga o elemento. As ligações dele saem por `trg_canvas_node_edges_delete` (migration 22).
+///
+/// A limpeza era manual aqui até a B5. Virou gatilho porque o mesmo efeito precisa valer quando
+/// quem sai é a **entidade** da outra ponta — caso que não passava por função nenhuma deste
+/// repositório, e deixava aresta órfã no arquivo para sempre.
 pub fn delete_node(transaction: &Transaction<'_>, id: &str) -> DatabaseCommandResult<bool> {
-    transaction
-        .execute(
-            "DELETE FROM canvas_edges
-              WHERE (source_kind = 'canvas' AND source_id = ?1)
-                 OR (target_kind = 'canvas' AND target_id = ?1)",
-            [id],
-        )
-        .map_err(map_sqlite_error)?;
     let affected = transaction
         .execute("DELETE FROM canvas_nodes WHERE id = ?1", [id])
         .map_err(map_sqlite_error)?;
@@ -298,7 +291,7 @@ pub fn list_attachments(
                     created_at
                FROM attachments
               WHERE universe_id = ?1 AND owner_type = ?2 AND owner_id = ?3
-              ORDER BY sort_order, created_at",
+              ORDER BY sort_order, id",
         )
         .map_err(map_sqlite_error)?;
     let rows = statement
@@ -353,44 +346,6 @@ pub fn get_attachment(
         )
         .optional()
         .map_err(map_sqlite_error)
-}
-
-/// Grava o anexo inteiro, vindo de um evento.
-///
-/// Diferente do `insert_attachment`: a posição **não** é recalculada, porque
-/// ela veio no payload. Recalcular faria o mesmo anexo aparecer em posições
-/// diferentes em cada aparelho.
-pub fn upsert_attachment_from_event(
-    connection: &Connection,
-    attachment: &Attachment,
-) -> DatabaseCommandResult<()> {
-    connection
-        .execute(
-            "INSERT INTO attachments
-               (id, universe_id, owner_type, owner_id, data_url, blob_hash, mime_type,
-                caption, sort_order, created_at)
-             VALUES (?1, ?2, ?3, ?4, '', ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(id) DO UPDATE SET
-                owner_type = excluded.owner_type,
-                owner_id = excluded.owner_id,
-                blob_hash = excluded.blob_hash,
-                mime_type = excluded.mime_type,
-                caption = excluded.caption,
-                sort_order = excluded.sort_order",
-            rusqlite::params![
-                attachment.id,
-                attachment.universe_id,
-                attachment.owner_type,
-                attachment.owner_id,
-                attachment.blob_hash,
-                attachment.mime_type,
-                attachment.caption,
-                attachment.sort_order,
-                attachment.created_at,
-            ],
-        )
-        .map_err(map_sqlite_error)?;
-    Ok(())
 }
 
 /// A posição sai de uma subquery no próprio `INSERT`. O caminho antigo lia
@@ -511,8 +466,7 @@ mod tests {
 
     #[test]
     fn excluir_elemento_leva_as_ligacoes_dele() {
-        // Sem FK nas pontas polimorficas, essa limpeza e manual — e e o que
-        // impede ligacao apontando para elemento que nao existe mais.
+        // Sem FK nas pontas polimorficas, quem faz isso e o gatilho da migration 22.
         let mut connection = migrated_memory_database();
         seed_universe(&connection, "u1");
         seed_entity(&connection, "e1");
@@ -529,6 +483,28 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM canvas_edges", [], |row| row.get(0))
             .expect("contar");
         assert_eq!(total, 0, "a ligacao tinha que sair junto");
+    }
+
+    /// Apagar a ENTIDADE tambem leva a aresta — e isso nao passava por funcao nenhuma daqui.
+    #[test]
+    fn excluir_a_entidade_leva_a_ligacao_em_vez_de_deixar_orfa_no_arquivo() {
+        let connection = migrated_memory_database();
+        seed_universe(&connection, "u1");
+        seed_entity(&connection, "e1");
+        insert_node(&connection, &node("n1", "u1")).expect("inserir");
+        insert_edge(&connection, &edge("l1", ("canvas", "n1"), ("entity", "e1"))).expect("ligar");
+
+        connection
+            .execute("DELETE FROM entities WHERE id = 'e1'", [])
+            .expect("excluir entidade");
+
+        let total: i64 = connection
+            .query_row("SELECT COUNT(*) FROM canvas_edges", [], |row| row.get(0))
+            .expect("contar");
+        assert_eq!(
+            total, 0,
+            "a aresta invisivel continuava no arquivo: invisivel nao e ausente"
+        );
     }
 
     #[test]

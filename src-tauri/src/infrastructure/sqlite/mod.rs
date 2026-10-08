@@ -10,6 +10,7 @@ pub mod knowledge_repository;
 pub mod manuscript_repository;
 pub mod planning_repository;
 pub mod sync_apply;
+pub mod sync_codec;
 pub mod sync_exchange;
 pub mod sync_gc;
 pub mod sync_repository;
