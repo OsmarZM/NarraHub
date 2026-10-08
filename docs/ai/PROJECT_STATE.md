@@ -9,13 +9,13 @@ Atualizado em: 2026-10-07
 
 | Item | Valor |
 | --- | --- |
-| Versão corrente | **0.10.0-beta.15** |
+| Versão corrente | **0.10.0-beta.16** |
 | Última versão estável | `app-v0.9.2`, em 2026-09-01 (Windows) |
 | Última pré-release | `app-v0.10.0-beta.15` (Android; publicada; design mobile aprovado pelo usuário) |
 | `origin/main` | 0.9.2 — **default** do repositório, linha das versões estáveis |
-| `origin/mobile-shell` | 0.10.0-beta.15 — linha de integração; merge do PR #81 em `00afff8` |
+| `origin/mobile-shell` | 0.10.0-beta.15 — linha de integração; backup externo integrado pelo PR #82 em `f0d43cd`; beta.16 em preparação |
 
-NH-087: proteção do acervo/backup externo autorizada, na branch `codex/backup-externo`, em
+NH-087: proteção do acervo/backup externo integrada pelo PR #82; beta.16 preparada na branch `codex/release-0.10.0-beta.16`, em
 qualificação. Detalhe: `docs/handoffs/2026-10-07-nh087-backup-externo-codex.md`.
 A fatia de Escrita permanece no checkout original; não está incluída nesta entrega.
 
