@@ -1,10 +1,10 @@
-<div class="nh-editor-toolbar" role="toolbar" aria-label="Ferramentas do editor">
+<div id="nh-writing-tools" class="nh-editor-toolbar" [class.mobile-expanded]="mobileToolsExpanded" role="toolbar" aria-label="Ferramentas do editor" (mousedown)="preserveMobileSelection($event)">
   <div class="nh-toolbar-group history-tools" aria-label="Histórico de edição">
     <button type="button" aria-label="Desfazer" title="Desfazer" [disabled]="!editor?.can()?.undo()" (click)="command('undo')">↶</button>
     <button type="button" aria-label="Refazer" title="Refazer" [disabled]="!editor?.can()?.redo()" (click)="command('redo')">↷</button>
   </div>
   <div class="nh-toolbar-group format-tools" aria-label="Formatação">
-    <select aria-label="Estilo do texto" (change)="setHeadingFromSelect($any($event.target).value)">
+    <select aria-label="Estilo do texto" [value]="headingLevel" (change)="setHeadingFromSelect($any($event.target).value)">
       <option value="0">Parágrafo</option><option value="1">Título 1</option><option value="2">Título 2</option><option value="3">Título 3</option>
     </select>
     <button type="button" aria-label="Negrito" title="Negrito" [class.active]="editor?.isActive('bold')" (click)="command('bold')"><strong>B</strong></button>
@@ -152,3 +152,16 @@
     <div #editorHost class="nh-rich-editor"></div>
   </article>
 </div>
+
+@if (viewport.isMobile()) {
+  <div class="nh-mobile-writing-toolbar" role="toolbar" aria-label="Formatação rápida">
+    <select aria-label="Estilo do texto" title="Estilo do texto" [value]="headingLevel" (change)="setHeadingFromSelect($any($event.target).value)">
+      <option value="0">Aa</option><option value="1">Título 1</option><option value="2">Título 2</option><option value="3">Título 3</option>
+    </select>
+    <button type="button" aria-label="Negrito" title="Negrito" [class.active]="editor?.isActive('bold')" [attr.aria-pressed]="editor?.isActive('bold') || false" (mousedown)="$event.preventDefault()" (click)="command('bold')"><strong>B</strong></button>
+    <button type="button" aria-label="Itálico" title="Itálico" [class.active]="editor?.isActive('italic')" [attr.aria-pressed]="editor?.isActive('italic') || false" (mousedown)="$event.preventDefault()" (click)="command('italic')"><em>I</em></button>
+    <button type="button" aria-label="Lista com marcadores" title="Lista com marcadores" [class.active]="editor?.isActive('bulletList')" [attr.aria-pressed]="editor?.isActive('bulletList') || false" (mousedown)="$event.preventDefault()" (click)="command('bulletList')">•</button>
+    <button type="button" aria-label="Desfazer" title="Desfazer" [disabled]="!editor?.can()?.undo()" (mousedown)="$event.preventDefault()" (click)="command('undo')">↶</button>
+    <button type="button" class="more-tools" [attr.aria-expanded]="mobileToolsExpanded" aria-controls="nh-writing-tools" aria-label="Mais ferramentas" [title]="mobileToolsExpanded ? 'Recolher ferramentas' : 'Mais ferramentas'" (mousedown)="$event.preventDefault()" (click)="mobileToolsExpanded = !mobileToolsExpanded">{{ mobileToolsExpanded ? '×' : '⋯' }}</button>
+  </div>
+}

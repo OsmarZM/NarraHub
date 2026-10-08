@@ -66,9 +66,9 @@ não sincroniza. Cada fatia repete Windows ↔ Android físico.
 
 ```text
 Owner:  Codex
-Status: IN_PROGRESS — beta.14 publicada; correção da faixa lateral relatada no S23
+Status: IN_PROGRESS — design mobile aprovado; Escrita e ferramentas em qualificação
 Fase:   5
-Branch: codex/nh-085-corrige-faixa-lateral
+Branch: codex/nh085-escrita-v2 (base mobile-shell)
 ```
 
 M0 (auditoria no S23 físico → `docs/mobile/UX_AUDIT_V1.md`, antes de qualquer redesign) até M15

@@ -3,21 +3,21 @@
 > Fonte da verdade sobre "onde estamos". Qualquer agente lê este arquivo antes de agir.
 > Atualize-o ao fechar uma tarefa que mude versão, fase ou dívida conhecida.
 
-Atualizado em: 2026-10-07
+Atualizado em: 2026-10-08
 
 ## Versão
 
 | Item | Valor |
 | --- | --- |
-| Versão corrente | **0.10.0-beta.16** |
+| Versão corrente | **0.10.0-beta.17** |
 | Última versão estável | `app-v0.9.2`, em 2026-09-01 (Windows) |
-| Última pré-release | `app-v0.10.0-beta.15` (Android; publicada; design mobile aprovado pelo usuário) |
+| Última pré-release | `app-v0.10.0-beta.16` (Android; publicada e verificada em 2026-10-08) |
 | `origin/main` | 0.9.2 — **default** do repositório, linha das versões estáveis |
-| `origin/mobile-shell` | 0.10.0-beta.15 — linha de integração; backup externo integrado pelo PR #82 em `f0d43cd`; beta.16 em preparação |
+| `origin/mobile-shell` | 0.10.0-beta.16 — linha de integração; PR #83 em `968911a`; beta.17 de Escrita em preparação |
 
-NH-087: proteção do acervo/backup externo integrada pelo PR #82; beta.16 preparada na branch `codex/release-0.10.0-beta.16`, em
-qualificação. Detalhe: `docs/handoffs/2026-10-07-nh087-backup-externo-codex.md`.
-A fatia de Escrita permanece no checkout original; não está incluída nesta entrega.
+NH-087: backup externo integrado e beta.16 publicada. O usuário confirmou em 2026-10-08 a cópia/restauração de textos e imagens; instalação vazia e Windows seguem como ensaios separados. NH-087 IN_PROGRESS.
+
+NH-085: Escrita/ferramentas retomada na branch codex/nh085-escrita-v2, reaproveitando o trabalho preservado. Beta.17 preparada; integração, publicação e S23 desta fatia seguem gates distintos.
 
 A linha "Versão corrente" acima é lida por `scripts/validate-release-version.mjs`: se ela
 divergir dos manifests, o CI reprova. Este arquivo é a memória compartilhada de três agentes,
@@ -131,8 +131,8 @@ entidades e reserva a margem de 48px da alça lateral. Qualificação: `docs/mob
 A segunda fatia foi mesclada no PR #79 em `fe210d1`, com CI 4/4 aprovado: biblioteca com capa e
 conteúdo separados, cartões compactos e criação/edição de universo adaptada ao toque nos
 modos claro/escuro. Mantém handlers, stores e router existentes. Qualificação local:
-`docs/mobile/QUALIFICACAO_V2_FATIA_2.md`. Em 2026-10-02 o usuário solicitou publicação para teste da beta: a beta.14 está em preparação
-na branch `codex/release-0.10.0-beta.14`. Última release publicada continua beta.13 até confirmação
+`docs/mobile/QUALIFICACAO_V2_FATIA_2.md`. Histórico da preparação em 2026-10-02: a beta.14 estava em preparação
+na branch `codex/release-0.10.0-beta.14`. Naquele handoff, a última release publicada continuava beta.13 até confirmação
 do workflow oficial; a beta.14 não tem PASS físico ainda.
 O gate físico da NH-085 e a modernização completa das demais páginas continuam pendentes.
 

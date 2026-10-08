@@ -208,6 +208,7 @@ export class WritingEditorComponent implements AfterViewInit, OnChanges, OnDestr
   @ViewChild('titleInput') private titleInput?: ElementRef<HTMLTextAreaElement>;
 
   editor: Editor | null = null;
+  mobileToolsExpanded = false;
   imageError = '';
   spellcheckEnabled = true;
   voicePanelOpen = false;
@@ -399,6 +400,16 @@ export class WritingEditorComponent implements AfterViewInit, OnChanges, OnDestr
     else if (action === 'horizontalRule') chain.setHorizontalRule().run();
     else if (action === 'undo') chain.undo().run();
     else chain.redo().run();
+  }
+
+  get headingLevel(): number {
+    return [1, 2, 3].find((level) => this.editor?.isActive('heading', { level })) ?? 0;
+  }
+
+  preserveMobileSelection(event: MouseEvent): void {
+    if (this.viewport.isMobile() && event.target instanceof Element && event.target.closest('button')) {
+      event.preventDefault();
+    }
   }
 
   setHeading(level: 1 | 2 | 3 | 0): void {
@@ -638,6 +649,13 @@ export class WritingEditorComponent implements AfterViewInit, OnChanges, OnDestr
 
   private positionAiBubble(position?: number): void {
     if (!this.editor || !this.aiPanelOpen) return;
+    if (this.viewport.isMobile()) {
+      const offset = this.fixedContainingOffset();
+      this.bubbleBelow = true;
+      this.bubbleTop = 12 - offset.top;
+      this.bubbleLeft = window.innerWidth / 2 - offset.left;
+      return;
+    }
     try {
       const { from, to } = this.editor.state.selection;
       const anchor = position ?? from; const head = position ?? to;
@@ -652,6 +670,12 @@ export class WritingEditorComponent implements AfterViewInit, OnChanges, OnDestr
 
   private positionSlashMenu(): void {
     if (!this.editor || !this.slashMenuOpen) return;
+    if (this.viewport.isMobile()) {
+      const offset = this.fixedContainingOffset();
+      this.slashTop = 12 - offset.top;
+      this.slashLeft = 12 - offset.left;
+      return;
+    }
     try {
       const coords = this.editor.view.coordsAtPos(this.editor.state.selection.from);
       const offset = this.fixedContainingOffset();
